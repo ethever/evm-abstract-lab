@@ -400,17 +400,19 @@ fn read_word(data: &Json) -> Option<[u8; 32]> {
             return None;
         }
         let value = read_scalar(fields.get("expression")?, scope, limits)?;
-        nodes
-            .iter()
-            .any(|node| matches!(node, Typed::Word(word) if *word == value))
-            .then_some(())?;
         if value.original.as_constant().is_some() {
+            // An exact byte root can retain a separate literal operand such as
+            // RETURN's length. Its own scoped numeric proof is sufficient.
             numeric_matches(
                 fields.get("value")?,
                 NumericValue::constant(value.exact),
                 scope,
             )?;
         } else {
+            nodes
+                .iter()
+                .any(|node| matches!(node, Typed::Word(word) if *word == value))
+                .then_some(())?;
             read_fact_matches(fields.get("value")?, &value, scope, limits)?;
             certified_reads.push(value.original);
         }
@@ -569,6 +571,35 @@ mod tests {
             )
             .unwrap();
         assert!(!word_matches(&snapshot(unknown), expected));
+    }
+
+    #[test]
+    fn literal_byte_roots_validate_independent_constant_operands() {
+        let expected = U256::from(42);
+        let mut data = snapshot(ByteStateId::exact(
+            expected.to_be_bytes::<32>().to_vec().into(),
+        ));
+        data["operands"] = json!([{
+            "expression": ExprId::constant(U256::from(32)),
+            "value": EvmValue::<NumericValue>::constant(U256::from(32))
+        }]);
+        assert!(word_matches(&data, expected));
+        let mut wrong_numeric = data.clone();
+        wrong_numeric["operands"][0]["value"] =
+            serde_json::to_value(EvmValue::<NumericValue>::constant(U256::from(31))).unwrap();
+        assert!(!word_matches(&wrong_numeric, expected));
+        let mut wrong_scope = data.clone();
+        wrong_scope["operands"][0]["expression"]["identity_scope"] = json!("another-producer");
+        assert!(!word_matches(&wrong_scope, expected));
+        let mut wrong_value_scope = data.clone();
+        wrong_value_scope["operands"][0]["value"]["expression"] =
+            serde_json::to_value(ExprId::constant(U256::from(32))).unwrap();
+        wrong_value_scope["operands"][0]["value"]["expression"]["identity_scope"] =
+            json!("another-producer");
+        assert!(!word_matches(&wrong_value_scope, expected));
+        let mut unrelated_read = data;
+        unrelated_read["operands"] = slot_snapshot(100, 0x10100, 42)["operands"].clone();
+        assert!(!word_matches(&unrelated_read, expected));
     }
 
     #[test]

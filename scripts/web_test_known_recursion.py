@@ -8,6 +8,7 @@ from web_test_inspector_helpers import hide_inspector, inspector_frame_tab, insp
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import node_snapshot, text_pixels, workspace_content_bottom
 from web_test_wire_bytes import assert_return_word42
+from web_test_hybrid import source_instructions
 
 
 def known_recursion_interactions(browser, url, output):
@@ -22,7 +23,7 @@ def known_recursion_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "known-recursion", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 20 and report["status"] == "Converged"
+    assert report["schema_version"] == 21 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries
@@ -36,7 +37,7 @@ def known_recursion_interactions(browser, url, output):
         frame = state["entry"]["frames"][-1]
         assert frame["kind"] == "Runtime" and frame["program"] is not None
         block = next(block for block in report["cfg"] if block["id"] == state["state"])
-        assert block["instructions"] and block["executed_pcs"] == []
+        assert source_instructions(report, block) and block["executed_pcs"] == []
     assert max(len(state["entry"]["frames"]) for state in report["states"]) <= 3
     assert any(edge["kind"] == "SummaryReturn" for edge in report["edges"])
     returns = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Return"]

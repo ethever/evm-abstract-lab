@@ -1,6 +1,6 @@
 //! Borrowed routing into one shared run and one generation-owned client store.
 use super::{
-    ImmutableInputPolicy, Inputs, Refinements, StackMeet,
+    ImmutableInputPolicy, Inputs, ProcessMeet, ProcessRefinements, Refinements, StackMeet,
     global::{
         Continuation, Continuations, Edge, EntryPolicy, Generations, ObservationPolicy, Points,
         Procedures, SetUnion, Shared, Subscriptions, Summaries, SummaryClosure, SummaryClosures,
@@ -13,6 +13,9 @@ use std::{marker::PhantomData, sync::Arc};
 
 /// Explicit route into the once-per-run client provider list.
 pub struct SharedRoute<P>(PhantomData<P>);
+
+/// Process guarantees, separate from Native stack observations and client tails.
+pub struct ProcessRefinementRoute;
 
 /// Explicit route of the global point-discovery directory.
 pub struct PointsRoute;
@@ -85,6 +88,7 @@ macro_rules! global_route {
         }
     };
 }
+global_route!(ProcessRefinementRoute, process_refinements, Channel<ProcessRefinements, Descending<ProcessMeet>>);
 global_route!(PointsRoute, points, Channel<Points, Ascending<SetUnion<super::Point>>>);
 global_route!(GenerationRoute, generations, Channel<Generations, EntryPolicy>);
 global_route!(TopologyRoute, topology, Channel<Topology, Ascending<SetUnion<Edge>>>);

@@ -146,6 +146,7 @@ impl<N: WordElement> EvmMemo<N> {
             frontiers: Vec::new(),
             outcomes: Vec::new(),
             completed_calls: Vec::new(),
+            common_successors: None,
             retention_failures: Vec::new(),
         }
     }

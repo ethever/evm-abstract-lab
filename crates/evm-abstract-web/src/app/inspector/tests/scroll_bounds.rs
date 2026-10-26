@@ -35,7 +35,7 @@ impl Surface {
 fn draw(
     ctx: &Context,
     time: &mut f64,
-    report: &api::AnalysisReport,
+    report: &crate::tests::AnalysisReport,
     surface: Surface,
     height: f32,
     events: Vec<Event>,
@@ -48,13 +48,13 @@ fn draw(
         |ui| match surface {
             Surface::Storage | Surface::Transient => stores::storage(
                 ui,
-                report,
+                &(report).view(),
                 None,
                 &report.accounts[0].address,
                 matches!(surface, Surface::Transient),
             ),
             Surface::Stack => buffers::stack(ui, &report.byte_arrays[0].values),
-            Surface::Bytes => buffers::show(ui, report, 0, "Memory"),
+            Surface::Bytes => buffers::show(ui, &(report).view(), 0, "Memory"),
         },
     )
 }
@@ -62,7 +62,7 @@ fn draw(
 fn scroll_to_end(
     ctx: &Context,
     time: &mut f64,
-    report: &api::AnalysisReport,
+    report: &crate::tests::AnalysisReport,
     surface: Surface,
     height: f32,
 ) -> Vec<(String, Rect)> {

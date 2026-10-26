@@ -47,6 +47,7 @@ pub fn without_application_metadata(value: &Json) -> Json {
     assert_eq!(maximum, 2_000_000_000);
     assert!(work <= maximum);
     report.remove("hybrid");
+    report.remove("global_status");
     Json::Object(report)
 }
 
@@ -200,23 +201,27 @@ pub fn binary() -> std::ffi::OsString {
     reason = "shared support module is also compiled by native-only integration targets"
 )]
 pub fn select(report: &Json) -> Json {
-    let Some(hybrid) = report.get("hybrid") else {
-        return report.clone();
-    };
-    let primary = if report.get("analysis").is_some() {
-        &report["analysis"]
-    } else {
-        report
-    };
-    let native = if hybrid["coverage"]["chosen"] == "Native" {
-        primary
-    } else {
-        &hybrid["detail"]
-    };
-    if native.is_null() {
+    if report.get("global").is_none() {
+        assert!(
+            report.get("hybrid").is_none() || report.get("global_status").is_some(),
+            "Hybrid evidence requires its Global graph"
+        );
         return report.clone();
     }
+    let hybrid = report.get("hybrid").expect("Hybrid coverage is recorded");
+    let graph = report
+        .get("native")
+        .filter(|graph| graph.is_object())
+        .expect("Native evidence is absent; inspect native::global explicitly");
+    let native = &graph["analysis"];
+    assert!(global(report)["states"].is_array());
     assert!(native["states"].is_array());
+    assert!(matches!(
+        report["selected_view"].as_str(),
+        Some("Native" | "Baseline")
+    ));
+    assert!(hybrid.get("baseline").is_none() && hybrid.get("detail").is_none());
+
     let coverage = hybrid
         .get("precision")
         .filter(|value| !value.is_null())
@@ -237,41 +242,81 @@ pub fn select(report: &Json) -> Json {
             prefix["instructions"].as_array().unwrap().len()
         );
     }
-    let mut result = report.clone();
     let mut native = native.clone();
     if let Some(acquisition) = hybrid.get("rpc").filter(|value| !value.is_null()) {
         native["rpc_acquisition"] = acquisition["acquisition"].clone();
     }
-    if report.get("analysis").is_some() || hybrid.get("detail_ssa").is_some_and(|ir| !ir.is_null())
-    {
-        result["global_status"] = result["status"].clone();
-        result["status"] = native["status"].clone();
-        result["analysis"] = native;
-        if hybrid["coverage"]["chosen"] != "Native" {
-            result.as_object_mut().unwrap().remove("ssa");
-            result.as_object_mut().unwrap().remove("partial_ssa");
-            if let Some(ir) = hybrid.get("detail_ssa").filter(|value| !value.is_null()) {
-                result[if ir["status"] == "Converged" {
-                    "ssa"
-                } else {
-                    "partial_ssa"
-                }] = ir.clone();
-            }
-        }
+    let has_ssa = graph.get("ssa").is_some() || graph.get("partial_ssa").is_some();
+    let mut result = if has_ssa {
+        let mut focused = graph.clone();
+        focused["analysis"] = native;
+        focused["global_status"] = report["status"].clone();
+        focused["status"] = focused["analysis"]["status"].clone();
+        focused
     } else {
-        for key in [
-            "numeric_model",
-            "postprocessing_max_work",
-            "postprocessing_work",
-        ] {
-            if let Some(value) = report.get(key) {
-                native[key] = value.clone();
-            }
-        }
-        native["hybrid"] = hybrid.clone();
-        result = native;
+        native
+    };
+    for key in [
+        "numeric_model",
+        "postprocessing_max_work",
+        "postprocessing_work",
+    ] {
+        result[key] = report[key].clone();
     }
+    result["hybrid"] = hybrid.clone();
+    result["global_status"] = report["status"].clone();
+
     result
+}
+
+/// Global control locations describe a MAY model. Borrow its analysis explicitly
+/// so a missing Native slot can never become executed-PC or SSA evidence.
+pub fn global(report: &Json) -> &Json {
+    assert!(report["hybrid"].is_object(), "Hybrid coverage is recorded");
+    let analysis = &report["global"]["analysis"];
+    assert!(analysis["states"].is_array(), "Global analysis is recorded");
+    analysis
+}
+
+#[test]
+fn hybrid_namespaces_keep_colliding_state_ids_and_ssa_separate() {
+    let report = serde_json::json!({
+        "global": {"analysis": {"states": [{"id": 0, "executed_pcs": []}]}},
+        "native": {
+            "analysis": {"status": "Converged", "states": [{"id": 0, "executed_pcs": [7]}]},
+            "ssa": {"instructions": [{"pc": 7}]}
+        },
+        "hybrid": {"coverage": {"detail_binding": "OriginalOwner"}, "local_detail": []},
+        "selected_view": "Baseline", "status": "Converged"
+    });
+    assert_eq!(
+        global(&report)["states"][0]["executed_pcs"],
+        serde_json::json!([])
+    );
+    let native = select(&report);
+    assert_eq!(
+        native["analysis"]["states"][0]["executed_pcs"],
+        serde_json::json!([7])
+    );
+    assert_eq!(native["ssa"]["instructions"][0]["pc"], 7);
+    assert_eq!(select(&native), native);
+}
+
+#[test]
+#[should_panic(expected = "Native evidence is absent; inspect native::global explicitly")]
+fn absent_native_evidence_cannot_fall_back_to_global_control() {
+    let report = serde_json::json!({
+        "global": {"analysis": {"states": [{"id": 0, "executed_pcs": []}]}},
+        "native": null,
+        "hybrid": {"local_detail": []}, "selected_view": "Baseline"
+    });
+    select(&report);
+}
+
+#[test]
+#[should_panic(expected = "Hybrid evidence requires its Global graph")]
+fn hybrid_evidence_requires_its_graph_envelope() {
+    select(&serde_json::json!({"hybrid": {}, "native": null}));
 }
 
 #[allow(
@@ -279,19 +324,23 @@ pub fn select(report: &Json) -> Json {
     reason = "shared support module is also compiled by native-only integration targets"
 )]
 pub fn assert_exit(report: &Json, output: &std::process::Output) {
+    let status = report
+        .get("global_status")
+        .or_else(|| {
+            report
+                .get("machine_analysis")
+                .map(|machine| &machine["status"])
+        })
+        .unwrap_or(&report["status"]);
     assert_eq!(
         output.status.code(),
-        Some(if report["status"] == "Converged" {
-            0
-        } else {
-            2
-        }),
+        Some(if status == "Converged" { 0 } else { 2 }),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     if let Some(hybrid) = report.get("hybrid") {
         assert_eq!(
-            report["status"] == "Converged",
+            status == "Converged",
             hybrid["coverage"]["baseline_current"] == true
         );
     }

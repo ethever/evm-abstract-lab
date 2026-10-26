@@ -4,8 +4,8 @@
 use super::{TransportError, timing};
 use evm_abstract_notation::WideSymbol;
 use evm_abstract_protocol::{
-    AnalyzeReply, AnalyzeRequest, ApiError, JobId, JobReply, JobSnapshot, JobState,
-    RpcProvidersReply,
+    AnalyzeRequest, ApiError, JobId, JobPublication, JobReply, JobResultReply, JobSnapshot,
+    JobState, PublicationVersion, RpcProvidersReply,
 };
 
 /// The HTTP status operation that produced a task snapshot.
@@ -40,7 +40,7 @@ pub enum Command {
         /// Backend task identity.
         id: JobId,
     },
-    /// Download the completed report.
+    /// Download the latest advertised immutable publication.
     Result {
         /// UI generation, echoed into the callback.
         generation: u64,
@@ -72,16 +72,16 @@ pub enum Message {
         /// Operation used for retry and cancellation handling.
         operation: JobOperation,
         /// Typed backend envelope or transport failure.
-        result: Result<JobReply, TransportError>,
+        result: Box<Result<JobReply, TransportError>>,
     },
-    /// Completed immutable analysis report.
+    /// Version-qualified immutable analysis publication.
     Result {
         /// Generation from the originating command.
         generation: u64,
         /// Backend task identity.
         id: JobId,
         /// Typed report envelope or transport failure.
-        result: Box<Result<AnalyzeReply, TransportError>>,
+        result: Box<Result<JobResultReply, TransportError>>,
         /// Network and body-transfer duration of this result attempt.
         transfer_ns: u64,
         /// JSON decoding duration of this result attempt.
@@ -109,11 +109,13 @@ pub(super) enum TaskError {
     Transport(TransportError),
     Schema { received: u16 },
     Identity { expected: JobId, received: JobId },
+    Publication,
 }
 
 impl std::fmt::Display for TaskError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Publication => f.write_str("Invalid result publication: graph versions do not match the report or advertised identity"),
             Self::Api(error) => write!(f, "{:?}: {}", error.code, error.message),
             Self::Transport(error) => error.fmt(f),
             Self::Schema { received } => write!(
@@ -139,6 +141,8 @@ pub(super) struct Task {
     generation: u64,
     poll_pending: bool,
     result_pending: bool,
+    delivered: Option<JobPublication>,
+    rejected: Option<PublicationVersion>,
     cancel_requested: bool,
     cancel_sent: bool,
     next_poll: Option<f64>,
@@ -166,7 +170,10 @@ impl Task {
     }
 
     pub(super) fn start(&mut self, request: AnalyzeRequest) -> Command {
-        let generation = self.generation + 1;
+        let generation = self
+            .generation
+            .checked_add(1)
+            .expect("task generation exhausted");
         *self = Self {
             generation,
             phase: TaskPhase::Submitting,
@@ -207,8 +214,24 @@ impl Task {
         }
     }
 
+    fn unpublished(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.publication.as_ref())
+            .is_some_and(|publication| {
+                self.delivered
+                    .as_ref()
+                    .is_none_or(|old| publication.version > old.version)
+                    && self
+                        .rejected
+                        .is_none_or(|rejected| publication.version > rejected)
+            })
+    }
+
     pub(super) fn next_command(&mut self, now: f64) -> Option<Command> {
-        if !self.busy() {
+        // Standalone replacement retires transport even if its old snapshot
+        // advertised a publication that was still in flight.
+        if self.phase == TaskPhase::Ready {
             return None;
         }
         if let Some(command) = self.cancel_command() {
@@ -216,19 +239,21 @@ impl Task {
         }
         let snapshot = self.snapshot.as_ref()?;
         let id = snapshot.id;
-        if snapshot.state == JobState::Completed && !self.result_pending {
+        let unpublished = self.unpublished();
+        // Retained closed models remain fetchable after cancellation/failure.
+        // A staged download leaves Running cancellable and status polling active.
+        if unpublished && !self.result_pending {
             if self.error.is_some() && now < *self.next_poll.get_or_insert(now + 1.0) {
                 return None;
             }
             self.next_poll = None;
             self.result_pending = true;
-            self.phase = TaskPhase::Fetching;
             return Some(Command::Result {
                 generation: self.generation,
                 id,
             });
         }
-        if self.poll_pending || self.result_pending {
+        if !self.busy() || self.poll_pending || snapshot.state == JobState::Completed {
             return None;
         }
         let delay = if self.error.is_some() { 1.0 } else { 0.3 };
@@ -262,7 +287,7 @@ impl Task {
         ) {
             return;
         }
-        let snapshot = match result {
+        let mut snapshot = match result {
             Ok(JobReply {
                 result: Ok(snapshot),
             }) => snapshot,
@@ -283,11 +308,22 @@ impl Task {
         };
         if let Some(current) = &self.snapshot {
             if current.id != snapshot.id {
-                self.fail(TaskError::Identity {
-                    expected: current.id,
-                    received: snapshot.id,
-                });
+                self.request_failed(
+                    operation,
+                    TaskError::Identity {
+                        expected: current.id,
+                        received: snapshot.id,
+                    },
+                );
                 return;
+            }
+            if snapshot.publication.as_ref().is_none_or(|next| {
+                current
+                    .publication
+                    .as_ref()
+                    .is_some_and(|old| old.version > next.version)
+            }) {
+                snapshot.publication = current.publication.clone();
             }
             if current.state == JobState::Completed && snapshot.state != JobState::Completed {
                 return;
@@ -298,11 +334,27 @@ impl Task {
                 return;
             }
         }
-        self.error = None;
+        let rejected = snapshot.publication.as_ref().is_some_and(|publication| {
+            self.rejected
+                .is_some_and(|rejected| publication.version <= rejected)
+        });
+        if !rejected {
+            self.error = None;
+        }
         self.phase = match &snapshot.state {
             JobState::Queued if !self.cancel_requested => TaskPhase::Queued,
             JobState::Running if !self.cancel_requested => TaskPhase::Running,
             JobState::Queued | JobState::Running | JobState::Cancelling => TaskPhase::Cancelling,
+            JobState::Completed if rejected => TaskPhase::Failed,
+            JobState::Completed
+                if snapshot.publication.as_ref().is_some_and(|publication| {
+                    self.delivered
+                        .as_ref()
+                        .is_some_and(|delivered| delivered.version >= publication.version)
+                }) =>
+            {
+                TaskPhase::Ready
+            }
             JobState::Completed => TaskPhase::Fetching,
             JobState::Cancelled => TaskPhase::Cancelled,
             JobState::Failed(error) => {
@@ -329,6 +381,15 @@ impl Task {
             self.cancel_requested = false;
             self.cancel_sent = false;
             self.phase = match &snapshot.state {
+                JobState::Completed
+                    if snapshot.publication.as_ref().is_some_and(|publication| {
+                        self.delivered
+                            .as_ref()
+                            .is_some_and(|delivered| delivered.version >= publication.version)
+                    }) =>
+                {
+                    TaskPhase::Ready
+                }
                 JobState::Completed => TaskPhase::Fetching,
                 JobState::Cancelling => TaskPhase::Cancelling,
                 JobState::Cancelled => TaskPhase::Cancelled,
@@ -347,16 +408,90 @@ impl Task {
 
     pub(super) fn accepts_result(&self, generation: u64, id: JobId) -> bool {
         generation == self.generation
-            && self.phase == TaskPhase::Fetching
+            && self.result_pending
             && self
                 .snapshot
                 .as_ref()
-                .is_some_and(|snapshot| snapshot.id == id && snapshot.state == JobState::Completed)
+                .is_some_and(|snapshot| snapshot.id == id)
+    }
+
+    pub(super) fn accepts_publication(&self, publication: &JobPublication) -> bool {
+        self.delivered
+            .as_ref()
+            .is_none_or(|old| publication.version > old.version)
+            && self
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.publication.as_ref())
+                .is_none_or(|advertised| publication.version >= advertised.version)
+    }
+
+    pub(super) fn advertised_publication(&self) -> Option<&JobPublication> {
+        self.snapshot.as_ref()?.publication.as_ref()
+    }
+
+    pub(super) fn discard_result(&mut self) {
+        self.result_pending = false;
+        self.next_poll = None;
+    }
+
+    pub(super) fn published(&mut self, publication: JobPublication) {
+        if let Some(snapshot) = &mut self.snapshot {
+            if snapshot
+                .publication
+                .as_ref()
+                .is_none_or(|old| old.version < publication.version)
+            {
+                snapshot.publication = Some(publication.clone());
+            }
+            if snapshot.state == JobState::Completed {
+                self.phase = TaskPhase::Ready;
+            }
+        }
+        self.delivered = Some(publication);
+        self.rejected = None;
+        self.result_pending = false;
+        self.error = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| match &snapshot.state {
+                JobState::Failed(error) => Some(TaskError::Api(error.clone())),
+                _ => None,
+            });
+    }
+
+    /// Invalid immutable contents cannot end known worker execution or cause an
+    /// endless retry of the same publication. A later version can recover.
+    pub(super) fn reject_result(&mut self, version: Option<PublicationVersion>, error: TaskError) {
+        self.rejected = version.or_else(|| {
+            self.advertised_publication()
+                .map(|publication| publication.version)
+        });
+        self.discard_result();
+        if self.snapshot.as_ref().is_some_and(|snapshot| {
+            matches!(
+                snapshot.state,
+                JobState::Queued | JobState::Running | JobState::Cancelling
+            )
+        }) {
+            self.error = Some(error);
+        } else {
+            self.fail(error);
+        }
+    }
+
+    /// Retained publication downloads and retry deadlines outlive worker cleanup.
+    pub(super) fn needs_refresh(&self) -> bool {
+        self.phase != TaskPhase::Ready && (self.busy() || self.result_pending || self.unpublished())
     }
 
     pub(super) fn complete(&mut self) {
         self.phase = TaskPhase::Ready;
         self.result_pending = false;
+        self.poll_pending = false;
+        self.cancel_requested = false;
+        self.cancel_sent = false;
+        self.next_poll = None;
         self.error = None;
         // The workspace freezes successful waiting only after the actual
         // current view has completed its first synchronous preparation.

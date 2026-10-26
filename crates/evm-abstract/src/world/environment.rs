@@ -239,6 +239,14 @@ pub struct EvmEnvironmentValues<N: WordElement> {
     pub blob_hashes: EvmBlobHashes<N>,
 }
 
+impl<N: WordElement> EvmEnvironmentValues<N> {
+    /// Original immutable input namespace, independent of a World snapshot,
+    /// fact revision, procedure table or application publication version.
+    pub fn input_scope_id(&self) -> Option<u64> {
+        self.input_scope.id()
+    }
+}
+
 impl<N: WordElement> Default for EvmEnvironmentValues<N> {
     fn default() -> Self {
         Self {

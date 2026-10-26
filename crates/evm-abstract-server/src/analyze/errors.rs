@@ -57,6 +57,7 @@ pub(super) fn execution(source: CooperationError<std::convert::Infallible>) -> a
         CooperationError::Config(error) => return configuration(error),
         CooperationError::Cancelled => return super::cancelled(),
         CooperationError::Extension(error) => match error {},
+        CooperationError::UnsupportedView { .. } => api::ExecutionFailureKind::UnsupportedView,
         CooperationError::Protocol(_) => api::ExecutionFailureKind::Protocol,
         CooperationError::Initialization(_) => api::ExecutionFailureKind::Initialization,
         CooperationError::Refinement(_) => api::ExecutionFailureKind::Refinement,

@@ -4,13 +4,14 @@
 //! child frame describes frame completion; a rejected CALL can instead resume
 //! at the same depth. An empty outgoing set proves no termination, and a
 //! non-current receipt keeps even observed termination evidence neutral.
+use crate::report::ReportView;
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage, EdgeKind, OutcomeKind};
+use evm_abstract_protocol::{BlockCoverage, EdgeKind, OutcomeKind};
 
 /// Counts native states with each kind, rather than outcome payloads or edges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -117,7 +118,7 @@ pub(super) struct Terminations {
 }
 
 impl Terminations {
-    pub(super) fn new(report: &AnalysisReport) -> Self {
+    pub(super) fn new(report: &ReportView<'_>) -> Self {
         let depths: BTreeMap<_, _> = report
             .cfg
             .iter()
@@ -169,6 +170,7 @@ impl Terminations {
                 | EdgeKind::BranchTrue
                 | EdgeKind::BranchFalse
                 | EdgeKind::Call
+                | EdgeKind::ProcessControl
                 | EdgeKind::Process(_) => None,
             };
             if let Some(kind) =

@@ -53,8 +53,10 @@ mod global;
 mod input;
 mod navigation;
 mod ports;
+mod process;
 mod query;
 mod refinement;
+mod view;
 
 pub use composition::{
     Composition, Extension, ExtraStores, InputTasks, NoExtension, NoStores, NoTasks, PairedTasks,
@@ -74,14 +76,16 @@ pub use input::{
 pub use navigation::{Callees, ProcedureEntries, ProcedureInfo};
 pub use ports::{
     CalleeRoute, ContinuationRoute, GenerationRoute, PointsRoute, Ports, ProcedureEntryRoute,
-    ProcedureRoute, SharedRoute, SubscriptionRoute, SummaryClosureRoute, SummaryRoute,
-    TopologyRoute,
+    ProcedureRoute, ProcessRefinementRoute, SharedRoute, SubscriptionRoute, SummaryClosureRoute,
+    SummaryRoute, TopologyRoute,
 };
+pub use process::{ProcessFacts, ProcessMeet, ProcessRefinements};
 pub use query::{
     ClosedSummaryResult, SummaryReadError, closed_summary, current_input, discover_closed_summary,
     discover_input,
 };
 pub use refinement::{InitializationError, LocalInput, RefinementError};
+pub use view::{InputView, InputViews, InvocationView, PhaseScope, ProcessView};
 
 use analysis_kernel::{Context, Here, Nil, There};
 

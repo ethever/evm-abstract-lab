@@ -1,3 +1,4 @@
+use super::{InputView, InvocationView, ProcessView};
 use crate::{analysis::EvmMachinePayload, domain::WordElement};
 use analysis_kernel::{Capability, Scope, algebra::PublicationPolicy};
 use std::{marker::PhantomData, sync::Arc};
@@ -100,9 +101,30 @@ impl<N: WordElement> Input<N> {
         Arc::downgrade(&self.payload)
     }
 
-    /// Borrow the immutable native state without a conversion to a fixed domain.
+    /// Borrow the retained adapter payload. Process stack/memory/key anchors
+    /// are representation details; semantic components must use `view()`.
     pub fn payload(&self) -> &EvmMachinePayload<N> {
         &self.payload
+    }
+
+    /// Borrow the actual semantic representation. Process inputs expose only
+    /// source-qualified control, logical invocation and Store. Captured code is
+    /// inventory, not proof that every block or descendant executes.
+    pub fn view(&self) -> InputView<'_, N> {
+        let frame = self.payload.active();
+        match frame.key.process.as_deref() {
+            Some(control) => InputView::Process(ProcessView {
+                control,
+                invocation: InvocationView {
+                    address: frame.address_operand.as_ref(),
+                    caller: frame.caller_operand.as_ref(),
+                    value: &frame.call_value,
+                },
+                store: &self.payload.store,
+                program: frame.program.as_ref(),
+            }),
+            None => InputView::Native(&self.payload),
+        }
     }
 
     /// Conservative retained native-state traversal envelope. Fine-grained

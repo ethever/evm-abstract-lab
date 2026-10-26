@@ -1,6 +1,6 @@
+use crate::tests::AnalysisReport;
 use evm_abstract_protocol::{
-    AnalysisReport, BlockCoverage, CfgEdge, EdgeKind, Frontier, FrontierDetails, FrontierKind,
-    Outcome, OutcomeKind,
+    BlockCoverage, CfgEdge, EdgeKind, Frontier, FrontierDetails, FrontierKind, Outcome, OutcomeKind,
 };
 
 use super::{TerminationCounts, TerminationSummary, Terminations};
@@ -57,7 +57,7 @@ fn each_root_kind_is_terminal_and_duplicate_payloads_count_one_state() {
         let mut report = report();
         report.outcomes = vec![outcome(1, kind), outcome(1, kind)];
         report.outcomes[1].store = 8;
-        let summary = Terminations::new(&report).summary(&[1, 1]);
+        let summary = Terminations::new(&(report).view()).summary(&[1, 1]);
         assert_eq!(summary.members, 1);
         assert_eq!(summary.ending, 1);
         assert_eq!(summary.root, expected_counts(kind, 1));
@@ -81,7 +81,7 @@ fn frame_endings_require_exactly_one_child_frame_pop_and_deduplicate_edges() {
         report.cfg[1].frame_depth = 3;
         report.cfg[2].frame_depth = 2;
         report.edges = vec![edge(91, 1, 2, kind), edge(999, 1, 2, kind)];
-        let summary = Terminations::new(&report).summary(&[1]);
+        let summary = Terminations::new(&(report).view()).summary(&[1]);
         assert_eq!(summary.frame, expected_counts(expected, 1));
         assert_eq!(summary.root, TerminationCounts::default());
         assert_eq!(summary.continuing, 0);
@@ -92,7 +92,7 @@ fn frame_endings_require_exactly_one_child_frame_pop_and_deduplicate_edges() {
     let mut report = report();
     report.cfg[1].frame_depth = 3;
     report.edges = vec![edge(0, 1, 0, EdgeKind::Return)];
-    let summary = Terminations::new(&report).summary(&[1]);
+    let summary = Terminations::new(&(report).view()).summary(&[1]);
     assert!(!summary.has_termination());
     assert_eq!(summary.continuing, 1);
     assert_eq!(summary.single_kind(), None);
@@ -104,7 +104,7 @@ fn rejected_call_failure_at_same_depth_is_observed_continuation() {
     report.cfg[0].frame_depth = 2;
     report.cfg[1].frame_depth = 2;
     report.edges = vec![edge(40, 0, 1, EdgeKind::Failure)];
-    let summary = Terminations::new(&report).summary(&[0]);
+    let summary = Terminations::new(&(report).view()).summary(&[0]);
     assert_eq!(summary.frame, TerminationCounts::default());
     assert_eq!(summary.continuing, 1);
     assert_eq!(summary.unobserved, 0);
@@ -117,7 +117,7 @@ fn root_outcome_with_another_successor_is_mixed_evidence() {
     let mut report = report();
     report.outcomes = vec![outcome(0, OutcomeKind::Failure)];
     report.edges = vec![edge(71, 0, 1, EdgeKind::Jump)];
-    let summary = Terminations::new(&report).summary(&[0]);
+    let summary = Terminations::new(&(report).view()).summary(&[0]);
     assert_eq!(summary.root.failures, 1);
     assert_eq!(summary.ending, 1);
     assert_eq!(summary.continuing, 1);
@@ -128,7 +128,7 @@ fn root_outcome_with_another_successor_is_mixed_evidence() {
 #[test]
 fn no_edges_and_frontiers_never_invent_a_terminal_kind() {
     let mut report = report();
-    let no_edges = Terminations::new(&report).summary(&[1]);
+    let no_edges = Terminations::new(&(report).view()).summary(&[1]);
     assert_eq!(no_edges.unobserved, 1);
     assert!(!no_edges.has_termination());
     assert_eq!(no_edges.single_kind(), None);
@@ -142,11 +142,11 @@ fn no_edges_and_frontiers_never_invent_a_terminal_kind() {
         reason: FrontierDetails::Work,
         detail: "unexpanded transfer".into(),
     }];
-    let frontier = Terminations::new(&report).summary(&[1]);
+    let frontier = Terminations::new(&(report).view()).summary(&[1]);
     assert_eq!(frontier.unresolved, 1);
     assert!(!frontier.has_termination());
     report.outcomes = vec![outcome(1, OutcomeKind::Return)];
-    let ending_and_frontier = Terminations::new(&report).summary(&[1]);
+    let ending_and_frontier = Terminations::new(&(report).view()).summary(&[1]);
     assert!(ending_and_frontier.has_termination());
     assert_eq!(ending_and_frontier.unresolved, 1);
     assert_eq!(ending_and_frontier.single_kind(), None);
@@ -158,12 +158,12 @@ fn hidden_program_neighbors_and_zero_hop_local_views_do_not_erase_continuation()
     report.cfg[1].program = Some(19);
     report.edges = vec![edge(30, 0, 1, EdgeKind::Call)];
     report.outcomes = vec![outcome(0, OutcomeKind::Failure)];
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     for (mode, program, center) in [
         (GraphMode::States, Some(0), None),
         (GraphMode::Local, None, Some(0)),
     ] {
-        let display = DisplayGraph::build(&report, &index, mode, program, center, 0);
+        let display = DisplayGraph::build(&(report).view(), &index, mode, program, center, 0);
         let node = display.nodes.iter().find(|node| node.id == 0).unwrap();
         assert!(display.edges.is_empty());
         let summary = index.termination_summary(&node.members);
@@ -182,8 +182,8 @@ fn block_folding_keeps_multiple_kinds_and_ending_with_non_ending_members_neutral
         outcome(0, OutcomeKind::Return),
         outcome(1, OutcomeKind::Revert),
     ];
-    let index = ReportIndex::new(&report);
-    let display = DisplayGraph::build(&report, &index, GraphMode::Blocks, None, None, 0);
+    let index = ReportIndex::new(&(report).view());
+    let display = DisplayGraph::build(&(report).view(), &index, GraphMode::Blocks, None, None, 0);
     let node = display.nodes.iter().find(|node| node.id == 0).unwrap();
     assert_eq!(node.members, [0, 1]);
     let mixed = index.termination_summary(&node.members);
@@ -194,12 +194,12 @@ fn block_folding_keeps_multiple_kinds_and_ending_with_non_ending_members_neutral
 
     report.outcomes.pop();
     report.edges = vec![edge(1, 1, 2, EdgeKind::Fallthrough)];
-    let mixed = Terminations::new(&report).summary(&node.members);
+    let mixed = Terminations::new(&(report).view()).summary(&node.members);
     assert_eq!(mixed.ending, 1);
     assert_eq!(mixed.continuing, 1);
     assert_eq!(mixed.single_kind(), None);
     report.edges.clear();
-    let mixed = Terminations::new(&report).summary(&node.members);
+    let mixed = Terminations::new(&(report).view()).summary(&node.members);
     assert_eq!(mixed.unobserved, 1);
     assert_eq!(mixed.single_kind(), None);
 }
@@ -212,7 +212,7 @@ fn multiple_types_on_one_state_are_retained_and_shared_type_across_scopes_can_be
         outcome(0, OutcomeKind::Revert),
         outcome(0, OutcomeKind::Failure),
     ];
-    let mixed = Terminations::new(&report).summary(&[0]);
+    let mixed = Terminations::new(&(report).view()).summary(&[0]);
     assert_eq!(
         mixed.root,
         TerminationCounts {
@@ -227,7 +227,7 @@ fn multiple_types_on_one_state_are_retained_and_shared_type_across_scopes_can_be
     report.outcomes.truncate(1);
     report.cfg[1].frame_depth = 2;
     report.edges = vec![edge(88, 1, 2, EdgeKind::Return)];
-    let homogeneous = Terminations::new(&report).summary(&[0, 1]);
+    let homogeneous = Terminations::new(&(report).view()).summary(&[0, 1]);
     assert_eq!(homogeneous.root.returns, 1);
     assert_eq!(homogeneous.frame.returns, 1);
     assert_eq!(homogeneous.ending, 2);
@@ -240,7 +240,7 @@ fn non_current_and_missing_receipts_keep_observed_endings_but_block_pure_fill() 
         let mut report = report();
         report.ssa.blocks[1].coverage = coverage;
         report.outcomes = vec![outcome(1, OutcomeKind::Return)];
-        let summary = Terminations::new(&report).summary(&[1]);
+        let summary = Terminations::new(&(report).view()).summary(&[1]);
         assert_eq!(summary.root.returns, 1);
         assert_eq!(summary.non_current, 1);
         assert_eq!(summary.single_kind(), None);
@@ -248,7 +248,7 @@ fn non_current_and_missing_receipts_keep_observed_endings_but_block_pure_fill() 
     let mut report = report();
     report.ssa.blocks.retain(|block| block.state != 1);
     report.outcomes = vec![outcome(1, OutcomeKind::Return)];
-    let summary = Terminations::new(&report).summary(&[1]);
+    let summary = Terminations::new(&(report).view()).summary(&[1]);
     assert_eq!(summary.non_current, 1);
     assert_eq!(summary.single_kind(), None);
 }
@@ -267,7 +267,7 @@ fn dangling_edges_and_sparse_native_ids_remain_conservative() {
         edge(42, 7, 205, EdgeKind::Return),
         edge(800, 91, 999, EdgeKind::Jump),
     ];
-    let terminations = Terminations::new(&report);
+    let terminations = Terminations::new(&(report).view());
     assert_eq!(
         terminations.summary(&[7]).single_kind(),
         Some(OutcomeKind::Return)
@@ -280,5 +280,10 @@ fn dangling_edges_and_sparse_native_ids_remain_conservative() {
     assert_eq!(terminations.summary(&[]), TerminationSummary::default());
 
     report.edges = vec![edge(999, 999, 91, EdgeKind::Return)];
-    assert_eq!(Terminations::new(&report).summary(&[91]).unresolved, 1);
+    assert_eq!(
+        Terminations::new(&(report).view())
+            .summary(&[91])
+            .unresolved,
+        1
+    );
 }

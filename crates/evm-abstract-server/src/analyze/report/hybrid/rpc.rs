@@ -1,5 +1,8 @@
 //! RPC preserves its original upper bound and the last useful native revision.
-use super::{api, coverage, prefixes, snapshot};
+use super::{
+    ProjectionInput, RetainedPublication, api, coverage, finish_publication, prefixes,
+    retained_publication, snapshot,
+};
 use crate::analyze::{checkpoint, errors, rpc as evidence};
 use evm_abstract::{
     analysis::{self, control::Control},
@@ -7,20 +10,45 @@ use evm_abstract::{
     resource::WorkBudget,
 };
 
-pub(in crate::analyze) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+/// Reuse only a publication admitted by exact immutable producer identity.
+pub(in crate::analyze) fn project_with_retained_global<
+    N: WordElement,
+    D: EvmNumericAlgebra<Element = N>,
+>(
     source: analysis::RpcHybridAnalysis<N>,
-    request: &api::AnalyzeRequest,
     algebra: &ValueAlgebra<D>,
-    numeric_model: api::NumericModel,
     control: &Control,
+    budget: &mut WorkBudget,
+    input: ProjectionInput<'_>,
+    retained: Option<&api::AnalysisReport>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    let mut budget = WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK);
-    // Project borrowed execution evidence before into_parts moves the graphs.
-    let local_prefixes = source
-        .detail_report()
-        .map(|detail| prefixes(detail, control, &mut budget))
-        .transpose()?
-        .unwrap_or_default();
+    // Reserve final RPC qualification before optional pools/SSA. The source is
+    // consumed only after its actual revision chain has been retained here.
+    let rpc_metadata = source.coverage();
+    let acquisition = &rpc_metadata.acquisition;
+    let metadata_work = rpc_metadata
+        .restrictions
+        .len()
+        .saturating_add(source.failures().len())
+        .saturating_add(acquisition.fetched_accounts.len())
+        .saturating_add(acquisition.failed_accounts.len())
+        .saturating_add(acquisition.fetched_storage.len())
+        .saturating_add(acquisition.failed_storage.len())
+        .saturating_add(acquisition.failures.len())
+        .saturating_mul(2)
+        .saturating_add(1);
+    let RetainedPublication {
+        minimum,
+        programs,
+        process_controls,
+    } = retained_publication(
+        source.baseline().baseline(),
+        input,
+        control,
+        retained,
+        budget,
+        metadata_work,
+    )?;
     let original = coverage(source.baseline())?;
     let precision = source.detail_report().map(coverage).transpose()?;
     let status = source.status();
@@ -86,49 +114,84 @@ pub(in crate::analyze) fn project<N: WordElement, D: EvmNumericAlgebra<Element =
             .collect(),
         preparation_failure: preparation_failure.map(errors::session_error).map(Box::new),
     };
-    let (baseline, _, _) = baseline.into_parts();
-    let native = latest
-        .and_then(|report| report.into_parts().1)
-        .or_else(|| retained_detail.and_then(|report| report.into_parts().1));
-    let mut report = super::super::with_budget(
-        &baseline,
-        request,
-        api::AnalysisScope::RpcWorld,
-        algebra,
-        numeric_model,
-        control,
-        &mut budget,
-    )?;
-    let detail = native
+    let native_report = latest
         .as_ref()
-        .map(|native| {
-            super::super::with_budget(
-                native,
-                request,
-                api::AnalysisScope::RpcWorld,
-                algebra,
-                numeric_model,
-                control,
-                &mut budget,
-            )
-        })
-        .transpose()?;
-    report.status = match status {
-        analysis::Status::Converged => api::AnalysisStatus::Converged,
-        analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
+        .filter(|report| report.detail().is_some())
+        .or(retained_detail.as_ref());
+    let mut report = api::AnalysisReport {
+        schema_version: api::SCHEMA_VERSION,
+        selected_view: api::AnalysisNamespace::Baseline,
+        minimum,
+        rich_export: api::RichExportOutcome::NotRequested,
+        status: match status {
+            analysis::Status::Converged => api::AnalysisStatus::Converged,
+            analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
+        },
+        work: rpc.work,
+        transfers: rpc.transfers,
+        postprocessing_work: budget.used() as u64,
+        timings: api::AnalysisTimings::default(),
+        acquisition: Some(rpc.acquisition.clone()),
+        programs,
+        process_controls,
+        global: None,
+        native: None,
+        hybrid: Some(api::HybridReport {
+            coverage: original,
+            local_prefixes: Vec::new(),
+            precision,
+            rpc: Some(rpc),
+        }),
     };
-    report.metadata.work = rpc.work;
-    report.metadata.postprocessing_work = budget.used() as u64;
-    report.transfers = rpc.transfers;
-    report.acquisition = Some(rpc.acquisition.clone());
-    report.hybrid = Some(Box::new(api::HybridReport {
-        coverage: original,
-        baseline: None,
-        detail: detail.map(Box::new),
-        local_prefixes,
-        precision,
-        rpc: Some(rpc),
-    }));
-    checkpoint(control)?;
-    Ok(report)
+    let rich = (|| {
+        let local_prefixes = native_report
+            .map(|detail| prefixes(detail, control, budget))
+            .transpose()?
+            .unwrap_or_default();
+        let super::super::GraphProjection {
+            graph: global,
+            mut programs,
+            mut process_controls,
+        } = super::super::project_global(
+            baseline.baseline(),
+            algebra,
+            control,
+            budget,
+            input,
+            retained,
+        )?;
+        let native = native_report
+            .and_then(|report| report.detail())
+            .map(|native| {
+                let super::super::GraphProjection {
+                    graph,
+                    programs: catalog,
+                    process_controls: controls,
+                } = super::super::project_graph(
+                    native,
+                    algebra,
+                    control,
+                    budget,
+                    input,
+                    std::mem::take(&mut programs),
+                    std::mem::take(&mut process_controls),
+                )?;
+                programs = catalog;
+                process_controls = controls;
+                Ok::<_, api::ApiError>(graph)
+            })
+            .transpose()?;
+        checkpoint(control)?;
+        report.global = Some(global);
+        report.native = native;
+        report.programs = programs;
+        report.process_controls = process_controls;
+        report
+            .hybrid
+            .as_mut()
+            .expect("RPC hybrid envelope constructed")
+            .local_prefixes = local_prefixes;
+        Ok(())
+    })();
+    finish_publication(report, rich, budget)
 }

@@ -172,18 +172,17 @@ fn run(exhaust: bool) -> (crate::analysis::WorldAnalysis, usize, usize, usize) {
     let changed = Rc::new(Cell::new(0));
     // Consumer runs first and reads Pending. The framework discovers the Q
     // dependency, wakes it after Provider publication, and closes the cycle.
-    let mut extension = Extension {
-        analyzer: Pair::new(
+    let mut extension = Extension::with_tasks(
+        Pair::new(
             Registered::new(Consumer {
                 changed: Rc::clone(&changed),
                 exhaust,
             }),
             Provider(Rc::clone(&produced)),
         ),
-        tasks: PairedTasks::new(PerInput, PerInput),
-        stores: Stores(Rc::clone(&factories)),
-        shared: crate::analysis::cooperation::NoStores,
-    };
+        PairedTasks::new(PerInput, PerInput),
+    )
+    .with_stores(Stores(Rc::clone(&factories)));
     let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let result =
         crate::analysis::AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
@@ -256,3 +255,6 @@ mod shared;
 
 #[path = "tests/payment.rs"]
 mod payment;
+
+#[path = "tests/assembled.rs"]
+mod assembled;

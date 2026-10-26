@@ -41,6 +41,8 @@ variant! {
 choice! {
     /// Qualification of optional native precision.
     pub enum HybridDetailState {
+        /// The Global model is closed; optional Native preparation has not started.
+        Pending,
         /// No optional precision was requested.
         Disabled,
         /// Global coverage has not been certified.
@@ -113,16 +115,19 @@ record! {
         pub detail_binding: HybridNativeBinding,
         /// Actual requested auxiliary option; baseline always keeps it disabled.
         pub requested_native_terminal_coverage: bool,
-        /// Number of exported current retained-input receipts.
+        /// Current retained-input sites in the source analysis. Rich export
+        /// may withhold their receipts under an explicit non-Complete outcome.
         pub local_detail_sites: usize,
         /// Frozen selected sources; other regions erase optional jump history.
         pub detail_regions: Vec<HybridRegion>,
-        /// Relation supplying the main graph and effects.
+        /// Qualified semantic interpretation, independent of selected_view.
         pub chosen: HybridInterpretation,
         /// Independent optional precision state.
         pub detail: HybridDetailState,
         /// Original requested precision allowance, losslessly encoded.
         pub requested_detail_work: crate::DecimalU64,
+        /// Original source-region bound; detail_regions records actual admission.
+        pub requested_detail_regions: u64,
         /// Actual cumulative accounting.
         pub work: HybridWork,
     }
@@ -173,14 +178,10 @@ record! {
     }
 }
 record! {
-    /// The main graph is chosen; the other graph is retained once, separately.
+    /// Qualifications and receipts; graphs have fixed envelope positions.
     pub struct HybridReport {
     /// Authoritative combined coverage and accounting.
     pub coverage: HybridCoverage,
-    /// Baseline when the main graph is Native; otherwise absent.
-    pub baseline: Option<Box<crate::AnalysisReport>>,
-    /// Native graph when the main graph is Baseline; otherwise absent.
-    pub detail: Option<Box<crate::AnalysisReport>>,
     /// Current conditioned observations, including honest pending control.
     pub local_prefixes: Vec<HybridLocalPrefix>,
     /// Qualification of separately retained RPC native detail, if any.
@@ -194,7 +195,8 @@ impl HybridReport {
     pub fn native_coverage(&self) -> &HybridCoverage {
         self.precision.as_ref().unwrap_or(&self.coverage)
     }
-    /// Namespace of the enclosing report's state/edge/SSA IDs.
+    /// Preferred rich namespace of the semantic interpretation. The envelope
+    /// may select an available minimum or another retained rich view instead.
     pub fn namespace(&self) -> AnalysisNamespace {
         match self.coverage.chosen {
             HybridInterpretation::Native => AnalysisNamespace::Native,

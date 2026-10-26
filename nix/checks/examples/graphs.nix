@@ -12,17 +12,27 @@
 let
   summary-text = mkCheck "summary-text" [ ] { } ''
     evm-abstract analyze --world ${inputs.file "examples/worlds/summary-reuse.json"} ${lib.escapeShellArgs concrete} > summary.txt
-    grep -Eq 'hits=[1-9][0-9]*' summary.txt
-    grep -q 'reused_at=' summary.txt
+    grep -q 'Detail regions: 1 requested' summary.txt
+    grep -Eq 'KnownCall .*source_current=true .*closed=true .*reused=[1-9][0-9]*' summary.txt
     grep -q 'fingerprint=0x' summary.txt
-    cp summary.txt "$out/"
+    # The original full-cache presentation remains a separate precision case.
+    evm-abstract analyze --world ${inputs.file "examples/worlds/summary-reuse.json"} ${lib.escapeShellArgs concrete} --max-detail-regions 2 > summary-native-cache.txt
+    grep -Eq 'hits=[1-9][0-9]*' summary-native-cache.txt
+    grep -q 'reused_at=' summary-native-cache.txt
+    grep -q 'fingerprint=0x' summary-native-cache.txt
+    cp summary.txt summary-native-cache.txt "$out/"
   '';
   summaries-dot = mkCheck "summaries-dot" [ pkgs.graphviz ] { FONTCONFIG_FILE = fontConfig; } ''
     evm-abstract analyze --world ${inputs.file "examples/worlds/summary-reuse.json"} ${lib.escapeShellArgs concrete} --format dot > summaries.dot
     dot -Tsvg summaries.dot -o summaries.svg
     test -s summaries.svg
-    grep -q 'label="reused"' summaries.dot
-    cp summaries.dot summaries.svg "$out/"
+    grep -q 'Procedure relation .*KnownCall' summaries.dot
+    grep -Eq 'closed=true .*reused=[1-9][0-9]*' summaries.dot
+    evm-abstract analyze --world ${inputs.file "examples/worlds/summary-reuse.json"} ${lib.escapeShellArgs concrete} --max-detail-regions 2 --format dot > summaries-native-cache.dot
+    dot -Tsvg summaries-native-cache.dot -o summaries-native-cache.svg
+    test -s summaries-native-cache.svg
+    grep -q 'label="reused"' summaries-native-cache.dot
+    cp summaries.dot summaries.svg summaries-native-cache.dot summaries-native-cache.svg "$out/"
   '';
   creation-dot = mkCheck "creation-dot" [ pkgs.graphviz ] { FONTCONFIG_FILE = fontConfig; } ''
     evm-abstract analyze --world ${inputs.file "examples/worlds/create-runtime.json"} ${lib.escapeShellArgs concrete} --format dot > creation.dot

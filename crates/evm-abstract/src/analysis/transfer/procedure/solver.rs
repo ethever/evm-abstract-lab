@@ -39,11 +39,6 @@ impl<
     ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
         let runtime_process =
             self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Process;
-        if runtime_process && X::ENABLED {
-            return Err(MachineError::Process(
-                crate::analysis::ProcessBoundary::CooperativeInputs,
-            ));
-        }
         if runtime_process {
             self.freeze_process_catalogue(&payload)?;
         }
@@ -272,7 +267,12 @@ impl<
         let payload = self.form(payload)?;
         let PartitionedRelative { key, payload } =
             self.partition_relative(payload, PolicySite::Procedure, None)?;
-        let lookup_key = (self.namespace, policy::clone_key(&key, self.budget)?);
+        let environment_calldata = payload.active().environment_calldata;
+        let lookup_key = (
+            self.namespace,
+            environment_calldata,
+            policy::clone_key(&key, self.budget)?,
+        );
         if let Some(id) = self.table.procedures_by_key.get(&lookup_key, self.budget)? {
             self.table.reused += 1;
             if let Some(from) = from {
@@ -322,14 +322,7 @@ impl<
         )?;
         let process = match payload.active().semantics {
             crate::analysis::TransferSemantics::KnownProcess => {
-                Some(super::process::Capabilities::scan(
-                    payload
-                        .active()
-                        .program
-                        .as_ref()
-                        .ok_or(MachineError::Shape)?,
-                    self.budget,
-                )?)
+                Some(super::process::Capabilities::empty())
             }
             crate::analysis::TransferSemantics::Environment
                 if self.policies.state.runtime_execution()
@@ -338,9 +331,10 @@ impl<
                 Some(super::process::Capabilities::unknown())
             }
             crate::analysis::TransferSemantics::ConstructorProcess => {
-                Some(match payload.active().program.as_ref() {
-                    Some(program) => super::process::Capabilities::scan(program, self.budget)?,
-                    None => super::process::Capabilities::unknown(),
+                Some(if payload.active().program.is_some() {
+                    super::process::Capabilities::empty()
+                } else {
+                    super::process::Capabilities::unknown()
                 })
             }
             crate::analysis::TransferSemantics::BoundaryProcess => Some(
@@ -349,9 +343,11 @@ impl<
             _ => None,
         };
         let stored_payload = payload.clone_with_payment(self.budget)?;
+        self.table.regional_snapshot = None;
         PolicyContext::new(self.domain, self.entry, self.budget).reserve(0)?;
         let mut index = std::mem::take(&mut self.table.procedures_by_key);
-        let created = index.insert_with((self.namespace, key), self.budget, |budget| {
+        let entry_key = (self.namespace, environment_calldata, key);
+        let created = index.insert_with(entry_key, self.budget, |budget| {
             let scope = self.runtime.relative;
             let output = self
                 .runtime
@@ -476,6 +472,7 @@ impl<
                     .saturating_add(usize::from(from.is_some()))
                     .saturating_add(entry.as_ref().map_or(0, |_| 1)),
             )?;
+            self.table.regional_snapshot = None;
             let is_entry = entry.is_some();
             if let Some(entry) = entry {
                 self.publish_entry(procedure, entry)?;
@@ -585,6 +582,9 @@ impl<
         if let Some(entry) = entry {
             self.publish_entry(procedure, entry)?;
         }
+        if prepared.change == Change::Changed {
+            self.table.regional_snapshot = None;
+        }
         let node = &mut self.table.nodes[id];
         let procedure = &mut self.table.procedures[procedure];
         self.runtime.with_run(
@@ -648,6 +648,7 @@ impl<
             },
         )?;
         if changed {
+            self.table.regional_snapshot = None;
             // Losing an old entry universe invalidates its completion proof
             // even when this publication leaves the native output bound equal.
             self.observe_summary(procedure, false)?;
@@ -839,13 +840,29 @@ impl<
             self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
             return false;
         }
-        let input = match self.table.nodes[id].payload.clone_with_payment(self.budget) {
+        let mut input = match self.table.nodes[id].payload.clone_with_payment(self.budget) {
             Ok(input) => input,
             Err(error) => {
                 self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
                 return false;
             }
         };
+        if !X::ENABLED
+            && self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Process
+            && input.active().semantics != crate::analysis::TransferSemantics::Native
+            && input.frames.len() == 1
+            && input.storage_observations.is_empty()
+        {
+            match self.process_compact(id, input) {
+                Ok(Some(original)) => input = original,
+                Ok(None) => return true,
+                Err(error) => {
+                    self.regional_transfer_complete(id, false);
+                    self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
+                    return false;
+                }
+            }
+        }
         #[cfg(test)]
         let instantiated = super::evidence::refuse_body_instantiation().map_or_else(
             || payload::caller::instantiate_with_payment(&input, self.domain, self.budget),
@@ -1180,6 +1197,21 @@ impl<
         let source = &self.table.nodes[from].payload;
         let source_depth = source.frames.len();
         let local_call = executed_call(source, &execution);
+        // The Native dispatcher, not numeric observations, proves that these
+        // alternatives have one common constrained input. Cooperation can edit
+        // each incoming edge, so its existing per-edge path remains mandatory.
+        let share_common = !X::ENABLED
+            && self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Native
+            && source.active().semantics == crate::analysis::TransferSemantics::Native
+            && source.active().code == FrameCode::Runtime;
+        #[cfg(test)]
+        let share_common = share_common && super::fanout::enabled();
+        let common_successors = if share_common {
+            execution.common_successors
+        } else {
+            None
+        };
+        let mut common_input: Option<EvmPayloadSummary<D::Element>> = None;
         let completed_calls = execution.completed_calls;
         let mut process_calls = execution.process_calls.into_iter().peekable();
         self.table
@@ -1249,8 +1281,31 @@ impl<
                 // where bytecode normally tests CALL status. Its successors use
                 // their actual new edge kinds and return to ordinary node keys.
                 let kind = successor.kind;
-                self.enqueue(procedure, successor.payload, resume_status, from)
-                    .and_then(|to| self.observe_body_edge(from, to, kind))
+                let queued = if common_successors
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&ordinal))
+                {
+                    let block = successor.payload.active().key.basic_block_index;
+                    (|| {
+                        if common_input.is_none() {
+                            common_input = Some(self.form(successor.payload)?);
+                            #[cfg(test)]
+                            super::fanout::formed();
+                        }
+                        let payload = common_input
+                            .as_ref()
+                            .expect("formed common Native jump input")
+                            .clone_at_block_with_payment(block, self.budget)?;
+                        #[cfg(test)]
+                        super::fanout::copied();
+                        // Every target still runs the selected partition and
+                        // summary policy and owns its own slot and receipts.
+                        self.enqueue_summary(procedure, payload, resume_status, Some(from))
+                    })()
+                } else {
+                    self.enqueue(procedure, successor.payload, resume_status, from)
+                };
+                queued.and_then(|to| self.observe_body_edge(from, to, kind))
             };
             if let Err(error) = operation {
                 self.frontier(original, error.frontier_reason(), 0);
@@ -1413,6 +1468,15 @@ impl<
             &store,
             &mut PolicyContext::new(self.domain, self.entry, self.budget),
         )?;
+        self.publish_summary(procedure, kind, incoming)
+    }
+
+    pub(super) fn publish_summary(
+        &mut self,
+        procedure: usize,
+        kind: OutcomeKind,
+        incoming: ProcedureOutput<D::Element>,
+    ) -> Result<(), MachineError> {
         let procedure_state = &self.table.procedures[procedure];
         let feedback = procedure_state.recursive || procedure_state.local_cycle;
         let old = procedure_state.outputs.get(&kind);
@@ -1484,6 +1548,7 @@ impl<
                 .map_err(kernel_failure)
             },
         )?;
+        self.table.regional_snapshot = None;
         self.observe_summary(procedure, false)?;
         Ok(())
     }

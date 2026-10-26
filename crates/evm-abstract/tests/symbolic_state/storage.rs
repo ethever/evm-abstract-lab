@@ -114,7 +114,7 @@ fn distinct_arithmetic_slot_keeps_the_ordered_write_witness() {
         no_bad_branch(&exact, &fixture, ROOT);
         return_words(&exact, &[7]);
         let observed = super::oracle::compare(&world, &input, &exact);
-        assert_eq!(observed.output, U256::from(7).to_be_bytes::<32>());
+        assert_eq!(observed.data, U256::from(7).to_be_bytes::<32>());
         // One unknown-input outcome must cover output, both ordered writes and
         // termination together, including the modular wrap at key=MAX.
         super::oracle::compare(&world, &input, &analysis);

@@ -39,7 +39,7 @@ fn width_and_table_share_rows_across_frames_and_native_selection_changes() {
         let mut output = context.run_ui(RawInput::default(), |ui| {
             widths.push(natural_width_cached(
                 ui,
-                &report,
+                &(report).view(),
                 Some(0),
                 SsaDisplay::Compact,
                 selection,
@@ -55,7 +55,7 @@ fn width_and_table_share_rows_across_frames_and_native_selection_changes() {
             row_storage = Some(pointer);
             ssa_cached(
                 ui,
-                &report,
+                &(report).view(),
                 Some(0),
                 SsaDisplay::Compact,
                 &mut selection,
@@ -84,12 +84,22 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
     report.cfg[1].program = Some(9);
     report.cfg[2].program = None;
     let mut cache = SsaCache::default();
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     assert_eq!(headers(&cache), [0]);
-    cache.prepare(&report, Some(9), SsaDisplay::Compact, Selection::default());
+    cache.prepare(
+        &(report).view(),
+        Some(9),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     assert_eq!(headers(&cache), [1]);
     cache.prepare(
-        &report,
+        &(report).view(),
         None,
         SsaDisplay::Compact,
         Selection {
@@ -100,7 +110,7 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
     );
     assert_eq!(headers(&cache), [2]);
     cache.prepare(
-        &report,
+        &(report).view(),
         None,
         SsaDisplay::Compact,
         Selection {
@@ -111,7 +121,12 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
     );
     assert!(cache.rows().is_empty());
     assert_eq!(cache.columns(), 0);
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     assert_eq!(headers(&cache), [0]);
 }
 
@@ -119,16 +134,29 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
 fn accepting_a_new_report_clears_both_rows_and_width_even_with_identical_program_ids() {
     let mut report = crate::tests::report();
     let mut cache = SsaCache::default();
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     let original_width = cache.columns();
     // A replacement can have identical graph IDs but different operands or
     // coverage, so its owner must explicitly invalidate rather than hash IDs.
     report.ssa.blocks[0].instructions[0].name = "NEW_RECEIPT_".repeat(original_width + 1);
     crate::tests::refresh_operation(&mut report.ssa.blocks[0].instructions[0]);
-    cache.clear();
+    cache.activate(crate::app::model::ReportViewId::fixture(
+        2,
+        evm_abstract_protocol::AnalysisNamespace::Native,
+    ));
     assert!(cache.rows().is_empty());
     assert_eq!(cache.columns(), 0);
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     assert_eq!(headers(&cache), [0, 1, 2]);
     assert!(
         cache
@@ -174,7 +202,12 @@ fn display_and_hidden_selection_rebuild_rows_while_ordinary_selection_reuses_sto
             .any(|row| row.target == Some(selection(Some(pc))))
     };
     let mut cache = SsaCache::default();
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, selection(None));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        selection(None),
+    );
     let compact_count = cache.rows().len();
     let compact_storage = cache.rows().as_ptr();
     assert!(!has_pc(&cache, 30));
@@ -189,37 +222,77 @@ fn display_and_hidden_selection_rebuild_rows_while_ordinary_selection_reuses_sto
         },
         Selection::default(),
     ] {
-        cache.prepare(&report, Some(0), SsaDisplay::Compact, selected);
+        cache.prepare(&(report).view(), Some(0), SsaDisplay::Compact, selected);
         assert_eq!(cache.rows().as_ptr(), compact_storage);
     }
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, selection(Some(30)));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        selection(Some(30)),
+    );
     assert_ne!(cache.rows().as_ptr(), compact_storage);
     assert_eq!(cache.rows().len(), compact_count + 1);
     assert!(has_pc(&cache, 30));
     assert!(!has_pc(&cache, 31));
     let revealed_storage = cache.rows().as_ptr();
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, selection(Some(30)));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        selection(Some(30)),
+    );
     assert_eq!(cache.rows().as_ptr(), revealed_storage);
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, selection(Some(31)));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        selection(Some(31)),
+    );
     assert_ne!(cache.rows().as_ptr(), revealed_storage);
     assert!(!has_pc(&cache, 30));
     assert!(has_pc(&cache, 31));
-    cache.prepare(&report, Some(0), SsaDisplay::Full, selection(Some(31)));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Full,
+        selection(Some(31)),
+    );
     assert_eq!(cache.rows().len(), compact_count + 2);
     assert!(has_pc(&cache, 30));
     assert!(has_pc(&cache, 31));
     let full_storage = cache.rows().as_ptr();
-    cache.prepare(&report, Some(0), SsaDisplay::Full, selection(Some(30)));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Full,
+        selection(Some(30)),
+    );
     assert_eq!(cache.rows().as_ptr(), full_storage);
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, selection(Some(30)));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        selection(Some(30)),
+    );
     assert_ne!(cache.rows().as_ptr(), full_storage);
     assert_eq!(cache.rows().len(), compact_count + 1);
     assert!(has_pc(&cache, 30));
     assert!(!has_pc(&cache, 31));
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, selection(Some(32)));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        selection(Some(32)),
+    );
     assert_eq!(cache.rows().len(), compact_count);
     let compact_storage = cache.rows().as_ptr();
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, selection(None));
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        selection(None),
+    );
     assert_eq!(cache.rows().as_ptr(), compact_storage);
 }
 
@@ -234,14 +307,27 @@ fn a_replacement_report_clears_the_hidden_instruction_index() {
     instruction.fault = false;
     report.ssa.blocks[0].coverage = evm_abstract_protocol::BlockCoverage::Current;
     let mut cache = SsaCache::default();
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     assert!(!cache.hidden.is_empty());
     report.ssa.blocks[0].instructions[0].opcode = 0x52;
     report.ssa.blocks[0].instructions[0].name = "MSTORE".into();
     crate::tests::refresh_operation(&mut report.ssa.blocks[0].instructions[0]);
-    cache.clear();
+    cache.activate(crate::app::model::ReportViewId::fixture(
+        2,
+        evm_abstract_protocol::AnalysisNamespace::Native,
+    ));
     assert!(cache.hidden.is_empty());
-    cache.prepare(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    cache.prepare(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     assert!(cache.hidden.is_empty());
     assert!(
         cache

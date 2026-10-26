@@ -79,7 +79,7 @@ def graph_scope(page, mode: str, nodes: int, shown: int, total: int):
 def symbol(base: str, index: int):
     return base + str(index).translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉"))
 
-def pick_graph_instance(page, canvas, state: int, query: str | None = None):
+def pick_graph_instance(page, canvas, state: int, query: str | None = None, *, program: int):
     # Real native TextEdit and virtual list coordinates from the egui geometry
     # probe. Search accepts an original state ID, not a display-node ordinal.
     canvas.click(position={"x": 200, "y": 108})
@@ -87,5 +87,5 @@ def pick_graph_instance(page, canvas, state: int, query: str | None = None):
     page.keyboard.insert_text(query if query is not None else symbol("σ", state))
     settle_gesture(page)
     canvas.click(position={"x": 110, "y": 131})
-    expect(page.locator("#analysis-status")).to_contain_text(f"Selected {symbol('σ', state)}; source {symbol('P', 0)}")
+    expect(page.locator("#analysis-status")).to_contain_text(f"Selected {symbol('σ', state)}; source {symbol('P', program)}")
     settle_gesture(page)

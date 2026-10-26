@@ -552,3 +552,114 @@ fn forgotten_or_conflicting_logs_keep_the_same_unknown_event_semantics() {
     assert_eq!(actual, expected);
     assert!(actual.logs_unknown && actual.possible_logs.is_empty());
 }
+
+#[test]
+fn coarse_layout_drops_unquotable_numbers_but_projects_lifecycle_and_code() {
+    let _scope = CALLS.scope();
+    let owner = Address::repeat_byte(1);
+    let outside = Address::repeat_byte(2);
+    let mut input = store();
+    let mut denied = Native::private();
+    denied.copy_fee = usize::MAX;
+    denied.singleton_fee = usize::MAX;
+    input.persistent.global_default = EvmValue::from_numeric(denied);
+    input
+        .persistent
+        .slots
+        .insert((outside, U256::ONE), private());
+    input.balances.insert(outside, private());
+    input.nonces.insert(outside, private());
+    for address in [owner, outside] {
+        input.codes.insert(address, Code::Delegation(outside));
+        input
+            .existence
+            .insert(address, super::super::Existence::Present);
+        input.created.insert(address, Some(true));
+        input.pending_destruction.insert(address, Some(true));
+        input.touched.insert(address, Some(true));
+    }
+    let mut layout = store();
+    layout.codes.insert(owner, Code::Empty);
+    layout
+        .existence
+        .insert(owner, super::super::Existence::Absent);
+    layout.created.insert(owner, Some(false));
+    layout.pending_destruction.insert(owner, Some(false));
+    layout.touched.insert(owner, Some(false));
+    let domain = ValueAlgebra::new(Policy::default());
+    let expected = input
+        .project_to_layout(&layout, domain.borrowed())
+        .forget_loop_numeric();
+    let before = input.clone();
+    CALLS.set(Calls::default());
+    let mut budget = WorkBudget::new(1_000_000);
+    let actual = input
+        .forget_loop_numeric_in_layout_with_payment(&layout, domain.borrowed(), &mut budget)
+        .unwrap();
+    assert_eq!(CALLS.get().clones, 0);
+    assert_eq!(CALLS.get().singletons, 0);
+    assert_eq!(CALLS.get().projects, 0);
+    assert_eq!(CALLS.get().constructions, 3);
+    assert_eq!(actual, expected);
+    assert_eq!(input, before);
+    assert_eq!(actual.codes.len(), 1);
+    assert_eq!(actual.codes[&owner], input.codes[&owner]);
+    assert_eq!(actual.existence.len(), 1);
+    assert_eq!(actual.created_default, None);
+    assert_eq!(actual.pending_destruction_default, None);
+    assert_eq!(actual.touched_default, None);
+    assert!(actual.logs_unknown);
+
+    for limit in [0, budget.used() - 1] {
+        let mut refused = WorkBudget::new(limit);
+        assert_eq!(
+            input.forget_loop_numeric_in_layout_with_payment(
+                &layout,
+                domain.borrowed(),
+                &mut refused,
+            ),
+            Err(CloneError::Work)
+        );
+        assert_eq!(input, before);
+    }
+}
+
+#[test]
+fn coarse_layout_retains_constructor_tariffs_and_both_cancellation_owners() {
+    let _scope = CALLS.scope();
+    let input = store();
+    let domain = ValueAlgebra::new(Policy {
+        constructor_fee: usize::MAX,
+        ..Policy::default()
+    });
+    CALLS.set(Calls::default());
+    assert_eq!(
+        input.forget_loop_numeric_in_layout_with_payment(
+            &input,
+            domain.borrowed(),
+            &mut WorkBudget::new(1_000_000),
+        ),
+        Err(CloneError::Work)
+    );
+    assert_eq!(CALLS.get(), Calls::default());
+    for captured in [false, true] {
+        let cancellation = analysis_control::Cancellation::new();
+        let mut budget = if captured {
+            analysis_control::with_cancellation(&cancellation, || WorkBudget::new(1_000_000))
+        } else {
+            WorkBudget::new(1_000_000)
+        };
+        cancellation.cancel();
+        let mut run = || {
+            input.forget_loop_numeric_in_layout_with_payment(&input, domain.borrowed(), &mut budget)
+        };
+        let actual = if captured {
+            run()
+        } else {
+            analysis_control::with_cancellation(&cancellation, run)
+        };
+        assert_eq!(actual, Err(CloneError::Cancelled));
+        assert_eq!(budget.used(), 0);
+        assert_eq!(CALLS.get(), Calls::default());
+    }
+}

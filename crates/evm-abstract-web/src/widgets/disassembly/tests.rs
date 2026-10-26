@@ -11,16 +11,18 @@ fn source_columns_size_to_current_data_including_full_push_values() {
         state: Some(0),
         pc: None,
     };
-    let ordinary = content_columns(&rows(&report, Some(0), selection));
+    let ordinary = content_columns(&rows(&(report).view(), Some(0), selection));
     assert_eq!(ordinary, [4, 15]);
-    report.programs[0].blocks[0].instructions[0].name = "PUSH32".into();
-    report.programs[0].blocks[0].instructions[0].immediate = Some(format!("0x{}", "fe".repeat(32)));
-    let full_push = content_columns(&rows(&report, Some(0), selection));
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks[0].instructions[0].name =
+        "PUSH32".into();
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks[0].instructions[0].immediate =
+        Some(format!("0x{}", "fe".repeat(32)));
+    let full_push = content_columns(&rows(&(report).view(), Some(0), selection));
     assert_eq!(full_push[1], 6 + 1 + 66);
     // The target is the native state, even when its basic-block ID is different.
     report.cfg[0].id = 91;
     let rows = rows(
-        &report,
+        &(report).view(),
         Some(0),
         Selection {
             value: None,
@@ -55,8 +57,10 @@ fn push_bounds(output: &FullOutput, immediate: &str) -> Rect {
 fn long_push_is_complete_and_horizontally_reachable_in_a_narrow_pane() {
     let mut report = crate::tests::report();
     let immediate = format!("0x{}", "fe".repeat(32));
-    report.programs[0].blocks[0].instructions[0].name = "PUSH32".into();
-    report.programs[0].blocks[0].instructions[0].immediate = Some(immediate.clone());
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks[0].instructions[0].name =
+        "PUSH32".into();
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks[0].instructions[0].immediate =
+        Some(immediate.clone());
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     let mut selection = Selection {
@@ -72,7 +76,7 @@ fn long_push_is_complete_and_horizontally_reachable_in_a_narrow_pane() {
                 events,
                 ..RawInput::default()
             },
-            |ui| disassembly(ui, &report, Some(0), &mut selection, &mut previous),
+            |ui| disassembly(ui, &(report).view(), Some(0), &mut selection, &mut previous),
         );
         output.textures_delta.clear();
         output
@@ -124,7 +128,8 @@ fn stack_signatures_and_explanations_appear_only_on_instruction_hover() {
         if !observed {
             report.cfg[0].executed_pcs.clear();
         }
-        let instruction = &mut report.programs[0].blocks[0].instructions[0];
+        let instruction =
+            &mut std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks[0].instructions[0];
         instruction.opcode = opcode;
         instruction.name = name.into();
         instruction.stack_inputs = inputs;
@@ -149,7 +154,7 @@ fn stack_signatures_and_explanations_appear_only_on_instruction_hover() {
                     events,
                     ..RawInput::default()
                 },
-                |ui| disassembly(ui, &report, Some(0), &mut selection, &mut previous),
+                |ui| disassembly(ui, &(report).view(), Some(0), &mut selection, &mut previous),
             );
             output.textures_delta.clear();
             output
@@ -200,7 +205,8 @@ fn painted_text(output: &FullOutput) -> String {
 
 #[test]
 fn invalid_and_deferred_instructions_do_not_claim_observed_results() {
-    let mut instruction = crate::tests::report().disassembly[0].instructions[0].clone();
+    let mut instruction =
+        crate::tests::report().model.programs[0].blocks[0].instructions[0].clone();
     instruction.opcode = 0xfe;
     instruction.valid = true;
     let invalid = super::tooltip::instruction(&instruction, false);
@@ -227,12 +233,13 @@ fn selected_child_program_keeps_its_complete_source_and_native_state_identity() 
     child.frame_depth = 2;
     child.code_address = Some("0x2222222222222222222222222222222222222222".into());
     // DELEGATECALL-style storage identity is independent of executable source.
-    child.instructions[0].name = "CALLDATASIZE".into();
-    child.instructions[0].opcode = 0x36;
+    let mut instructions = report.source(0).instructions.clone();
+    instructions[0].name = "CALLDATASIZE".into();
+    instructions[0].opcode = 0x36;
     let first = evm_abstract_protocol::DisasmBlock {
         id: 0,
         start_pc: 0,
-        instructions: child.instructions.clone(),
+        instructions,
     };
     let mut unexecuted = first.clone();
     unexecuted.id = 9;
@@ -240,7 +247,7 @@ fn selected_child_program_keeps_its_complete_source_and_native_state_identity() 
     unexecuted.instructions[0].pc = 88;
     unexecuted.instructions[0].name = "RETURN".into();
     unexecuted.instructions[0].opcode = 0xf3;
-    report.programs.push(crate::tests::source_program(
+    report.model.programs.push(crate::tests::source_program(
         1,
         child.code_address.clone(),
         vec![first, unexecuted],
@@ -250,7 +257,7 @@ fn selected_child_program_keeps_its_complete_source_and_native_state_identity() 
     receipt.state = 83;
     report.ssa.blocks.push(receipt);
     let rows = rows(
-        &report,
+        &(report).view(),
         Some(1),
         Selection {
             value: None,

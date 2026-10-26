@@ -50,7 +50,7 @@ fn details_button_is_reachable_and_shared_across_views_widths_and_reports() {
         }
         workspace.initial_command();
         workspace.receive(Ok(AnalyzeReply {
-            result: Ok(crate::tests::report()),
+            result: Ok((crate::tests::report()).into()),
         }));
         let output = settled(&ctx, &mut workspace, size);
         assert_eq!(workspace.ssa_display, SsaDisplay::Full);

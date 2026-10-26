@@ -93,7 +93,7 @@ fn precise_gap_keeps_distinct_queued_inputs_and_self_dirty_evaluations() {
                     &algebra,
                     &policies,
                 );
-                let WorldWork { id, payload } = admit_child(&mut engine, child);
+                let WorldWork { id, payload, .. } = admit_child(&mut engine, child);
                 let original_value = payload.active().call_value.clone();
                 let mut output = 0usize;
                 let scope = engine.runtime.world;
@@ -158,7 +158,7 @@ fn precise_gap_keeps_distinct_queued_inputs_and_self_dirty_evaluations() {
                     .frontiers
                     .iter()
                     .any(|frontier| frontier.reason == FrontierReason::Work);
-                engine.execution(id, execution, None);
+                engine.execution(id, execution, None, false);
                 assert!(engine.budget.exhausted());
                 if cancelled {
                     cancellation.cancel();
@@ -233,7 +233,7 @@ fn a_prior_precise_frontier_does_not_cover_a_later_completed_evaluation() {
         &algebra,
         &policies,
     );
-    let WorldWork { id, payload } = admit_child(&mut engine, child);
+    let WorldWork { id, payload, .. } = admit_child(&mut engine, child);
     engine
         .result
         .frontiers
@@ -252,7 +252,7 @@ fn a_prior_precise_frontier_does_not_cover_a_later_completed_evaluation() {
         .frontiers
         .iter()
         .any(|f| f.reason == FrontierReason::Work);
-    engine.execution(id, execution, None);
+    engine.execution(id, execution, None, false);
     assert!(engine.budget.charge(WORK - engine.budget.used() - 1));
     let error = engine
         .runtime

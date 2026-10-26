@@ -1,16 +1,20 @@
 //! Every graph and pool reference is checked before a consumer follows it.
+mod control;
 mod hybrid;
+mod minimum;
 mod process;
 mod regional;
 mod source;
 mod terminal;
 use crate::{
-    AccountState, AnalysisReport, MachineSnapshot, PoolReferenceFailure, PoolReferenceKind,
-    ReportValidationFailure, SymbolicGraph, SymbolicReference, SymbolicSort, ValueInfo,
+    AccountState, AnalysisGraph, AnalysisReport, MachineSnapshot, PoolReferenceFailure,
+    PoolReferenceKind, ReportValidationFailure, SymbolicGraph, SymbolicReference, SymbolicSort,
+    ValueInfo,
 };
 
 struct Validation<'a> {
-    report: &'a AnalysisReport,
+    report: &'a AnalysisGraph,
+    programs: &'a [std::sync::Arc<crate::ProgramInfo>],
     graph: &'a SymbolicGraph,
 }
 impl Validation<'_> {
@@ -62,12 +66,18 @@ impl Validation<'_> {
         if let Some(id) = id {
             // ProgramInfo.id is a report-local identity, not necessarily its
             // position; consumers preserve sparse native presentation IDs.
-            if !self.report.programs.iter().any(|program| program.id == id) {
+            let program = self.programs.iter().find(|program| program.id == id);
+            if program.is_none() {
                 return Err(ReportValidationFailure::Pool(PoolReferenceFailure {
                     kind: PoolReferenceKind::Program,
                     index: id,
-                    length: self.report.programs.len(),
+                    length: self.programs.len(),
                 }));
+            }
+            if program.is_some_and(|program| program.fork != self.report.fork) {
+                return Err(ReportValidationFailure::Source(
+                    crate::SourceValidationKind::Fork,
+                ));
             }
         }
         Ok(())
@@ -102,6 +112,7 @@ impl Validation<'_> {
         for frame in &machine.frames {
             self.process_frame(frame)?;
             self.program(frame.program)?;
+            self.source_frame(frame)?;
             self.store(frame.rollback_store)?;
             for id in [frame.memory, frame.calldata, frame.returndata]
                 .into_iter()
@@ -195,13 +206,14 @@ impl Validation<'_> {
             }
         }
         for block in &self.report.cfg {
+            self.program(block.program)?;
+            self.source_instructions(block)?;
             if let Some(key) = &block.process {
                 if block.basic_block.is_some()
                     || block.start_pc.is_some()
                     || !block.context.is_empty()
                     || block.code_address.is_some()
                     || block.storage_address.is_some()
-                    || !block.instructions.is_empty()
                     || !block.entry_stack.is_empty()
                     || !block.exit_stack.is_empty()
                     || !block.executed_pcs.is_empty()
@@ -319,12 +331,12 @@ impl Validation<'_> {
         Ok(())
     }
 }
-impl AnalysisReport {
-    /// Validate the version, postprocessing budget and every symbolic/program/pool reference.
-    pub fn validate(&self) -> Result<(), ReportValidationFailure> {
-        if self.schema_version != crate::SCHEMA_VERSION {
-            return Err(ReportValidationFailure::Schema(self.schema_version));
-        }
+impl AnalysisGraph {
+    /// Check graph-local references against the publication's shared source directory.
+    pub fn validate(
+        &self,
+        programs: &[std::sync::Arc<crate::ProgramInfo>],
+    ) -> Result<(), ReportValidationFailure> {
         let max_work = self.metadata.postprocessing_max_work;
         let work = self.metadata.postprocessing_work;
         if max_work == 0 || work > max_work {
@@ -332,12 +344,45 @@ impl AnalysisReport {
                 crate::PostprocessingWorkFailure { max_work, work },
             ));
         }
-        self.validate_source()?;
-        self.validate_hybrid()?;
+        self.validate_source(programs)?;
         Validation {
             report: self,
+            programs,
             graph: &self.symbolic,
         }
         .all()
+    }
+}
+impl AnalysisReport {
+    /// Check schema, graph placement and all namespace-qualified references.
+    pub fn validate(&self) -> Result<(), ReportValidationFailure> {
+        if self.schema_version != crate::SCHEMA_VERSION {
+            return Err(ReportValidationFailure::Schema(self.schema_version));
+        }
+        if self.selected_graph().is_none()
+            && self
+                .minimum
+                .as_ref()
+                .is_none_or(|minimum| minimum.namespace != self.selected_view)
+        {
+            return Err(ReportValidationFailure::Hybrid(
+                crate::HybridValidationKind::Namespace,
+            ));
+        }
+        self.validate_catalog()?;
+        self.validate_process_controls()?;
+        self.validate_minimum()?;
+        for graph in [&self.global, &self.native].into_iter().flatten() {
+            graph.validate(&self.programs)?;
+            if self.postprocessing_work > graph.metadata.postprocessing_max_work {
+                return Err(ReportValidationFailure::Postprocessing(
+                    crate::PostprocessingWorkFailure {
+                        max_work: graph.metadata.postprocessing_max_work,
+                        work: self.postprocessing_work,
+                    },
+                ));
+            }
+        }
+        self.validate_hybrid()
     }
 }

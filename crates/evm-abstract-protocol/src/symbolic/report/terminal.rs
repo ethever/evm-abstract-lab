@@ -77,6 +77,14 @@ impl Validation<'_> {
             }
         }
         let metadata = &self.report.metadata;
+        if input.snapshot != metadata.source_snapshot {
+            return Err(invalid(Failure::Snapshot));
+        }
+        if input.revision != metadata.revision {
+            return Err(ReportValidationFailure::Source(
+                crate::SourceValidationKind::Revision,
+            ));
+        }
         match (&input.snapshot, &metadata.snapshot) {
             (RootTerminalSnapshot::Offline(_), None) => {}
             (RootTerminalSnapshot::Chain(snapshot), Some(expected))
@@ -146,7 +154,6 @@ impl Validation<'_> {
         // Pool membership was checked above. A captured executable is never
         // recovered from a possibly havoced current account's code field.
         let mut programs = self
-            .report
             .programs
             .iter()
             .filter(|program| program.id == input.program);

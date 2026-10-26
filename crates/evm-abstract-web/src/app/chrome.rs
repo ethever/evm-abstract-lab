@@ -7,7 +7,7 @@ use crate::{
 };
 use egui::{RichText, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
-use evm_abstract_protocol::{AnalysisReport, AnalysisStatus};
+use evm_abstract_protocol::AnalysisStatus;
 
 impl Workspace {
     pub(super) fn header(&mut self, ui: &mut Ui) {
@@ -132,14 +132,21 @@ impl Workspace {
                     });
                 } else if self.task.phase==super::job::TaskPhase::Cancelled {
                     ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
-                } else if let Some(report)=&self.report {
+                } else if let Some(model)=&self.report {
+                    if let Some(minimum)=self.report_view.minimum(model) {
+                        ui.colored_label(if minimum.current{palette::ACCENT}else{palette::WARNING},terminal_coverage::detail_status(model));
+                        ui.label(format!("{} qualified relations",minimum.summaries.len()));
+                        ui.label(super::minimum::rich_status(model));
+                        return;
+                    }
+                    let report = &self.report_view.shown(model);
                     let complete=report.hybrid.as_ref().map_or(report.status==AnalysisStatus::Converged&&report.ssa.complete, |hybrid| hybrid.coverage.baseline_current);
-                    let label=terminal_coverage::detail_status(report);
+                    let label=terminal_coverage::detail_status(model);
                     ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
-                    if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
+                    if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),model.work));}
                     if let Some(hybrid)=&report.hybrid
                         && controls::action(ui, format!("Coverage · {} prefixes", hybrid.local_prefixes.len()), Density::Regular)
-                            .on_hover_text(super::hybrid::summary(report).unwrap_or_default()).clicked() {
+                            .on_hover_text(super::hybrid::summary(model).unwrap_or_default()).clicked() {
                         self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Coverage;
                     }
                     if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular)
@@ -177,7 +184,7 @@ mod tests;
 
 pub(super) fn result_context(
     ui: &mut Ui,
-    report: &AnalysisReport,
+    report: &crate::report::ReportView<'_>,
     program: Option<usize>,
     previous: bool,
     display: &mut crate::ssa_display::SsaDisplay,

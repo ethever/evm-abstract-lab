@@ -6,7 +6,7 @@
 
 [摘要](#1-调用摘要复用完整结果关系)、[创建](#2-create先执行构造代码再安装运行时代码)、[销毁](#3-selfdestruct转账和删除发生在不同时间)、[预编译](#4-预编译没有普通字节码也有调用帧)四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 15 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询[当前原生格式](../crates/evm-abstract/src/analysis.rs)的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `Bᵢ @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 Bᵢ 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 Bᵢ 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用归一化后的赋值式指令正文；世界视图保留 Cᵢ、fᵢ、state owner、context，以及按 Tᵢ 标记并带 fᵢ/slot 的 φ。完整视图展开所有帧元数据和原始效果链，字节码行与效果行也使用这套布局；原始指令字段、最终计算与值依赖保留在 JSON 中。编号与证据的读法见[第 04 课](04-ssa.md)、[第 09 课](09-cross-contract.md#默认文本怎样读)和[SSA 值归一化](ssa-normalization.md)。
 
@@ -35,24 +35,33 @@
 
 ### 第一步：分别开启和关闭摘要
 
+默认一个来源使用当前的 `KnownCall` 相对摘要；它不要求保存 B 的完整私有子图。先保留这组默认请求，再用显式的两个来源演示完整调用缓存。两组都沿用同一代码、调用环境和默认执行预算。
+
 ```bash
 nix run . -- analyze \
   --world examples/worlds/summary-reuse.json \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-  --format json > /tmp/summary-on.json
+  --format json > /tmp/summary-relative.json
+jq '.native.analysis | .summary_stats,
+    [.procedure_summaries[] | {kind, closed, source_current}]' /tmp/summary-relative.json
 
 nix run . -- analyze \
   --world examples/worlds/summary-reuse.json \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-  --format json --no-summaries > /tmp/summary-off.json
+  --max-detail-regions 2 --format json > /tmp/summary-on.json
 
-jq '.status, .summary_stats,
+nix run . -- analyze \
+  --world examples/worlds/summary-reuse.json \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --max-detail-regions 2 --format json --no-summaries > /tmp/summary-off.json
+
+jq '.native.analysis | .status, .summary_stats,
     [.summaries[] | {source_state, state_count, edge_count, reused_at}]' \
   /tmp/summary-on.json
-jq '.status, .summary_stats.hits, .summaries' /tmp/summary-off.json
+jq '.native.analysis | .status, .summary_stats.hits, .summaries' /tmp/summary-off.json
 ```
 
-两次都应为 `Converged`。开启摘要时 `hits > 0`、`imported_states > 0`；关闭时 `hits=0`，证书列表为空。
+默认请求的完整缓存统计为 `hits=0`、`published=0`，当前相对摘要仍在 `procedure_summaries` 中。后两次显式选择两个来源，都应为 `Converged`：开启完整缓存时 `hits > 0`、`imported_states > 0`；关闭时 `hits=0`，证书列表为空。
 
 | 字段 | 怎样读 |
 | --- | --- |
@@ -70,13 +79,15 @@ jq '.status, .summary_stats.hits, .summaries' /tmp/summary-off.json
 
 ### 第二步：确认复用没有改变最终关系
 
-图编号可能不同，比较时只取入口结果的种类、返回字节和 Store：
+图编号和独立生产者的私有作用域可能不同。先对完整 Native 图一致地重命名作用域，再比较入口结果的种类、返回字节和 Store，保留同一输出中的联合关系：
 
 ```bash
-jq -S '[.outcomes[] | {kind, data, store}] | unique' \
-  /tmp/summary-on.json > /tmp/summary-on-relations.json
-jq -S '[.outcomes[] | {kind, data, store}] | unique' \
-  /tmp/summary-off.json > /tmp/summary-off-relations.json
+jq '.native.analysis' /tmp/summary-on.json | \
+  python3 scripts/normalize_identity_scopes.py | \
+  jq -S '[.outcomes[] | {kind, data, store}] | unique' > /tmp/summary-on-relations.json
+jq '.native.analysis' /tmp/summary-off.json | \
+  python3 scripts/normalize_identity_scopes.py | \
+  jq -S '[.outcomes[] | {kind, data, store}] | unique' > /tmp/summary-off-relations.json
 cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 ```
 
@@ -107,7 +118,7 @@ A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入�
 ### 当前 JSON 怎样记录输入与帧
 
 ```bash
-jq '{schema_version,
+jq '.native.analysis | {schema_version,
      root: {state_owner: .entry.address, to: .entry.environment.to,
             caller: .entry.environment.caller, origin: .entry.environment.origin},
      root_frame: (.states[0].key.frames[0] | {address, address_value, caller}),
@@ -115,11 +126,11 @@ jq '{schema_version,
                | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-分析 `schema_version` 为 15。CLI `analyze` JSON 保留平铺图字段，带 `--ssa` 时所选关系在 `.analysis`；根输入分别在 `.entry.environment` / `.analysis.entry.environment`；`.entry.binding` 区分物理根地址与符号根的输入模板坐标，帧 `.address` 按该来源资格解释，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+CLI `analyze` JSON 在 `.global.analysis` 与可选 `.native.analysis` 分别保存原生图；`--ssa` 只增加 `.native.ssa` 或 `.native.partial_ssa`。本节的缓存、帧和 SSA 查询显式读取 `.native.analysis`。缺少 Native 时，应先查看 Global 的实际模型与资格；Global 关系不能代替这些私有执行证据。根输入位于所选图的 `.entry.environment`；`.entry.binding` 区分物理根地址与符号根模板坐标。帧 `.address` 按该来源资格解释，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`，两者不能都按裸地址字符串读取。
 
 本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
-单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本在 `domain_spec.schema_version`，当前为 3；它与分析 JSON 的 schema 15 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 保持两张图的固定位置，Native 根环境在 `.native.analysis.entry.environment`。域策略版本在 `domain_spec.schema_version`，当前为 3；它与分析 JSON 的 [schema 常量](../crates/evm-abstract/src/analysis.rs) 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
 
 环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 
@@ -154,17 +165,17 @@ nix run . -- analyze \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json --ssa > /tmp/create.json
 
-jq '[.analysis.states[] | .key.frames[-1]
+jq '(.native // .global).analysis | [.states[] | .key.frames[-1]
      | select(.address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7")
      | {address, address_value, caller, mode, code_hash}] | unique' /tmp/create.json
 
-jq '[.analysis.outcomes[].store.account_observations[]
+jq '(.native // .global).analysis | [.outcomes[].store.account_observations[]
      | select(.address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7")
      | {existence, nonce, balance, code_size, code_hash}] | unique' \
   /tmp/create.json
 ```
 
-这里用了 `--ssa`，JSON 根对象是 `{"analysis":...,"ssa":...}`，查询因此从 `.analysis` 开始。不加 `--ssa` 时，`states` / `outcomes` 就在根对象中。
+是否加 `--ssa` 都通过图字段选择同一关系；SSA 与 Native 图相邻，`states` / `outcomes` 仍在 `.native.analysis` 中。
 
 第一个查询应找到同一地址的 `InitCode` 与 `Runtime` 两种 `mode`，并带不同代码 hash。第二个查询看最终账户事实：某些失败可能仍为 absent；成功部署的账户为 present、nonce=`0x1`、code_size=8。
 
@@ -189,7 +200,7 @@ flowchart TD
 可进一步对照 A 的返回内容根与末 byte 的数值观察：
 
 ```bash
-jq '[.analysis.outcomes[] | select(.kind == "Return")
+jq '(.native // .global).analysis | [.outcomes[] | select(.kind == "Return")
      | {length: .data.length, root: .data.root,
         last_byte_projection: (.data.bytes["31"] // .data.default)}] | unique' \
   /tmp/create.json
@@ -235,7 +246,7 @@ nix run . -- analyze \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/destroy.json
 
-jq '[.states[]
+jq '(.native // .global).analysis | [.states[]
      | select(.entry.store.pending_destruction["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"] == true)
      | .id]' /tmp/destroy.json
 ```
@@ -245,11 +256,11 @@ jq '[.states[]
 ### 第二步：查看返回 caller 后的代码观察和最终账户
 
 ```bash
-jq '[.outcomes[] | select(.kind == "Return")
+jq '(.native // .global).analysis | [.outcomes[] | select(.kind == "Return")
      | .store.persistent.slots]
     | unique' /tmp/destroy.json
 
-jq '[.outcomes[] | {kind,
+jq '(.native // .global).analysis | [.outcomes[] | {kind,
       accounts: [.store.account_observations[]
        | select(.address == "0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"
              or .address == "0x0000000000000000000000000000000000000200")
@@ -281,9 +292,9 @@ nix run . -- analyze \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
   --format json --ssa > /tmp/native.json
 
-jq '[.analysis.states[].key.frames[-1].mode] | unique' /tmp/native.json
-jq '.analysis.edges,
-    ([.analysis.outcomes[] | select(.kind == "Return")
+jq '(.native // .global).analysis | [.states[].key.frames[-1].mode] | unique' /tmp/native.json
+jq '(.native // .global).analysis | .edges,
+    ([.outcomes[] | select(.kind == "Return")
       | {kind, length: .data.length,
          last_byte: (.data.bytes["31"] // .data.default)}] | unique)' \
   /tmp/native.json
@@ -311,7 +322,7 @@ jq '.analysis.edges,
 先查看[第 1 节](#1-调用摘要复用完整结果关系)使用的离线快照：
 
 ```bash
-jq '.world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
+jq '(.native // .global).analysis | .world | {fork, provenance, identity, fingerprint}' /tmp/summary-on.json
 ```
 
 它的 `identity.kind` 为 `offline`，标签是 `summary-reuse:v1`。fixture 在 world 顶层明确写：
@@ -355,9 +366,10 @@ printf 'analysis exit=%s\n' "$LAB_RPC_STATUS"
 
 case "$LAB_RPC_STATUS" in
   0|2)
-    jq '.status, .world.identity, .rpc_acquisition,
-        [.frontiers[] | {from, pc, reason}]' /tmp/rpc-discovery.json
-    LAB_BLOCK_HASH=$(jq -er '.world.identity
+    jq '(.native // .global).analysis as $graph
+        | .status, $graph.world.identity, .hybrid.rpc.acquisition,
+          [$graph.frontiers[] | {from, pc, reason}]' /tmp/rpc-discovery.json
+    LAB_BLOCK_HASH=$(jq -er '(.native // .global).analysis | .world.identity
       | select(.kind == "chain") | .block_hash' /tmp/rpc-discovery.json)
     ;;
   *)
@@ -419,7 +431,7 @@ nix run . -- analyze \
 printf 'analysis exit=%s\n' "$LAB_SELECTED_STATUS"
 
 case "$LAB_SELECTED_STATUS" in
-  0|2) jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/rpc-selected.json ;;
+  0|2) jq '(.native // .global).analysis | .status, [.frontiers[] | {from, pc, reason}]' /tmp/rpc-selected.json ;;
   *) printf '初始分析失败；检查 stderr，不能按有效 JSON 继续。\n' >&2 ;;
 esac
 ```
@@ -481,6 +493,6 @@ printf 'exit=%s\n' "$PARTIAL_SSA_STATUS"
 
 要展开所有指令阶段与效果链，在这条 world/RPC `explain` 命令上加 `--verbose`；核对同一分析输入时同时指定报告中的 `--block-hash`。默认隐藏的 Completed/Dispatched 注释与效果链只是显示详略，Started/OperandsConsumed/Faulted、Stale/Unexecuted、延后或开放的边与全部前沿继续可见。根帧的 RETURN 结果读 `Outcomes`，子帧的返回则沿 Return 转移追踪。
 
-需要 JSON 时，将命令改为 `analyze`，同时加 `--ssa --allow-partial-ssa --format json`；未完成结果为 `{"analysis":...,"partial_ssa":...}`，状态和 RPC 采集记录在 `.analysis` 内；JSON 保留完整 progress、效果及覆盖字段。部分 φ 不声称覆盖所有调用路径，旧执行输入失效时也不会继续显示其旧指令正文。完整字段读法见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。
+需要 JSON 时，将命令改为 `analyze`，同时加 `--ssa --allow-partial-ssa --format json`；未完成的 Native 图位于 `.native.analysis`，部分 SSA 位于 `.native.partial_ssa`；外层 status 描述全局覆盖，Native status 和 frontiers 保留自己的进度，累计 RPC 采集位于 `.hybrid.rpc.acquisition`；JSON 保留完整 progress、效果及覆盖字段。部分 φ 不声称覆盖所有调用路径，旧执行输入失效时也不会继续显示其旧指令正文。完整字段读法见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。
 
 关系约束也是摘要输入的一部分。复用完整 callee 图时，调用输入中的符号保持绑定，callee 内部新产生的未知值会重新命名；悬挂 caller 中上一次调用的结果不会因此变成这次调用的同一个变量。关系的合并和资源规则见[第 15 课](15-symbolic-relations.md)。

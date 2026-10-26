@@ -30,6 +30,9 @@ struct Args {
     /// Terminal tasks retained for inspection before the oldest are evicted.
     #[arg(long, default_value_t = 16)]
     retained_jobs: usize,
+    /// Per-job work shared by the minimum model and optional rich presentation.
+    #[arg(long, default_value_t = evm_abstract_server::analyze::DEFAULT_POSTPROCESS_WORK)]
+    postprocess_work: usize,
 }
 
 fn main() -> ExitCode {
@@ -72,5 +75,12 @@ async fn run_async(args: Args) -> Result<(), evm_abstract_server::http::ServerEr
         listener.local_addr()?,
         config.workers
     );
-    evm_abstract_server::http::serve_with_providers(listener, &args.assets, config, providers).await
+    evm_abstract_server::http::serve_with_postprocess_work(
+        listener,
+        &args.assets,
+        config,
+        providers,
+        args.postprocess_work,
+    )
+    .await
 }

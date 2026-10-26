@@ -7,6 +7,7 @@ from web_test_graph_helpers import graph_scope
 from web_test_harness import complete_submission, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import screenshot_metrics, text_pixels
+from web_test_hybrid import assert_hybrid, oracle_graph
 
 
 LAYOUT_FIXTURES = Path(__file__).resolve().parent.parent / "crates/evm-abstract-web/tests/fixtures/layout"
@@ -14,6 +15,7 @@ LAYOUT_FIXTURES = Path(__file__).resolve().parent.parent / "crates/evm-abstract-
 LAYOUT_DEFAULT_LIMITS = {
     "max_states":100_000, "max_transfers":10_000_000, "context_depth":128,
     "max_constants":512, "max_work":2_000_000_000, "max_call_depth":1025,
+    "max_detail_regions":1,
     "max_memory_bytes":64*1024*1024, "use_summaries":True, "root_terminal_coverage":True,
     "numeric_model":"Product",
     "reduction_rounds":16, "max_facts":4096, "relations_enabled":True,
@@ -34,6 +36,52 @@ def layout_modal(page, canvas):
     boxes = screenshot_metrics(page, canvas.screenshot(),
                                (0, 0, viewport["width"], viewport["height"]), True)["nodes"]
     return max(boxes, key=lambda rect: (rect[2]-rect[0])*(rect[3]-rect[1]))
+
+
+def layout_detail_regions(page, canvas, output, name, requested):
+    """Edit D5's real Precision row in an already open, collapsed input form."""
+    assert type(requested) is int and 0 <= requested <= (1 << 64) - 1
+    assert page.viewport_size == {"width": 1440, "height": 1000}
+    geometry = {}
+    header_offset = 10
+
+    def capture(stage):
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        page.wait_for_timeout(200)
+        png = canvas.screenshot(path=str(output / f"{name}-precision-{stage}.png"))
+        bounds = layout_modal(page, canvas)
+        assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
+                and 750 <= bounds[2] - bounds[0] <= 780), bounds
+        region = (bounds[0] + 29, bounds[1] + header_offset, bounds[0] + 95, bounds[3] - 40)
+        measured = {"modal": bounds, "region": region, **text_pixels(page, png, region)}
+        geometry[stage] = measured
+        (output / f"{name}-precision-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
+        return measured
+
+    before = capture("closed")
+    headers = before["rows"][-6:]
+    assert len(headers) == 6 and all(20 <= b[0] - a[0] <= 26
+                                   for a, b in zip(headers, headers[1:])), before
+    header_offset = headers[0][0] - before["modal"][1] - 2
+    canvas.click(position={"x": before["modal"][0] + 70, "y": sum(headers[-2]) / 2})
+    opened = capture("open")
+    # Three environment headers, Execution, Precision, Numeric model, then
+    # Detailed code sources. The POST caller checks the complete applied policy.
+    assert len(opened["rows"]) >= 15, opened
+    assert all(abs(a[0] - opened["modal"][1] - (b[0] - before["modal"][1])) <= 2
+               for a, b in zip(opened["rows"][:5], headers[:5])), opened
+    assert all(20 <= b[0] - a[0] <= 26
+               for a, b in zip(opened["rows"][5:13], opened["rows"][6:14])), opened
+    canvas.click(position={"x": opened["modal"][0] + 250, "y": sum(opened["rows"][6]) / 2})
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text(str(requested))
+    rendered_frame(page)
+    edited = capture("edited")
+    canvas.click(position={"x": edited["modal"][0] + 70, "y": sum(edited["rows"][4]) / 2})
+    closed = capture("restored")
+    assert len(closed["rows"]) == 6, closed
+
 
 def layout_entry_form(page, canvas, entry, source_height_offset=0):
     """Edit actual egui controls; the typed POST below verifies every choice."""
@@ -194,10 +242,18 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
             assert request["input"]["Bytecode"]["address"] == entry["address"], request
         if "chain_id" in entry:
             assert request["environment"]["chain_id"] == entry["chain_id"], request
-    result = complete_submission(page, admitted, timeout_seconds)
+    result = complete_submission(page, admitted, timeout_seconds, namespace="Native", close_directory=True,
+                                 expected_detail_regions=expected_limits["max_detail_regions"])
     assert result.status == 200 and "Ok" in result.json()["result"], result.json()
-    report = result.json()["result"]["Ok"]
-    assert report["programs"][0]["bytecode"].removeprefix("0x") == code
+    full_report = result.report
+    (output / f"{name}-task-reply.json").write_text(json.dumps(result.json(), indent=2) + "\n")
+    assert_hybrid(full_report)
+    # These layout/SSA scenarios assert Native execution, including source and
+    # input pools. The final publication can preserve the initial Global view.
+    report = oracle_graph(full_report, "Native")
+    assert report is not None
+    root = next(program for program in report["programs"] if program["id"] == report["metadata"]["root_program"])
+    assert root["bytecode"].removeprefix("0x") == code
     assert report["metadata"]["limits"] == expected_limits
     if entry is not None:
         environment = report["metadata"]["environment"]
@@ -216,13 +272,8 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
             assert [int(value,16) for value in environment["call_value"]["constants"]] == [int(entry["call_value"],16)]
         if "chain_id" in entry:
             assert [int(value,16) for value in environment["chain_id"]["constants"]] == [int(entry["chain_id"],16)]
-    (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
-    # Layout/SSA checks follow the visible namespace. Retain and validate the
-    # complete production reply first, including the original global relation.
-    from web_test_hybrid import assert_hybrid, displayed_graph
-    if report.get("hybrid") is not None:
-        assert_hybrid(report)
-    return displayed_graph(report)
+    (output / f"{name}-analysis.json").write_text(json.dumps(full_report, indent=2) + "\n")
+    return report
 
 def layout_counts(page, report, expected_groups: int | None = None, mode="Blocks"):
     identities = {
@@ -252,7 +303,7 @@ def layout_page(browser, url: str):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    complete_submission(page, initial.value)
+    complete_submission(page, initial.value, namespace="Native", close_directory=True)
     canvas = page.locator("#evm-canvas")
     hide_inspector(page, canvas)
     page.keyboard.press("2")

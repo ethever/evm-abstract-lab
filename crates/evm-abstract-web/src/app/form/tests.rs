@@ -3,6 +3,8 @@ use egui::{Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawI
 use evm_abstract_protocol as api;
 use evm_abstract_protocol::RpcProvider;
 
+mod precision;
+
 fn frame(ctx: &Context, form: &mut AnalysisForm, events: Vec<Event>) -> Option<AnalyzeRequest> {
     paint(ctx, form, events).0
 }
@@ -67,40 +69,10 @@ fn selected_fork_controls_the_submitted_execution_rules() {
     for fork in [Fork::Cancun, Fork::Osaka] {
         let output = paint_sized(&ctx, &mut form, vec![], size).1;
         let selector = text_center(&output, &format!("{:?}", form.fork));
-        for pressed in [true, false] {
-            paint_sized(
-                &ctx,
-                &mut form,
-                vec![
-                    Event::PointerMoved(selector),
-                    Event::PointerButton {
-                        pos: selector,
-                        button: PointerButton::Primary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    },
-                ],
-                size,
-            );
-        }
+        click_sized(&ctx, &mut form, selector, size);
         let menu = paint_sized(&ctx, &mut form, vec![], size).1;
         let target = text_center(&menu, &format!("{fork:?}"));
-        for pressed in [true, false] {
-            paint_sized(
-                &ctx,
-                &mut form,
-                vec![
-                    Event::PointerMoved(target),
-                    Event::PointerButton {
-                        pos: target,
-                        button: PointerButton::Primary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    },
-                ],
-                size,
-            );
-        }
+        click_sized(&ctx, &mut form, target, size);
         assert_eq!(form.fork, fork);
         assert_eq!(form.request().fork, fork);
     }
@@ -118,38 +90,21 @@ fn precision_selector_submits_each_supported_numeric_model() {
         ..AnalysisForm::default()
     };
     let size = Vec2::new(1440.0, 1400.0);
-    let click = |form: &mut AnalysisForm, pos| {
-        for pressed in [true, false] {
-            paint_sized(
-                &ctx,
-                form,
-                vec![
-                    Event::PointerMoved(pos),
-                    Event::PointerButton {
-                        pos,
-                        button: PointerButton::Primary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    },
-                ],
-                size,
-            );
-        }
-    };
+
     for _ in 0..3 {
         paint_sized(&ctx, &mut form, vec![], size);
     }
     let output = paint_sized(&ctx, &mut form, vec![], size).1;
-    click(&mut form, text_center(&output, "Precision"));
+    click_sized(&ctx, &mut form, text_center(&output, "Precision"), size);
     for (model, current, choice) in [
         (NumericModel::FiniteSet, "Product", "Finite set"),
         (NumericModel::Product, "Finite set", "Product"),
     ] {
         let output = paint_sized(&ctx, &mut form, vec![], size).1;
         text_center(&output, "Numeric model");
-        click(&mut form, text_center(&output, current));
+        click_sized(&ctx, &mut form, text_center(&output, current), size);
         let output = paint_sized(&ctx, &mut form, vec![], size).1;
-        click(&mut form, text_center(&output, choice));
+        click_sized(&ctx, &mut form, text_center(&output, choice), size);
         assert_eq!(
             form.request().limits,
             AnalysisLimits {
@@ -163,24 +118,7 @@ fn precision_selector_submits_each_supported_numeric_model() {
 }
 
 fn click(ctx: &Context, form: &mut AnalysisForm, pos: Pos2) -> Option<AnalyzeRequest> {
-    let mut request = None;
-    for pressed in [true, false] {
-        request = frame(
-            ctx,
-            form,
-            vec![
-                Event::PointerMoved(pos),
-                Event::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed,
-                    modifiers: Modifiers::NONE,
-                },
-            ],
-        )
-        .or(request);
-    }
-    request
+    click_sized(ctx, form, pos, Vec2::new(900.0, 700.0))
 }
 
 fn providers() -> Vec<RpcProvider> {
@@ -321,12 +259,29 @@ fn root_terminal_checkbox_submits_the_default_and_explicit_opt_out_for_both_sour
             );
             #[cfg(not(target_arch = "wasm32"))]
             if source == Source::Bytecode {
-                let report = evm_abstract_server::analyze::analyze(submitted).unwrap();
+                let report = evm_abstract_server::analyze::analyze(submitted.clone()).unwrap();
                 report.validate().unwrap();
-                assert_eq!(report.metadata.limits, expected.limits);
+                assert_eq!(
+                    report.selected_graph().unwrap().metadata.limits,
+                    expected.limits
+                );
                 let hybrid = report.hybrid.as_ref().unwrap();
                 assert!(!hybrid.coverage.baseline_config.root_terminal_coverage);
-                let native = report.graph(api::AnalysisNamespace::Native).unwrap();
+                // One transfer does not close the selected source-control
+                // Global. Preserve the original request/cap and observe that
+                // optional Native has not been admitted.
+                assert_eq!(report.status, api::AnalysisStatus::Incomplete);
+                assert!(!hybrid.coverage.baseline_current);
+                assert!(report.native.is_none());
+                // Keep the original Native certificate/configuration oracle on
+                // the exact same submitted input and transfer allowance.
+                let native_report = evm_abstract_server::analyze::captured::native_bytecode(
+                    &submitted,
+                    &Default::default(),
+                )
+                .unwrap();
+                native_report.validate().unwrap();
+                let native = native_report.graph(api::AnalysisNamespace::Native).unwrap();
                 if enabled {
                     let config = &native.root_terminal_coverage.as_ref().unwrap().input.config;
                     assert!(config.root_terminal_coverage);

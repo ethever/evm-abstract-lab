@@ -8,11 +8,13 @@
 #[macro_use]
 mod codec;
 mod analysis;
+pub mod application_defaults;
 mod boundaries;
 mod errors;
 mod hybrid;
 mod input_errors;
 mod jobs;
+mod minimum;
 mod process;
 mod query_errors;
 mod request;
@@ -34,6 +36,7 @@ pub use errors::*;
 pub use hybrid::*;
 pub use input_errors::*;
 pub use jobs::*;
+pub use minimum::*;
 pub use process::*;
 pub use query_errors::*;
 pub use request::*;
@@ -52,8 +55,10 @@ pub use terminal::*;
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of native report JSON.
+/// Version 21 fixes graph placement, shares the source directory and qualifies
+/// graph snapshots/revisions independently of job publication and selection.
 /// Version 20 qualifies root templates, process sources and conditional native detail.
-pub const SCHEMA_VERSION: u16 = 20;
+pub const SCHEMA_VERSION: u16 = 21;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

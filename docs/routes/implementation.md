@@ -189,7 +189,7 @@ flowchart TD
 
 源码先读 [`ssa::build`](../../crates/evm-abstract/src/ssa/build.rs) 的局部视图，再读 [`build_world`](../../crates/evm-abstract/src/ssa/world.rs#L138)。当前构建先为状态入口分配参数式 φ，再连接前驱值，包含不一定最小化的 φ；不要把它直接等同于经典“计算支配边界再插 φ”的算法。世界 SSA 还以 `FramePhi`、`EffectPhi` 和 `Transition` 记录帧值与状态效果的传递。沿 [`WorldSsa::verify`](../../crates/evm-abstract/src/ssa/world.rs#L115) 进入 [`ssa/world/verify.rs`](../../crates/evm-abstract/src/ssa/world/verify.rs)，检查前驱、指令、栈形状、调用/返回与定义使用是否对齐。
 
-接着用 [`partial-ssa-memory.json`](../../examples/partial-ssa-memory.json) 做[块中途停下的实验](../04-ssa.md#从块中途停下的实际输出开始)。内存上限为 1 字节时，MLOAD 已弹出偏移，却不能完成 32 字节访问；`recorded prefix stack` 留下的是先前 PUSH 的 `%0`。把上限改为 32 后，MLOAD 和后面的 ADD 完成，最后留下 ADD 的 `%3`。两次最后数值都可能是 1，但定义来源与完成程度不同。
+接着用 [`partial-ssa-memory.json`](../../examples/partial-ssa-memory.json) 做[块中途停下的实验](../04-ssa.md#从块中途停下的实际输出开始)。共享执行 work 为 2,000,000 时，Native 的 MLOAD 已弹出偏移，却不能付清后续抽象读取；`recorded prefix stack` 留下的是先前 PUSH 的 `%0`。恢复默认 work 后，Native 的 MLOAD 和后面的 ADD 完成，最后留下 ADD 的 `%3`。两次最后数值都可能是 1，但定义来源与完成程度不同。
 
 读取 [`build_partial_world`](../../crates/evm-abstract/src/ssa/partial.rs#L151) 时，把本页工作表一站的“旧出口失效”带回来：[`EvmExecutionEvidence<N>`](../../crates/evm-abstract/src/analysis/machine/evidence.rs) 只证明最新一次 transfer；历史积累的边不一定属于当前入口的执行凭据。结合[基本块为何只有执行前缀](../04-ssa.md#为什么基本块可以只执行一个前缀)和[进度与效果链](../04-ssa.md#进度和效果链怎样一起读)，再逐项读下面的字段。
 

@@ -1,8 +1,6 @@
 //! Private default numeric primitives. These never call the metadata facade.
 
-use super::{
-    DomainSpec, EvmValue, FiniteConstantSet, NumericReduction, NumericValue, known_bits::KnownBits,
-};
+use super::{DomainSpec, FiniteConstantSet, NumericReduction, NumericValue, known_bits::KnownBits};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
@@ -21,41 +19,6 @@ pub(super) fn finite(finite: FiniteConstantSet) -> NumericValue {
 }
 
 impl DomainSpec {
-    pub(super) fn numeric_memory_write_passes(
-        self,
-        offset: &EvmValue<NumericValue>,
-        value: &EvmValue<NumericValue>,
-        width: usize,
-    ) -> usize {
-        let numeric = value.numeric();
-        // These are exactly singleton()'s candidate tags, without its possibly
-        // expensive membership/modulo validation. No candidate means the writer
-        // cannot enter its singleton-provenance loop.
-        let candidate = numeric.finite.cardinality() == Some(1)
-            || numeric.bits.singleton().is_some()
-            || numeric.interval.singleton().is_some()
-            || numeric.congruence.singleton().is_some();
-        let constant_origin = value
-            .provenance()
-            .origins()
-            .sources()
-            .is_some_and(|origins| {
-                origins.len() == 1 && origins.contains(&super::provenance::Origin::Constant)
-            })
-            && !value.provenance().is_code_address();
-        let source_pass = usize::from(candidate && !constant_origin);
-        // NumericValue cloning/normalized offset retain this raw complete set.
-        // A single last-key lookup bounds every host conversion and width add.
-        let cached = offset.constants().is_some_and(|values| {
-            values.last().is_none_or(|last| {
-                usize::try_from(*last)
-                    .ok()
-                    .and_then(|start| start.checked_add(width.saturating_sub(1)))
-                    .is_some()
-            })
-        });
-        source_pass + usize::from(!cached)
-    }
     pub(super) fn numeric_project(self, value: &NumericValue) -> NumericValue {
         let mut out = value.clone();
         out.finite = out.finite.into_limited(self.constant_capacity());

@@ -1,4 +1,5 @@
 //! Positions into an immutable report. Native IDs are not vector offsets.
+use crate::report::ReportView;
 
 #[cfg(test)]
 mod tests;
@@ -6,8 +7,8 @@ mod tests;
 use std::collections::BTreeMap;
 
 use evm_abstract_protocol::{
-    AnalysisReport, CfgBlock, CfgEdge, DeferredEdge, ProcedureSummaryKind, SsaBlock, SsaTransition,
-    StateDetails, SummarySourceStatus,
+    CfgBlock, CfgEdge, DeferredEdge, ProcedureSummaryKind, SsaBlock, SsaTransition, StateDetails,
+    SummarySourceStatus,
 };
 
 use super::termination::{TerminationSummary, Terminations};
@@ -31,7 +32,7 @@ pub(super) struct ReportIndex {
 }
 
 impl ReportIndex {
-    pub(super) fn new(report: &AnalysisReport) -> Self {
+    pub(super) fn new(report: &ReportView<'_>) -> Self {
         let latest: BTreeMap<_, _> = report
             .abstract_summaries
             .iter()
@@ -105,8 +106,8 @@ impl ReportIndex {
         index
     }
 
-    pub(super) fn cfg<'a>(&self, report: &'a AnalysisReport, state: usize) -> Option<&'a CfgBlock> {
-        report.cfg.get(*self.cfg.get(&state)?)
+    pub(super) fn cfg<'a>(&self, report: &ReportView<'a>, state: usize) -> Option<&'a CfgBlock> {
+        report.data().cfg.get(*self.cfg.get(&state)?)
     }
 
     pub(super) fn summary_source(
@@ -123,36 +124,44 @@ impl ReportIndex {
         .copied()
     }
 
-    pub(super) fn ssa<'a>(&self, report: &'a AnalysisReport, state: usize) -> Option<&'a SsaBlock> {
-        report.ssa.blocks.get(*self.ssa.get(&state)?)
+    pub(super) fn ssa<'a>(&self, report: &ReportView<'a>, state: usize) -> Option<&'a SsaBlock> {
+        report.data().ssa.blocks.get(*self.ssa.get(&state)?)
     }
 
     pub(super) fn details<'a>(
         &self,
-        report: &'a AnalysisReport,
+        report: &ReportView<'a>,
         state: usize,
     ) -> Option<&'a StateDetails> {
-        report.states.get(*self.details.get(&state)?)
+        report.data().states.get(*self.details.get(&state)?)
     }
 
-    pub(super) fn edge<'a>(&self, report: &'a AnalysisReport, edge: usize) -> Option<&'a CfgEdge> {
-        report.edges.get(*self.edges.get(&edge)?)
+    pub(super) fn edge<'a>(&self, report: &ReportView<'a>, edge: usize) -> Option<&'a CfgEdge> {
+        report.data().edges.get(*self.edges.get(&edge)?)
     }
 
     pub(super) fn transition<'a>(
         &self,
-        report: &'a AnalysisReport,
+        report: &ReportView<'a>,
         edge: usize,
     ) -> Option<&'a SsaTransition> {
-        report.ssa.transitions.get(*self.transitions.get(&edge)?)
+        report
+            .data()
+            .ssa
+            .transitions
+            .get(*self.transitions.get(&edge)?)
     }
 
     pub(super) fn deferred<'a>(
         &self,
-        report: &'a AnalysisReport,
+        report: &ReportView<'a>,
         edge: usize,
     ) -> Option<&'a DeferredEdge> {
-        report.ssa.deferred_edges.get(*self.deferred.get(&edge)?)
+        report
+            .data()
+            .ssa
+            .deferred_edges
+            .get(*self.deferred.get(&edge)?)
     }
 
     /// Original edge positions, so parallel edges and their order are retained.

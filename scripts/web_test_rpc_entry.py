@@ -6,6 +6,7 @@ import json
 import re
 from web_test_harness import complete_submission, observe_webgpu, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_rpc_helpers import CUSTOM_ENTRY, RPC_ENTRY_EXAMPLES, RPC_PROVIDERS, automatic_rpc_entry, configured_rpc_server, open_rpc_input, select_rpc_provider
+from web_test_hybrid import graph
 
 
 def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
@@ -43,7 +44,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
         request_offset = len(rpc.requests)
         with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
             page.keyboard.press("Control+Enter")
-        reply = complete_submission(page, response.value)
+        reply = complete_submission(page, response.value, namespace="Native")
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         requests = rpc.requests[request_offset:]
         pins = sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in requests)
@@ -55,7 +56,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
         assert reply.request.post_data_json == expected, "entry selection reset unrelated request fields"
         expected_submissions.append(expected)
         assert submitted == expected_submissions, f"{ui_label} did not submit exactly once to the chosen provider"
-        assert reply.json()["result"]["Ok"]["metadata"]["entry_address"].lower() == address.lower()
+        assert graph(reply.report, "Native")["metadata"]["entry_address"].lower() == address.lower()
         results["selected_addresses"].append(address)
         results["selected_examples"].append({"label": ui_label, "address": address})
     open_rpc_input(page, canvas)
@@ -79,7 +80,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     request_offset = len(rpc.requests)
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
         page.keyboard.press("Control+Enter")
-    reply = complete_submission(page, response.value)
+    reply = complete_submission(page, response.value, namespace="Native")
     assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
     requests = rpc.requests[request_offset:]
     pins = sum(request["method"] == "eth_getBlockByNumber" and request["params"][0] == "latest" for request in requests)
@@ -91,7 +92,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     assert reply.request.post_data_json == expected, "reopening the form replaced the hand-edited address"
     expected_submissions.append(expected)
     assert submitted == expected_submissions, "Custom did not submit exactly once to the chosen provider"
-    assert reply.json()["result"]["Ok"]["metadata"]["entry_address"].lower() == CUSTOM_ENTRY.lower()
+    assert graph(reply.report, "Native")["metadata"]["entry_address"].lower() == CUSTOM_ENTRY.lower()
     results["custom_reopened_address"] = CUSTOM_ENTRY
     results["provider_submissions"] = [request["input"] for request in submitted]
     results["renderer"] = webgpu_evidence(page)

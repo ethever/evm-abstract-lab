@@ -19,6 +19,7 @@ pub(in crate::analysis) mod fixtures;
 mod frame;
 mod join;
 mod payload;
+mod procedure;
 mod process_key;
 mod range;
 mod stack;
@@ -31,6 +32,12 @@ pub use frame::{EvmChildFrame, EvmFrame, EvmFrameState, EvmRootFrame};
 pub(in crate::analysis) use frame::{FrameByteKind, FrameMapOrder};
 pub(crate) use join::EvmEntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
+pub use procedure::{
+    EvmProcedureModel, EvmProcedureModelData, EvmProcedureModelOutput, EvmProcedureModels,
+    EvmProcedureReport, EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord,
+    EvmRegionalEvidence, ProcedureEvidenceVersion, ProcedureModelVersion, ProcedureReportOutcome,
+    ProcedureSummaryKind,
+};
 pub use range::{ByteRangeBoundary, EvmRangeRequest, EvmRangeWitness, RangeKind};
 #[cfg(test)]
 pub(in crate::analysis) use stack::CallStack;
@@ -276,8 +283,10 @@ pub enum MachineEdgeKind {
     Revert,
     /// A procedure relation resumes the parent with this termination category.
     Summary(OutcomeKind),
-    /// A coarse region repeats after a local primitive without entering a child.
+    /// A coarse action continues locally without entering a child.
     Process(super::ProcessAction),
+    /// Reach an effect boundary through the Process receipt's pure MAY relation.
+    ProcessControl,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -384,88 +393,6 @@ pub struct EvmMachineOutcome<N: WordElement> {
     pub data: EvmByteArray<N>,
     /// Shared transaction effects; reverted frames restore their saved snapshot.
     pub store: EvmStore<N>,
-}
-
-/// One numerical output of a caller-independent procedure relation.
-/// Templates are instantiated with independent symbolic state roots before execution.
-#[derive(Clone, Debug, Serialize)]
-pub struct EvmProcedureSummaryOutput<N: WordElement> {
-    /// Relative frame termination; failure effects are rolled back at each caller.
-    pub kind: OutcomeKind,
-    /// Bound on full return or revert data.
-    pub data: EvmByteArray<N>,
-    /// Bound on transaction effects at completion.
-    pub store: EvmStore<N>,
-}
-
-/// A procedure participating in the joint known/unknown fixed point.
-#[derive(Clone, Debug, Serialize)]
-pub struct EvmProcedureSummary<N: WordElement> {
-    /// Joined logical invocation bounds for a process; None for native code.
-    pub process_input: Option<super::EvmProcessInvocation<N>>,
-    /// Interpretation is independent of the captured Program/code identity.
-    pub semantics: super::TransferSemantics,
-    /// Executable and context shape, independent of suspended caller stacks.
-    pub frame: FrameKey,
-    /// Whole-store numerical input invariant, including transient and lifecycle state.
-    pub input: EvmStore<N>,
-    /// Growing output alternatives by termination category.
-    pub outputs: Vec<EvmProcedureSummaryOutput<N>>,
-    /// Procedures whose output growth replays retained return continuations.
-    pub dependencies: Vec<usize>,
-    /// Number of strict input expansions.
-    pub input_updates: usize,
-    /// Number of strict output expansions.
-    pub output_updates: usize,
-    /// Cumulative historical observations of visited captured-program blocks.
-    /// These do not certify execution of the current joined input; use current
-    /// regional transfer receipts for that distinction. Unknown PCs are never invented.
-    pub covered_blocks: Vec<usize>,
-}
-
-/// Why ordinary stack execution entered the relative procedure worklist.
-/// The trigger is captured before callee detachment; recursive dependencies
-/// discovered during saturation do not change it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum ProcedureSummaryKind {
-    /// Captured runtime selected by the explicit coarse process policy.
-    KnownProcess,
-    /// An unobserved implementation or symbolic target remainder.
-    UnknownEnvironment,
-    /// A known runtime CALL entry admitted before any repeated active call edge.
-    KnownCall,
-    /// A known runtime entry selected by a repeated structural call edge on its stack.
-    KnownRecursion,
-}
-
-/// Coverage evidence for an entry and its recursive procedure system.
-#[derive(Clone, Debug, Serialize)]
-pub struct EvmProcedureSummaryRecord<N: WordElement> {
-    /// Main machine node whose execution requested this relation.
-    pub source_state: usize,
-    /// Certified for this source's final successful, still-valid World evaluation.
-    /// False means uncertified currentness, not proof that historical facts are
-    /// stale or false. Regional closure and global closure remain separate.
-    pub source_current: bool,
-    /// Actual source of the abstraction; known runtime remains known runtime.
-    pub kind: ProcedureSummaryKind,
-    /// Entry procedure index, absent when entry or evidence construction failed.
-    pub root_procedure: Option<usize>,
-    /// Regional-system closure observed at this snapshot's retained input and
-    /// dependency basis; neither current global closure nor source currency.
-    pub closed: bool,
-    /// Known bytecode and unknown procedures solved together.
-    pub procedures: Vec<EvmProcedureSummary<N>>,
-    /// Coarse native regional CFG, separate from machine instruction/SSA evidence.
-    pub regional_cfg: super::transfer::procedure::EvmRegionalCfg,
-    /// Relative block states retained by the shared worklist.
-    pub state_count: usize,
-    /// Metered block/environment transfers performed for this request.
-    pub transfers: usize,
-    /// Output-to-caller propagations, including local failures that resume the environment.
-    pub propagations: usize,
-    /// Existing procedure relations used by a retained caller continuation.
-    pub reused: usize,
 }
 
 /// The running engine is the sole writer; returning WorldAnalysis ends append.

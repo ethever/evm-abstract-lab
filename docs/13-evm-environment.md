@@ -85,14 +85,14 @@ PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中�
 
 ### 在 JSON 中查输入范围
 
-分析结果格式的 `schema_version` 是 15，数值域策略中的 `domain_spec.schema_version` 是 3。输入环境所在位置随输出入口变化：
+分析结果格式的 `schema_version` 与数值域策略中的 `domain_spec.schema_version` 分别见[原生格式常量](../crates/evm-abstract/src/analysis.rs)和[域策略定义](../crates/evm-abstract/src/domain/spec.rs)。输入环境所在位置随输出入口变化：
 
 | 命令 | 环境路径 |
 | --- | --- |
 | `cfg --format json` | `.environment` |
 | `ssa --format json` | `.analysis.environment` |
-| `analyze --format json` | `.entry.environment` |
-| `analyze --format json --ssa` | `.analysis.entry.environment` |
+| `analyze --format json` | `.global.analysis.entry.environment`（原始输入），`.native.analysis.entry.environment`（Native 条件） |
+| `analyze --format json --ssa` | 同上；SSA 在 `.native.ssa` 或 `.native.partial_ssa` |
 
 世界结果中，`.states[].key.frames[].address` 是状态账户，同一 frame 的 `.address_value` 是逻辑 ADDRESS，`.caller` 是有类型的调用者；具体地址表示为 `{"Concrete":"0x..."}`，符号地址表示为 `{"Symbolic":"Caller"}` 等。text/DOT/SSA 将这些身份以可读名字展示。符号作用域的内部编号不进入 JSON，跨报告比较符号名字不能建立相等关系。
 

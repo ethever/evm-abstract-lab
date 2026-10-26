@@ -16,6 +16,20 @@ fn relations(source: RelationLimits) -> api::RootTerminalRelationLimits {
         max_depth: source.max_depth as u64,
     }
 }
+pub(super) fn domain_spec(domain: evm_abstract::domain::DomainSpec) -> api::RootTerminalDomainSpec {
+    api::RootTerminalDomainSpec {
+        schema_version: domain.schema_version(),
+        word_bits: domain.word_bits(),
+        capacity: domain.capacity() as u64,
+        reduction_rounds: domain.reduction_rounds() as u64,
+        fact_limit: domain.fact_limit() as u64,
+        cost_version: domain.cost_version(),
+        widening_after_updates: domain.widening_after_updates() as u64,
+        provenance_policy: domain.provenance_policy().into(),
+        relations: relations(domain.relations()),
+    }
+}
+
 pub(super) fn project<N: WordElement>(
     source: &analysis::EvmRootTerminalCoverage<N>,
     numeric_model: api::NumericModel,
@@ -88,17 +102,7 @@ pub(super) fn project<N: WordElement>(
             root_terminal_coverage: config.root_terminal_coverage,
         },
         numeric_model,
-        domain_spec: api::RootTerminalDomainSpec {
-            schema_version: domain.schema_version(),
-            word_bits: domain.word_bits(),
-            capacity: domain.capacity() as u64,
-            reduction_rounds: domain.reduction_rounds() as u64,
-            fact_limit: domain.fact_limit() as u64,
-            cost_version: domain.cost_version(),
-            widening_after_updates: domain.widening_after_updates() as u64,
-            provenance_policy: domain.provenance_policy().into(),
-            relations: relations(domain.relations()),
-        },
+        domain_spec: domain_spec(domain),
         frame: api::RootTerminalFrame {
             code_address: frame.code_address.to_string(),
             code_hash: frame.code_hash.to_string(),

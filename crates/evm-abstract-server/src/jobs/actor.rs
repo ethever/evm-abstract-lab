@@ -1,14 +1,16 @@
 //! Single-writer task lifecycle and explicit per-worker channels.
 
-use super::{Config, Executor, PoolError, worker_error, worker_spawn_error};
+use super::{
+    Config, Executor, PoolError, PublishedResult, Publisher, worker_error, worker_spawn_error,
+};
 use evm_abstract::analysis::{
     control::Control,
     progress::{Event, Observer, Phase},
 };
 use evm_abstract_protocol::{
-    AnalysisPhase, AnalysisProgress, AnalysisReport, AnalysisTimings, AnalyzeRequest, ApiError,
-    ApiErrorCode, ErrorDetails, JobId, JobSnapshot, JobState, TaskErrorKind, TaskFailure,
-    WorkerErrorKind,
+    AnalysisPhase, AnalysisProgress, AnalysisReport, AnalysisStatus, AnalysisTimings,
+    AnalyzeRequest, ApiError, ApiErrorCode, DecimalU64, ErrorDetails, JobId, JobPublication,
+    JobSnapshot, JobState, PublicationVersion, TaskErrorKind, TaskFailure, WorkerErrorKind,
 };
 use std::{
     collections::{BTreeMap, VecDeque, hash_map::RandomState},
@@ -53,7 +55,13 @@ pub(super) enum Command {
     },
     Result {
         id: JobId,
-        reply: SyncSender<Result<Arc<AnalysisReport>, ApiError>>,
+        reply: SyncSender<Result<PublishedResult, ApiError>>,
+    },
+    Published {
+        worker: usize,
+        id: JobId,
+        report: Arc<AnalysisReport>,
+        installed: SyncSender<()>,
     },
     Finished {
         worker: usize,
@@ -172,6 +180,31 @@ impl<E: Executor> Coordinator<E> {
                 let result = self.result(id);
                 let _ = reply.send(result);
             }
+            Command::Published {
+                worker,
+                id,
+                report,
+                installed,
+            } => {
+                if self
+                    .workers
+                    .get(worker)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|slot| slot.active == Some(id))
+                    && let Some(entry) = self.jobs.get_mut(&id)
+                    && matches!(
+                        entry.snapshot.state,
+                        JobState::Running | JobState::Cancelling
+                    )
+                {
+                    // Release old best-effort progress before Native starts.
+                    // The receipt linearizes result installation, independently
+                    // of whether an HTTP reader is currently connected.
+                    drain_progress(entry);
+                    publish(entry, report);
+                    let _ = installed.send(());
+                }
+            }
             Command::Finished { worker, id, result } => {
                 if let Some(slot) = self.workers.get_mut(worker).and_then(Option::as_mut) {
                     slot.active = None;
@@ -236,6 +269,7 @@ impl<E: Executor> Coordinator<E> {
                 state: JobState::Queued,
                 progress: AnalysisProgress::default(),
                 timings: AnalysisTimings::default(),
+                publication: None,
             },
             queued_at: Instant::now(),
             control: Control::new(Observer::new(sender)),
@@ -293,20 +327,22 @@ impl<E: Executor> Coordinator<E> {
         }
     }
 
-    fn result(&self, id: JobId) -> Result<Arc<AnalysisReport>, ApiError> {
+    fn result(&self, id: JobId) -> Result<PublishedResult, ApiError> {
         let entry = self
             .jobs
             .get(&id)
             .ok_or_else(|| task_error(TaskErrorKind::NotFound, Some(id)))?;
+        if let (Some(report), Some(publication)) = (&entry.report, &entry.snapshot.publication) {
+            return Ok(PublishedResult {
+                id,
+                publication: publication.clone(),
+                report: Arc::clone(report),
+            });
+        }
         match &entry.snapshot.state {
-            JobState::Completed => Ok(Arc::clone(
-                entry.report.as_ref().expect("completed job owns report"),
-            )),
             JobState::Failed(error) => Err(error.clone()),
             JobState::Cancelled => Err(task_error(TaskErrorKind::Cancelled, Some(id))),
-            JobState::Queued | JobState::Running | JobState::Cancelling => {
-                Err(task_error(TaskErrorKind::NotReady, Some(id)))
-            }
+            _ => Err(task_error(TaskErrorKind::NotReady, Some(id))),
         }
     }
 
@@ -350,19 +386,21 @@ impl<E: Executor> Coordinator<E> {
         } else {
             match result {
                 Ok(mut report) => {
-                    report.metadata.timings = entry.snapshot.timings.clone();
+                    report.timings = entry.snapshot.timings.clone();
                     entry.snapshot.progress.phase = AnalysisPhase::Complete;
-                    entry.snapshot.progress.states =
-                        entry.snapshot.progress.states.max(report.cfg.len());
                     entry.snapshot.progress.transfers =
                         entry.snapshot.progress.transfers.max(report.transfers);
-                    entry.snapshot.progress.work = report.metadata.work;
-                    entry.snapshot.progress.accounts = report.accounts.len();
-                    entry.snapshot.progress.slots = report
-                        .accounts
-                        .iter()
-                        .map(|account| account.storage.len())
-                        .sum();
+                    entry.snapshot.progress.work = report.work;
+                    if let Some(graph) = report.selected_graph() {
+                        entry.snapshot.progress.states =
+                            entry.snapshot.progress.states.max(graph.cfg.len());
+                        entry.snapshot.progress.accounts = graph.accounts.len();
+                        entry.snapshot.progress.slots = graph
+                            .accounts
+                            .iter()
+                            .map(|account| account.storage.len())
+                            .sum();
+                    }
                     if let Some(acquisition) = &report.acquisition {
                         entry.snapshot.progress.round = acquisition.rounds;
                         entry.snapshot.progress.requests = acquisition.requests;
@@ -372,7 +410,7 @@ impl<E: Executor> Coordinator<E> {
                             .states
                             .max(acquisition.states_created);
                     }
-                    entry.report = Some(Arc::new(report));
+                    publish(entry, Arc::new(report));
                     entry.snapshot.state = JobState::Completed;
                 }
                 Err(error) => entry.snapshot.state = JobState::Failed(error),
@@ -433,6 +471,67 @@ impl<E: Executor> Coordinator<E> {
             self.finish(id, Err(task_error(TaskErrorKind::Cancelled, Some(id))));
         }
     }
+}
+
+fn publish(entry: &mut Entry, report: Arc<AnalysisReport>) {
+    // There are only two publications: the certified baseline, and final output.
+    // Preserve Global identity only by reusing the exact projected object.
+    // Replacing a model, even at an equal revision, gets a fresh graph version.
+    let version = entry
+        .snapshot
+        .publication
+        .as_ref()
+        .map_or(1, |previous| previous.version.0.0.saturating_add(1));
+    let previous = entry.report.as_ref();
+    let prior = entry.snapshot.publication.as_ref();
+    let next = PublicationVersion(DecimalU64(version));
+    entry.snapshot.publication = Some(JobPublication {
+        version: next,
+        minimum_version: retained_version(
+            &report.minimum,
+            previous.and_then(|r| r.minimum.as_ref()),
+            prior.and_then(|p| p.minimum_version),
+            next,
+        ),
+        global_version: retained_version(
+            &report.global,
+            previous.and_then(|r| r.global.as_ref()),
+            prior.and_then(|p| p.global_version),
+            next,
+        ),
+        native_version: retained_version(
+            &report.native,
+            previous.and_then(|r| r.native.as_ref()),
+            prior.and_then(|p| p.native_version),
+            next,
+        ),
+        model_closed: report.status == AnalysisStatus::Converged
+            && report.minimum.as_ref().is_none_or(|minimum| {
+                minimum.current && minimum.status == AnalysisStatus::Converged
+            })
+            && report
+                .hybrid
+                .as_ref()
+                .is_none_or(|hybrid| hybrid.coverage.baseline_current),
+    });
+    entry.report = Some(report);
+}
+
+// Only immutable object identity preserves a namespace's installed IDs. Equal
+// snapshot labels, revisions or numeric contents are insufficient.
+fn retained_version<T>(
+    next: &Option<Arc<T>>,
+    previous: Option<&Arc<T>>,
+    prior: Option<PublicationVersion>,
+    new: PublicationVersion,
+) -> Option<PublicationVersion> {
+    next.as_ref().map(|next| {
+        if previous.is_some_and(|previous| Arc::ptr_eq(previous, next)) {
+            prior.unwrap_or(new)
+        } else {
+            new
+        }
+    })
 }
 
 fn refresh_timings(entry: &mut Entry) {
@@ -555,7 +654,17 @@ fn start_worker<E: Executor>(
                     .spawn_scoped(scope, move || {
                         while let Ok(work) = receiver.recv() {
                             let timing = crate::analyze::timing::Guard::start(&work.control);
-                            let result = executor.execute(work.request, &work.control);
+                            let publisher = Publisher {
+                                sender: events.clone(),
+                                worker,
+                                id: work.id,
+                                published: std::sync::atomic::AtomicBool::new(false),
+                            };
+                            let result = executor.execute_with_publisher(
+                                work.request,
+                                &work.control,
+                                &publisher,
+                            );
                             drop(timing);
                             let id = work.id;
                             drop(work.control);

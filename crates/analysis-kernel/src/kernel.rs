@@ -5,6 +5,7 @@ use crate::{
     Scoped, Version,
     algebra::PublicationPolicy,
     capability::{Availability, Cell, ScopeCells},
+    cost::{self, tree_work},
     worklist::Worklist,
 };
 use std::{
@@ -200,10 +201,6 @@ pub(crate) fn reserve<M: Meter>(meter: &mut M, cost: usize) -> Result<(), Kernel
     meter.reserve(cost).map_err(KernelError::Stopped)?;
     meter.checkpoint().map_err(KernelError::Stopped)
 }
-fn tree_work(len: usize) -> usize {
-    len.saturating_add(1).ilog2() as usize + 2
-}
-
 impl<J> Kernel<J> {
     /// Create an independent analysis epoch without semantic allocations.
     pub fn new() -> Result<Self, IdentityExhausted> {
@@ -299,7 +296,7 @@ impl<J> Kernel<J> {
             self.check_scope(scope)?;
             return Ok(scope);
         }
-        reserve(meter, 7 + tree_work(self.scope_ids.len()))?;
+        reserve(meter, cost::scope_insert_work(self.scope_ids.len()))?;
         let scope = Scope {
             epoch: self.epoch,
             birth: self.allocation,
@@ -334,7 +331,7 @@ impl<J> Kernel<J> {
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
         self.check_scope(scope)?;
-        reserve(meter, 1)?;
+        reserve(meter, cost::SEAL_SCOPE_WORK)?;
         self.scopes[scope.index].sealed = true;
         self.touch();
         Ok(())
@@ -367,7 +364,7 @@ impl<J> Kernel<J> {
         policy: P,
         meter: &mut M,
     ) -> Result<Channel<Q, P>, KernelError<M::Stop>> {
-        reserve(meter, 4)?;
+        reserve(meter, cost::CHANNEL_WORK)?;
         let directory = self.push_fact(None, true);
         Ok(Channel {
             epoch: self.epoch,
@@ -392,9 +389,10 @@ impl<J> Kernel<J> {
         self.check_usable_scope(scope)?;
         reserve(
             meter,
-            7usize
-                .saturating_add(tree_work(self.scopes[scope.index].jobs.len()))
-                .saturating_add(self.worklist.enqueue_work()),
+            cost::registration_work(
+                self.scopes[scope.index].jobs.len(),
+                self.worklist.enqueue_work(),
+            ),
         )?;
         let id = JobId {
             epoch: self.epoch,
@@ -433,7 +431,7 @@ impl<J> Kernel<J> {
         meter: &mut M,
     ) -> Result<Arc<J>, KernelError<M::Stop>> {
         self.check_job(id)?;
-        reserve(meter, 1)?;
+        reserve(meter, cost::TASK_HANDLE_WORK)?;
         let task = self.jobs[id.index]
             .task
             .as_ref()
@@ -522,9 +520,11 @@ impl<J> Kernel<J> {
             .next()
             .ok_or(KernelError::VersionExhausted)?;
         let work = if self.jobs[id.index].state == JobState::Admitted {
-            1
+            cost::ADMITTED_BEGIN_WORK
         } else {
-            self.worklist.removal_work().saturating_add(1)
+            self.worklist
+                .removal_work()
+                .saturating_add(cost::ADMITTED_BEGIN_WORK)
         };
         reserve(meter, work)?;
         // next() already removed the admitted occurrence. A later publication
@@ -574,9 +574,10 @@ impl<J> Kernel<J> {
         }
         reserve(
             meter,
-            5usize
-                .saturating_add(tree_work(channel.scopes.len()))
-                .saturating_add(tree_work(self.scopes[scope.index].facts.len())),
+            cost::channel_scope_insert_work(
+                channel.scopes.len(),
+                self.scopes[scope.index].facts.len(),
+            ),
         )?;
         meter.checkpoint().map_err(KernelError::Stopped)?;
         let directory = self.push_fact(Some(scope), true);
@@ -603,19 +604,18 @@ impl<J> Kernel<J> {
             .expect("interned scope table");
         reserve(
             meter,
-            tree_work(table.cells.len())
-                .saturating_mul(Q::key_work(&key.key).max(1))
-                .saturating_mul(3),
+            cost::key_lookup_work(table.cells.len(), Q::key_work(&key.key)),
         )?;
         if let Some(cell) = table.cells.get(&key.key) {
             return Ok(cell.id);
         }
         reserve(
             meter,
-            5usize
-                .saturating_add(tree_work(table.cells.len()))
-                .saturating_add(Q::key_work(&key.key))
-                .saturating_add(tree_work(self.scopes[key.scope.index].facts.len())),
+            cost::key_insert_work(
+                table.cells.len(),
+                Q::key_work(&key.key),
+                self.scopes[key.scope.index].facts.len(),
+            ),
         )?;
         meter.checkpoint().map_err(KernelError::Stopped)?;
         let id = self.push_fact(Some(key.scope), false);

@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod caller_tests;
 mod carrier;
+mod coverage;
 use carrier::{FEE, Hook, Policy, RECEIPT, Receipt, Stage, Word};
 
 fn controls<N: WordElement>() -> Vec<EvmByteArraySummary<N>> {

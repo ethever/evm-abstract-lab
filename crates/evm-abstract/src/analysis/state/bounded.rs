@@ -99,10 +99,14 @@ fn restrict_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 
 fn coarse_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     mut summary: EvmPayloadSummary<N>,
+    layout: &EvmPayloadSummary<N>,
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<EvmPayloadSummary<N>, MachineError> {
-    reserve(budget, summary.work_size())?;
+    reserve(
+        budget,
+        summary.work_size().saturating_add(layout.work_size()),
+    )?;
     let scalar = |value: &mut EvmValue<N>, budget: &mut WorkBudget| {
         // Coarse state deliberately retains the interval view, not an opaque
         // singleton answer. The selected algebra prices the new range carrier.
@@ -110,10 +114,11 @@ fn coarse_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         *value = crate::domain::summary::unsigned_range(lower, upper, domain, budget)?;
         Ok::<_, MachineError>(())
     };
-    summary.store = summary
-        .store
-        .forget_loop_numeric_with_payment(domain, budget)?;
-    for frame in &mut summary.frames {
+    summary.store =
+        summary
+            .store
+            .forget_loop_numeric_in_layout_with_payment(&layout.store, domain, budget)?;
+    for (frame, shape) in summary.frames.iter_mut().zip(&layout.frames) {
         for value in frame.values_mut() {
             scalar(value, budget)?;
         }
@@ -122,7 +127,7 @@ fn coarse_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         }
         frame.saved_store = frame
             .saved_store
-            .forget_loop_numeric_with_payment(domain, budget)?;
+            .forget_loop_numeric_in_layout_with_payment(&shape.saved_store, domain, budget)?;
     }
     for continuation in &mut summary.continuations {
         scalar(&mut continuation.output_offset, budget)?;
@@ -154,10 +159,10 @@ impl<N: WordElement> EvmBoundedState<N> {
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<Self, MachineError> {
-        let copied = layout.copy_for_bound_with_payment(budget)?;
-        let projected = restrict_with_payment(copied, layout, domain, budget)?;
-        let layout = erase_guarantees(projected)?;
-        reserve(budget, layout.work_size())?;
+        // Coarse normalization never consults numeric store/byte coordinates.
+        // Retaining their precise values here would pay a projection solely
+        // for an anchor that cannot use it during this immutable mode.
+        let layout = layout.project_for_bound_with_payment(layout, coarse, domain, budget)?;
         Ok(Self { layout, coarse })
     }
 
@@ -195,11 +200,13 @@ impl<N: WordElement> EvmBoundedState<N> {
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<EvmPayloadSummary<N>, MachineError> {
-        let summary = restrict_with_payment(summary, &self.layout, domain, budget)?;
         let summary = if self.coarse {
-            coarse_with_payment(summary, domain, budget)?
+            // Numeric layout projection would build cells/defaults that this
+            // mode immediately forgets. Only structural store coordinates
+            // survive; byte lengths are independent of the erased content.
+            coarse_with_payment(summary, &self.layout, domain, budget)?
         } else {
-            summary
+            restrict_with_payment(summary, &self.layout, domain, budget)?
         };
         let summary = erase_guarantees(summary)?;
         reserve(budget, summary.work_size())?;
@@ -216,8 +223,8 @@ impl<N: WordElement> EvmBoundedState<N> {
         budget: &mut WorkBudget,
         widen: bool,
     ) -> Result<EvmPayloadSummary<N>, MachineError> {
-        let incoming = incoming.copy_for_bound_with_payment(budget)?;
-        let incoming = self.normalize_with_payment(incoming, domain, budget)?;
+        let incoming =
+            incoming.project_for_bound_with_payment(&self.layout, self.coarse, domain, budget)?;
         let joined = old.join_bound_with_payment(&incoming, domain, budget, widen)?;
         self.normalize_with_payment(joined, domain, budget)
     }

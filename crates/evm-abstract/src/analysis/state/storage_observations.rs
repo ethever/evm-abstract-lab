@@ -225,6 +225,10 @@ pub(in crate::analysis) fn form_work<N: WordElement, D: EvmNumericAlgebra<Elemen
 }
 
 impl<N: WordElement> EvmStorageObservations<N> {
+    pub(in crate::analysis) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     #[cfg(test)]
     pub(in crate::analysis) fn form<D: EvmNumericAlgebra<Element = N>>(
         payload: &EvmMachinePayload<N>,

@@ -16,6 +16,7 @@ pub mod layers;
 mod machine;
 pub mod process;
 pub mod progress;
+pub mod publication;
 mod rpc;
 mod single;
 mod state;
@@ -67,18 +68,21 @@ use machine::{
 pub use machine::{
     EvmCallStack, EvmChildFrame, EvmContinuation, EvmExecutionEvidence, EvmFrame, EvmFrameState,
     EvmInstructionValue, EvmMachineFrontier, EvmMachineOutcome, EvmMachinePayload, EvmMachineState,
-    EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord, EvmRangeRequest,
-    EvmRangeWitness, EvmRootFrame, EvmWorldAnalysis,
+    EvmProcedureModel, EvmProcedureModelData, EvmProcedureModelOutput, EvmProcedureModels,
+    EvmProcedureReport, EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord,
+    EvmRangeRequest, EvmRangeWitness, EvmRegionalEvidence, EvmRootFrame, EvmWorldAnalysis,
+    ProcedureEvidenceVersion, ProcedureModelVersion, ProcedureReportOutcome,
 };
 pub use process::{
     CreationContinuation, EvmProcessInvocation, EvmProcessTransfer, ProcessAction, ProcessBoundary,
-    ProcessControlScope, ProcessCreation, ProcessCreationTransfer, ProcessFrameKey, ProcessOwner,
+    ProcessControlBlock, ProcessControlRegion, ProcessControlRelation, ProcessControlScope,
+    ProcessCreation, ProcessCreationTransfer, ProcessFrameKey, ProcessLocation, ProcessOwner,
     ProcessSource, RuntimeExecution, TransferSemantics,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcBaselineRelation,
     RpcFactRestriction, RpcHybridAnalysis, RpcHybridCoverage, RpcPrecisionOutcome, RpcStorageSlot,
-    analyze_rpc, analyze_rpc_hybrid,
+    analyze_rpc, analyze_rpc_hybrid, analyze_rpc_hybrid_with_publisher,
 };
 pub use single::ProjectionError;
 pub use summary::{EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryStats};
@@ -93,7 +97,9 @@ pub use transfer::procedure::{
     EvmRegionalTransfer,
 };
 
-/// Serialized EVM analysis format. Version 15 distinguishes a supplied root
+/// Serialized EVM analysis format. Version 16 reserves the normalized global/native
+/// publication and immutable minimal procedure model used by this migration.
+/// Version 15 distinguishes a supplied root
 /// namespace/input Program from observed physical owners/code accounts.
 /// Version 14 adds explicit process semantics,
 /// coarse action receipts and typed unresolved process obligations.
@@ -103,7 +109,7 @@ pub use transfer::procedure::{
 /// exhaustion, cancellation and kernel failure from the local round limit.
 /// Version 10 introduced optional root terminal coverage with owned original
 /// input binding and finalized tuples. The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 15;
+pub const SCHEMA_VERSION: u16 = 16;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

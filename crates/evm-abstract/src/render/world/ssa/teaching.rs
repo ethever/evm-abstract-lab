@@ -232,6 +232,12 @@ fn write_transition<N: WordElement>(
         MachineEdgeKind::Process(action) => {
             writeln!(output, "    repeat conservative process after {action:?}")
         }
+        MachineEdgeKind::ProcessControl => {
+            writeln!(
+                output,
+                "    carry unchanged Store through pure MAY control to a reached boundary"
+            )
+        }
         MachineEdgeKind::Intraprocedural(_) => unreachable!(),
     }
     .unwrap();

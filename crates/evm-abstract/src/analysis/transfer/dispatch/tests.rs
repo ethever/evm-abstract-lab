@@ -1355,6 +1355,38 @@ enum JumpCover {
     InvalidThenValid,
 }
 
+fn jump_visit_fixture(conditional: bool, cover: JumpCover) -> Fixture {
+    let mut fixture = fixture(
+        if conditional {
+            "575b005b00"
+        } else {
+            "565b005b00"
+        },
+        false,
+    );
+    let target = EvmValue::from_numeric(Opaque {
+        low: U256::ZERO,
+        high: U256::from(3),
+        finite: match cover {
+            JumpCover::Open => None,
+            JumpCover::Valid => Some([U256::ONE, U256::from(3)].into()),
+            JumpCover::InvalidThenValid => Some([U256::ZERO, U256::from(3)].into()),
+        },
+        ..Opaque::top()
+    });
+    fixture.input.active_mut().stack = if conditional {
+        vec![word(1), target]
+    } else {
+        vec![target]
+    };
+    fixture
+}
+
+// The producer's fixed Option<Range<usize>> fee covers presence and two range
+// endpoints. It follows all target visits, only when >1 taken edges completed;
+// it is separate from opaque discovery, membership and payload-copy payments.
+const COMMON_SUCCESSOR_METADATA_WORK: usize = 3;
+
 #[test]
 fn jump_visit_refusal_keeps_exactly_the_completed_edges_and_faults() {
     for conditional in [false, true] {
@@ -1363,30 +1395,8 @@ fn jump_visit_refusal_keeps_exactly_the_completed_edges_and_faults() {
             JumpCover::Valid,
             JumpCover::InvalidThenValid,
         ] {
-            let mut fixture = fixture(
-                if conditional {
-                    "575b005b00"
-                } else {
-                    "565b005b00"
-                },
-                false,
-            );
+            let fixture = jump_visit_fixture(conditional, cover);
             let invalid = matches!(cover, JumpCover::InvalidThenValid);
-            let target = EvmValue::from_numeric(Opaque {
-                low: U256::ZERO,
-                high: U256::from(3),
-                finite: match cover {
-                    JumpCover::Open => None,
-                    JumpCover::Valid => Some([U256::ONE, U256::from(3)].into()),
-                    JumpCover::InvalidThenValid => Some([U256::ZERO, U256::from(3)].into()),
-                },
-                ..Opaque::top()
-            });
-            fixture.input.active_mut().stack = if conditional {
-                vec![word(1), target]
-            } else {
-                vec![target]
-            };
             let label = format!("conditional {conditional}, cover {cover:?}");
             let roots = usize::from(!matches!(cover, JumpCover::Valid));
             let mut full_budget = WorkBudget::new(fixture.config.max_work);
@@ -1398,15 +1408,34 @@ fn jump_visit_refusal_keeps_exactly_the_completed_edges_and_faults() {
                 "{label}"
             );
             assert_eq!(full.outcomes.len(), roots, "{label}");
+            assert_eq!(
+                full.common_successors,
+                (!invalid).then_some(0..2),
+                "{label}"
+            );
+            let metadata_work = if invalid {
+                0
+            } else {
+                COMMON_SUCCESSOR_METADATA_WORK
+            };
 
             // Refuse only the last target visit. Valid and invalid completed
             // candidates have different evidence, all checked at this boundary.
-            let mut budget = WorkBudget::new(full_budget.used() - 1);
+            // Exclude the later fanout fee so it cannot move this boundary.
+            let last_target_limit = full_budget.used() - metadata_work - 1;
+            let mut budget = WorkBudget::new(last_target_limit);
             let result = run(&fixture, &mut budget);
+            eprintln!(
+                "jump last-target refusal {label}: full={}, metadata={metadata_work}, limit={last_target_limit}, paid={}",
+                full_budget.used(),
+                budget.used(),
+            );
             assert!(budget.exhausted(), "{label}");
-            assert_eq!(budget.used(), full_budget.used() - 1, "{label}");
+            assert_eq!(budget.used(), last_target_limit, "{label}");
             assert_stop_frontier(&result, FrontierReason::Work, &label);
             assert_eq!(result.frontiers[0].pc, 0, "{label}");
+            assert_eq!(result.executed_pcs, [0], "{label}");
+            assert!(result.common_successors.is_none(), "{label}");
             assert_eq!(result.successors.len(), usize::from(!invalid), "{label}");
             if !invalid {
                 assert_eq!(
@@ -1445,6 +1474,91 @@ fn jump_visit_refusal_keeps_exactly_the_completed_edges_and_faults() {
                     *fixture.input.active().saved_store.state(),
                     "{label}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn jump_metadata_refusal_keeps_all_completed_edges_without_a_common_group() {
+    for conditional in [false, true] {
+        for cover in [JumpCover::Open, JumpCover::Valid] {
+            let fixture = jump_visit_fixture(conditional, cover);
+            let label = format!("conditional {conditional}, cover {cover:?}");
+            let mut full_budget = WorkBudget::new(fixture.config.max_work);
+            let full = run(&fixture, &mut full_budget);
+            assert!(full.frontiers.is_empty(), "{label}");
+            assert_eq!(full.common_successors, Some(0..2), "{label}");
+            let completed_targets_work = full_budget.used() - COMMON_SUCCESSOR_METADATA_WORK;
+
+            // No remainder and a remainder one short both refuse the entire
+            // metadata payment. The latter is the original full_used - 1 cap.
+            for remainder in [0, COMMON_SUCCESSOR_METADATA_WORK - 1] {
+                let mut budget = WorkBudget::new(completed_targets_work + remainder);
+                let result = run(&fixture, &mut budget);
+                eprintln!(
+                    "jump metadata refusal {label}: full={}, remainder={remainder}, paid={}",
+                    full_budget.used(),
+                    budget.used(),
+                );
+                assert!(budget.exhausted(), "{label}, remainder {remainder}");
+                assert_eq!(budget.used(), completed_targets_work, "{label}");
+                assert_stop_frontier(&result, FrontierReason::Work, &label);
+                assert_eq!(result.frontiers[0].pc, 0, "{label}");
+                assert!(result.common_successors.is_none(), "{label}");
+
+                // Independent legal-target and rollback expectations apply to
+                // both successful dispatch and metadata refusal; no edge count
+                // or expected fault is inferred from the successful transfer.
+                for completed in [&full, &result] {
+                    assert_eq!(completed.executed_pcs, [0], "{label}");
+                    assert_eq!(completed.payload.store, fixture.input.store, "{label}");
+                    assert_eq!(completed.successors.len(), 2, "{label}");
+                    for (successor, target_pc) in completed.successors.iter().zip([1, 3]) {
+                        assert_eq!(
+                            successor.kind,
+                            MachineEdgeKind::Intraprocedural(if conditional {
+                                EdgeKind::BranchTrue
+                            } else {
+                                EdgeKind::Jump
+                            }),
+                            "{label}"
+                        );
+                        assert_eq!(
+                            successor.payload.active().key.basic_block_index,
+                            fixture
+                                .input
+                                .active()
+                                .program
+                                .as_ref()
+                                .unwrap()
+                                .jumpdest_blocks()[&target_pc],
+                            "{label}"
+                        );
+                        assert!(successor.payload.active().stack.is_empty(), "{label}");
+                        assert_eq!(successor.payload.store, fixture.input.store, "{label}");
+                    }
+                    let open = matches!(cover, JumpCover::Open);
+                    assert_eq!(completed.outcomes.len(), usize::from(open), "{label}");
+                    assert_eq!(
+                        completed.diagnostics,
+                        if open {
+                            vec![(0, crate::analysis::DiagnosticKind::UnknownJump)]
+                        } else {
+                            vec![]
+                        },
+                        "{label}"
+                    );
+                    for outcome in &completed.outcomes {
+                        assert_eq!(outcome.kind, OutcomeKind::Failure, "{label}");
+                        assert_eq!(outcome.data, EvmByteArray::empty(), "{label}");
+                        assert_eq!(
+                            outcome.store,
+                            *fixture.input.active().saved_store.state(),
+                            "{label}"
+                        );
+                    }
+                }
             }
         }
     }

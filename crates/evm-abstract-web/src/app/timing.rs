@@ -1,8 +1,9 @@
 //! Client waiting and first-view work use one monotonic clock. Server phase
 //! durations come exclusively from the backend's immutable timing snapshots.
+use evm_abstract_protocol::AnalysisReport;
 
 use egui::Ui;
-use evm_abstract_protocol::{AnalysisReport, AnalysisTimings};
+use evm_abstract_protocol::AnalysisTimings;
 
 /// Seconds on a monotonic clock shared by submission, transport and view setup.
 pub(crate) fn now() -> f64 {
@@ -165,7 +166,7 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, details: &Details) {
     } else {
         ui.label("Report timing");
     }
-    backend_rows(ui, &report.metadata.timings, "report_timing");
+    backend_rows(ui, &report.timings, "report_timing");
     if let Some(timing) = &details.report {
         ui.separator();
         if let Some(wait) = timing.wait.summary(now()) {

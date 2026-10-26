@@ -1,16 +1,54 @@
 use egui::{Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 use evm_abstract_protocol as api;
 use evm_abstract_protocol::{
-    AnalysisReport, AnalysisScope, AnalysisStatus, AnalyzeReply, ApiError, ApiErrorCode,
+    AnalysisGraph, AnalysisScope, AnalysisStatus, AnalyzeReply, ApiError, ApiErrorCode,
     BlockCoverage, CfgBlock, CfgEdge, DisasmBlock, DisasmInstruction, EdgeKind, Fork,
     InstructionProgress, Phi, PhiInput, SCHEMA_VERSION, SsaBlock, SsaInstruction, SsaReport,
 };
+
+mod fixture;
+pub(crate) use fixture::Fixture as AnalysisReport;
 
 use crate::{
     Workspace,
     app::{Selection, View},
     widgets,
 };
+
+pub(crate) fn native_publication() -> api::JobPublication {
+    api::JobPublication {
+        version: api::PublicationVersion(api::DecimalU64(1)),
+        minimum_version: None,
+        global_version: None,
+        native_version: Some(api::PublicationVersion(api::DecimalU64(1))),
+        model_closed: true,
+    }
+}
+
+pub(crate) fn job_result(id: api::JobId, reply: api::AnalyzeReply) -> api::JobResultReply {
+    api::JobResultReply {
+        result: reply.result.map(|report| {
+            let mut publication = native_publication();
+            publication.global_version = report.global.as_ref().map(|_| publication.version);
+            publication.native_version = report.native.as_ref().map(|_| publication.version);
+            publication.model_closed = report.status == api::AnalysisStatus::Converged;
+            api::JobResult {
+                id,
+                publication,
+                report,
+            }
+        }),
+    }
+}
+
+pub(crate) fn fixture_view(report: &api::AnalysisReport) -> crate::report::ReportView<'_> {
+    crate::report::ReportView::new(
+        report,
+        crate::app::model::ReportViewId::fixture(1, report.selected_view),
+        None,
+    )
+    .unwrap()
+}
 
 /// Native-component consumer fixtures from the real default producer. Symbolic
 /// root detail is conditioned on the producer's retained owner namespace.
@@ -23,7 +61,11 @@ pub(crate) fn procedure_report(bytecode: &str) -> AnalysisReport {
         ..api::AnalyzeRequest::default()
     };
     request.limits.root_terminal_coverage = false;
-    let report = native_component(evm_abstract_server::analyze::analyze(request).unwrap());
+    let report = native_component(
+        evm_abstract_server::analyze::analyze(request)
+            .unwrap()
+            .into(),
+    );
     report.validate().unwrap();
     assert!(!report.abstract_summaries.is_empty());
     report
@@ -31,21 +73,17 @@ pub(crate) fn procedure_report(bytecode: &str) -> AnalysisReport {
 
 /// Legacy native inspectors test this component independently of global coverage.
 pub(crate) fn native_component(mut report: AnalysisReport) -> AnalysisReport {
-    let Some(hybrid) = report.hybrid.take() else {
-        return report;
-    };
-    match hybrid.namespace() {
-        api::AnalysisNamespace::Native => report,
-        api::AnalysisNamespace::Baseline => {
-            *hybrid.detail.expect("fixture needs retained native detail")
-        }
-    }
+    report.model.hybrid = None;
+    report.model.minimum = None;
+    report.model.global = None;
+    report.model.selected_view = api::AnalysisNamespace::Native;
+    report
 }
 
 fn instruction(pc: usize, name: &str) -> DisasmInstruction {
     DisasmInstruction {
         pc,
-        opcode: 0x5b,
+        opcode: 0x01,
         name: name.into(),
         immediate: None,
         size: 1,
@@ -108,96 +146,115 @@ pub(crate) fn empty_report() -> AnalysisReport {
     };
     let address = |kind| api::AddressValue::Symbolic(api::InputSymbol { kind, index: None });
     AnalysisReport {
-        symbolic: crate::tests::symbolic_graph(),
-        pending_machines: vec![],
-        schema_version: SCHEMA_VERSION,
-        scope: AnalysisScope::SingleProgram,
-        fork: Fork::Osaka,
-        byte_len: 0,
-        status: AnalysisStatus::Converged,
-        transfers: 0,
-        disassembly: vec![],
-        cfg: vec![],
-        edges: vec![],
-        diagnostics: vec![],
-        frontiers: vec![],
-        ssa: SsaReport {
-            complete: true,
-            value_count: 0,
-            values: vec![],
-            effect_count: 0,
-            blocks: vec![],
-            transitions: vec![],
-            deferred_edges: vec![],
-        },
-        metadata: api::ReportMetadata {
-            export_limits: api::ExportLimits {
-                max_nodes: 65536,
-                max_depth: 256,
-                max_exact_bytes: 16777216,
-            },
-            export_usage: api::ExportUsage {
-                nodes: 5,
-                exact_bytes: 0,
-                work: 5,
-            },
-            timings: api::AnalysisTimings::default(),
-            entry_address: "0x0000000000000000000000000000000000000000".into(),
-            root_binding: api::RootInputBinding::Physical(api::PhysicalRootInput {
-                address: "0x0000000000000000000000000000000000000000".into(),
-            }),
-            declared_root_source: api::ProcessSource::AnyRuntime(api::ProcessForkSource {
-                fork: Fork::Osaka,
-            }),
-            root_program: None,
-            snapshot: None,
-            fingerprint: format!("0x{}", "00".repeat(32)),
+        model: api::AnalysisReport {
+            process_controls: Vec::new(),
+            schema_version: SCHEMA_VERSION,
+            minimum: None,
+            rich_export: api::RichExportOutcome::Complete,
+            selected_view: api::AnalysisNamespace::Native,
+            status: AnalysisStatus::Converged,
             work: 0,
-            postprocessing_max_work: 2_000_000_000,
+            transfers: 0,
             postprocessing_work: 0,
-            limits: api::AnalysisLimits::default(),
-            environment: api::EnvironmentSnapshot {
-                to: api::AddressValue::Concrete(
-                    "0x0000000000000000000000000000000000000000".into(),
-                ),
-                caller: address(api::InputSymbolKind::Caller),
-                origin: address(api::InputSymbolKind::Caller),
-                call_value: top.clone(),
-                calldata: 0,
-                is_static: false,
-                gas_upper_bound: None,
-                gas_price: top.clone(),
-                coinbase: address(api::InputSymbolKind::Coinbase),
-                timestamp: top.clone(),
-                number: top.clone(),
-                prevrandao: top.clone(),
-                gas_limit: top.clone(),
-                chain_id: top.clone(),
-                base_fee: top.clone(),
-                blob_base_fee: top.clone(),
-                block_hashes: vec![],
-                blob_hashes: vec![],
-                blob_count: top.clone(),
-            },
+            timings: api::AnalysisTimings::default(),
+            acquisition: None,
+            programs: vec![],
+            global: None,
+            hybrid: None,
+            native: Some(std::sync::Arc::new(AnalysisGraph {
+                symbolic: crate::tests::symbolic_graph(),
+                pending_machines: vec![],
+                scope: AnalysisScope::SingleProgram,
+                fork: Fork::Osaka,
+                byte_len: 0,
+                status: AnalysisStatus::Converged,
+                transfers: 0,
+                cfg: vec![],
+                edges: vec![],
+                diagnostics: vec![],
+                frontiers: vec![],
+                ssa: SsaReport {
+                    complete: true,
+                    value_count: 0,
+                    values: vec![],
+                    effect_count: 0,
+                    blocks: vec![],
+                    transitions: vec![],
+                    deferred_edges: vec![],
+                },
+                metadata: api::ReportMetadata {
+                    source_snapshot: api::RootTerminalSnapshot::Offline(
+                        api::RootTerminalOfflineSnapshot {
+                            label: "consumer fixture".into(),
+                            namespace: api::DecimalU64(0),
+                        },
+                    ),
+                    revision: api::DecimalU64(0),
+                    export_limits: api::ExportLimits {
+                        max_nodes: 65536,
+                        max_depth: 256,
+                        max_exact_bytes: 16777216,
+                    },
+                    export_usage: api::ExportUsage {
+                        nodes: 5,
+                        exact_bytes: 0,
+                        work: 5,
+                    },
+                    entry_address: "0x0000000000000000000000000000000000000000".into(),
+                    root_binding: api::RootInputBinding::Physical(api::PhysicalRootInput {
+                        address: "0x0000000000000000000000000000000000000000".into(),
+                    }),
+                    declared_root_source: api::ProcessSource::AnyRuntime(api::ProcessForkSource {
+                        fork: Fork::Osaka,
+                    }),
+                    root_program: None,
+                    snapshot: None,
+                    fingerprint: format!("0x{}", "00".repeat(32)),
+                    work: 0,
+                    postprocessing_max_work: 2_000_000_000,
+                    postprocessing_work: 0,
+                    limits: api::AnalysisLimits::default(),
+                    environment: api::EnvironmentSnapshot {
+                        to: api::AddressValue::Concrete(
+                            "0x0000000000000000000000000000000000000000".into(),
+                        ),
+                        caller: address(api::InputSymbolKind::Caller),
+                        origin: address(api::InputSymbolKind::Caller),
+                        call_value: top.clone(),
+                        calldata: 0,
+                        is_static: false,
+                        gas_upper_bound: None,
+                        gas_price: top.clone(),
+                        coinbase: address(api::InputSymbolKind::Coinbase),
+                        timestamp: top.clone(),
+                        number: top.clone(),
+                        prevrandao: top.clone(),
+                        gas_limit: top.clone(),
+                        chain_id: top.clone(),
+                        base_fee: top.clone(),
+                        blob_base_fee: top.clone(),
+                        block_hashes: vec![],
+                        blob_hashes: vec![],
+                        blob_count: top.clone(),
+                    },
+                },
+                accounts: vec![],
+                states: vec![],
+                stores: vec![],
+                outcomes: vec![],
+                root_terminal_coverage: None,
+                abstract_summaries: vec![],
+                byte_arrays: vec![api::ByteArraySnapshot {
+                    symbolic_facts: vec![],
+                    symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },
+                    length: top.clone(),
+                    default: top,
+                    values: vec![],
+                    cells: vec![],
+                    memory: false,
+                }],
+            })),
         },
-        programs: vec![],
-        accounts: vec![],
-        states: vec![],
-        stores: vec![],
-        outcomes: vec![],
-        root_terminal_coverage: None,
-        abstract_summaries: vec![],
-        acquisition: None,
-        hybrid: None,
-        byte_arrays: vec![api::ByteArraySnapshot {
-            symbolic_facts: vec![],
-            symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },
-            length: top.clone(),
-            default: top,
-            values: vec![],
-            cells: vec![],
-            memory: false,
-        }],
     }
 }
 
@@ -205,27 +262,28 @@ pub(crate) fn source_program(
     id: usize,
     code_address: Option<String>,
     blocks: Vec<DisasmBlock>,
-) -> api::ProgramInfo {
+) -> std::sync::Arc<api::ProgramInfo> {
     let byte_len = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .map(|instruction| instruction.pc + instruction.size)
         .max()
         .unwrap_or(0);
-    api::ProgramInfo {
+    std::sync::Arc::new(api::ProgramInfo {
         id,
         code_address,
         code_hash: format!("0x{}", "00".repeat(32)),
         kind: api::CodeKind::Runtime,
+        fork: Fork::Osaka,
         bytecode: format!("0x{}", "00".repeat(byte_len)),
         blocks,
-    }
+    })
 }
 
 pub(crate) fn report() -> AnalysisReport {
     let cfg: Vec<_> = [(0, 0, "CALLDATALOAD"), (1, 5, "PUSH1"), (2, 10, "ADD")]
         .into_iter()
-        .map(|(id, pc, name)| CfgBlock {
+        .map(|(id, pc, _)| CfgBlock {
             process: None,
             id,
             basic_block: Some(id),
@@ -235,7 +293,6 @@ pub(crate) fn report() -> AnalysisReport {
             code_address: Some("0x0000000000000000000000000000000000000000".into()),
             storage_address: Some("0x0000000000000000000000000000000000000000".into()),
             program: Some(0),
-            instructions: vec![instruction(pc, name)],
             entry_stack: vec![],
             exit_stack: vec!["Top".into()],
             executed_pcs: vec![pc],
@@ -269,10 +326,15 @@ pub(crate) fn report() -> AnalysisReport {
                 vec![]
             },
             instructions: vec![SsaInstruction {
-                operation: opcode_operation(0x01, &block.instructions[0].name, &[1, 2], None),
+                operation: opcode_operation(
+                    0x01,
+                    ["CALLDATALOAD", "PUSH1", "ADD"][block.id],
+                    &[1, 2],
+                    None,
+                ),
                 pc: block.start_pc.unwrap(),
                 opcode: 0x01,
-                name: block.instructions[0].name.clone(),
+                name: ["CALLDATALOAD", "PUSH1", "ADD"][block.id].into(),
                 immediate: None,
                 operands: vec![1, 2],
                 results: vec![block.id + 3],
@@ -288,23 +350,26 @@ pub(crate) fn report() -> AnalysisReport {
             open_incoming: vec![],
         })
         .collect();
-    let mut report = AnalysisReport {
+    let mut report = empty_report();
+    let source = cfg
+        .iter()
+        .map(|block| DisasmBlock {
+            id: block.basic_block.unwrap(),
+            start_pc: block.start_pc.unwrap(),
+            instructions: vec![instruction(
+                block.start_pc.unwrap(),
+                ["CALLDATALOAD", "PUSH1", "ADD"][block.id],
+            )],
+        })
+        .collect();
+    *report = AnalysisGraph {
         symbolic: crate::tests::symbolic_graph(),
         pending_machines: vec![],
-        schema_version: SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
         byte_len: 11,
         status: AnalysisStatus::Converged,
         transfers: 3,
-        disassembly: cfg
-            .iter()
-            .map(|block| DisasmBlock {
-                id: block.basic_block.unwrap(),
-                start_pc: block.start_pc.unwrap(),
-                instructions: block.instructions.clone(),
-            })
-            .collect(),
         cfg,
         edges: vec![
             CfgEdge {
@@ -337,14 +402,19 @@ pub(crate) fn report() -> AnalysisReport {
         },
         diagnostics: vec![],
         frontiers: vec![],
-        ..empty_report()
+        ..std::sync::Arc::unwrap_or_clone(empty_report().model.native.unwrap())
     };
-    report.programs.push(source_program(
+    report.model.programs.push(source_program(
         0,
         report.cfg[0].code_address.clone(),
-        report.disassembly.clone(),
+        source,
     ));
     report.metadata.root_program = Some(0);
+    fixture::attach_snapshots(&mut report);
+    for state in &mut report.states {
+        state.exit = None;
+        state.entry.frames[0].stack.clear();
+    }
     report
 }
 
@@ -353,14 +423,15 @@ pub(crate) fn ready() -> Workspace {
     // Existing source/SSA identity and camera regressions exercise native
     // states. The overview integration tests construct the product default.
     workspace.graph.set_mode(widgets::GraphMode::States);
+    report().validate().expect("consumer fixture must validate");
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
-        result: Ok(report()),
+        result: Ok((report()).into()),
     }));
     workspace
 }
 
-fn frame(ctx: &Context, workspace: &mut Workspace, events: Vec<Event>) -> FullOutput {
+pub(crate) fn frame(ctx: &Context, workspace: &mut Workspace, events: Vec<Event>) -> FullOutput {
     let mut input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 1000.0))),
         events,
@@ -375,7 +446,7 @@ fn frame(ctx: &Context, workspace: &mut Workspace, events: Vec<Event>) -> FullOu
     output
 }
 
-fn painted_text(output: &FullOutput) -> Vec<(String, Pos2)> {
+pub(crate) fn painted_text(output: &FullOutput) -> Vec<(String, Pos2)> {
     let mut result = vec![];
     for shape in &output.shapes {
         collect_text(&shape.shape, &mut result);
@@ -422,7 +493,9 @@ fn report_counters_above_wasm_word_size_decode_and_render_exactly() {
     let mut report = empty_report();
     report.transfers = count;
     report.metadata.work = count;
-    let reply = AnalyzeReply { result: Ok(report) };
+    let reply = AnalyzeReply {
+        result: Ok((report).into()),
+    };
     let decoded: AnalyzeReply =
         serde_json::from_slice(&serde_json::to_vec(&reply).unwrap()).unwrap();
     assert_eq!(decoded, reply);
@@ -613,9 +686,9 @@ fn unsupported_schema_is_rejected_and_partial_coverage_is_explicit() {
     let mut workspace = Workspace::default();
     for version in [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1] {
         let mut unsupported = report();
-        unsupported.schema_version = version;
+        unsupported.model.schema_version = version;
         workspace.receive(Ok(AnalyzeReply {
-            result: Ok(unsupported),
+            result: Ok((unsupported).into()),
         }));
         assert!(workspace.accessible_status().contains(&format!(
             "Unsupported response schema {version}; expected {SCHEMA_VERSION}"
@@ -625,7 +698,7 @@ fn unsupported_schema_is_rejected_and_partial_coverage_is_explicit() {
     partial.status = AnalysisStatus::Incomplete;
     partial.ssa.complete = false;
     workspace.receive(Ok(AnalyzeReply {
-        result: Ok(partial),
+        result: Ok((partial).into()),
     }));
     assert!(
         workspace
@@ -652,7 +725,7 @@ fn graph_layout_handles_cycles_disconnected_nodes_and_sparse_native_ids() {
             kind: EdgeKind::Jump,
         },
     ];
-    let positions = widgets::test_layout(&report);
+    let positions = widgets::test_layout(&(report).view());
     assert_eq!(positions.len(), 3);
     assert!(positions.contains_key(&100));
     assert_ne!(positions[&0], positions[&1]);
@@ -681,10 +754,10 @@ fn zoom_caps_enlargement_and_rejects_invalid_factors() {
 #[test]
 fn long_push_and_phi_rows_reserve_scrollable_painter_extents() {
     let mut report = report();
-    let ordinary_width = widgets::test_content_columns(&report);
+    let ordinary_width = widgets::test_content_columns(&(report).view());
     report.ssa.blocks[0].instructions[0].immediate = Some(format!("0x{}", "ff".repeat(32)));
     refresh_operation(&mut report.ssa.blocks[0].instructions[0]);
-    let push_width = widgets::test_content_columns(&report);
+    let push_width = widgets::test_content_columns(&(report).view());
     assert!(push_width > ordinary_width);
     report.ssa.blocks[2].phis[0].inputs = (0..40)
         .map(|index| PhiInput {
@@ -693,7 +766,7 @@ fn long_push_and_phi_rows_reserve_scrollable_painter_extents() {
             value: index + 100,
         })
         .collect();
-    assert!(widgets::test_content_columns(&report) > push_width * 3);
+    assert!(widgets::test_content_columns(&(report).view()) > push_width * 3);
 }
 
 #[test]
@@ -707,7 +780,9 @@ fn horizontal_scroll_reaches_the_last_phi_argument() {
         })
         .collect();
     let mut workspace = Workspace::default();
-    workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
+    workspace.receive(Ok(AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     workspace.view = View::Ssa;
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
@@ -848,7 +923,9 @@ fn stale_and_unexecuted_blocks_never_claim_current_exit_evidence() {
         report.ssa.blocks[0].instructions.clear();
         report.edges.clear();
         let mut workspace = Workspace::default();
-        workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
+        workspace.receive(Ok(AnalyzeReply {
+            result: Ok((report).into()),
+        }));
         workspace.view = View::Ssa;
         let ctx = Context::default();
         crate::notation::initialize_fonts(&ctx);
@@ -889,9 +966,15 @@ fn child_without_bytecode_has_no_invented_program_counter() {
     report.cfg[0].frame_depth = 2;
     report.cfg[0].start_pc = None;
     report.cfg[0].program = None;
-    report.cfg[0].instructions.clear();
+    report.cfg[0].executed_pcs.clear();
+    report.ssa.blocks[0].instructions.clear();
+    report.states[0].entry.frames[0].program = None;
+    report.states[0].entry.frames[0].kind = api::CodeKind::Empty;
+    report.validate().unwrap();
     let mut workspace = Workspace::default();
-    workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
+    workspace.receive(Ok(AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     workspace.view = View::Disassembly;
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);

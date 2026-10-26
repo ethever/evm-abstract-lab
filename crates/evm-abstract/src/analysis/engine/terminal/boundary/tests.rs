@@ -33,6 +33,7 @@ fn retention(cause: Option<RetentionCause>) -> Execution {
         }],
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        common_successors: None,
         retention_failures: cause.into_iter().map(|cause| (0, cause)).collect(),
     }
 }

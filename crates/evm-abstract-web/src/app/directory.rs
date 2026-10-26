@@ -1,10 +1,10 @@
 //! Captured programs and observed accounts share native identities with selection.
 
 use crate::controls::{self, Density};
+use crate::report::ReportView;
 use crate::{framework, notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::AnalysisReport;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Kind {
@@ -30,7 +30,7 @@ impl Directory {
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
-        report: &AnalysisReport,
+        report: &ReportView<'_>,
         selected_program: Option<usize>,
         selected_account: Option<&str>,
     ) -> Option<Pick> {
@@ -65,7 +65,7 @@ impl Directory {
             .auto_shrink([false, false])
             .show(ui, |ui| match self.kind {
                 Kind::Programs => {
-                    for program in &report.programs {
+                    for program in report.programs {
                         if !filter.is_empty()
                             && !program
                                 .code_address

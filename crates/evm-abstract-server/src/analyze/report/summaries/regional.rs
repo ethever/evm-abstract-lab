@@ -1,6 +1,6 @@
 //! Copy compact identities/receipts once; never expand numerical payloads or SSA.
 use super::outcome;
-use crate::analyze::{mapping, pools, process, symbolic::Pool, value};
+use crate::analyze::{mapping, process, symbolic::Pool};
 use evm_abstract::analysis;
 use evm_abstract_protocol as api;
 
@@ -24,13 +24,6 @@ pub(super) fn project(
                 .saturating_add(node.successors.len()),
         )?;
         let frame = &node.frame;
-        let process_key = frame.process.as_deref().map(process::key);
-        let is_native = process_key.is_none();
-        let bytecode = procedures[node.procedure].semantics == api::TransferSemantics::Native
-            && matches!(
-                frame.mode,
-                analysis::FrameCode::Runtime | analysis::FrameCode::InitCode
-            );
         let transfer = node
             .transfer
             .as_ref()
@@ -60,28 +53,10 @@ pub(super) fn project(
         nodes.push(api::RegionalNode {
             id: node.id,
             procedure: node.procedure,
-            frame: api::RegionalFrame {
-                process: process_key.clone(),
-                code_address: is_native.then(|| frame.code_address.to_string()),
-                code_hash: (is_native && frame.mode != analysis::FrameCode::Unknown)
-                    .then(|| frame.code_hash.to_string()),
-                storage_address: is_native.then(|| frame.address.to_string()),
-                address_value: is_native.then(|| value::address(frame.address_value)),
-                caller: is_native.then(|| value::address(frame.caller)),
-                kind: process_key
-                    .as_ref()
-                    .map_or_else(|| pools::mode(frame.mode), |key| key.source.kind()),
-                is_static: process_key
-                    .as_ref()
-                    .map_or(frame.is_static, |key| key.is_static),
-                basic_block: bytecode.then_some(frame.basic_block_index),
-                stack_height: is_native.then_some(frame.stack_height),
-                context: if is_native {
-                    frame.jump_history.clone()
-                } else {
-                    vec![]
-                },
-            },
+            frame: mapping::regional_frame(
+                frame,
+                procedures[node.procedure].semantics == api::TransferSemantics::Native,
+            ),
             input_revision: api::DecimalU64(node.input_revision),
             excluded: node.excluded,
             successors: node.successors.clone(),

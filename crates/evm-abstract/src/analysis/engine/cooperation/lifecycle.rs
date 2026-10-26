@@ -47,26 +47,30 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
         runtime: &Runtime<<X as InputTasks>::Task>,
         budget: &mut WorkBudget,
     ) -> Result<bool, CooperationError<E>> {
-        MachineMeter(budget)
+        self.receipt_valid_metered(receipt, runtime, &mut MachineMeter(budget))
+    }
+
+    pub(super) fn receipt_valid_metered<M: Meter<Stop = crate::analysis::MachineError>>(
+        &self,
+        receipt: Subject,
+        runtime: &Runtime<<X as InputTasks>::Task>,
+        meter: &mut M,
+    ) -> Result<bool, CooperationError<E>> {
+        meter
             .reserve(((usize::BITS as usize) + 1) * 8)
             .map_err(KernelError::Stopped)?;
         let Some(binding) = self.bindings.get(&receipt.point) else {
             return Ok(false);
         };
         if binding.input.subject() != receipt
-            || runtime
-                .view()
-                .scope_stale(receipt.scope, &mut MachineMeter(budget))?
-            || runtime
-                .view()
-                .generation_stale(&binding.entry, &mut MachineMeter(budget))?
+            || runtime.view().scope_stale(receipt.scope, meter)?
+            || runtime.view().generation_stale(&binding.entry, meter)?
         {
             return Ok(false);
         }
-        Ok(super::clients_ready(runtime.view().closure_in_metered(
-            receipt.scope,
-            &mut MachineMeter(budget),
-        )?))
+        Ok(super::clients_ready(
+            runtime.view().closure_in_metered(receipt.scope, meter)?,
+        ))
     }
 
     pub(super) fn consumer_job(
@@ -95,11 +99,18 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
             .reserve(((usize::BITS as usize) + 1) * 8)
             .map_err(KernelError::Stopped)?;
         let job = self.consumer_job(runtime, consumer, budget)?;
+        let owner = super::source::Owner::of(&runtime.view().task(job)?.0)
+            .ok_or(KernelError::InvalidJob)?;
+        self.sources.remove(&owner);
         let old = self.owner_epochs.get(&job).copied().unwrap_or(0);
-        self.owner_epochs.insert(
-            job,
-            old.checked_add(1).ok_or(KernelError::VersionExhausted)?,
-        );
+        let next = old.checked_add(1).ok_or(KernelError::VersionExhausted)?;
+        let slot = self.source_slot(owner, runtime, budget)?;
+        let mut meter = MachineMeter(budget);
+        let mut run = runtime.kernel().resume(consumer, &mut meter)?;
+        run.publish_prepared_with(&slot, analysis_kernel::Change::Changed, 1, || {
+            self.owner_epochs.insert(job, next);
+        })?;
+        *consumer = run.suspend();
         Ok(())
     }
 
@@ -190,6 +201,11 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
         )?;
         runtime.kernel().reclaim_channel_scope(
             &mut shared.refinements,
+            retired,
+            &mut MachineMeter(budget),
+        )?;
+        runtime.kernel().reclaim_channel_scope(
+            &mut shared.process_refinements,
             retired,
             &mut MachineMeter(budget),
         )?;
@@ -316,6 +332,6 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
                 },
             );
         }
-        Ok(())
+        self.record_source(runtime, consumer, budget, receipt)
     }
 }

@@ -548,6 +548,21 @@ pub trait ProcedureSummaryPolicy<D: EvmNumericAlgebra> {
         false
     }
 
+    /// Choose early admission for this known runtime source. The engine checks
+    /// the ordinary CALL entry shape first. Selection only detaches the callee;
+    /// its caller continuation and checkpoint remain independent obligations.
+    /// Existing policies keep their uniform admission choice by default.
+    fn summarize_known_call(&self, _frame: &crate::analysis::FrameKey) -> bool {
+        self.supports_early_known_admission()
+    }
+
+    /// Admit a known root's initial block into the same relative solver.
+    /// This explicit opt-in is independent of CALL admission; ordinary Native
+    /// roots retain their existing execution path by default.
+    fn summarize_known_root(&self, _frame: &crate::analysis::FrameKey) -> bool {
+        false
+    }
+
     /// Cover a relative body/subscriber input under the selected schedule.
     fn admit_relative(
         &self,
@@ -566,6 +581,26 @@ pub trait ProcedureSummaryPolicy<D: EvmNumericAlgebra> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<ProcedureOutput<D::Element>, MachineError>;
+
+    /// Admit an output without materializing a result that will be discarded.
+    /// `None` certifies that this policy's admitted bound is exactly `current`
+    /// under the supplied acceleration; it requires a previous output. It does
+    /// not certify source currency, completion or delivery generations.
+    ///
+    /// The default preserves the policy's actual `admit_output` operation and
+    /// its payment/hooks. Overrides must fund their complete proof, including
+    /// opaque native predicates. Callers still copy a required retained result
+    /// when invalidating delivery without a numerical change.
+    fn admit_output_change(
+        &self,
+        current: Option<&ProcedureOutput<D::Element>>,
+        incoming: &ProcedureOutput<D::Element>,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<Option<ProcedureOutput<D::Element>>, MachineError> {
+        self.admit_output(current, incoming, acceleration, cx)
+            .map(Some)
+    }
 }
 
 /// Preserve finite projection guarantees while joining procedure summaries.
@@ -717,6 +752,30 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<RelativeState<D::Element>, MachineError> {
+        // Process admission has already erased private stack/byte coordinates
+        // and frozen the source/owner vocabulary. These fields cannot acquire
+        // fresh execution history or dynamically enumerated storage keys.
+        // Keep the general regional path for an unprepared Native input.
+        cx.reserve(
+            current
+                .frames
+                .len()
+                .saturating_add(incoming.frames.len())
+                .saturating_mul(8),
+        )?;
+        let process = !current.frames.is_empty()
+            && !incoming.frames.is_empty()
+            && current.frames.iter().chain(&incoming.frames).all(|frame| {
+                frame.key.process.is_some()
+                    && frame.semantics != crate::analysis::TransferSemantics::Native
+                    && frame.stack.is_empty()
+            });
+        if process {
+            if current.eq_with_payment(incoming, cx.domain, cx.budget)? {
+                return current.clone_with_payment(cx.budget);
+            }
+            return current.covering_join(incoming, acceleration, cx);
+        }
         current.regional_join(incoming, acceleration, cx)
     }
     fn admit_output(
@@ -726,9 +785,52 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<ProcedureOutput<D::Element>, MachineError> {
-        current
-            .unwrap_or(incoming)
-            .regional_join(incoming, acceleration, cx)
+        match self.admit_output_change(current, incoming, acceleration, cx)? {
+            Some(summary) => Ok(summary),
+            None => current
+                .ok_or(MachineError::Shape)?
+                .clone_with_payment(cx.budget),
+        }
+    }
+    fn admit_output_change(
+        &self,
+        current: Option<&ProcedureOutput<D::Element>>,
+        incoming: &ProcedureOutput<D::Element>,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<Option<ProcedureOutput<D::Element>>, MachineError> {
+        // Current is already admitted under this frozen Process policy.
+        // Exact paid Native equality includes private predicates and lifecycle
+        // metadata; public projections are insufficient for this reuse. The
+        // outer adapter still owns generation/feedback invalidation.
+        if let Some(current) = current
+            && current.eq_with_payment(incoming, cx.domain, cx.budget)?
+        {
+            return Ok(None);
+        }
+        // A sufficient proof can retain this admitted Process bound without
+        // executing numerical joins. Selected widening still uses its hook.
+        if let Some(current) = current
+            && acceleration == Acceleration::Join
+            && current
+                .data()
+                .covers_with_payment(incoming.data(), cx.domain, cx.budget)?
+            && current
+                .store()
+                .covers_with_payment(incoming.store(), cx.domain, cx.budget)?
+        {
+            return Ok(None);
+        }
+        // The Process operators already bound coordinates by their frozen
+        // owner/source catalogue and initial input. Effects use arbitrary
+        // defaults, and erased return data introduces no private byte keys.
+        // Re-freezing this same output layout would repeat numerical
+        // interpretation without buying a finite representation boundary.
+        if let Some(current) = current {
+            current.covering_join(incoming, acceleration, cx).map(Some)
+        } else {
+            incoming.clone_with_payment(cx.budget).map(Some)
+        }
     }
 }
 
@@ -879,6 +981,14 @@ where
         self.summary.supports_early_known_admission()
     }
 
+    fn summarize_known_call(&self, frame: &crate::analysis::FrameKey) -> bool {
+        self.summary.summarize_known_call(frame)
+    }
+
+    fn summarize_known_root(&self, frame: &crate::analysis::FrameKey) -> bool {
+        self.summary.summarize_known_root(frame)
+    }
+
     fn admit_relative(
         &self,
         current: &RelativeState<D::Element>,
@@ -899,6 +1009,16 @@ where
     ) -> Result<ProcedureOutput<D::Element>, MachineError> {
         self.summary
             .admit_output(current, incoming, acceleration, cx)
+    }
+    fn admit_output_change(
+        &self,
+        current: Option<&ProcedureOutput<D::Element>>,
+        incoming: &ProcedureOutput<D::Element>,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<Option<ProcedureOutput<D::Element>>, MachineError> {
+        self.summary
+            .admit_output_change(current, incoming, acceleration, cx)
     }
 }
 

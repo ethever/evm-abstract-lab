@@ -53,7 +53,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 [路线总览](docs/learning-routes.md)按同一组模块连接理论与实现入口。每课顶部也有所属模块和两条路线的链接；[例子索引](examples/README.md)用于选实验，[第 07 课](docs/07-exercises.md)用于核对理解，[参考资料](docs/references.md)用于继续读规范和论文。
 
-如果你正在读 `recorded prefix stack`、`partial φ` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在内存上限不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
+如果你正在读 `recorded prefix stack`、`partial φ` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在执行 work 不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
 
 未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告；[已知代码自身递归](docs/18-unknown-world.md#已知代码自身递归也进入同一过程表)也使用共同更新的过程关系。
 
@@ -113,7 +113,7 @@ flowchart TD
 
 CLI 默认选择 `--numeric-model product`：`ProductAlgebra` 的实际载体 `NumericValue` 组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`--numeric-model finite-set` 选择独立的 `FiniteSetAlgebra`，实际载体为 `FiniteConstantSet`。两者共用 `ValueAlgebra<D>` 的来源、角色、值身份和表达式处理，执行状态始终保留 `EvmValue<D::Element>`。
 
-应用构造数值策略后，将 `AnalysisInput`、借用的代数、`EnginePolicies` 和组件交给 `AnalysisEngine::run`。单程序 CFG 是原生结果的显式 `EvmAnalysis::from_execution` 投影，保留底层图和状态 ID 映射。该投影、SSA 和所需计算共用独立的有限后处理账本，应用默认 `DEFAULT_POSTPROCESS_WORK=2_000_000_000`；它与执行预算分别计量。CLI 与 Web 的 `--max-constants` 默认 512，接受平台能表示的任意正 `usize`，不会按配置预分配集合；`--reduction-rounds` 默认 16，`--max-facts` 默认 4096。数值与关系限制冻结在代数的 `DomainSpec` 中。
+应用构造数值策略后，将 `AnalysisInput`、借用的代数、`EnginePolicies` 和组件交给 `AnalysisEngine::run`。单程序 CFG 是原生结果的显式 `EvmAnalysis::from_execution` 投影，保留底层图和状态 ID 映射。该投影、SSA 和所需计算共用独立的有限后处理账本，应用默认 `DEFAULT_POSTPROCESS_WORK=2_000_000_000`；它与执行预算分别计量。CLI 与 Web 的 `--max-constants` 默认 512，接受平台能表示的任意正 `usize`，不会按配置预分配集合；`--reduction-rounds` 默认 16，`--max-facts` 默认 4096。数值与关系限制冻结在代数的 `DomainSpec` 中。CLI、HTTP 和 Web 的应用默认策略统一声明在 [`application_defaults`](crates/evm-abstract-protocol/src/application_defaults.rs)；库默认策略保持独立。
 
 机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过局部表达式与数值事实推理排除已证明矛盾的路径，并将已证明的数值上界投影回执行值。未证明矛盾的路径继续保留。两种数值模型 默认都启用这层能力；`--no-relations` 用于关闭它的对照。表达式节点、深度和关系数量有独立上限，真实的取消、配置与精度边界仍保留类型化原因。`cfg`、`ssa`、`analyze`、`explain` 与 Web 的 `max_work` 默认 2000000000，覆盖执行、数值与符号工作，并默认启用保守根终止覆盖；仍可显式设置预算。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
@@ -149,10 +149,10 @@ nix run . -- analyze \
   --evm.caller 0x0000000000000000000000000000000000001000 \
   --evm.value 0 --evm.calldata 0x \
   --format json --ssa > /tmp/proxy.json
-nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
+nix develop -c jq '.status, (.native.ssa | type)' /tmp/proxy.json
 ```
 
-这里应得到 `"Converged"` 和 `"object"`。本例选中的 Native 关系已完成，因此 `--ssa` 输出包含 `analysis` 和 `ssa`；无主图 SSA 时仍使用平铺图字段。组合 status/work 位于外层，所选图的原始计数保存在 `.hybrid.selected_graph`。其他 Native 图与请求的明细 SSA 分别位于 `.hybrid.detail`、`.hybrid.detail_ssa`，并使用 Native 命名空间和相应输入条件。更详细的字段解读见[跨合约报告](docs/09-cross-contract.md#默认文本怎样读)和[输入与帧的 JSON 查询](docs/10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
+这里应得到 `"Converged"` 和 `"object"`。CLI 的组合报告固定保留 `.global.analysis` 和可选 `.native.analysis`，`selected_view` 表示默认展示选择。外层 `status`、`work`、`transfers` 是组合资格与累计计数；每张图保留自己的原始统计。Native 的 `ssa` 或 `partial_ssa` 与该图相邻；请求 SSA 不会改变图的位置。`.hybrid.local_detail` 中的指令阶段和 frontier 索引始终属于 Native 命名空间。更详细的字段解读见[跨合约报告](docs/09-cross-contract.md#默认文本怎样读)和[输入与帧的 JSON 查询](docs/10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 怎样判断结果是否完整
 
@@ -164,7 +164,7 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。原生分析 JSON 的 `schema_version` 是 15，独立 Web 协议是 20，`domain_spec.schema_version` 是 3。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的原始输入位于 `.global.analysis.entry.environment`，Native 条件位于 `.native.analysis.entry.environment`。当前[原生 schema](crates/evm-abstract/src/analysis.rs) 为 16，[Web wire schema](crates/evm-abstract-protocol/src/lib.rs) 为 21，[域 schema 与成本版本](crates/evm-abstract/src/domain/spec.rs)为 3 与 9。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界 Native 图的 `.native.analysis.states[].entry.relations` 保存关系信息。
 
 RPC 混合分析保留原始全局关系，并用同一固定快照和累计账本扩展可选精度。后续补查失败或额度耗尽时，已经独立闭合的基线继续有效，采集失败、Native frontiers 与各自 revision 显式保留；基线本身未获认证时仍是 `Incomplete`。初始入口采集失败属于输入错误，取消返回类型化错误。原生 RPC 库入口继续用 `RpcAcquisition` 表示尚需补查的详细义务。
 
@@ -191,6 +191,8 @@ nix run .#web
 分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。首次打开时，有提供者则使用第一项自动分析 Ethereum 主网 USDC；未配置提供者则运行分支字节码示例，RPC 提交不可用。RPC 表单还可选择 WETH、USDT、Multicall3、Uniswap V2 Router02、V2 Pair（USDC/WETH）、V2 Factory、V4 PoolManager 或自定义入口地址，切换示例不会自动提交。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)，预置地址与来源见[入口示例](docs/web-workbench.md#使用控件)。
 
 CLI 与 Web 保留全部预算和精度控件，共用同一套默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的配置；`ExecutionConfig::default()` 的 work 预算仍为 20000000，根终止覆盖默认开启。
+
+world/RPC 的 `analyze` 与 `explain` 可用 `--max-detail-regions N` 调整保留私有 Native 上下文的已捕获来源数，HTTP 对应 `limits.max_detail_regions`。默认 1，0 只运行 Global；更多来源继续使用原累计执行预算。请求上限与实际选中来源分别记录，RPC 的最新精度资格也与原始 Global 分开，见[全局模型与详细路径](docs/20-global-and-local.md#当前前缀的范围)。
 
 ## 开发环境与实现入口
 
@@ -284,4 +286,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。Native schema 15 与 Web schema 20 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，导出池的累计 work 仅作诊断统计；原生局部投影、SSA 构建与验证使用显式后处理账本预付费。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。原生与 Web 的符号状态使用 flat typed graphs，当前格式版本见[版本与成本说明](docs/19-root-terminal-coverage.md)；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限。应用的有限共享后处理账本先支付最小模型，再尝试可选丰富投影与 SSA；导出池的 work 统计不替代该账本。丰富导出拒绝或取消时仍保留已发布模型，见[渐进结果](docs/progressive-results.md)。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。

@@ -3,12 +3,12 @@
 //! readable; short panes retain their natural width. Manual divider choices and
 //! active tabs persist independently for each width class.
 
+use crate::report::ReportView;
 use egui::{Stroke, Ui};
 use egui_tiles::{
     Behavior, Container, Linear, LinearDir, ResizeState, Shares, Tile, TileId, Tiles, Tree,
     UiResponse,
 };
-use evm_abstract_protocol::AnalysisReport;
 
 use super::Selection;
 use crate::{
@@ -227,7 +227,7 @@ fn bounded_sides(desired: [f32; 2], budget: f32) -> [f32; 2] {
 /// Borrows the same selection and graph across all responsive arrangements.
 /// Hidden tabs keep their independent source scroll and graph navigation state.
 pub(super) struct AnalysisPanes<'a> {
-    pub(super) report: &'a AnalysisReport,
+    pub(super) report: &'a ReportView<'a>,
     pub(super) program: Option<usize>,
     pub(super) selection: &'a mut Selection,
     pub(super) graph: &'a mut widgets::Graph,

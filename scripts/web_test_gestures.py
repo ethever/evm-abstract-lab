@@ -5,7 +5,7 @@ from playwright.sync_api import expect
 import math
 import re
 from web_test_graph_helpers import frozen_camera, graph_mode, pinch_wheel, workspace_panes
-from web_test_harness import complete_submission, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_harness import complete_submission, hide_world_directory, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import assert_anchored_zoom, assert_same_scene, assert_translation, canvas_screenshot, graph_screenshot_metrics, node_snapshot, require_selected_complete, screenshot_metrics
 
@@ -27,7 +27,10 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.on("console", lambda message: failures.append(message.text)
                     if message.type == "error" else None)
-            page.goto(url, wait_until="networkidle")
+            with page.expect_response(lambda response: response.url.endswith("/api/tasks")
+                                      and response.request.method == "POST") as initial:
+                page.goto(url, wait_until="networkidle")
+            complete_submission(page, initial.value, namespace="Native")
             status = page.locator("#analysis-status")
             expect(status).to_contain_text("Ready:", timeout=60000)
             expect(status).to_contain_text("CFG nodes: SSA")
@@ -47,6 +50,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
                 observer.observe(canvas, {box: 'device-pixel-content-box'});
             })""")
             hide_inspector(page, canvas)
+            hide_world_directory(page, canvas)
             page.keyboard.press("2")
             rendered_frame(page)
             graph_mode(page, canvas, "States")
@@ -262,7 +266,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             open_input(page)
             with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
                 page.keyboard.press("Control+Enter")
-            reply = complete_submission(page, response.value)
+            reply = complete_submission(page, response.value, namespace="Native")
+            hide_world_directory(page, canvas)
             assert reply.status == 200
             assert posted_bytecode(reply) == bytecode + "fF", "focused f/F keys did not reach the bytecode request"
             expect(status).to_contain_text("Ready:")

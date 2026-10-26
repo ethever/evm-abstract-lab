@@ -3,9 +3,10 @@
 //! application dispatch, while captured numeric limits come from native results.
 mod environment;
 pub(super) mod hybrid;
+pub(super) mod minimum;
 mod summaries;
 mod terminal;
-use super::{checkpoint, mapping, pools::Pools, rpc, ssa, value};
+use super::{checkpoint, mapping, pools::Pools, ssa, value};
 use evm_abstract::{
     analysis::{self, control::Control, progress::Phase},
     domain::{EvmNumericAlgebra, ValueAlgebra, WordElement},
@@ -13,6 +14,103 @@ use evm_abstract::{
     world::{EvmStore, SnapshotIdentity},
 };
 use evm_abstract_protocol as api;
+use std::sync::Arc;
+
+/// Frozen application inputs shared by both namespace projections.
+#[derive(Clone, Copy)]
+pub(in crate::analyze) struct ProjectionInput<'a> {
+    pub request: &'a api::AnalyzeRequest,
+    pub scope: api::AnalysisScope,
+    pub numeric_model: api::NumericModel,
+}
+
+struct GraphProjection {
+    graph: Arc<api::AnalysisGraph>,
+    programs: Vec<Arc<api::ProgramInfo>>,
+    process_controls: Vec<Arc<api::ProcessControlRelation>>,
+}
+
+/// Reuse is admitted by the publisher's exact ModelHandle identity. These
+/// structural guards additionally reject a seed from another input or policy.
+/// Cloning catalog handles preserves all assigned IDs without copying instructions.
+fn project_global<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    native: &analysis::EvmWorldAnalysis<N>,
+    algebra: &ValueAlgebra<D>,
+    control: &Control,
+    budget: &mut WorkBudget,
+    input: ProjectionInput<'_>,
+    retained: Option<&api::AnalysisReport>,
+) -> Result<GraphProjection, api::ApiError> {
+    checkpoint(control)?;
+    let Some(retained) = retained else {
+        return project_graph(
+            native,
+            algebra,
+            control,
+            budget,
+            input,
+            Vec::new(),
+            Vec::new(),
+        );
+    };
+    let invalid = || api::ApiError {
+        code: api::ApiErrorCode::Internal,
+        message: "retained Global projection has a different input".into(),
+        details: api::ErrorDetails::Report(api::ReportValidationFailure::Hybrid(
+            api::HybridValidationKind::Source,
+        )),
+    };
+    let Some(graph) = retained.global.as_ref() else {
+        let minimum = retained.minimum.as_ref().ok_or_else(invalid)?;
+        if retained.schema_version != api::SCHEMA_VERSION
+            || minimum.source_snapshot != hybrid::snapshot(native.snapshot())?
+            || minimum.revision != api::DecimalU64(native.revision().value())
+            || minimum.root_binding != mapping::root_binding(native.root_binding())
+            || minimum.fork != input.request.fork
+            || minimum.scope != input.scope
+        {
+            return Err(invalid());
+        }
+        if !budget.charge(
+            retained
+                .programs
+                .len()
+                .saturating_add(retained.process_controls.len())
+                .saturating_add(1),
+        ) {
+            return Err(ssa::errors::convert(evm_abstract::ssa::SsaError::Work));
+        }
+        let programs = retained.programs.iter().map(Arc::clone).collect();
+        let controls = retained.process_controls.iter().map(Arc::clone).collect();
+        return project_graph(native, algebra, control, budget, input, programs, controls);
+    };
+    if retained.schema_version != api::SCHEMA_VERSION
+        || graph.metadata.source_snapshot != hybrid::snapshot(native.snapshot())?
+        || graph.metadata.revision != api::DecimalU64(native.revision().value())
+        || graph.metadata.root_binding != mapping::root_binding(native.root_binding())
+        || graph.metadata.limits != input.request.limits
+        || graph.fork != input.request.fork
+        || graph.scope != input.scope
+    {
+        return Err(invalid());
+    }
+    if !budget.charge(
+        retained
+            .programs
+            .len()
+            .saturating_add(retained.process_controls.len())
+            .saturating_add(1),
+    ) {
+        return Err(ssa::errors::convert(evm_abstract::ssa::SsaError::Work));
+    }
+    let programs = retained.programs.iter().map(Arc::clone).collect();
+    checkpoint(control)?;
+    Ok(GraphProjection {
+        graph: Arc::clone(graph),
+        programs,
+        process_controls: retained.process_controls.iter().map(Arc::clone).collect(),
+    })
+}
 
 #[cfg(any(test, feature = "capture-replay"))]
 pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
@@ -35,7 +133,8 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     )
 }
 
-fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+#[cfg(any(test, feature = "capture-replay"))]
+pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     native: &analysis::EvmWorldAnalysis<N>,
     request: &api::AnalyzeRequest,
     scope: api::AnalysisScope,
@@ -44,10 +143,64 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     control: &Control,
     postprocessing: &mut WorkBudget,
 ) -> Result<api::AnalysisReport, api::ApiError> {
+    let GraphProjection {
+        graph,
+        programs,
+        process_controls,
+    } = project_graph(
+        native,
+        algebra,
+        control,
+        postprocessing,
+        ProjectionInput {
+            request,
+            scope,
+            numeric_model,
+        },
+        Vec::new(),
+        Vec::new(),
+    )?;
+    Ok(api::AnalysisReport {
+        schema_version: api::SCHEMA_VERSION,
+        selected_view: api::AnalysisNamespace::Native,
+        minimum: None,
+        rich_export: api::RichExportOutcome::Complete,
+        status: graph.status,
+        work: graph.metadata.work,
+        transfers: graph.transfers,
+        postprocessing_work: postprocessing.used() as u64,
+        timings: api::AnalysisTimings::default(),
+        acquisition: native.rpc_acquisition().map(super::rpc::acquisition),
+        programs,
+        process_controls,
+        global: None,
+        native: Some(graph),
+        hybrid: None,
+    })
+}
+
+/// Thread one immutable source directory through both namespace projections.
+/// Graph-local numerical pools are deliberately independent.
+fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    native: &analysis::EvmWorldAnalysis<N>,
+    algebra: &ValueAlgebra<D>,
+    control: &Control,
+    postprocessing: &mut WorkBudget,
+    input: ProjectionInput<'_>,
+    programs: Vec<std::sync::Arc<api::ProgramInfo>>,
+    process_controls: Vec<Arc<api::ProcessControlRelation>>,
+) -> Result<GraphProjection, api::ApiError> {
+    let ProjectionInput {
+        request,
+        scope,
+        numeric_model,
+    } = input;
+    let initial_work = postprocessing.used();
     checkpoint(control)?;
     // The request's Control.scope covers this ledger and every native output
     // computation. There is no local execution projection on the server path.
-    let mut pools = Pools::<N>::new(control);
+    let mut pools = Pools::<N>::with_programs(control, programs);
+    pools.symbolic.seed_controls(process_controls);
     let root_binding = mapping::root_binding(native.root_binding());
     pools.root_namespace = match native.root_binding() {
         evm_abstract::world::RootInputBinding::Namespace { coordinate } => Some(coordinate),
@@ -114,7 +267,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 .len()
                 .saturating_add(state.executed_pcs.len())
                 .saturating_add(state.exit_stack.len())
-                .saturating_add(block.map_or(0, |block| block.instructions.len()))
                 .saturating_add(1),
         )?;
         cfg.push(api::CfgBlock {
@@ -131,11 +283,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             code_address: is_native.then(|| state.active().code_address.to_string()),
             storage_address: is_native.then(|| state.active().address.to_string()),
             program,
-            instructions: block
-                .into_iter()
-                .flat_map(|block| &block.instructions)
-                .map(mapping::instruction)
-                .collect(),
             entry_stack: if is_native {
                 state
                     .entry
@@ -207,20 +354,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 })
                 .map(|program| program.id)
         });
-    let disassembly = root_program
-        .map(|id| {
-            let source = &pools.programs[id];
-            pools.symbolic.charge(
-                source
-                    .blocks
-                    .iter()
-                    .map(|block| block.instructions.len() + 1)
-                    .sum(),
-            )?;
-            Ok(source.blocks.clone())
-        })
-        .transpose()?
-        .unwrap_or_default();
     let byte_len = root_program.map_or(0, |id| {
         pools.programs[id].bytecode.len().saturating_sub(2) / 2
     });
@@ -252,6 +385,7 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     };
     let environment = environment::project(&native.entry().environment, &mut pools)?;
     checkpoint(control)?;
+    pools.symbolic.attach_control_budget(postprocessing);
     let abstract_summaries =
         summaries::project(native.procedure_summaries(), control, &mut pools.symbolic)?;
     let root_terminal_coverage = native
@@ -259,8 +393,12 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         .map(|source| terminal::project(source, numeric_model, &mut pools))
         .transpose()?;
     checkpoint(control)?;
-    let report = api::AnalysisReport {
-        schema_version: api::SCHEMA_VERSION,
+    let process_controls = pools.symbolic.finish_controls(&pools.programs)?;
+    let postprocessing = pools
+        .symbolic
+        .release_control_budget()
+        .expect("rich projection owns control payer");
+    let report = api::AnalysisGraph {
         scope,
         fork: request.fork,
         byte_len,
@@ -269,7 +407,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
         },
         transfers: native.transfers() as u64,
-        disassembly,
         cfg,
         edges: native
             .edges()
@@ -327,6 +464,8 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             root_binding,
             declared_root_source,
             root_program,
+            source_snapshot: hybrid::snapshot(native.snapshot())?,
+            revision: api::DecimalU64(native.revision().value()),
             snapshot,
             fingerprint: world
                 .fingerprint()
@@ -335,15 +474,13 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             environment,
             limits: request.limits.clone(),
             work: native.work() as u64,
-            postprocessing_max_work: super::DEFAULT_POSTPROCESS_WORK as u64,
-            postprocessing_work: postprocessing.used() as u64,
-            timings: api::AnalysisTimings::default(),
+            postprocessing_max_work: postprocessing.limit() as u64,
+            postprocessing_work: postprocessing.used().saturating_sub(initial_work) as u64,
             export_limits: pools.symbolic.limits,
             export_usage: pools.symbolic.usage,
         },
         symbolic: pools.symbolic.graph,
         pending_machines: pools.pending,
-        programs: pools.programs,
         accounts,
         states,
         byte_arrays: pools.buffers_dto,
@@ -351,9 +488,11 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         outcomes,
         root_terminal_coverage,
         abstract_summaries,
-        acquisition: native.rpc_acquisition().map(rpc::acquisition),
-        hybrid: None,
     };
     checkpoint(control)?;
-    Ok(report)
+    Ok(GraphProjection {
+        graph: Arc::new(report),
+        programs: pools.programs,
+        process_controls,
+    })
 }

@@ -16,6 +16,8 @@ use analysis_control::Cancellation;
 use serde::Serialize;
 use std::fmt;
 
+mod coverage;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Receipt {
     clones: usize,

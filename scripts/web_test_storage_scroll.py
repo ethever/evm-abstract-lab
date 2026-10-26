@@ -1,5 +1,6 @@
 """Storage scroll browser acceptance cases."""
 
+from web_test_hybrid import oracle_graph, source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import json
@@ -25,12 +26,13 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     code = "".join(f"61{0x1000+i:04x}61{i:04x}5561{0x2000+i:04x}61{i:04x}5d"
                    for i in range(count)) + "00"
     reply = submit_bytecode(page, canvas, code, output / "storage-scroll-input.png")
-    report = reply.json()["result"]["Ok"]
+    report = reply.report
     (output / "storage-scroll-full-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
     assert report["hybrid"]["coverage"]["baseline_current"]
-    original_entry=report["states"][0]["entry"]
-    assert report["stores"][original_entry["store"]]["touched_default"] is None
-    report=report["hybrid"]["detail"]
+    baseline=oracle_graph(report, "Baseline")
+    original_entry=baseline["states"][0]["entry"]
+    assert baseline["stores"][original_entry["store"]]["touched_default"] is None
+    report=oracle_graph(report, "Native")
     assert report["status"] == "Converged" and len(report["states"]) == 1
     machine = report["states"][0]["exit"]
     account = next(account for account in report["stores"][machine["store"]]["accounts"]
@@ -39,7 +41,13 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     # This fixture paints the default touch prefix and exactly nine account
     # facts: the captured program is present, with no delegation row.
     assert store["touched_default"] is False and account["touched"] is True
-    assert account["program"] == 0 and account["delegation_target"] is None
+    root = source_program(report, report["metadata"]["root_program"])
+    frame, = machine["frames"]
+    assert account["program"] == frame["program"] == root["id"]
+    assert root["code_address"] == frame["code_address"] == account["address"]
+    assert root["code_hash"] == frame["code_hash"]
+    assert root["kind"] == "Runtime" and root["fork"] == report["fork"]
+    assert root["bytecode"].removeprefix("0x") == code and account["delegation_target"] is None
     assert account["created"] is False and account["pending_destruction"] is False
     graph=report["symbolic"]["nodes"]
     ordered_roots={}

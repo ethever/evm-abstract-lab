@@ -234,6 +234,8 @@ record! {
         /// Physical code account or native creation namespace; None for supplied
         /// root runtime and process initcode without a physical code account.
         pub code_address: Option<String>,
+        /// Execution rules used to decode this immutable source.
+        pub fork: crate::Fork,
         /// Hash of the captured bytes.
         pub code_hash: String,
         /// Runtime or creation-time program.
@@ -567,6 +569,10 @@ record! {
         pub declared_root_source: crate::ProcessSource,
         /// Resolved root executable program, including root delegation.
         pub root_program: Option<usize>,
+        /// Exact immutable input snapshot, including offline equality namespace.
+        pub source_snapshot: crate::RootTerminalSnapshot,
+        /// Fact revision consumed by this graph, independent of publication version.
+        pub revision: crate::DecimalU64,
         /// Pinned chain identity and observed header, absent for bytecode input.
         pub snapshot: Option<ChainSnapshot>,
         /// Native immutable world fingerprint.
@@ -581,8 +587,6 @@ record! {
         pub postprocessing_max_work: u64,
         /// Charged postprocessing work; does not certify execution closure or source identity.
         pub postprocessing_work: u64,
-        /// Frozen processing and queue durations; excluded from world identity.
-        pub timings: crate::AnalysisTimings,
         /// Frozen projection policy, independent of execution limits.
         pub export_limits: crate::ExportLimits,
         /// Projection counters; work is informational, separate from the postprocessing ledger.

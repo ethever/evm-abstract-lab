@@ -3,7 +3,7 @@ use super::{
     BoundsToMask, BuiltinWork, ComposedWork, DomainSpec, MaskToBounds, NumericReduction,
     NumericValue, ProductContext, ProductWork, Reduction, RuleError, Scope,
 };
-use crate::domain::{EvmNumericAlgebra, EvmValue, SummaryConstruction, ValueAlgebra, WordElement};
+use crate::domain::{EvmNumericAlgebra, SummaryConstruction, WordElement};
 
 /// Native Word256 product with replaceable mask/range reductions.
 ///
@@ -287,44 +287,25 @@ where
             && word.interval().singleton().is_none()
             && word.congruence().singleton().is_none()
     }
-    fn uniform_word_write_work(
+    fn uniform_word_numeric_work(
         &self,
-        value: &EvmValue<NumericValue>,
-        length: &EvmValue<NumericValue>,
-        default: &EvmValue<NumericValue>,
-        allocations: usize,
+        _offset: &NumericValue,
+        word: &NumericValue,
+        length: &NumericValue,
     ) -> usize {
-        use crate::domain::{provenance::MAX_ORIGINS, symbolic::ExprId};
-
         if !self.builtin {
             return usize::MAX;
         }
-
-        // Finite sets and expressions share handles; origins are bounded deep
-        // copies. Literal scalar work is 13 numeric units plus one origin.
-        const VALUE_COPY: usize = 12 + MAX_ORIGINS + 4;
-        const LITERAL_WORK: usize = 14;
-        let nodes = value.expression().map_or(0, ExprId::nodes);
-        // MSIZE may be nonliteral even with a Zero content root. A length
-        // guard would change eligibility when touch collapses {0,16} to 32.
-        // Quote its original expansion instead, using cached shape only.
+        // These exact carriers copy inline words and a shared finite handle.
+        // The admitted zero offset's normalization join is fixed-width too;
+        // the numeric copy/literal envelope below covers that inline result.
+        // No common value metadata or memory/graph representation is priced here.
+        const NUMERIC_COPY: usize = 12;
         let exact_length = length.known_bits().singleton().is_some_and(|n| {
             length.interval().singleton() == Some(n)
                 && length.congruence().singleton() == Some(n)
                 && length.finite_constants().singleton() == Some(n)
         });
-        // A synthesized numeric-only source adds five nodes: observed root,
-        // fresh source token, fresh binding value, constant key and SlotRead.
-        let length_nodes = length.expression().map_or_else(
-            || {
-                if exact_length {
-                    1
-                } else {
-                    length.numeric().work_size().saturating_add(5)
-                }
-            },
-            ExprId::nodes,
-        );
         let candidates = if exact_length {
             0
         } else {
@@ -333,65 +314,23 @@ where
                 .map_or(0, std::collections::BTreeSet::len)
         };
         let joined = candidates.min(self.spec.capacity()).saturating_add(1);
-        let join_height = (usize::BITS - joined.leading_zeros()) as usize + 1;
-        // At most k joins of a <=capacity set and one constant. Pay bounded
-        // set insertion/comparison shape, copies and the 256-bit congruence
-        // gcd/difference steps (4096, as in the numeric fixed-width base).
-        let length_joins = candidates.saturating_mul(
+        let height = (usize::BITS - joined.leading_zeros()) as usize + 1;
+        // At most k joins of a <=capacity finite set and one scalar: bounded
+        // insertion/comparison, copies and fixed-width congruence gcd/difference.
+        let joins = candidates.saturating_mul(
             4096usize
-                .saturating_add(joined.saturating_mul(join_height).saturating_mul(256))
-                .saturating_add(VALUE_COPY.saturating_mul(6)),
+                .saturating_add(joined.saturating_mul(height).saturating_mul(256))
+                .saturating_add(NUMERIC_COPY.saturating_mul(6)),
         );
-        // Reserve the allocation touch_memory may install after this quote.
-        let allocations = allocations.saturating_add(1);
-        let height = (usize::BITS - allocations.leading_zeros()) as usize + 1;
-        // Each B-tree node has at most eleven keys. Only the new literal pair
-        // is compared, so even a fingerprint collision with an arbitrary old
-        // key compares a kind tag or fixed-width constants, never its children.
-        let allocation_probes = allocations.min(height.saturating_mul(12));
-        let staged = VALUE_COPY
-            .saturating_mul(8)
-            .saturating_add(allocations.saturating_mul(VALUE_COPY.saturating_mul(2) + 3))
-            .saturating_add(allocation_probes.saturating_mul(16).saturating_mul(2));
-        // Expanded uses only constant candidates/joins and checked scalar
-        // terms here, without numeric transfer. Four old-expression copies bound
-        // its maximum/guard terms.
-        let expand_root = nodes
-            .saturating_add(length_nodes.saturating_mul(4))
-            .saturating_add(28)
-            .saturating_mul(256)
-            .saturating_add(length_joins)
-            .saturating_add(length.work_size())
-            .saturating_add(default.work_size());
-        // This default-only proof uses one nonfinite tuple: the numeric base
-        // plus cached operand sizes bounds the default BYTE transfer. Reader
-        // disables relations; authoritative expressions are paid below.
-        let numeric = ValueAlgebra::new(self)
-            .without_relations()
-            .operation_work(revm_bytecode::opcode::BYTE, &[])
-            .saturating_add(LITERAL_WORK)
-            .saturating_add(value.work_size());
-        // Per cell: complete numeric clone, one source-fact map clone, literal
-        // remember/metadata copies, Context and checked ByteRead/attach. Roots
-        // have nodes+3; ByteRead adds two. Index collection and B-tree insertion
-        // visit at most 32 coordinates. No word-read packing is charged here.
-        let cells = VALUE_COPY
-            .saturating_mul(6)
-            .saturating_add(nodes.saturating_add(5).saturating_mul(256))
-            .saturating_add(32)
-            .saturating_mul(32);
-        staged
-            .saturating_add(expand_root)
-            .saturating_add(numeric)
-            .saturating_add(cells)
-    }
-    fn memory_write_passes(
-        &self,
-        offset: &EvmValue<NumericValue>,
-        value: &EvmValue<NumericValue>,
-        width: usize,
-    ) -> usize {
-        self.spec.numeric_memory_write_passes(offset, value, width)
+        // The certified nonfinite word needs one BYTE evaluation. Quote its
+        // actual payload; a literal index adds only a fixed inline numeric
+        // operand, whose construction/release is reserved separately. Numeric
+        // copies cover all retained cell results and the staging/query lifetimes.
+        self.operation_work(revm_bytecode::opcode::BYTE, std::iter::once(word))
+            .saturating_add(self.literal_quote_work(crate::U256::ZERO))
+            .saturating_add(word.work_size())
+            .saturating_add(NUMERIC_COPY.saturating_mul(6).saturating_mul(32))
+            .saturating_add(joins)
     }
     fn byte_image_candidate(&self, value: &NumericValue) -> bool {
         value.finite_constants().is_top() && value.congruence().is_top()

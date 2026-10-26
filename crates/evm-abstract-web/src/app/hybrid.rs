@@ -1,11 +1,24 @@
 //! Explain global coverage separately from the progress of detailed paths.
-use evm_abstract_protocol::{AnalysisReport, HybridInterpretation, HybridNativeBinding};
+use evm_abstract_protocol::{
+    AnalysisReport, HybridDetailState, HybridInterpretation, HybridNativeBinding,
+};
 
 pub(super) fn summary(report: &AnalysisReport) -> Option<String> {
     let hybrid = report.hybrid.as_ref()?;
     let coverage = &hybrid.coverage;
     let precision = hybrid.native_coverage();
-    Some(if !coverage.baseline_current {
+    let status = if coverage.detail == HybridDetailState::Disabled
+        || coverage.requested_detail_regions == 0
+    {
+        format!(
+            "Global coverage {} · detailed paths disabled",
+            if coverage.baseline_current {
+                "closed"
+            } else {
+                "incomplete"
+            }
+        )
+    } else if !coverage.baseline_current {
         "Global coverage incomplete · detail awaits coverage".into()
     } else if coverage.chosen == HybridInterpretation::Native {
         "Global coverage closed · detailed paths current".into()
@@ -32,5 +45,15 @@ pub(super) fn summary(report: &AnalysisReport) -> Option<String> {
                 ""
             }
         )
-    })
+    };
+    Some(format!("{status} · {}", source_policy(report)?))
+}
+
+pub(super) fn source_policy(report: &AnalysisReport) -> Option<String> {
+    let hybrid = report.hybrid.as_ref()?;
+    Some(format!(
+        "Detailed code sources: {} selected · limit {}",
+        hybrid.native_coverage().detail_regions.len(),
+        hybrid.coverage.requested_detail_regions
+    ))
 }

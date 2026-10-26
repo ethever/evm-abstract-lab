@@ -12,6 +12,7 @@ fn report(output: Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let report = crate::native::select(&report);
     super::native::without_application_metadata(&report);
     assert_eq!(report["numeric_model"], "product");
     report
@@ -163,7 +164,9 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
     );
     let world: Value = serde_json::from_slice(&output.stdout).unwrap();
     super::native::assert_exit(&world, &output);
-    policy(&world, true, &expected);
+    assert!(world["native"].is_null());
+    assert_eq!(world["hybrid"]["coverage"]["requested_detail_regions"], 1);
+    policy(crate::native::global(&world), true, &expected);
 }
 
 #[test]
@@ -254,6 +257,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
     ]);
     assert_eq!(refused.status.code(), Some(2));
     let refused: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    let refused = crate::native::select(&refused);
     assert_eq!(refused["domain_spec"]["relations"]["max_nodes"], 2);
     assert_eq!(refused["status"], "Incomplete");
     assert_eq!(refused["states"], serde_json::json!([]));
@@ -283,6 +287,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
     ]);
     assert_eq!(partial.status.code(), Some(2));
     let partial: Value = serde_json::from_slice(&partial.stdout).unwrap();
+    let partial = crate::native::select(&partial);
     assert!(partial.get("ssa").is_none());
     assert_eq!(partial["analysis"]["config"], refused["config"]);
     assert_eq!(partial["analysis"]["states"], refused["states"]);

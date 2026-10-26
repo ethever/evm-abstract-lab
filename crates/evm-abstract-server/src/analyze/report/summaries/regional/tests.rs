@@ -13,6 +13,7 @@ fn regional_projection_is_paid_and_checks_cancellation_even_for_empty_evidence()
     assert_eq!(edges(&[edge, edge], &mut export).unwrap().len(), 2);
     assert_eq!(export.usage.work - before, 4);
     let receipt = analysis::EvmProcessTransfer {
+        control: None,
         creations: vec![],
         repeat: true,
         actions: vec![analysis::ProcessAction::StaticCall],

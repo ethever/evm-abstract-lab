@@ -1,5 +1,6 @@
 """Rpc url browser acceptance cases."""
 
+from web_test_hybrid import oracle_graph
 from playwright.sync_api import expect
 import json
 from web_test_harness import analysis_server, complete_submission, observe_webgpu, webgpu_evidence
@@ -21,12 +22,12 @@ def url_configured_world_interactions(browser, args):
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=60000)
             admitted = submit_rpc(page, page.locator("#evm-canvas"), rpc, args.output,
                                   "url-default", provider_index=0, providers=providers)
-            reply = complete_submission(page, admitted)
+            reply = complete_submission(page, admitted, namespace="Native")
             envelope = reply.json()
             assert reply.status == 200 and "Ok" in envelope["result"], envelope
-            full_report = envelope["result"]["Ok"]
+            full_report = reply.report
             assert full_report["hybrid"]["coverage"]["baseline_current"]
-            report = full_report["hybrid"]["detail"]
+            report = oracle_graph(full_report, "Native")
             assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
             assert report["metadata"]["snapshot"]["block_hash"] == rpc.block_hash
             assert full_report["acquisition"]["requests"] > 0 and rpc.requests

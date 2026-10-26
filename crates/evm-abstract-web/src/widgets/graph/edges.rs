@@ -21,6 +21,7 @@ pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
         "{notation_0} {}",
         match kind {
             EdgeKind::Process(_) => unreachable!("process label handled above"),
+            EdgeKind::ProcessControl => "MAY control",
             EdgeKind::BranchTrue => "true",
             EdgeKind::BranchFalse => "false",
             EdgeKind::Jump => "jump",
@@ -76,7 +77,7 @@ pub(super) fn paint_edge_text(
         | EdgeKind::Revert
         | EdgeKind::SummaryFailure
         | EdgeKind::SummaryRevert => palette::ERROR,
-        EdgeKind::Fallthrough => palette::BLUE,
+        EdgeKind::Fallthrough | EdgeKind::ProcessControl => palette::BLUE,
     };
     let stroke = Stroke::new(
         if selected { 1.6 } else { 1.0 },

@@ -5,7 +5,7 @@
 - [`evm_abstract_web::framework`](../crates/evm-abstract-web/src/framework.rs) 接入 egui 的 `TextBuffer`、egui_tiles 的 `Behavior`、eframe 应用回调和 wasm-bindgen JavaScript 回调。
 - [`evm_abstract::world::rpc::framework`](../crates/evm-abstract/src/world/rpc/framework.rs) 接入 Alloy 的 RPC client 和 transport。Alloy 的 `RpcCall` 默认响应映射使用函数指针，transport 接口返回装箱的异步对象；适配模块承接这些 SDK 类型，并保留项目的有界传输和具体错误。
 
-例外只用于框架接入。自绘控件、前端状态、共享协议、HTTP 服务、抽象分析、SSA，以及 RPC 的快照和按需采集逻辑继续遵循禁用规则。Alloy 接口依据见 [`RpcCall`](https://docs.rs/alloy-rpc-client/2.5.0/alloy_rpc_client/struct.RpcCall.html) 和 [`Transport`](https://docs.rs/alloy-transport/2.5.0/alloy_transport/trait.Transport.html)。
+上述模块例外只用于框架接入。自绘控件、前端状态、共享协议、HTTP 服务、抽象分析、SSA，以及 RPC 的快照和按需采集逻辑继续遵循禁用规则。Alloy 接口依据见 [`RpcCall`](https://docs.rs/alloy-rpc-client/2.5.0/alloy_rpc_client/struct.RpcCall.html) 和 [`Transport`](https://docs.rs/alloy-transport/2.5.0/alloy_transport/trait.Transport.html)。
 
 ## 运行
 
@@ -43,9 +43,11 @@ lint 的默认级别为 `forbid`，`#[allow(no_dyn)]` 不能降低级别。框�
 
 编译器支持代码另外排除 builtin `Debug` 派生中的格式化支持、builtin `#[test]` / `#[bench]` 回调和测试 / proc-macro 入口框架。通过编译器的 builtin 标记识别来源，用户自定义同名宏不能绕过；原始字段类型、测试函数和嵌入的用户表达式继续检查。rustc 对静态闭包和异步闭包使用的内部函数指针表示不会被误认为用户创建的函数指针。
 
+Serde `Deserialize` 派生另有一个表达式级例外：仅允许生成的具体引用隐式转换为 `&serde_core::de::Expected`，且必须直接作为 `serde_core::de::Error::{invalid_type, invalid_value, invalid_length}` 的第二个参数。lint 核对 `macro_def_id` 指向依赖 `serde_derive` 根级 `Deserialize` 定义、目标 trait 及被调用方法的真实定义父链；不按展开显示名或导入别名放行。原始表达式类型、字段、类型别名、函数签名、回调以及手写的同类错误调用继续检查。正反 UI 覆盖重命名导入、真实派生中的动态字段、手写调用、自定义解码函数和同名本地 / 外部宏。Serde 或编译器更新若改变该结构，检查会重新拒绝，需复核新生成代码。
+
 错误通过具体枚举和字段保留。`DecodeError`、`RpcError` 和 CLI 错误不再生成动态 `Error::source()` 转换；标准 `source()` 使用默认 `None`。调用者可匹配具体变体读取底层错误，RPC 的公共 `source` 字段和显示文本保留。
 
-JSON 输入改用[具体 visitor](../crates/evm-abstract-cli/src/world/input.rs)，保留重复 / 未知 / 缺失字段检查、nullable 字段、默认 storage 和 identity tag 顺序；避免 Serde 派生错误路径中的 `&dyn Expected` 转换。
+[CLI 快照输入](../crates/evm-abstract-cli/src/world/input.rs) 使用 `deny_unknown_fields` 标准派生，保留重复 / 未知 / 缺失字段检查、nullable 字段、默认 storage、序列输入和 identity tag 顺序；storage 使用小型 visitor 拒绝重复槽位。[协议 codec](../crates/evm-abstract-protocol/src/codec.rs) 的载荷枚举使用标准派生，record 和纯字符串 choice 保留集中 visitor，以维持对象专用、nullable 但必填和仅接受字符串的格式约定。该冷端例外不改变语义分析的静态派发或具体错误 API，也不表示动态派发具有普遍的性能优势。
 
 ## 范围
 

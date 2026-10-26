@@ -42,8 +42,10 @@ fn decimal_entry_value_matches_hex_and_reaches_execution() {
         );
         let hexadecimal_json: serde_json::Value =
             serde_json::from_slice(&hexadecimal_output.stdout).unwrap();
+        let hexadecimal_json = crate::native::select(&hexadecimal_json);
         let decimal_json: serde_json::Value =
             serde_json::from_slice(&decimal_output.stdout).unwrap();
+        let decimal_json = crate::native::select(&decimal_json);
         assert_eq!(
             decimal_json["entry"]["environment"]["value"]["numeric"]["constants"],
             serde_json::json!([hexadecimal])
@@ -228,6 +230,7 @@ impl RpcServer {
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
                 let request: Json = serde_json::from_slice(&body).unwrap();
+                let request = crate::native::select(&request);
                 let result = rpc_result(&request, &chain_id);
                 let response = serde_json::to_vec(
                     &json!({"jsonrpc":"2.0","id":request["id"],"result":result}),

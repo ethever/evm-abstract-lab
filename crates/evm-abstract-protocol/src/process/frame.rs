@@ -136,6 +136,18 @@ record! {
         pub source: ProcessSource,
         /// Propagated read-only restriction.
         pub is_static: bool,
+        /// MAY source coordinate, never a Native executed block or PC.
+        pub location: super::ProcessLocation,
+    }
+}
+
+impl ProcessFrameKey {
+    /// One procedure context may contain multiple admitted Body locations.
+    pub fn same_context(&self, other: &Self) -> bool {
+        self.epoch == other.epoch
+            && self.owner == other.owner
+            && self.source == other.source
+            && self.is_static == other.is_static
     }
 }
 record! {
@@ -238,5 +250,7 @@ choice! {
         Creation,
         /// Action scope is inconsistent with its primitive action.
         Scope,
+        /// A MAY directory, location or actual macro receipt is inconsistent.
+        Control,
     }
 }

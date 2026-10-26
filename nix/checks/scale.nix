@@ -34,6 +34,19 @@ let
     "scripts/benchmark_known_recursion/identity.py"
     "scripts/benchmark_known_recursion/process.py"
     "scripts/benchmark_known_recursion/report.py"
+    "scripts/web_test_hybrid.py"
+  ];
+  benchmarkSources = inputs.files [
+    "crates/evm-abstract/src/analysis.rs"
+    "crates/evm-abstract-protocol/src/lib.rs"
+    "scripts/benchmark-known-recursion.py"
+    "scripts/benchmark_known_recursion/identity.py"
+    "scripts/benchmark_known_recursion/process.py"
+    "scripts/benchmark_known_recursion/probe.py"
+    "scripts/benchmark_known_recursion/report.py"
+    "scripts/benchmark_known_recursion/workbench.py"
+    "scripts/test_benchmark_known_recursion.py"
+    "scripts/web_test_hybrid.py"
   ];
 in
 {
@@ -43,6 +56,16 @@ in
         export PYTHONDONTWRITEBYTECODE=1
         python -B ${sources}/scripts/test_benchmark_no_smt_scale.py
         python -B ${sources}/scripts/test_generate_no_smt_scale_commands.py
+        touch "$out"
+      '';
+  # The HTTP fake and strict consumers read only Python and version witnesses;
+  # neither current-format admission nor capture tests compile engine binaries.
+  benchmark-consumer-contracts =
+    pkgs.runCommand "evm-abstract-benchmark-consumer-contracts"
+      { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        export PYTHONDONTWRITEBYTECODE=1
+        python -B ${benchmarkSources}/scripts/test_benchmark_known_recursion.py
         touch "$out"
       '';
 }

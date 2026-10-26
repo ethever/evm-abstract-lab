@@ -1,24 +1,24 @@
+use crate::tests::AnalysisReport;
 use egui::{Context, FullOutput, Pos2, RawInput, Rect, Vec2};
 use evm_abstract_protocol::{
-    AnalysisReport, AnalysisScope, AnalysisStatus, BlockCoverage, CfgEdge, EdgeKind, EffectInput,
-    Fork, InstructionProgress, Phi, PhiInput, SCHEMA_VERSION, SsaBlock, SsaInstruction, SsaReport,
-    SsaTransition,
+    AnalysisScope, AnalysisStatus, BlockCoverage, CfgEdge, EdgeKind, EffectInput, Fork,
+    InstructionProgress, Phi, PhiInput, SsaBlock, SsaInstruction, SsaReport, SsaTransition,
 };
 
 use super::{Row, rows, scoped_rows, ssa};
 use crate::{app::Selection, ssa_display::SsaDisplay};
 
 fn report() -> AnalysisReport {
-    let mut report = AnalysisReport {
+    let mut report = crate::tests::empty_report();
+    report.model.programs = crate::tests::report().model.programs;
+    *report = evm_abstract_protocol::AnalysisGraph {
         symbolic: crate::tests::symbolic_graph(),
         pending_machines: vec![],
-        schema_version: SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
         byte_len: 1,
         status: AnalysisStatus::Converged,
         transfers: 1,
-        disassembly: Vec::new(),
         cfg: vec![{
             let mut state = crate::tests::report().cfg[0].clone();
             state.id = 27;
@@ -85,24 +85,20 @@ fn report() -> AnalysisReport {
         },
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
-        ..crate::tests::empty_report()
+        ..std::sync::Arc::unwrap_or_clone(crate::tests::empty_report().model.native.unwrap())
     };
     report.cfg[0].start_pc = Some(400);
-    report.cfg[0].instructions[0].pc = 400;
-    report.cfg[0].instructions[0].name = "ADD".into();
-    report.cfg[0].instructions[0].opcode = 1;
-    report.cfg[0].instructions[0].stack_inputs = 2;
-    report.cfg[0].instructions[0].stack_outputs = 1;
-    report.disassembly = vec![evm_abstract_protocol::DisasmBlock {
-        id: 0,
-        start_pc: 400,
-        instructions: report.cfg[0].instructions.clone(),
-    }];
-    report.programs.push(crate::tests::source_program(
-        0,
-        report.cfg[0].code_address.clone(),
-        report.disassembly.clone(),
-    ));
+    report.source_mut(0).instructions[0].pc = 400;
+    report.source_mut(0).instructions[0].name = "ADD".into();
+    report.source_mut(0).instructions[0].opcode = 1;
+    report.source_mut(0).instructions[0].stack_inputs = 2;
+    report.source_mut(0).instructions[0].stack_outputs = 1;
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks =
+        vec![evm_abstract_protocol::DisasmBlock {
+            id: 0,
+            start_pc: 400,
+            instructions: report.source_mut(0).instructions.clone(),
+        }];
     report.metadata.root_program = Some(0);
     report
 }
@@ -110,7 +106,7 @@ fn report() -> AnalysisReport {
 #[test]
 fn percent_names_cover_definitions_phi_exits_and_transition_tooltips() {
     let report = report();
-    let rows = rows(&report);
+    let rows = rows(&(report).view());
     let visible = rows
         .iter()
         .map(Row::plain_text)
@@ -163,7 +159,7 @@ fn incomplete_attempt_keeps_effect_and_phase_on_the_instruction_row() {
     instruction.progress = InstructionProgress::Started;
     instruction.effect_result = None;
     instruction.results.clear();
-    let rendered = rows(&report);
+    let rendered = rows(&(report).view());
     let instruction = &rendered[3];
     assert!(instruction.plain_text().ends_with("μ₂→pending · Started"));
     assert!(!instruction.plain_text().contains("%13 ="));
@@ -194,7 +190,7 @@ fn frame_with_events(
         |ui| {
             ssa(
                 ui,
-                report,
+                &(report).view(),
                 Some(0),
                 SsaDisplay::Compact,
                 selection,
@@ -224,7 +220,7 @@ fn normalized_operations_keep_native_opcode_and_operand_provenance_in_tooltips()
     ] {
         let mut report = report();
         report.ssa.blocks[0].instructions[0].operation = operation;
-        let rendered = rows(&report);
+        let rendered = rows(&(report).view());
         let row = &rendered[3];
         assert!(row.plain_text().contains(expected), "{}", row.plain_text());
         assert!(row.tooltip.contains("Original opcode: 0x01 ADD %11 %12"));
@@ -398,8 +394,18 @@ fn stack_moves_and_important_operations() -> AnalysisReport {
 #[test]
 fn compact_rows_hide_completed_stack_moves_and_full_restores_all_instruction_details() {
     let report = stack_moves_and_important_operations();
-    let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, Selection::default());
-    let full = scoped_rows(&report, Some(0), SsaDisplay::Full, Selection::default());
+    let compact = scoped_rows(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
+    let full = scoped_rows(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Full,
+        Selection::default(),
+    );
     let instruction_rows = |rows: &[Row]| {
         rows.iter()
             .filter(|row| row.target.is_some_and(|target| target.pc.is_some()))
@@ -463,7 +469,12 @@ fn compact_rows_keep_pending_faulted_and_noncurrent_stack_moves() {
         instruction
     })
     .collect();
-    let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, Selection::default());
+    let compact = scoped_rows(
+        &(report).view(),
+        Some(0),
+        SsaDisplay::Compact,
+        Selection::default(),
+    );
     for instruction in &report.ssa.blocks[0].instructions {
         let row = compact
             .iter()
@@ -483,7 +494,12 @@ fn compact_rows_keep_pending_faulted_and_noncurrent_stack_moves() {
         let instruction = &mut report.ssa.blocks[0].instructions[0];
         instruction.progress = InstructionProgress::Completed;
         instruction.fault = false;
-        let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, Selection::default());
+        let compact = scoped_rows(
+            &(report).view(),
+            Some(0),
+            SsaDisplay::Compact,
+            Selection::default(),
+        );
         assert!(compact.iter().any(|row| {
             row.target.is_some_and(|target| target.pc == Some(0))
                 && row.plain_text().contains("POP")
@@ -505,7 +521,7 @@ fn compact_rows_reveal_only_the_selected_native_state_and_pc() {
         state: Some(91),
         pc: Some(5),
     };
-    let compact = scoped_rows(&report, Some(0), SsaDisplay::Compact, selection);
+    let compact = scoped_rows(&(report).view(), Some(0), SsaDisplay::Compact, selection);
     let revealed: Vec<_> = compact
         .iter()
         .filter(|row| {
@@ -546,7 +562,7 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
         .collect();
     report.edges[0].to = report.cfg[129].id;
     let scoped = scoped_rows(
-        &report,
+        &(report).view(),
         Some(0),
         SsaDisplay::Compact,
         Selection {
@@ -586,7 +602,7 @@ fn program_scope_preserves_every_native_context_and_transition_to_other_programs
             .contains("Destination frame stacks: f₀ [%13, %14]")
     );
     let other = scoped_rows(
-        &report,
+        &(report).view(),
         Some(9),
         SsaDisplay::Compact,
         Selection {
@@ -618,7 +634,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
             reason: evm_abstract_protocol::DeferredReason::SourceStale,
         });
     let scoped = scoped_rows(
-        &report,
+        &(report).view(),
         None,
         SsaDisplay::Compact,
         Selection {
@@ -635,7 +651,7 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
             .any(|row| row.plain_text() == "e₈₈ → σ₉₁ · deferred Some(SourceStale)")
     );
     let other = scoped_rows(
-        &report,
+        &(report).view(),
         None,
         SsaDisplay::Compact,
         Selection {
@@ -646,10 +662,18 @@ fn no_program_scope_shows_only_the_selected_no_code_state_and_keeps_deferred_rea
     );
     assert_eq!(other.iter().filter(|row| row.header).count(), 1);
     assert_eq!(other[0].target.unwrap().state, Some(91));
-    assert!(scoped_rows(&report, None, SsaDisplay::Compact, Selection::default()).is_empty());
     assert!(
         scoped_rows(
-            &report,
+            &(report).view(),
+            None,
+            SsaDisplay::Compact,
+            Selection::default()
+        )
+        .is_empty()
+    );
+    assert!(
+        scoped_rows(
+            &(report).view(),
             Some(0),
             SsaDisplay::Compact,
             Selection {

@@ -16,6 +16,7 @@ pub mod admission;
 pub mod algebra;
 pub mod capability;
 pub mod cooperation;
+pub mod cost;
 pub mod error;
 pub mod kernel;
 pub mod reclaim;

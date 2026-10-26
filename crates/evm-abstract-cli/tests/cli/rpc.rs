@@ -30,8 +30,14 @@ mod storage;
 
 #[path = "rpc/budgets.rs"]
 mod budgets;
+#[path = "rpc/evidence.rs"]
+mod evidence;
+#[path = "rpc/precision_policy.rs"]
+mod precision_policy;
 #[path = "rpc/relations.rs"]
 mod relations;
+
+use evidence::{assert_policy, relative_procedure};
 
 const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const CALLEE: &str = "0x0000000000000000000000000000000000000200";
@@ -159,6 +165,7 @@ impl RpcServer {
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
                 let request: Json = serde_json::from_slice(&body).unwrap();
+                let request = crate::native::select(&request);
                 let (status, bytes, allow_peer_abort) = match handler(&request) {
                     Reply::Json(reply) => (200, serde_json::to_vec(&reply).unwrap(), false),
                     Reply::Bytes(bytes) => (200, bytes, false),
@@ -220,6 +227,10 @@ fn result(output: Output, detail_exit: i32) -> Json {
     let report: Json = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
     super::native::assert_exit(&report, &output);
+    assert!(
+        report["native"]["analysis"].is_object(),
+        "RPC precision requires the Native namespace"
+    );
     let result = super::native::select(&report);
     let native = result.get("analysis").unwrap_or(&result);
     assert_eq!(
@@ -270,42 +281,69 @@ fn assert_pinned(requests: &[Json]) {
 #[test]
 fn recursive_rpc_callees_are_discovered_without_account_flags_and_cached() {
     thread::scope(|scope| {
-        let a = format!("{}50{}5000", call(0xf1, 0x200, 0), call(0xf1, 0x200, 0));
-        let b = format!("{}5000", call(0xf1, 0x300, 0));
-        let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, &b), (LEAF, "602a00")]);
-        let server = RpcServer::new(scope, move |request| fixture.reply(request));
-        let analysis = result(execute(&server, &[]), 0);
-        assert_eq!(analysis["status"], "Converged");
-        assert!(analysis["frontiers"].as_array().unwrap().is_empty());
-        for address in [ENTRY, CALLEE, LEAF] {
-            assert!(analysis["world"]["accounts"].get(address).is_some());
-        }
-        assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
-            let frames = state["key"]["frames"].as_array().unwrap();
-            frames.len() == 3 && frames[2]["code_address"] == LEAF
-        }));
-        let requests = server.finish();
-        assert_eq!(
-            analysis["rpc_acquisition"]["fetched_accounts"],
-            json!([CALLEE, LEAF])
-        );
-        assert_eq!(analysis["rpc_acquisition"]["rounds"], 4);
-        assert_eq!(
-            analysis["rpc_acquisition"]["requests"].as_u64().unwrap() as usize,
-            requests.len()
-        );
-        assert!(
-            analysis["rpc_acquisition"]["states_created"]
-                .as_u64()
-                .unwrap()
-                >= analysis["states"].as_array().unwrap().len() as u64
-        );
-        for address in [ENTRY, CALLEE, LEAF] {
-            for method in ["eth_getCode", "eth_getBalance", "eth_getTransactionCount"] {
-                assert_eq!(requests_for(&requests, method, address).len(), 1);
+        for regions in [1, 3] {
+            let a = format!("{}50{}5000", call(0xf1, 0x200, 0), call(0xf1, 0x200, 0));
+            let b = format!("{}5000", call(0xf1, 0x300, 0));
+            let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, &b), (LEAF, "602a00")]);
+            let server = RpcServer::new(scope, move |request| fixture.reply(request));
+            let extra = if regions == 3 {
+                vec!["--max-detail-regions", "3"]
+            } else {
+                vec![]
+            };
+            let analysis = result(execute(&server, &extra), 0);
+            assert_policy(&analysis, regions, 2_000_000_000);
+            assert_eq!(analysis["status"], "Converged");
+            assert!(analysis["frontiers"].as_array().unwrap().is_empty());
+            for address in [ENTRY, CALLEE, LEAF] {
+                assert!(analysis["world"]["accounts"].get(address).is_some());
             }
+            if regions == 3 {
+                assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
+                    let frames = state["key"]["frames"].as_array().unwrap();
+                    frames.len() == 3 && frames[2]["code_address"] == LEAF
+                }));
+            } else {
+                let leaf = relative_procedure(
+                    &analysis,
+                    LEAF,
+                    LEAF,
+                    &json!(keccak256(hex::decode("602a00").unwrap())),
+                )
+                .expect("default Native relation executes the discovered leaf");
+                assert_eq!(leaf["frame"]["caller"]["Concrete"], CALLEE);
+                assert_eq!(leaf["covered_blocks"], json!([0]));
+                assert!(
+                    analysis["states"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|state| state["key"]["frames"].as_array().unwrap().len() < 3)
+                );
+            }
+            let requests = server.finish();
+            assert_eq!(
+                analysis["rpc_acquisition"]["fetched_accounts"],
+                json!([CALLEE, LEAF])
+            );
+            assert_eq!(analysis["rpc_acquisition"]["rounds"], 4);
+            assert_eq!(
+                analysis["rpc_acquisition"]["requests"].as_u64().unwrap() as usize,
+                requests.len()
+            );
+            assert!(
+                analysis["rpc_acquisition"]["states_created"]
+                    .as_u64()
+                    .unwrap()
+                    >= analysis["states"].as_array().unwrap().len() as u64
+            );
+            for address in [ENTRY, CALLEE, LEAF] {
+                for method in ["eth_getCode", "eth_getBalance", "eth_getTransactionCount"] {
+                    assert_eq!(requests_for(&requests, method, address).len(), 1);
+                }
+            }
+            assert_pinned(&requests);
         }
-        assert_pinned(&requests);
     });
 }
 
@@ -345,42 +383,67 @@ fn address_word(address: &str) -> U256 {
 #[test]
 fn discovered_code_preserves_each_call_kind_execution_context() {
     thread::scope(|scope| {
-        for op in [0xf1, 0xf2, 0xf4, 0xfa] {
-            let a = format!("{}00", call(op, 0x200, 9));
-            let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "30333400")]);
-            let server = RpcServer::new(scope, move |request| fixture.reply(request));
-            let analysis = result(execute(&server, &["--evm.value", "42"]), 0);
-            assert_eq!(analysis["status"], "Converged");
-            let child = analysis["states"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|state| state["key"]["frames"].as_array().unwrap().len() == 2)
-                .unwrap();
-            let frame = &child["key"]["frames"][1];
-            let address = if matches!(op, 0xf2 | 0xf4) {
-                ENTRY
-            } else {
-                CALLEE
-            };
-            let caller = if op == 0xf4 { CALLER } else { ENTRY };
-            let value = if op == 0xf4 {
-                42
-            } else if op == 0xfa {
-                0
-            } else {
-                9
-            };
-            assert_eq!(frame["code_address"], CALLEE);
-            assert_eq!(frame["address"], address);
-            assert_eq!(frame["caller"]["Concrete"], caller);
-            assert_eq!(frame["is_static"], op == 0xfa);
-            assert!(contains(&child["exit_stack"][0], address_word(address)));
-            assert!(contains(&child["exit_stack"][1], address_word(caller)));
-            assert!(contains(&child["exit_stack"][2], U256::from(value)));
-            let requests = server.finish();
-            assert_eq!(requests_for(&requests, "eth_getCode", CALLEE).len(), 1);
-            assert_pinned(&requests);
+        for regions in [1, 2] {
+            for op in [0xf1, 0xf2, 0xf4, 0xfa] {
+                let a = format!("{}00", call(op, 0x200, 9));
+                let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "30333400")]);
+                let server = RpcServer::new(scope, move |request| fixture.reply(request));
+                let mut extra = vec!["--evm.value", "42"];
+                if regions == 2 {
+                    extra.extend(["--max-detail-regions", "2"]);
+                }
+                let analysis = result(execute(&server, &extra), 0);
+                assert_policy(&analysis, regions, 2_000_000_000);
+                assert_eq!(analysis["status"], "Converged");
+                let child = analysis["states"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|state| state["key"]["frames"].as_array().unwrap().len() == 2)
+                    .unwrap();
+                let frame = &child["key"]["frames"][1];
+                let address = if matches!(op, 0xf2 | 0xf4) {
+                    ENTRY
+                } else {
+                    CALLEE
+                };
+                let caller = if op == 0xf4 { CALLER } else { ENTRY };
+                let value = if op == 0xf4 {
+                    42
+                } else if op == 0xfa {
+                    0
+                } else {
+                    9
+                };
+                assert_eq!(frame["code_address"], CALLEE);
+                assert_eq!(frame["address"], address);
+                assert_eq!(frame["caller"]["Concrete"], caller);
+                assert_eq!(frame["is_static"], op == 0xfa);
+                let input = &child["entry"]["call_stack"]["children"][0]["state"];
+                assert!(contains(&input["call_value"], U256::from(value)));
+                if regions == 2 {
+                    assert_eq!(child["executed_pcs"], json!([0, 1, 2, 3]));
+                    assert!(contains(&child["exit_stack"][0], address_word(address)));
+                    assert!(contains(&child["exit_stack"][1], address_word(caller)));
+                    assert!(contains(&child["exit_stack"][2], U256::from(value)));
+                } else {
+                    assert!(child["executed_pcs"].as_array().unwrap().is_empty());
+                    assert!(child["exit_stack"].as_array().unwrap().is_empty());
+                    let procedure = relative_procedure(
+                        &analysis,
+                        CALLEE,
+                        address,
+                        &json!(keccak256(hex::decode("30333400").unwrap())),
+                    )
+                    .expect("unselected callee has an actual Native block receipt");
+                    assert_eq!(procedure["frame"], *frame);
+                    assert_eq!(procedure["frame"]["caller"]["Concrete"], caller);
+                    assert_eq!(procedure["frame"]["is_static"], op == 0xfa);
+                }
+                let requests = server.finish();
+                assert_eq!(requests_for(&requests, "eth_getCode", CALLEE).len(), 1);
+                assert_pinned(&requests);
+            }
         }
     });
 }
@@ -760,121 +823,187 @@ fn verified_export(export: &Json) -> &Json {
 #[test]
 fn discovered_facts_survive_ancestor_revert_and_match_preloaded_summary_oracles() {
     thread::scope(|scope| {
-        let a = format!(
-            "60035f55{}50{}50{}5000",
-            call(0xf1, 0x200, 5),
-            call(0xf1, 0x300, 2),
-            call(0xf1, 0x300, 2)
-        );
-        let b = format!("60075f555f5fa0{}505f5ffd", call(0xf1, 0x300, 1));
-        let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, &b), (LEAF, "602a5f5260205ff3")]);
-        let mut analyses = Vec::new();
-        for extra in [
-            vec!["--ssa"],
-            vec![
-                "--ssa",
-                "--no-rpc-discovery",
-                "--account",
-                CALLEE,
-                "--account",
-                LEAF,
-            ],
-            vec!["--ssa", "--no-summaries"],
-            vec![
-                "--ssa",
-                "--no-summaries",
-                "--no-rpc-discovery",
-                "--account",
-                CALLEE,
-                "--account",
-                LEAF,
-            ],
-        ] {
-            let fixture = fixture.clone();
-            let server = RpcServer::new(scope, move |request| fixture.reply(request));
-            let export = result(execute(&server, &extra), 0);
-            let analysis = verified_export(&export).clone();
-            assert!(
-                analysis["edges"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|edge| edge["kind"] == "Revert")
+        for regions in [1, 2] {
+            let a = format!(
+                "60035f55{}50{}50{}5000",
+                call(0xf1, 0x200, 5),
+                call(0xf1, 0x300, 2),
+                call(0xf1, 0x300, 2)
             );
-            for outcome in analysis["outcomes"].as_array().unwrap() {
-                assert!(
-                    outcome["store"]["possible_logs"]
-                        .as_array()
-                        .unwrap()
-                        .is_empty()
-                );
-                assert!(
-                    !outcome["store"]["persistent"]["slots"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|slot| slot["address"] == CALLEE)
-                );
+            let b = format!("60075f555f5fa0{}505f5ffd", call(0xf1, 0x300, 1));
+            let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, &b), (LEAF, "602a5f5260205ff3")]);
+            let mut analyses = Vec::new();
+            for mut extra in [
+                vec!["--ssa"],
+                vec![
+                    "--ssa",
+                    "--no-rpc-discovery",
+                    "--account",
+                    CALLEE,
+                    "--account",
+                    LEAF,
+                ],
+                vec!["--ssa", "--no-summaries"],
+                vec![
+                    "--ssa",
+                    "--no-summaries",
+                    "--no-rpc-discovery",
+                    "--account",
+                    CALLEE,
+                    "--account",
+                    LEAF,
+                ],
+            ] {
+                if regions == 2 {
+                    extra.extend(["--max-detail-regions", "2"]);
+                }
+                let fixture = fixture.clone();
+                let server = RpcServer::new(scope, move |request| fixture.reply(request));
+                let export = result(execute(&server, &extra), 0);
+                let analysis = verified_export(&export).clone();
+                assert_policy(&export, regions, 2_000_000_000);
+                if regions == 2 {
+                    assert!(
+                        analysis["edges"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|edge| edge["kind"] == "Revert")
+                    );
+                } else {
+                    assert!(
+                        analysis["edges"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|edge| edge["kind"] == json!({"Summary":"Revert"}))
+                    );
+                    let procedure = relative_procedure(
+                        &analysis,
+                        CALLEE,
+                        CALLEE,
+                        &json!(keccak256(hex::decode(&b).unwrap())),
+                    )
+                    .expect("closed Native callee rollback relation");
+                    assert!(
+                        procedure["outputs"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|output| output["kind"] == "Revert")
+                    );
+                }
+                for outcome in analysis["outcomes"].as_array().unwrap() {
+                    assert!(
+                        outcome["store"]["possible_logs"]
+                            .as_array()
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert!(
+                        !outcome["store"]["persistent"]["slots"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|slot| slot["address"] == CALLEE)
+                    );
+                }
+                let requests = server.finish();
+                assert_eq!(requests_for(&requests, "eth_getCode", LEAF).len(), 1);
+                assert_pinned(&requests);
+                analyses.push(analysis);
             }
-            let requests = server.finish();
-            assert_eq!(requests_for(&requests, "eth_getCode", LEAF).len(), 1);
-            assert_pinned(&requests);
-            analyses.push(analysis);
+            // Compare discovery with complete initial observations under the same
+            // summary policy, including every outcome's data and transaction state.
+            assert_eq!(relations(&analyses[0]), relations(&analyses[1]));
+            assert_eq!(relations(&analyses[2]), relations(&analyses[3]));
+            for analysis in &analyses[2..] {
+                assert_eq!(analysis["summary_stats"]["hits"], 0);
+                assert!(analysis["summaries"].as_array().unwrap().is_empty());
+            }
+            assert_eq!(
+                analyses[0]["rpc_acquisition"]["fetched_accounts"],
+                json!([CALLEE, LEAF])
+            );
+            assert_eq!(
+                analyses[2]["rpc_acquisition"]["fetched_accounts"],
+                json!([CALLEE, LEAF])
+            );
         }
-        // Compare discovery with complete initial observations under the same
-        // summary policy, including every outcome's data and transaction state.
-        assert_eq!(relations(&analyses[0]), relations(&analyses[1]));
-        assert_eq!(relations(&analyses[2]), relations(&analyses[3]));
-        for analysis in &analyses[2..] {
-            assert_eq!(analysis["summary_stats"]["hits"], 0);
-            assert!(analysis["summaries"].as_array().unwrap().is_empty());
-        }
-        assert_eq!(
-            analyses[0]["rpc_acquisition"]["fetched_accounts"],
-            json!([CALLEE, LEAF])
-        );
-        assert_eq!(
-            analyses[2]["rpc_acquisition"]["fetched_accounts"],
-            json!([CALLEE, LEAF])
-        );
     });
 }
 
 #[test]
 fn discovered_repeated_read_only_callee_reuses_a_summary_with_identical_outcomes() {
     thread::scope(|scope| {
-        let a = format!("{}50{}5000", call(0xfa, 0x200, 0), call(0xfa, 0x200, 0));
-        let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "602a5f5260205ff3")]);
-        let mut analyses = Vec::new();
-        for extra in [vec!["--ssa"], vec!["--ssa", "--no-summaries"]] {
-            let fixture = fixture.clone();
-            let server = RpcServer::new(scope, move |request| fixture.reply(request));
-            let export = result(execute(&server, &extra), 0);
-            analyses.push(verified_export(&export).clone());
-            let requests = server.finish();
-            assert_eq!(requests_for(&requests, "eth_getCode", CALLEE).len(), 1);
-            assert_pinned(&requests);
-        }
-        let enabled = &analyses[0];
-        let disabled = &analyses[1];
-        assert!(enabled["summary_stats"]["hits"].as_u64().unwrap() > 0);
-        assert!(
-            enabled["summaries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|summary| {
-                    !summary["reused_at"].as_array().unwrap().is_empty()
-                        && summary["outputs"].as_array().unwrap().iter().any(|output| {
-                            output["kind"] == "Return"
-                                && contains(&output["data"]["length"], U256::from(32))
-                                && native_bytes::word_matches(&output["data"], U256::from(42))
+        for regions in [1, 2] {
+            let a = format!("{}50{}5000", call(0xfa, 0x200, 0), call(0xfa, 0x200, 0));
+            let fixture = Fixture::new(&[(ENTRY, &a), (CALLEE, "602a5f5260205ff3")]);
+            let mut analyses = Vec::new();
+            for mut extra in [vec!["--ssa"], vec!["--ssa", "--no-summaries"]] {
+                if regions == 2 {
+                    extra.extend(["--max-detail-regions", "2"]);
+                }
+                let fixture = fixture.clone();
+                let server = RpcServer::new(scope, move |request| fixture.reply(request));
+                let export = result(execute(&server, &extra), 0);
+                let analysis = verified_export(&export).clone();
+                assert_policy(&export, regions, 2_000_000_000);
+                analyses.push(analysis);
+                let requests = server.finish();
+                assert_eq!(requests_for(&requests, "eth_getCode", CALLEE).len(), 1);
+                assert_pinned(&requests);
+            }
+            let enabled = &analyses[0];
+            let disabled = &analyses[1];
+            if regions == 2 {
+                assert!(enabled["summary_stats"]["hits"].as_u64().unwrap() > 0);
+                assert!(
+                    enabled["summaries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|summary| {
+                            !summary["reused_at"].as_array().unwrap().is_empty()
+                                && summary["outputs"].as_array().unwrap().iter().any(|output| {
+                                    output["kind"] == "Return"
+                                        && contains(&output["data"]["length"], U256::from(32))
+                                        && native_bytes::word_matches(
+                                            &output["data"],
+                                            U256::from(42),
+                                        )
+                                })
                         })
-                })
-        );
-        assert_eq!(disabled["summary_stats"]["hits"], 0);
-        assert!(disabled["summaries"].as_array().unwrap().is_empty());
-        assert_eq!(relations(enabled), relations(disabled));
+                );
+                assert!(
+                    enabled["summary_stats"]["imported_states"]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+            } else {
+                assert_eq!(enabled["summary_stats"]["hits"], 0);
+                for analysis in &analyses {
+                    let procedure = relative_procedure(
+                        analysis,
+                        CALLEE,
+                        CALLEE,
+                        &json!(keccak256(hex::decode("602a5f5260205ff3").unwrap())),
+                    )
+                    .expect("default Native relative callee remains executed");
+                    assert_eq!(procedure["frame"]["is_static"], true);
+                    assert!(procedure["outputs"].as_array().unwrap().iter().any(
+                        |output| output["kind"] == "Return"
+                            && contains(&output["data"]["length"], U256::from(32))
+                            && output["data"]["content"]["Exact"]
+                                == json!(U256::from(42).to_be_bytes::<32>())
+                    ));
+                }
+            }
+            assert_eq!(disabled["summary_stats"]["hits"], 0);
+            assert!(disabled["summaries"].as_array().unwrap().is_empty());
+            assert_eq!(relations(enabled), relations(disabled));
+        }
     });
 }
 
@@ -945,63 +1074,99 @@ fn discovered_and_preloaded_empty_accounts_preserve_unknown_existence() {
 #[test]
 fn deployed_runtime_overlay_is_used_without_refetching_snapshot_empty_code() {
     thread::scope(|scope| {
-        const CREATED: &str = "0xea53a153a9a04fd632b2486d84732feb3b71afb7";
-        const ZERO: &str = "0x0000000000000000000000000000000000000000";
-        // Existing creation lesson: deploy a runtime returning 42, then call it.
-        let factory = "6100156100275f396100155f6000f0805f555060205f5f5f5f5f5462fffffff160015560205ff361000861000d5f396100085ff3602a5f5260205ff3";
-        let mut fixture = Fixture::new(&[(ENTRY, factory), (CREATED, ""), (ZERO, "")]);
-        fixture.0.get_mut(CREATED).unwrap().zero_facts = true;
-        fixture.0.get_mut(ZERO).unwrap().zero_facts = true;
-        let server = RpcServer::new(scope, move |request| fixture.reply(request));
-        let export = result(
-            execute(&server, &["--ssa", "--account", CREATED, "--account", ZERO]),
-            0,
-        );
-        let analysis = verified_export(&export);
-        let runtime_hash = json!(keccak256(hex::decode("602a5f5260205ff3").unwrap()));
-        assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
-            let frame = state["key"]["frames"].as_array().unwrap().last().unwrap();
-            frame["code_address"] == CREATED
-                && frame["mode"] == "Runtime"
-                && frame["code_hash"] == runtime_hash
-                && state["entry"]["store"]["created"][CREATED] == true
-                && !state["executed_pcs"].as_array().unwrap().is_empty()
-        }));
-        assert!(
-            analysis["outcomes"]
+        for regions in [1, 2] {
+            const CREATED: &str = "0xea53a153a9a04fd632b2486d84732feb3b71afb7";
+            const ZERO: &str = "0x0000000000000000000000000000000000000000";
+            // Existing creation lesson: deploy a runtime returning 42, then call it.
+            let factory = "6100156100275f396100155f6000f0805f555060205f5f5f5f5f5462fffffff160015560205ff361000861000d5f396100085ff3602a5f5260205ff3";
+            let mut fixture = Fixture::new(&[(ENTRY, factory), (CREATED, ""), (ZERO, "")]);
+            fixture.0.get_mut(CREATED).unwrap().zero_facts = true;
+            fixture.0.get_mut(ZERO).unwrap().zero_facts = true;
+            let server = RpcServer::new(scope, move |request| fixture.reply(request));
+            let mut extra = vec!["--ssa", "--account", CREATED, "--account", ZERO];
+            if regions == 2 {
+                extra.extend(["--max-detail-regions", "2"]);
+            }
+            let export = result(execute(&server, &extra), 0);
+            let analysis = verified_export(&export);
+            assert_policy(&export, regions, 2_000_000_000);
+            let runtime_hash = json!(keccak256(hex::decode("602a5f5260205ff3").unwrap()));
+            assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
+                let frame = state["key"]["frames"].as_array().unwrap().last().unwrap();
+                frame["code_address"] == CREATED
+                    && frame["mode"] == "InitCode"
+                    && frame["code_hash"]
+                        == json!(keccak256(
+                            hex::decode("61000861000d5f396100085ff3602a5f5260205ff3").unwrap()
+                        ))
+                    && state["entry"]["store"]["created"][CREATED] == true
+                    && !state["executed_pcs"].as_array().unwrap().is_empty()
+            }));
+            // Runtime code is created after the immutable region selection. Its
+            // real Native block receipt carries effects without a private PC list.
+            let runtime_state = analysis["states"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|outcome| {
-                    if outcome["kind"] != "Return" {
-                        return false;
-                    }
-                    let store = &outcome["store"];
-                    let Some(created) = account(store, CREATED) else {
-                        return false;
-                    };
-                    let Some(creator) = account(store, ENTRY) else {
-                        return false;
-                    };
-                    created["existence"] == "present"
-                        && created["code_hash"] == runtime_hash
-                        && created["code_size"] == 8
-                        && contains(&created["nonce"], U256::from(1))
-                        && contains(&creator["nonce"], U256::from(1))
-                        && slot_contains(store, ENTRY, 0, address_word(CREATED))
-                        && slot_contains(store, ENTRY, 1, U256::from(1))
-                        && contains(&outcome["data"]["length"], U256::from(32))
-                        && native_bytes::word_matches(&outcome["data"], U256::from(42))
+                .find(|state| {
+                    let frame = state["key"]["frames"].as_array().unwrap().last().unwrap();
+                    frame["code_address"] == CREATED
+                        && frame["mode"] == "Runtime"
+                        && frame["code_hash"] == runtime_hash
+                        && state["entry"]["store"]["created"][CREATED] == true
                 })
-        );
-        assert!(
-            analysis["rpc_acquisition"]["fetched_accounts"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        let requests = server.finish();
-        assert_eq!(requests_for(&requests, "eth_getCode", CREATED).len(), 1);
-        assert_pinned(&requests);
+                .expect("the runtime overlay retains its original hash and creation state");
+            assert!(runtime_state["executed_pcs"].as_array().unwrap().is_empty());
+            let runtime = relative_procedure(analysis, CREATED, CREATED, &runtime_hash)
+                .expect("created runtime executes through the Native relative body");
+            assert_eq!(runtime["input"]["created"][CREATED], true);
+            assert!(
+                runtime["outputs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|output| output["kind"] == "Return"
+                        && output["store"]["created"][CREATED] == true
+                        && contains(&output["data"]["length"], U256::from(32))
+                        && output["data"]["content"]["Exact"]
+                            == json!(U256::from(42).to_be_bytes::<32>()))
+            );
+            assert!(
+                analysis["outcomes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|outcome| {
+                        if outcome["kind"] != "Return" {
+                            return false;
+                        }
+                        let store = &outcome["store"];
+                        let Some(created) = account(store, CREATED) else {
+                            return false;
+                        };
+                        let Some(creator) = account(store, ENTRY) else {
+                            return false;
+                        };
+                        created["existence"] == "present"
+                            && created["code_hash"] == runtime_hash
+                            && created["code_size"] == 8
+                            && contains(&created["nonce"], U256::from(1))
+                            && contains(&creator["nonce"], U256::from(1))
+                            && slot_contains(store, ENTRY, 0, address_word(CREATED))
+                            && slot_contains(store, ENTRY, 1, U256::from(1))
+                            && contains(&outcome["data"]["length"], U256::from(32))
+                            && native_bytes::word_matches(&outcome["data"], U256::from(42))
+                    })
+            );
+            assert!(
+                analysis["rpc_acquisition"]["fetched_accounts"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            let requests = server.finish();
+            assert_eq!(requests_for(&requests, "eth_getCode", CREATED).len(), 1);
+            assert_pinned(&requests);
+        }
     });
 }

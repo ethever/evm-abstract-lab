@@ -49,6 +49,7 @@ fn finite_set_clz_keeps_the_complete_set_at_capacity_257() {
             String::from_utf8_lossy(&output.stderr)
         );
         let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json = crate::native::select(&json);
         assert_eq!(json["status"], "Converged");
         assert_eq!(json["domain_spec"]["capacity"].to_string(), capacity);
         let result = &json["states"][0]["exit_stack"][0];
@@ -89,6 +90,7 @@ fn world_entrypoint_preserves_large_capacity_and_frozen_policy() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["status"], "Converged");
     assert!(json["config"]["analysis"].get("max_constants").is_none());
     assert_eq!(json["domain_spec"]["capacity"], 1000);
@@ -103,6 +105,7 @@ fn default_capacity_matches_web_for_program_and_world() {
     ] {
         assert!(output.status.success());
         let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json = crate::native::select(&json);
         assert_eq!(
             json["domain_spec"]["capacity"],
             evm_abstract_protocol::AnalysisLimits::default().max_constants

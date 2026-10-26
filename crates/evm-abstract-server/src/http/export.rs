@@ -6,19 +6,42 @@ use evm_abstract::{
 use evm_abstract_protocol as api;
 
 #[derive(serde::Serialize)]
-struct Reply<'a> {
-    result: Result<&'a api::AnalysisReport, &'a api::ApiError>,
+struct PublicationReply<'a> {
+    id: api::JobId,
+    publication: &'a api::JobPublication,
+    report: &'a api::AnalysisReport,
 }
 
-pub(super) fn report(
-    report: &api::AnalysisReport,
+#[derive(serde::Serialize)]
+struct ResultReply<'a> {
+    result: Result<PublicationReply<'a>, &'a api::ApiError>,
+}
+
+pub(super) fn publication(
+    result: &crate::jobs::PublishedResult,
     control: &Control,
 ) -> Result<Vec<u8>, api::ApiError> {
-    json::compact_with_control(&Reply { result: Ok(report) }, control)
-        .map(String::into_bytes)
-        .map_err(|error| failure(report, error))
+    json::compact_with_control(
+        &ResultReply {
+            result: Ok(PublicationReply {
+                id: result.id,
+                publication: &result.publication,
+                report: &result.report,
+            }),
+        },
+        control,
+    )
+    .map(String::into_bytes)
+    .map_err(|error| failure(&result.report, error))
 }
 fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
+    let (limits, usage) = if let Some(graph) = report.selected_graph() {
+        (graph.metadata.export_limits, graph.metadata.export_usage)
+    } else if let Some(minimum) = &report.minimum {
+        (minimum.export_limits, minimum.export_usage)
+    } else {
+        return super::api_error(api::ApiErrorCode::Internal, "report has no selected model");
+    };
     let message = error.to_string();
     let written = match error {
         JsonError::Cancelled { written } => written,
@@ -33,8 +56,8 @@ fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
         details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
             kind: api::ExportFailureKind::Cancelled,
             required: written as u64,
-            limits: report.metadata.export_limits,
-            usage: report.metadata.export_usage,
+            limits,
+            usage,
             written: Some(written),
         })),
     }

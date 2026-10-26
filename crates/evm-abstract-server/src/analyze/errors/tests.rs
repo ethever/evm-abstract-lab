@@ -10,6 +10,23 @@ use evm_abstract::{
     world::{EvmAccount, EvmWorld},
 };
 
+#[test]
+fn unsupported_execution_view_preserves_its_typed_category_and_native_diagnostic() {
+    let native = CooperationError::UnsupportedView {
+        supported: evm_abstract::analysis::cooperation::InputViews::Native,
+        requested: evm_abstract::analysis::RuntimeExecution::Process,
+    };
+    let message = native.to_string();
+    let error = execution(native);
+    assert_eq!(error.code, api::ApiErrorCode::Internal);
+    assert_eq!(error.message, message);
+    assert_eq!(
+        error.details,
+        api::ErrorDetails::Execution(api::ExecutionFailureKind::UnsupportedView)
+    );
+    roundtrip(&error);
+}
+
 fn world(expression: ExprId) -> EvmWorld<NumericValue> {
     let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "typed fingerprint failure");
     let mut account = EvmAccount::<NumericValue>::empty();
@@ -22,6 +39,24 @@ fn roundtrip(error: &api::ApiError) {
     let decoded: api::ApiError =
         serde_json::from_slice(&serde_json::to_vec(error).unwrap()).unwrap();
     assert_eq!(&decoded, error);
+}
+
+#[test]
+fn unsupported_cooperation_view_keeps_its_category_and_requested_contract() {
+    use evm_abstract::analysis::{RuntimeExecution, cooperation::InputViews};
+    let source = CooperationError::<std::convert::Infallible>::UnsupportedView {
+        supported: InputViews::Native,
+        requested: RuntimeExecution::Process,
+    };
+    let message = source.to_string();
+    let projected = execution(source);
+    assert_eq!(projected.code, api::ApiErrorCode::Internal);
+    assert_eq!(projected.message, message);
+    assert_eq!(
+        projected.details,
+        api::ErrorDetails::Execution(api::ExecutionFailureKind::UnsupportedView)
+    );
+    roundtrip(&projected);
 }
 
 #[test]

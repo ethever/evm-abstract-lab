@@ -173,9 +173,9 @@ fn delegated_creation(call_op: u8, create2: bool) {
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
         assert_eq!(concrete.kind, OutcomeKind::Return);
-        assert_eq!(concrete.output.len(), 224);
+        assert_eq!(concrete.data.len(), 224);
         let returned_words: Vec<_> = concrete
-            .output
+            .data
             .as_chunks::<32>()
             .0
             .iter()
@@ -192,10 +192,7 @@ fn delegated_creation(call_op: u8, create2: bool) {
                 U256::from(42)
             ]
         );
-        assert_eq!(
-            &concrete.output[192..192 + runtime.len()],
-            runtime.as_slice()
-        );
+        assert_eq!(&concrete.data[192..192 + runtime.len()], runtime.as_slice());
         assert_eq!(concrete.accounts[&address(ROOT)].nonce, 6);
         assert_eq!(concrete.accounts[&address(ROOT)].balance, U256::from(993));
         assert_eq!(concrete.accounts[&address(0x200)].nonce, 37);
@@ -204,6 +201,22 @@ fn delegated_creation(call_op: u8, create2: bool) {
             concrete.accounts[&destination].code.as_deref(),
             Some(runtime.as_slice())
         );
+        // The shared checker must reject losing newly created account effects,
+        // even when return bytes and every pre-existing account still match.
+        let returned = analysis
+            .outcomes()
+            .iter()
+            .find(|outcome| concrete.outcome_covers(&analysis, outcome))
+            .unwrap();
+        let mut lost_nonce = returned.clone();
+        lost_nonce.store.write_nonce(destination, word(0));
+        assert!(!concrete.outcome_covers(&analysis, &lost_nonce));
+        let mut wrong_code = concrete.clone();
+        wrong_code.accounts.get_mut(&destination).unwrap().code = Some(vec![0xfe]);
+        assert!(!wrong_code.is_covered(&analysis));
+        let mut wrong_deletion = concrete.clone();
+        wrong_deletion.deleted.insert(destination);
+        assert!(!wrong_deletion.is_covered(&analysis));
         assert!(analysis.outcomes().iter().any(|outcome| {
             outcome.kind == OutcomeKind::Return
                 && outcome.store.raw_account_code(destination).as_deref()
@@ -232,7 +245,7 @@ fn delegated_creation(call_op: u8, create2: bool) {
             concrete
                 .steps
                 .iter()
-                .any(|step| step.address == destination && step.code_address.is_none())
+                .any(|step| step.owner == destination && step.code_address.is_none())
         );
         assert!(
             concrete
@@ -318,17 +331,11 @@ fn failed_init_nonce_belongs_to_its_outer_savepoint_and_preserves_prior_creation
                 concrete.accounts[&prior].code.as_deref(),
                 Some(&[opcode::STOP][..])
             );
-            assert_eq!(U256::from_be_slice(&concrete.output[32..64]), U256::from(1));
-            assert_eq!(
-                U256::from_be_slice(&concrete.output[64..96]),
-                U256::from(96)
-            );
-            assert_eq!(U256::from_be_slice(&concrete.output[96..128]), U256::ZERO);
-            assert_eq!(
-                U256::from_be_slice(&concrete.output[128..160]),
-                U256::from(1)
-            );
-            assert_eq!(concrete.output[160], 0x42);
+            assert_eq!(U256::from_be_slice(&concrete.data[32..64]), U256::from(1));
+            assert_eq!(U256::from_be_slice(&concrete.data[64..96]), U256::from(96));
+            assert_eq!(U256::from_be_slice(&concrete.data[96..128]), U256::ZERO);
+            assert_eq!(U256::from_be_slice(&concrete.data[128..160]), U256::from(1));
+            assert_eq!(concrete.data[160], 0x42);
             let init_states: Vec<_> = analysis
                 .states()
                 .iter()
@@ -512,7 +519,7 @@ fn reverting_delegate_removes_its_deployed_code_storage_and_funding() {
             U256::ZERO,
         ];
         assert_eq!(
-            concrete.output,
+            concrete.data,
             expected
                 .into_iter()
                 .flat_map(|value| value.to_be_bytes::<32>())
@@ -523,7 +530,7 @@ fn reverting_delegate_removes_its_deployed_code_storage_and_funding() {
             concrete
                 .steps
                 .iter()
-                .any(|step| step.address == destination && step.code_address.is_none())
+                .any(|step| step.owner == destination && step.code_address.is_none())
         );
         assert!(
             concrete

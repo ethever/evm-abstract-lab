@@ -11,7 +11,7 @@ use std::{
 };
 
 use evm_abstract_protocol::{
-    API_PATH, AnalyzeReply, AnalyzeRequest, JobReply, RPC_PROVIDERS_PATH, RpcProvidersReply,
+    API_PATH, AnalyzeRequest, JobReply, JobResultReply, RPC_PROVIDERS_PATH, RpcProvidersReply,
 };
 use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -182,17 +182,17 @@ async fn execute(command: Command) -> Message {
         } => Message::Status {
             generation,
             operation: JobOperation::Submit,
-            result: status("POST", API_PATH, Some(*request)).await,
+            result: Box::new(status("POST", API_PATH, Some(*request)).await),
         },
         Command::Poll { generation, id } => Message::Status {
             generation,
             operation: JobOperation::Poll,
-            result: status("GET", &format!("{API_PATH}/{id}"), None).await,
+            result: Box::new(status("GET", &format!("{API_PATH}/{id}"), None).await),
         },
         Command::Cancel { generation, id } => Message::Status {
             generation,
             operation: JobOperation::Cancel,
-            result: status("DELETE", &format!("{API_PATH}/{id}"), None).await,
+            result: Box::new(status("DELETE", &format!("{API_PATH}/{id}"), None).await),
         },
         Command::Result { generation, id } => {
             let (result, transfer_ns, parsing_ns) =
@@ -232,7 +232,7 @@ async fn status(
     Ok(reply)
 }
 
-async fn result(path: &str) -> (Result<AnalyzeReply, TransportError>, u64, u64) {
+async fn result(path: &str) -> (Result<JobResultReply, TransportError>, u64, u64) {
     let started = timing::now();
     let fetched = fetch("GET", path, None).await;
     let parsing_started = timing::now();
@@ -241,7 +241,7 @@ async fn result(path: &str) -> (Result<AnalyzeReply, TransportError>, u64, u64) 
         Ok(response) => response,
         Err(error) => return (Err(error), transfer_ns, 0),
     };
-    let decoded: Result<AnalyzeReply, TransportError> =
+    let decoded: Result<JobResultReply, TransportError> =
         serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause });
     let parsing_ns = timing::elapsed_ns(parsing_started, timing::now());
     let decoded = decoded.and_then(|reply| {

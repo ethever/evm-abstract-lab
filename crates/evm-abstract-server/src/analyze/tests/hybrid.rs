@@ -1,6 +1,7 @@
 //! Default application dispatch and qualified prefix delivery over real graphs.
 use super::super::*;
 use evm_abstract::{
+    Fork,
     domain::{EvmValue, NumericValue},
     world::AddressInput,
 };
@@ -70,7 +71,11 @@ fn default_bytecode_uses_hybrid_and_concrete_small_input_selects_native() {
     let hybrid = report.hybrid.as_ref().unwrap();
     assert_eq!(hybrid.coverage.chosen, api::HybridInterpretation::Native);
     assert!(hybrid.coverage.baseline_current && hybrid.coverage.detail_current);
-    assert!(hybrid.baseline.is_some() && hybrid.detail.is_none());
+    assert!(report.global.is_some() && report.native.is_some());
+    let global = report.global.as_ref().unwrap();
+    let native = report.native.as_ref().unwrap();
+    assert!(global.transfers > 0 && native.transfers > global.transfers);
+    assert_eq!(report.transfers, native.transfers);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
     assert!(!hybrid.local_prefixes.is_empty());
     assert!(
@@ -83,6 +88,61 @@ fn default_bytecode_uses_hybrid_and_concrete_small_input_selects_native() {
         serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
     decoded.validate().unwrap();
     assert_eq!(decoded, report);
+}
+
+#[test]
+fn current_environment_native_remains_inspectable_while_server_selects_global() {
+    for unknown in [false, true] {
+        let address = |id: u64| Address::from_word(evm_abstract::U256::from(id).into());
+        let mut world = EvmWorld::new(Fork::Osaka, "current F1 server selection");
+        let target = if unknown { 0x201 } else { 0x301 };
+        let root = format!("60205f5f5f5f61{target:04x}5af15060205ff3");
+        for (id, code) in [(0x101, root.as_str()), (0x301, "305f5260205ff3")] {
+            let mut account = EvmAccount::from_hex(code, Fork::Osaka).unwrap();
+            account.balance = EvmValue::constant(evm_abstract::U256::from(1_000_000));
+            world.insert(address(id), account).unwrap();
+        }
+        let entry = EvmEntry::concrete(
+            address(0x101),
+            address(0x900),
+            EvmValue::constant(evm_abstract::U256::ZERO),
+            evm_abstract::world::EvmByteArray::empty(),
+        );
+        let request = api::AnalyzeRequest::default();
+        let report = captured::analyze(
+            AnalysisInput::new(world, entry).unwrap(),
+            &request,
+            &Control::default(),
+        )
+        .unwrap();
+        report.validate().unwrap();
+        let coverage = &report.hybrid.as_ref().unwrap().coverage;
+        assert!(coverage.baseline_current && coverage.detail_current);
+        assert_eq!(coverage.detail, api::HybridDetailState::Current);
+        assert_eq!(
+            coverage.detail_binding,
+            api::HybridNativeBinding::OriginalOwner
+        );
+        assert!(report.global.is_some() && report.native.is_some());
+        assert!(report.native.as_ref().unwrap().frontiers.is_empty());
+        assert!(!report.hybrid.as_ref().unwrap().local_prefixes.is_empty());
+        assert_eq!(
+            report.selected_view,
+            if unknown {
+                api::AnalysisNamespace::Baseline
+            } else {
+                api::AnalysisNamespace::Native
+            }
+        );
+        assert_eq!(
+            coverage.chosen,
+            if unknown {
+                api::HybridInterpretation::ProcessWithDetail
+            } else {
+                api::HybridInterpretation::Native
+            }
+        );
+    }
 }
 
 #[test]
@@ -102,16 +162,30 @@ fn closed_global_routes_survive_partial_native_prefix_with_phases_and_frontiers(
     let hybrid = report.hybrid.as_ref().unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Converged);
     assert_eq!(
-        report.abstract_summaries.len(),
+        report.selected_graph().unwrap().abstract_summaries.len(),
         source.baseline().procedure_summaries().len()
     );
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .abstract_summaries
             .iter()
             .any(|summary| !summary.regional_cfg.calls.is_empty())
     );
     let native = report.graph(api::AnalysisNamespace::Native).unwrap();
+    assert_eq!(
+        report.transfers,
+        source.detail().unwrap().transfers() as u64
+    );
+    assert_eq!(
+        native.transfers,
+        source.detail().unwrap().transfers() as u64
+    );
+    assert_eq!(
+        report.global.as_ref().unwrap().transfers,
+        source.baseline().transfers() as u64
+    );
     assert!(!native.frontiers.is_empty());
     assert_eq!(hybrid.local_prefixes.len(), source.local_detail().count());
     for (prefix, actual) in hybrid.local_prefixes.iter().zip(source.local_detail()) {
@@ -185,7 +259,7 @@ fn symbolic_default_owner_retains_namespace_conditioned_detail_and_global_relati
     let hybrid = report.hybrid.as_ref().unwrap();
     assert!(
         matches!(&hybrid.coverage.detail_binding, api::HybridNativeBinding::SymbolicOwnerNamespace(binding)
-        if binding.namespace == report.metadata.entry_address)
+        if binding.namespace == report.selected_graph().unwrap().metadata.entry_address)
     );
     assert_ne!(hybrid.coverage.chosen, api::HybridInterpretation::Native);
     assert!(
@@ -209,13 +283,10 @@ fn symbolic_default_owner_retains_namespace_conditioned_detail_and_global_relati
             api::HybridValidationKind::Source
         ))
     );
-    let mut hybrid = forged.hybrid.take().unwrap();
-    let mut native = *hybrid.detail.take().unwrap();
-    hybrid.baseline = Some(Box::new(forged));
-    hybrid.coverage.chosen = api::HybridInterpretation::Native;
-    native.hybrid = Some(hybrid);
+    forged.hybrid.as_mut().unwrap().coverage.chosen = api::HybridInterpretation::Native;
+    forged.selected_view = api::AnalysisNamespace::Native;
     assert_eq!(
-        native.validate(),
+        forged.validate(),
         Err(api::ReportValidationFailure::Hybrid(
             api::HybridValidationKind::Source
         ))
@@ -245,23 +316,33 @@ fn failed_baseline_spends_no_precision_and_cancelled_default_publishes_no_report
     assert_eq!(source.coverage().detail, analysis::DetailState::Disabled);
     let report = captured::project(&source, &request, &Control::default()).unwrap();
     report.validate().unwrap();
+    assert_eq!(report.transfers, source.baseline().transfers() as u64);
     assert!(report.hybrid.as_ref().unwrap().local_prefixes.is_empty());
     let mut request = api::AnalyzeRequest::default();
     request.limits.max_work = 1;
     let report = analyze(request).unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
+    assert_eq!(report.transfers, 0);
     assert!(
-        report.states.is_empty(),
+        report.selected_graph().unwrap().states.is_empty(),
         "one work unit must stop before state admission"
     );
-    let api::RootInputBinding::Namespace(binding) = &report.metadata.root_binding else {
+    let api::RootInputBinding::Namespace(binding) =
+        &report.selected_graph().unwrap().metadata.root_binding
+    else {
         panic!("default bytecode must retain its symbolic root binding")
     };
     assert!(matches!(
-        report.metadata.declared_root_source,
+        report
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .declared_root_source,
         api::ProcessSource::InputProgram(_)
     ));
     let template = report
+        .selected_graph()
+        .unwrap()
         .accounts
         .iter()
         .find(|row| row.address == binding.coordinate)
@@ -281,7 +362,8 @@ fn failed_baseline_spends_no_precision_and_cancelled_default_publishes_no_report
     );
     report.validate().unwrap();
     let mut forged = report.clone();
-    forged.programs[program.id].code_address = Some(binding.coordinate.clone());
+    std::sync::Arc::make_mut(&mut forged.programs[program.id]).code_address =
+        Some(binding.coordinate.clone());
     assert_eq!(
         forged.validate(),
         Err(api::ReportValidationFailure::Process(
@@ -294,7 +376,7 @@ fn failed_baseline_spends_no_precision_and_cancelled_default_publishes_no_report
         hybrid.coverage.work.preparation + hybrid.coverage.work.detail,
         0
     );
-    assert!(hybrid.detail.is_none());
+    assert!(report.native.is_none());
     let control = Control::new(analysis::progress::Observer::default());
     control.cancellation().cancel();
     assert_eq!(

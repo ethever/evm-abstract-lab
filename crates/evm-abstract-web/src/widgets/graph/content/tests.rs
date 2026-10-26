@@ -34,7 +34,7 @@ fn source_current_qualifies_known_call_cards_in_ssa_and_disassembly_views() {
                 report.abstract_summaries[0].source_current = source_current;
                 for view in [NodeView::Ssa, NodeView::Disassembly] {
                     let block = report.cfg.iter().find(|block| block.id == source).unwrap();
-                    let node = node_text(ui.painter(), &report, block, view);
+                    let node = node_text(ui.painter(), &(report).view(), block, view);
                     assert!(
                         node.lines
                             .iter()
@@ -53,10 +53,11 @@ fn source_current_qualifies_known_call_cards_in_ssa_and_disassembly_views() {
     output.textures_delta.clear();
 }
 
-fn report() -> evm_abstract_protocol::AnalysisReport {
+fn report() -> crate::tests::AnalysisReport {
     let mut report = crate::tests::report();
     // Native state IDs are unrelated to vector indices and basic-block IDs.
     report.cfg[2].id = 205;
+    report.states[2].state = 205;
     report.ssa.blocks[2].state = 205;
     report.edges.iter_mut().for_each(|edge| {
         if edge.to == 2 {
@@ -80,7 +81,12 @@ fn cfg_preview_consumes_normalized_operations_and_retains_native_receipt_details
         let context = Context::default();
         crate::notation::initialize_fonts(&context);
         let mut output = context.run_ui(RawInput::default(), |ui| {
-            let node = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
+            let node = node_text(
+                ui.painter(),
+                &(report).view(),
+                &report.cfg[2],
+                NodeView::Ssa,
+            );
             assert!(node.lines.iter().any(|(line, _)| line.contains(expected)));
             assert!(node.tooltip.contains(expected));
             assert!(node.tooltip.contains("Original opcode: 0x01 ADD %1 %2"));
@@ -94,7 +100,7 @@ fn cfg_preview_consumes_normalized_operations_and_retains_native_receipt_details
 fn frame(
     ctx: &Context,
     graph: &mut Graph,
-    report: &evm_abstract_protocol::AnalysisReport,
+    report: &crate::tests::AnalysisReport,
     selection: &mut Selection,
     events: Vec<Event>,
 ) -> FullOutput {
@@ -111,7 +117,7 @@ fn frame(
 fn frame_at(
     ctx: &Context,
     graph: &mut Graph,
-    report: &evm_abstract_protocol::AnalysisReport,
+    report: &crate::tests::AnalysisReport,
     selection: &mut Selection,
     events: Vec<Event>,
     size: Vec2,
@@ -122,7 +128,7 @@ fn frame_at(
         ..RawInput::default()
     };
     graph.prepare_input(&mut input);
-    let mut output = ctx.run_ui(input, |ui| graph.show(ui, report, selection));
+    let mut output = ctx.run_ui(input, |ui| graph.show(ui, &(report).view(), selection));
     output.textures_delta.clear();
     output
 }
@@ -143,7 +149,7 @@ fn label_position(output: &FullOutput, label: &str) -> Pos2 {
 fn click(
     ctx: &Context,
     graph: &mut Graph,
-    report: &evm_abstract_protocol::AnalysisReport,
+    report: &crate::tests::AnalysisReport,
     selection: &mut Selection,
     label: &str,
 ) {
@@ -183,7 +189,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     frame(&ctx, &mut graph, &report, &mut selection, Vec::new());
     assert_eq!(graph.content, NodeView::Ssa);
     assert!(
-        graph.nodes[&205]
+        graph.scene.nodes[&205]
             .lines
             .iter()
             .any(|(line, _)| line.contains("%5 = φ(σ₀:%1 (e₁), σ₁:%2 (e₂))")),
@@ -191,16 +197,16 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     );
     click(&ctx, &mut graph, &report, &mut selection, "Disasm");
     assert_eq!(graph.content, NodeView::Disassembly);
-    let source_size = graph.nodes[&205].size;
+    let source_size = graph.scene.nodes[&205].size;
     assert!(
-        !graph.nodes[&205]
+        !graph.scene.nodes[&205]
             .lines
             .iter()
             .any(|(line, _)| line.contains('%'))
     );
     click(&ctx, &mut graph, &report, &mut selection, "SSA");
     assert_eq!(graph.content, NodeView::Ssa);
-    let content = &graph.nodes[&205];
+    let content = &graph.scene.nodes[&205];
     assert!(
         content
             .lines
@@ -222,7 +228,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
         content.size, source_size,
         "mode switch must invalidate measured node content"
     );
-    assert_eq!(graph.placement.nodes[&205].size(), content.size);
+    assert_eq!(graph.scene.placement.nodes[&205].size(), content.size);
     assert_eq!(
         selection,
         Selection {
@@ -233,7 +239,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     );
     click(&ctx, &mut graph, &report, &mut selection, "Disasm");
     assert_eq!(graph.content, NodeView::Disassembly);
-    assert_eq!(graph.nodes[&205].size, source_size);
+    assert_eq!(graph.scene.nodes[&205].size, source_size);
     assert!(!leaf_tooltip(&report, 205, NodeView::Disassembly).contains("%5 ="));
 }
 
@@ -274,7 +280,12 @@ fn diamond_merge_preview_shows_phi_add_definition_and_exit_use_together() {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
-        let content = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
+        let content = node_text(
+            ui.painter(),
+            &(report).view(),
+            &report.cfg[2],
+            NodeView::Ssa,
+        );
         for required in ["%6 = φ(", "%8 = ADD %7, %6", "STOP", "exit μ₁₄ · f₀ [%8]"] {
             assert!(
                 content
@@ -333,7 +344,12 @@ fn ssa_preview_keeps_terminal_phase_and_full_phi_transition_details() {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
-        let content = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
+        let content = node_text(
+            ui.painter(),
+            &(report).view(),
+            &report.cfg[2],
+            NodeView::Ssa,
+        );
         assert_eq!(content.lines.len(), 8);
         assert!(
             !content
@@ -377,7 +393,12 @@ fn ssa_entry_only_and_missing_receipts_never_invent_execution() {
         report.ssa.blocks[2].coverage = coverage;
         report.ssa.blocks[2].incoming_complete = false;
         let mut output = ctx.run_ui(RawInput::default(), |ui| {
-            let content = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
+            let content = node_text(
+                ui.painter(),
+                &(report).view(),
+                &report.cfg[2],
+                NodeView::Ssa,
+            );
             assert!(content.title.contains(&format!("{coverage:?}")));
             assert!(content.detail.contains("incoming open"));
             assert!(
@@ -394,7 +415,12 @@ fn ssa_entry_only_and_missing_receipts_never_invent_execution() {
     let mut report = report();
     report.ssa.blocks.retain(|block| block.state != 205);
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
-        let content = node_text(ui.painter(), &report, &report.cfg[2], NodeView::Ssa);
+        let content = node_text(
+            ui.painter(),
+            &(report).view(),
+            &report.cfg[2],
+            NodeView::Ssa,
+        );
         assert!(content.lines[0].0.contains("SSA unavailable"));
         assert!(!content.tooltip.contains("ADD"));
     });
@@ -418,12 +444,12 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
     graph.zoom = 1.2;
     let offset = Vec2::new(12.0, -8.0);
     graph.pan = graph.viewport.unwrap() * 0.5 + offset
-        - graph.placement.nodes[&205].center().to_vec2() * graph.zoom;
+        - graph.scene.placement.nodes[&205].center().to_vec2() * graph.zoom;
     click(&ctx, &mut graph, &report, &mut selection, "Disasm");
     assert_eq!(graph.content, NodeView::Disassembly);
     assert!(!graph.fitted);
     assert_eq!(graph.zoom, 1.2);
-    let new_offset = graph.pan + graph.placement.nodes[&205].center().to_vec2() * graph.zoom
+    let new_offset = graph.pan + graph.scene.placement.nodes[&205].center().to_vec2() * graph.zoom
         - graph.viewport.unwrap() * 0.5;
     assert!((new_offset - offset).length() < 0.01);
 }
@@ -447,24 +473,24 @@ fn a_representation_switch_preserves_initial_fit_scale_and_canvas_anchor() {
         zoom < 1.0,
         "fixture must first fit its SSA content at a reduced scale"
     );
-    let anchor = graph.pan + graph.placement.nodes[&205].center().to_vec2() * zoom;
-    let ssa_size = graph.nodes[&205].size;
+    let anchor = graph.pan + graph.scene.placement.nodes[&205].center().to_vec2() * zoom;
+    let ssa_size = graph.scene.nodes[&205].size;
     graph.set_content(NodeView::Disassembly, selection.state);
     frame_at(&ctx, &mut graph, &report, &mut selection, Vec::new(), small);
     assert_eq!(
         graph.zoom, zoom,
         "switching to smaller cards must not automatically magnify the graph"
     );
-    assert_ne!(graph.nodes[&205].size, ssa_size);
+    assert_ne!(graph.scene.nodes[&205].size, ssa_size);
     assert!(
-        (graph.pan + graph.placement.nodes[&205].center().to_vec2() * zoom - anchor).length()
+        (graph.pan + graph.scene.placement.nodes[&205].center().to_vec2() * zoom - anchor).length()
             < 0.01
     );
     let camera = (graph.zoom, graph.pan);
-    let nodes = graph.placement.nodes.clone();
+    let nodes = graph.scene.placement.nodes.clone();
     frame(&ctx, &mut graph, &report, &mut selection, Vec::new());
     assert_eq!((graph.zoom, graph.pan), camera);
-    assert_eq!(graph.placement.nodes, nodes);
+    assert_eq!(graph.scene.placement.nodes, nodes);
 }
 
 #[test]
@@ -488,16 +514,16 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
         graph.zoom_at(graph.viewport.unwrap() * 0.5, 1.8);
         graph.pan += Vec2::new(90.0, -70.0);
         assert!(!graph.fitted);
-        let nodes = graph.placement.nodes.clone();
-        let geometry = graph.placement.clone();
+        let nodes = graph.scene.placement.nodes.clone();
+        let geometry = graph.scene.placement.clone();
         click(&ctx, &mut graph, &report, &mut selection, "Fit graph");
         assert!(graph.fitted);
         assert_eq!(graph.content, content);
         assert_eq!(selection, expected);
-        assert_eq!(graph.placement.nodes, nodes);
-        assert_eq!(graph.placement, geometry);
+        assert_eq!(graph.scene.placement.nodes, nodes);
+        assert_eq!(graph.scene.placement, geometry);
         let viewport = Rect::from_min_size(Pos2::ZERO, graph.viewport.unwrap());
-        let scene = graph.screen_rect(viewport, graph.placement.bounds);
+        let scene = graph.screen_rect(viewport, graph.scene.placement.bounds);
         assert!(viewport.contains_rect(scene));
         assert!(
             (scene.center() - viewport.center()).length() < 0.01,
@@ -514,12 +540,12 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     let mut workspace = Workspace::default();
     workspace.graph.set_mode(GraphMode::States);
     workspace.receive(Ok(AnalyzeReply {
-        result: Ok(report.clone()),
+        result: Ok((report.clone()).into()),
     }));
     assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
-        result: Ok(report.clone()),
+        result: Ok((report.clone()).into()),
     }));
     assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
     workspace.view = View::Graph;
@@ -574,7 +600,9 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     }
     assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
     workspace.initial_command();
-    workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
+    workspace.receive(Ok(AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     for (view, size) in [
         (View::Split, Vec2::new(844.0, 390.0)),
         (View::Ssa, Vec2::new(390.0, 844.0)),
@@ -586,13 +614,9 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     }
 }
 
-fn leaf_tooltip(
-    report: &evm_abstract_protocol::AnalysisReport,
-    state: usize,
-    view: NodeView,
-) -> String {
-    let index = super::ReportIndex::new(report);
-    let block = index.cfg(report, state).unwrap();
+fn leaf_tooltip(report: &crate::tests::AnalysisReport, state: usize, view: NodeView) -> String {
+    let index = super::ReportIndex::new(&(report).view());
+    let block = index.cfg(&(report).view(), state).unwrap();
     let node = super::DisplayNode {
         id: state,
         members: vec![state],
@@ -600,5 +624,5 @@ fn leaf_tooltip(
         basic_block: block.basic_block,
         start_pc: block.start_pc,
     };
-    super::node_tooltip(report, &index, &node, view)
+    super::node_tooltip(&(report).view(), &index, &node, view)
 }

@@ -249,7 +249,7 @@ record! {
     /// Report-export policy, independent of execution and logical byte ranges.
     #[derive(std::hash::Hash, Copy)]
     pub struct ExportLimits {
-        /// Maximum actual retained DAG nodes.
+        /// Maximum retained DAG nodes, or scalar rows in the minimum profile.
         pub max_nodes: usize,
         /// Maximum dependency depth.
         pub max_depth: usize,
@@ -258,10 +258,11 @@ record! {
     }
 }
 record! {
-    /// Measured report projection usage; work is diagnostic and has no hard cap.
+    /// Measured projection usage; the minimum profile also pays work from the
+    /// independent persistent application ledger.
     #[derive(std::hash::Hash, Copy)]
     pub struct ExportUsage {
-        /// Actual retained mixed DAG nodes.
+        /// Actual retained DAG nodes, or scalar rows in the minimum profile.
         pub nodes: usize,
         /// Actual exact byte payload.
         pub exact_bytes: usize,
@@ -272,6 +273,10 @@ record! {
 choice! {
     /// Export rejection category, independent of analysis convergence.
     pub enum ExportFailureKind {
+        /// Mandatory application projection could not be funded.
+        Work,
+        /// This scalar's custom predicates have no exact public representation.
+        Numeric,
         /// Actual node count bound.
         Nodes,
         /// Dependency depth bound.
@@ -291,6 +296,8 @@ record! {
         pub kind: ExportFailureKind,
         /// Required amount at rejection; cancellation records projection work
         /// or accepted JSON bytes when `written` is present.
+        /// A Work refusal uses zero when its native enclosing operation does
+        /// not expose the rejected quote.
         pub required: u64,
         /// Frozen export policy.
         pub limits: ExportLimits,
@@ -451,6 +458,10 @@ record! {
 variant! {
     /// Compatibility failure before consuming a report.
     pub enum ReportValidationFailure {
+        /// Inconsistent mandatory numerical/control publication.
+        Minimum(crate::MinimumValidationKind),
+        /// Inconsistent immutable catalog or source-qualified reference.
+        Source(crate::SourceValidationKind),
         /// Inconsistent Hybrid namespace, source, receipt or coverage facts.
         Hybrid(crate::HybridValidationKind),
         /// Process identity, private-state or constructor representation failure.
@@ -472,6 +483,8 @@ variant! {
 impl std::fmt::Display for ReportValidationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Minimum(kind) => write!(f, "invalid minimum model: {kind:?}"),
+            Self::Source(kind) => write!(f, "invalid source reference: {kind:?}"),
             Self::Hybrid(kind) => write!(f, "invalid hybrid evidence: {kind:?}"),
             Self::Process(kind) => write!(f, "invalid process evidence: {kind:?}"),
             Self::Schema(version) => write!(

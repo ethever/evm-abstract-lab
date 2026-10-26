@@ -1,16 +1,16 @@
 //! Report-local SSA identities and facts retain their independent scopes.
+use crate::report::ReportView;
 
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
-    AnalysisReport, SsaFactScope, SsaFactStatus, SsaInstruction, SsaValue, SsaValueFacts,
-    SsaValueOrigin,
+    SsaFactScope, SsaFactStatus, SsaInstruction, SsaValue, SsaValueFacts, SsaValueOrigin,
 };
 
 use super::{Selection, scroll, value};
 use crate::{notation, palette, ssa_display};
 
-pub(super) fn summary(report: &AnalysisReport, selection: Selection) -> String {
+pub(super) fn summary(report: &ReportView<'_>, selection: Selection) -> String {
     let Some(id) = selection.value else {
         return "Inspector: SSA value · no value selected".into();
     };
@@ -32,7 +32,7 @@ pub(super) fn summary(report: &AnalysisReport, selection: Selection) -> String {
     )
 }
 
-pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
+pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selection) {
     if report.ssa.values.is_empty() {
         ui.label("No SSA value definitions are available in this report.");
         return;
@@ -64,7 +64,7 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selection: &mut Selecti
     });
 }
 
-fn details(ui: &mut Ui, report: &AnalysisReport, selected: &SsaValue, selection: &mut Selection) {
+fn details(ui: &mut Ui, report: &ReportView<'_>, selected: &SsaValue, selection: &mut Selection) {
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(format!("Value %{}", selected.id)).strong());
         if crate::controls::action(ui, "Go to source", crate::controls::Density::Compact).clicked()
@@ -287,7 +287,7 @@ fn source_selection(origin: &SsaValueOrigin, value: usize) -> Selection {
     }
 }
 
-fn instruction<'a>(report: &'a AnalysisReport, value: &SsaValue) -> Option<&'a SsaInstruction> {
+fn instruction<'a>(report: &'a ReportView<'_>, value: &SsaValue) -> Option<&'a SsaInstruction> {
     let SsaValueOrigin::Instruction(origin) = &value.origin else {
         return None;
     };

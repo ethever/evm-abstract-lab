@@ -55,9 +55,13 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
             request.limits.root_terminal_coverage = false;
             request.limits.max_expression_nodes = max_nodes;
         }
-        let report =
-            crate::tests::native_component(evm_abstract_server::analyze::analyze(request).unwrap());
-        let wire = serde_json::to_vec(&api::AnalyzeReply { result: Ok(report) }).unwrap();
+        let report = crate::tests::native_component(
+            (evm_abstract_server::analyze::analyze(request).unwrap()).into(),
+        );
+        let wire = serde_json::to_vec(&api::AnalyzeReply {
+            result: Ok((report).into()),
+        })
+        .unwrap();
         let reply: api::AnalyzeReply = serde_json::from_slice(&wire).unwrap();
         let parsed = reply.result.as_ref().unwrap();
         parsed.validate().unwrap();
@@ -70,16 +74,16 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
             .expect("validated report must enter frontend model");
         assert_eq!(installed, &expected);
         if code.starts_with("36") {
-            let state = &installed.states[0];
+            let state = &installed.selected_graph().unwrap().states[0];
             let exit = state.exit.as_ref().unwrap();
             let frame = exit.frames.last().unwrap();
-            let input = &installed.byte_arrays[frame.calldata.unwrap()];
+            let input = &installed.selected_graph().unwrap().byte_arrays[frame.calldata.unwrap()];
             let length = input.length.expression.unwrap();
             assert!(
-                matches!(&installed.symbolic.nodes[length.node], api::Expression::Input(identity)
+                matches!(&installed.selected_graph().unwrap().symbolic.nodes[length.node], api::Expression::Input(identity)
                 if identity.symbol.kind == api::InputSymbolKind::CalldataLength)
             );
-            let instruction = installed.ssa.blocks[0]
+            let instruction = installed.selected_graph().unwrap().ssa.blocks[0]
                 .instructions
                 .iter()
                 .find(|instruction| instruction.pc == 4)
@@ -90,32 +94,39 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
             assert!(instruction.effect_result.is_some());
             if max_nodes.is_none() {
                 assert_eq!(installed.status, api::AnalysisStatus::Converged);
-                assert!(installed.frontiers.is_empty());
-                assert!(installed.ssa.complete);
-                let api::Expression::View(memory) = &installed.symbolic.nodes
-                    [installed.byte_arrays[frame.memory.unwrap()].symbolic.node]
+                assert!(installed.selected_graph().unwrap().frontiers.is_empty());
+                assert!(installed.selected_graph().unwrap().ssa.complete);
+                let api::Expression::View(memory) = &installed
+                    .selected_graph()
+                    .unwrap()
+                    .symbolic
+                    .nodes[installed.selected_graph().unwrap().byte_arrays[frame.memory.unwrap()]
+                    .symbolic
+                    .node]
                 else {
                     panic!("installed memory retains its view")
                 };
-                let copy = &installed.symbolic.nodes[memory.state.node];
+                let copy = &installed.selected_graph().unwrap().symbolic.nodes[memory.state.node];
                 assert!(label(copy).contains("captured source"));
                 let api::Expression::Copy(copy) = copy else {
                     panic!("installed success commits the lazy copy")
                 };
                 assert_eq!(copy.length, length);
                 assert!(matches!(
-                    installed.symbolic.nodes[copy.previous.node],
+                    installed.selected_graph().unwrap().symbolic.nodes[copy.previous.node],
                     api::Expression::BytesZero
                 ));
                 assert_eq!(
-                    installed.symbolic.nodes[copy.destination.node],
+                    installed.selected_graph().unwrap().symbolic.nodes[copy.destination.node],
                     api::Expression::Constant("0x0".into())
                 );
-                let api::Expression::View(source) = &installed.symbolic.nodes[copy.source.node]
+                let api::Expression::View(source) =
+                    &installed.selected_graph().unwrap().symbolic.nodes[copy.source.node]
                 else {
                     panic!("installed copy retains its captured source")
                 };
-                let api::Expression::View(input) = &installed.symbolic.nodes[input.symbolic.node]
+                let api::Expression::View(input) =
+                    &installed.selected_graph().unwrap().symbolic.nodes[input.symbolic.node]
                 else {
                     panic!("installed calldata retains its input view")
                 };
@@ -123,7 +134,7 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                 assert_eq!(source.offset, input.offset);
                 assert_eq!(source.length, length);
                 assert!(matches!(
-                    installed.symbolic.nodes[exit.path.node],
+                    installed.selected_graph().unwrap().symbolic.nodes[exit.path.node],
                     api::Expression::PathAnd(_)
                 ));
                 assert_eq!(instruction.progress, api::InstructionProgress::Completed);
@@ -131,8 +142,8 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                 // Three nodes admit calldata but cannot retain the complete
                 // logical-memory guard. Its mandatory partition stays pending.
                 assert_eq!(installed.status, api::AnalysisStatus::Incomplete);
-                assert!(!installed.ssa.complete);
-                let [frontier] = installed.frontiers.as_slice() else {
+                assert!(!installed.selected_graph().unwrap().ssa.complete);
+                let [frontier] = installed.selected_graph().unwrap().frontiers.as_slice() else {
                     panic!("expected exactly the installed logical range refusal")
                 };
                 assert_eq!(frontier.kind, api::FrontierKind::Relations);
@@ -152,19 +163,21 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                 );
                 assert_eq!(range.nonzero, None);
                 assert!(range.condition.expression.is_none());
-                let pending = &installed.pending_machines[range.payload];
+                let pending = &installed.selected_graph().unwrap().pending_machines[range.payload];
                 assert_eq!(pending.frames, exit.frames);
                 assert_eq!(pending.store, exit.store);
                 assert_eq!(exit.store, state.entry.store);
                 assert!(frame.stack.is_empty());
-                let memory = &installed.byte_arrays[frame.memory.unwrap()];
+                let memory =
+                    &installed.selected_graph().unwrap().byte_arrays[frame.memory.unwrap()];
                 assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
-                let api::Expression::View(view) = &installed.symbolic.nodes[memory.symbolic.node]
+                let api::Expression::View(view) =
+                    &installed.selected_graph().unwrap().symbolic.nodes[memory.symbolic.node]
                 else {
                     panic!("installed refusal retains the pre-effect memory view")
                 };
                 assert!(matches!(
-                    installed.symbolic.nodes[view.state.node],
+                    installed.selected_graph().unwrap().symbolic.nodes[view.state.node],
                     api::Expression::BytesZero
                 ));
                 assert_eq!(
@@ -175,17 +188,19 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                     instruction.operation,
                     api::SsaOperation::Opcode(_)
                 ));
-                assert!(!installed.ssa.values.iter().any(|value| {
+                assert!(!installed.selected_graph().unwrap().ssa.values.iter().any(|value| {
                     matches!(&value.origin, api::SsaValueOrigin::Instruction(origin) if origin.pc == 4)
                 }));
                 assert!(
-                    !installed.ssa.blocks[0]
+                    !installed.selected_graph().unwrap().ssa.blocks[0]
                         .instructions
                         .iter()
                         .any(|instruction| instruction.pc > 4)
                 );
                 assert!(
                     installed
+                        .selected_graph()
+                        .unwrap()
                         .symbolic
                         .nodes
                         .iter()
@@ -193,6 +208,8 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                 );
                 assert!(
                     installed
+                        .selected_graph()
+                        .unwrap()
                         .outcomes
                         .iter()
                         .all(|outcome| outcome.kind == api::OutcomeKind::Failure)
@@ -200,9 +217,11 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
             }
         } else {
             assert_eq!(installed.status, api::AnalysisStatus::Converged);
-            assert!(installed.frontiers.is_empty());
+            assert!(installed.selected_graph().unwrap().frontiers.is_empty());
             assert!(
                 installed
+                    .selected_graph()
+                    .unwrap()
                     .states
                     .iter()
                     .filter_map(|s| s.exit.as_ref())
@@ -212,29 +231,47 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                         .is_some_and(|v| v.constants == Some(vec!["0x7".into()]))))
             );
             let store = installed
+                .selected_graph()
+                .unwrap()
                 .symbolic
                 .nodes
                 .iter()
                 .find(|node| matches!(node, api::Expression::Store(_)))
                 .unwrap();
             assert!(label(store).contains("ordered update"));
-            assert!(installed.ssa.values.iter().any(|v| {
-                matches!(&v.origin,api::SsaValueOrigin::Instruction(origin) if origin.pc==7)
-                    && v.facts.iter().any(|fact| {
-                        fact.status == api::SsaFactStatus::Current
-                            && fact.constant.as_deref() == Some("0x7")
-                            && fact.value.is_some()
+            assert!(
+                installed
+                    .selected_graph()
+                    .unwrap()
+                    .ssa
+                    .values
+                    .iter()
+                    .any(|v| {
+                        matches!(&v.origin,api::SsaValueOrigin::Instruction(origin) if origin.pc==7)
+                            && v.facts.iter().any(|fact| {
+                                fact.status == api::SsaFactStatus::Current
+                                    && fact.constant.as_deref() == Some("0x7")
+                                    && fact.value.is_some()
+                            })
                     })
-            }));
-            assert!(installed.ssa.values.iter().any(|value| {
-                value.facts.iter().any(|fact| {
-                    fact.status == api::SsaFactStatus::Current
-                        && fact.scope == api::SsaFactScope::Definition
-                        && fact.source == api::SsaFactSource::Literal
-                        && fact.constant.as_deref() == Some("0x7")
-                        && fact.value.is_none()
-                })
-            }));
+            );
+            assert!(
+                installed
+                    .selected_graph()
+                    .unwrap()
+                    .ssa
+                    .values
+                    .iter()
+                    .any(|value| {
+                        value.facts.iter().any(|fact| {
+                            fact.status == api::SsaFactStatus::Current
+                                && fact.scope == api::SsaFactScope::Definition
+                                && fact.source == api::SsaFactSource::Literal
+                                && fact.constant.as_deref() == Some("0x7")
+                                && fact.value.is_none()
+                        })
+                    })
+            );
         }
     }
 }

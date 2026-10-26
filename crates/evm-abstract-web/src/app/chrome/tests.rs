@@ -30,14 +30,16 @@ fn status(
     workspace.receive_message(Message::Status {
         generation,
         operation,
-        result: Ok(api::JobReply {
+        result: Box::new(Ok(api::JobReply {
             result: Ok(api::JobSnapshot {
+                publication: (state == evm_abstract_protocol::JobState::Completed)
+                    .then(crate::tests::native_publication),
                 id,
                 state,
                 progress: api::AnalysisProgress::default(),
                 timings: api::AnalysisTimings::default(),
             }),
-        }),
+        })),
     });
 }
 
@@ -47,7 +49,12 @@ fn result(generation: u64, id: api::JobId) -> Message {
     Message::Result {
         generation,
         id,
-        result: Box::new(Ok(api::AnalyzeReply { result: Ok(report) })),
+        result: Box::new(Ok(crate::tests::job_result(
+            id,
+            api::AnalyzeReply {
+                result: Ok((report).into()),
+            },
+        ))),
         transfer_ns: 0,
         parsing_ns: 0,
     }
@@ -68,6 +75,8 @@ fn complete(workspace: &mut Workspace, generation: u64, id: api::JobId) {
         JobOperation::Poll,
         api::JobState::Completed,
     );
+    let _ = workspace.task.next_command(f64::MAX);
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(result(generation, id));
     assert_eq!(workspace.task.phase, TaskPhase::Ready);
     assert_eq!(workspace.report_job_id, Some(id));
@@ -255,7 +264,14 @@ fn failed_and_cancelled_job_ids_remain_copyable_with_or_without_a_previous_repor
             if previous {
                 assert_eq!(workspace.report_job_id, Some(old));
                 assert_eq!(
-                    workspace.report.as_ref().unwrap().metadata.work,
+                    workspace
+                        .report
+                        .as_ref()
+                        .unwrap()
+                        .selected_graph()
+                        .unwrap()
+                        .metadata
+                        .work,
                     generation - 1
                 );
                 assert_copy(&mut workspace, 390.0, "Result Job ID", old, 1);
@@ -291,6 +307,7 @@ fn retained_result_identity_changes_only_for_the_accepted_new_result() {
         JobOperation::Poll,
         api::JobState::Completed,
     );
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(result(first, old));
     assert_eq!(workspace.task.snapshot.as_ref().unwrap().id, current);
     status(
@@ -300,12 +317,25 @@ fn retained_result_identity_changes_only_for_the_accepted_new_result() {
         JobOperation::Poll,
         api::JobState::Completed,
     );
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(result(second, old));
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(result(first, current));
     assert_eq!(workspace.task.phase, TaskPhase::Fetching);
     assert_eq!(workspace.report_job_id, Some(old));
-    assert_eq!(workspace.report.as_ref().unwrap().metadata.work, first);
+    assert_eq!(
+        workspace
+            .report
+            .as_ref()
+            .unwrap()
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .work,
+        first
+    );
     assert_copy(&mut workspace, 390.0, "Result Job ID", old, 1);
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {
         generation: second,
         id: current,
@@ -314,15 +344,37 @@ fn retained_result_identity_changes_only_for_the_accepted_new_result() {
         parsing_ns: 0,
     });
     assert_eq!(workspace.report_job_id, Some(old));
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(result(second, current));
     assert!(!workspace.previous_report);
     assert_eq!(workspace.report_job_id, Some(current));
-    assert_eq!(workspace.report.as_ref().unwrap().metadata.work, second);
+    assert_eq!(
+        workspace
+            .report
+            .as_ref()
+            .unwrap()
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .work,
+        second
+    );
     assert_copy(&mut workspace, 390.0, "Job ID", current, 0);
     assert!(!workspace.accessible_status().contains("Result Job ID:"));
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(result(first, old));
     assert_eq!(workspace.report_job_id, Some(current));
-    assert_eq!(workspace.report.as_ref().unwrap().metadata.work, second);
+    assert_eq!(
+        workspace
+            .report
+            .as_ref()
+            .unwrap()
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .work,
+        second
+    );
     assert_copy(&mut workspace, 390.0, "Job ID", current, 0);
 }
 
@@ -342,19 +394,33 @@ fn invalid_result_cannot_bind_the_visible_report_to_the_new_job() {
         api::JobState::Completed,
     );
     let mut invalid = report();
-    invalid.schema_version = 0;
+    invalid.model.schema_version = 0;
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {
         generation: second,
         id: current,
-        result: Box::new(Ok(api::AnalyzeReply {
-            result: Ok(invalid),
-        })),
+        result: Box::new(Ok(crate::tests::job_result(
+            current,
+            api::AnalyzeReply {
+                result: Ok((invalid).into()),
+            },
+        ))),
         transfer_ns: 0,
         parsing_ns: 0,
     });
     assert_eq!(workspace.task.phase, TaskPhase::Failed);
     assert_eq!(workspace.report_job_id, Some(old));
-    assert_eq!(workspace.report.as_ref().unwrap().metadata.work, first);
+    assert_eq!(
+        workspace
+            .report
+            .as_ref()
+            .unwrap()
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .work,
+        first
+    );
     assert!(workspace.previous_report);
     assert_copy(&mut workspace, 390.0, "Current Job ID", current, 0);
     assert_copy(&mut workspace, 390.0, "Result Job ID", old, 1);
@@ -367,7 +433,7 @@ fn standalone_receive_does_not_inherit_the_previous_server_result_id() {
     let generation = start(&mut workspace);
     complete(&mut workspace, generation, id);
     workspace.receive(Ok(api::AnalyzeReply {
-        result: Ok(report()),
+        result: Ok((report()).into()),
     }));
     assert!(workspace.report_job_id.is_none());
     assert_copy(&mut workspace, 390.0, "Current Job ID", id, 0);
@@ -400,17 +466,30 @@ fn requested_certificate_absence_is_quiet_only_when_detail_has_converged() {
         }
         let report = evm_abstract_server::analyze::analyze(request).unwrap();
         report.validate().unwrap();
-        assert!(report.metadata.limits.root_terminal_coverage);
-        assert!(report.root_terminal_coverage.is_none());
-        assert_eq!(report.ssa.complete, !incomplete);
+        assert!(
+            report
+                .selected_graph()
+                .unwrap()
+                .metadata
+                .limits
+                .root_terminal_coverage
+        );
+        assert!(
+            report
+                .selected_graph()
+                .unwrap()
+                .root_terminal_coverage
+                .is_none()
+        );
+        assert_eq!(report.selected_graph().unwrap().ssa.complete, !incomplete);
         let expected_detail = if incomplete {
             assert_eq!(report.status, api::AnalysisStatus::Incomplete);
-            assert!(!report.frontiers.is_empty());
+            assert!(!report.selected_graph().unwrap().frontiers.is_empty());
             assert_eq!(terminal_coverage::status(&report), Some(NOT_ATTACHED));
             "Global model incomplete"
         } else {
             assert_eq!(report.status, api::AnalysisStatus::Converged);
-            assert!(report.frontiers.is_empty());
+            assert!(report.selected_graph().unwrap().frontiers.is_empty());
             assert_eq!(terminal_coverage::status(&report), None);
             "Global model converged"
         };
@@ -439,6 +518,6 @@ fn requested_certificate_absence_is_quiet_only_when_detail_has_converged() {
         let live = workspace.accessible_status();
         assert_eq!(live.contains(NOT_ATTACHED), incomplete);
         assert!(!live.contains(COVERED));
-        assert_eq!(workspace.report.as_ref().unwrap(), &report);
+        assert_eq!(workspace.report.as_ref().unwrap(), &report.clone());
     }
 }

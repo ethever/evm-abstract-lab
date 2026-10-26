@@ -1,14 +1,16 @@
 //! Installed tests cross Session, the native engine and real finite HTTP RPC.
 
+mod publication;
 mod transport;
 
 use super::{RpcBaselineRelation, RpcHybridAnalysis, RpcPrecisionOutcome};
 use crate::{
     U256,
     analysis::{
-        AnalysisEngine, AnalysisInput, EnginePolicies, ExecutionConfig, FrontierReason,
+        AnalysisEngine, AnalysisInput, EnginePolicies, ExecutionConfig, FrameCode, FrontierReason,
         HybridConfig, HybridInterpretation, HybridLocalScope, HybridNativeBinding, MachineEdgeKind,
-        ProcessSource, ProjectionError, Status, analyze_rpc_hybrid,
+        ProcedureSummaryKind, ProcessSource, ProjectionError, Status, TransferSemantics,
+        analyze_rpc_hybrid,
         control::Control,
         cooperation::NoExtension,
         layers::{AnalysisSession, Observation, SessionError, SnapshotId},
@@ -674,25 +676,83 @@ fn proxy_storage_selects_missing_implementation_and_preserves_delegate_owner() {
         assert_eq!(server.count("eth_getStorageAt", address(0x200)), 0);
         assert_eq!(server.count("eth_getCode", address(0x200)), 1);
         let detail = report.detail().unwrap();
-        let implementation = detail.world().runtime(address(0x200)).unwrap();
-        let target_pcs: Vec<_> = report
-            .local_detail()
-            .filter(|s| s.frame.code_address == address(0x200))
-            .flat_map(|s| s.successors.iter())
-            .filter(|(_, kind)| {
-                *kind == MachineEdgeKind::Intraprocedural(crate::analysis::EdgeKind::Jump)
-            })
-            .map(|(to, _)| {
-                implementation.blocks()[detail.states()[*to].active().basic_block_index].start_pc
-            })
-            .collect();
-        assert_eq!(target_pcs, [5]);
-        assert!(
-            report
-                .local_detail()
-                .filter(|s| s.frame.code_address == address(0x200))
-                .all(|s| s.frame.address == address(0x101))
+        assert!(report.coverage().detail_at_current_revision);
+        assert_eq!(detail.snapshot(), report.baseline().baseline().snapshot());
+        assert_eq!(detail.revision(), report.coverage().current_revision);
+        assert_eq!(
+            report.detail_report().unwrap().coverage().detail_binding,
+            HybridNativeBinding::OriginalOwner
         );
+        let implementation = detail.world().runtime(address(0x200)).unwrap();
+        // The unselected callee uses relative Native bodies, whose IDs belong
+        // to this record rather than the outer machine instruction receipts.
+        let mut records = detail.procedure_summaries().iter().filter(|record| {
+            record.source_current
+                && record.kind == ProcedureSummaryKind::KnownCall
+                && detail.states()[record.source_state].active().code_address == address(0x200)
+        });
+        let record = records.next().expect("current implementation relation");
+        assert!(records.next().is_none());
+        assert!(record.closed && record.version.generation > 0);
+        let source = &detail.states()[record.source_state];
+        assert_eq!(source.id, record.source_state);
+        assert_eq!(source.active().code_hash, implementation.bytes_digest());
+        assert_eq!(source.active().address, address(0x101));
+        assert_eq!(source.active().mode, FrameCode::Runtime);
+        assert!(source.active().process.is_none());
+        assert!(source.execution_evidence().unwrap().is_current());
+        let procedure = record.root_procedure.unwrap();
+        let model = &record.procedures[procedure];
+        assert_eq!(model.version.namespace, record.version.namespace);
+        assert_eq!(&model.frame, source.active());
+        assert_eq!(model.semantics, TransferSemantics::Native);
+        let bodies: Vec<_> = record
+            .regional_cfg
+            .nodes
+            .iter()
+            .filter(|node| node.frame.code_address == address(0x200))
+            .collect();
+        assert!(!bodies.is_empty());
+        let mut target_pcs = Vec::new();
+        let mut visited_blocks = Vec::new();
+        for body in &bodies {
+            assert_eq!(body.procedure, procedure);
+            assert_eq!(body.frame.code_hash, source.active().code_hash);
+            assert_eq!(body.frame.mode, FrameCode::Runtime);
+            assert_eq!(body.frame.address, address(0x101));
+            assert!(body.frame.process.is_none() && !body.excluded);
+            let transfer = body.transfer.as_ref().unwrap();
+            assert_eq!(transfer.semantics, TransferSemantics::Native);
+            assert!(transfer.process.is_none());
+            assert_eq!(transfer.input_revision, body.input_revision);
+            assert!(transfer.current && transfer.complete && transfer.visited_block);
+            visited_blocks.push(body.frame.basic_block_index);
+            for edge in &transfer.successors {
+                if edge.kind != MachineEdgeKind::Intraprocedural(crate::analysis::EdgeKind::Jump) {
+                    continue;
+                }
+                let target = &record.regional_cfg.nodes[edge.to];
+                assert_eq!(target.id, edge.to);
+                assert_eq!(target.procedure, body.procedure);
+                assert_eq!(target.frame.code_address, body.frame.code_address);
+                assert_eq!(target.frame.code_hash, body.frame.code_hash);
+                target_pcs.push(implementation.blocks()[target.frame.basic_block_index].start_pc);
+            }
+        }
+        assert_eq!(target_pcs, [5]);
+        // Both destinations are legal, but only PC5 has a current visited
+        // Native receipt after reading slot one from the delegated owner.
+        for (pc, visited) in [(4, false), (5, true)] {
+            let block = implementation
+                .jumpdest_blocks()
+                .get(&pc)
+                .expect("legal implementation JUMPDEST");
+            assert_eq!(
+                visited_blocks.contains(block),
+                visited,
+                "Native visit at PC{pc}"
+            );
+        }
         assert_accounting(&report, product_config().max_work);
     });
 }

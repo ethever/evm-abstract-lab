@@ -346,7 +346,9 @@ fn verify_transition<N: WordElement>(
     let target_depth = to.entry.call_stack.depth();
     let last = source.instructions.last().map(|s| &s.instruction);
     match edge.kind {
-        MachineEdgeKind::Intraprocedural(_) | MachineEdgeKind::Process(_) => {
+        MachineEdgeKind::Intraprocedural(_)
+        | MachineEdgeKind::Process(_)
+        | MachineEdgeKind::ProcessControl => {
             if target_depth != source_depth || transition.result.is_some() {
                 return Err(invariant(Kind::PartialLocalEdgeDepth)
                     .expected(source_depth)
@@ -409,7 +411,9 @@ fn verify_transition<N: WordElement>(
     }
     let operands = if matches!(
         edge.kind,
-        MachineEdgeKind::Intraprocedural(_) | MachineEdgeKind::Process(_)
+        MachineEdgeKind::Intraprocedural(_)
+            | MachineEdgeKind::Process(_)
+            | MachineEdgeKind::ProcessControl
     ) {
         Vec::new()
     } else {

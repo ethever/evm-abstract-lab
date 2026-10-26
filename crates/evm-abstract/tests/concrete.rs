@@ -3,8 +3,11 @@
 use evm_abstract::analysis::control::Control;
 use evm_abstract::analysis::{AnalysisInput, ExecutionConfig};
 
+#[path = "support/arithmetic.rs"]
+mod arithmetic;
 #[path = "support/native.rs"]
 mod native;
+use arithmetic::evaluate as arithmetic;
 
 use evm_abstract::domain::NumericValue;
 use evm_abstract::{
@@ -73,24 +76,6 @@ fn concrete(code: &[u8], calldata: Vec<u8>, fork: Fork) -> Trace {
         "concrete oracle did not succeed: {result:?}"
     );
     evm.inspector
-}
-
-fn arithmetic(op: u8, args: &[U256], fork: Fork) -> U256 {
-    let mut code = Vec::new();
-    for value in args.iter().rev() {
-        code.push(0x7f); // PUSH32，测试夹具只负责拼装，opcode 的语义交给 revm。
-        code.extend(value.to_be_bytes::<32>());
-    }
-    code.extend([op, 0x00]);
-    let trace = concrete(&code, Vec::new(), fork);
-    *trace
-        .steps
-        .iter()
-        .find(|step| step.opcode == op && step.pc == args.len() * 33)
-        .unwrap()
-        .after
-        .last()
-        .unwrap()
 }
 
 // 具体 oracle 判断数值；运算来源与直接常量来源应当保持可区分。

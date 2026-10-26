@@ -5,6 +5,7 @@ mod analyzer;
 mod entry_lifecycle;
 mod generations;
 mod invalidation;
+mod protocol_cost;
 mod refinement;
 mod reporting;
 mod snapshot;
@@ -14,7 +15,7 @@ use crate::{Kernel, Scope, ScopeKey};
 #[path = "../tests/support/meter.rs"]
 mod meter;
 use analyzer::Noop;
-use meter::{Budget, Stop};
+pub(super) use meter::{Budget, Stop};
 
 fn scope<J>(kernel: &mut Kernel<J>, meter: &mut Budget, context: u64, generation: u64) -> Scope {
     kernel

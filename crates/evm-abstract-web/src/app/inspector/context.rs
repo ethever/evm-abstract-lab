@@ -1,12 +1,13 @@
 //! Frame and effective-environment context beside the shared source selection.
+use crate::report::ReportView;
 
 use super::value;
 use crate::palette;
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{AnalysisReport, EnvironmentSnapshot, FrameSnapshot};
+use evm_abstract_protocol::{EnvironmentSnapshot, FrameSnapshot};
 
-pub(super) fn frame(ui: &mut Ui, report: &AnalysisReport, frame: &FrameSnapshot) {
+pub(super) fn frame(ui: &mut Ui, report: &ReportView<'_>, frame: &FrameSnapshot) {
     if let Some(key) = &frame.process {
         super::process::frame(ui, key);
         if let Some(operands) = &frame.process_operands {
@@ -156,7 +157,7 @@ pub(super) fn frame(ui: &mut Ui, report: &AnalysisReport, frame: &FrameSnapshot)
     }
 }
 
-pub(super) fn environment(ui: &mut Ui, report: &AnalysisReport) {
+pub(super) fn environment(ui: &mut Ui, report: &ReportView<'_>) {
     ui.label(RichText::new("Declared root input").strong());
     match &report.metadata.root_binding {
         evm_abstract_protocol::RootInputBinding::Physical(source) => {

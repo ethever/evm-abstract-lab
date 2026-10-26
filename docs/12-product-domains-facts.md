@@ -279,12 +279,12 @@ nix run . -- analyze \
   --numeric-model product --max-constants 512 --reduction-rounds 16 --max-facts 4096 \
   --max-work 1000000000000 --format json > /tmp/facts-world.json
 
-jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
+jq '(.native // .global).analysis | .schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-原生报告的 `schema_version` 为 15，独立的 Web 协议为 19；`domain_spec.schema_version` 为 3。CLI 用 `numeric_model: "product"` / `"finite-set"` 记录所选模型，wire 20 对应为 `"Product"` / `"FiniteSet"`，`domain_spec` 则保存实际代数的 word 宽度、常量容量、交换上限、widening、费用版本、来源策略和关系限制，不包含模型选择器。原生 `Config` 只保存上下文、状态和 transfer 限制，`ExecutionConfig` 再保存工作、调用深度、具体物化等执行预算；数值与关系限制只由 `algebra.spec()` 提供。`DomainSpec::validate()` 返回类型化 `DomainSpecError`；表达式与关系上限为零时，即使关闭关系推理也会拒绝。
+原生报告的 `schema_version`、独立的 Web 协议版本与 `domain_spec.schema_version` 分别由[原生分析格式](../crates/evm-abstract/src/analysis.rs)、[Web 协议](../crates/evm-abstract-protocol/src/lib.rs)和[域策略](../crates/evm-abstract/src/domain/spec.rs)定义。CLI 用 `numeric_model: "product"` / `"finite-set"` 记录所选模型，Web 协议对应为 `"Product"` / `"FiniteSet"`，`domain_spec` 则保存实际代数的 word 宽度、常量容量、交换上限、widening、费用版本、来源策略和关系限制，不包含模型选择器。原生 `Config` 只保存上下文、状态和 transfer 限制，`ExecutionConfig` 再保存工作、调用深度、具体物化等执行预算；数值与关系限制只由 `algebra.spec()` 提供。`DomainSpec::validate()` 返回类型化 `DomainSpecError`；表达式与关系上限为零时，即使关闭关系推理也会拒绝。
 
-当前 `cost_version` 为 8，冻结本次分析的逻辑工作计费口径。版本 7 的借用式数值操作与显式 opcode 工作报价，以及版本 6 的共享 kernel、规则和独立查询计费，都是此前的口径；跨费用版本的原始 work 不是同一单位，同样整数预算不代表相同分析工作量，不能直接相除解释为提速。`domain_spec.relations` 冻结关系开关与表达式/约束预算。子调用使用同一代数和策略，[调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)还要检查实际输入、来源和策略资格；模型标签不能代替这些检查。
+`DomainSpec.cost_version` 冻结本次分析的逻辑工作计费口径，当前值见[域策略定义](../crates/evm-abstract/src/domain/spec.rs)。版本 7 的借用式数值操作与显式 opcode 工作报价，以及版本 6 的共享 kernel、规则和独立查询计费，都是此前的口径；跨费用版本的原始 work 不是同一单位，同样整数预算不代表相同分析工作量，不能直接相除解释为提速。`domain_spec.relations` 冻结关系开关与表达式/约束预算。子调用使用同一代数和策略，[调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)还要检查实际输入、来源和策略资格；模型标签不能代替这些检查。
 
 `--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 finite-set 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 

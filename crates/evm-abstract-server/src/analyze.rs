@@ -8,6 +8,7 @@ mod input;
 mod mapping;
 mod pools;
 mod process;
+mod publication;
 mod report;
 mod rpc;
 mod ssa;
@@ -32,7 +33,7 @@ use evm_abstract_protocol as api;
 
 /// Independent application allowance shared by requested native postprocessing.
 /// It matches the CLI policy and remains available after execution stops.
-pub const DEFAULT_POSTPROCESS_WORK: usize = 2_000_000_000;
+pub const DEFAULT_POSTPROCESS_WORK: usize = api::application_defaults::DEFAULT_POSTPROCESS_WORK;
 
 /// Analyze bytecode without an RPC registry; RPC inputs require `analyze_with_providers`.
 pub fn analyze(request: api::AnalyzeRequest) -> Result<api::AnalysisReport, api::ApiError> {
@@ -58,14 +59,68 @@ pub fn analyze_with_control_and_providers(
     control: &Control,
     providers: &crate::rpc_providers::Registry,
 ) -> Result<api::AnalysisReport, api::ApiError> {
+    analyze_publishing(
+        request,
+        control,
+        providers,
+        publication::Options {
+            publisher: None,
+            max_work: DEFAULT_POSTPROCESS_WORK,
+        },
+    )
+}
+
+/// Run with configured providers and commit a closed Global publication before
+/// optional Native work. Custom pool executors can preserve staged delivery.
+pub fn analyze_with_publisher(
+    request: api::AnalyzeRequest,
+    control: &Control,
+    providers: &crate::rpc_providers::Registry,
+    publisher: &crate::jobs::Publisher,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    analyze_with_publisher_and_limit(
+        request,
+        control,
+        providers,
+        publisher,
+        DEFAULT_POSTPROCESS_WORK,
+    )
+}
+
+/// Set one application allowance shared by minimum and optional rich export.
+/// Execution and fixed-snapshot RPC retain the request's separate original payer.
+pub fn analyze_with_publisher_and_limit(
+    request: api::AnalyzeRequest,
+    control: &Control,
+    providers: &crate::rpc_providers::Registry,
+    publisher: &crate::jobs::Publisher,
+    postprocess_work: usize,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    analyze_publishing(
+        request,
+        control,
+        providers,
+        publication::Options {
+            publisher: Some(publisher),
+            max_work: postprocess_work,
+        },
+    )
+}
+
+fn analyze_publishing(
+    request: api::AnalyzeRequest,
+    control: &Control,
+    providers: &crate::rpc_providers::Registry,
+    publishing: publication::Options<'_>,
+) -> Result<api::AnalysisReport, api::ApiError> {
     let timing = timing::Guard::start(control);
     let mut result = control.scope(|| {
         providers.validate_request(&request)?;
-        run(request, control, providers)
+        run(request, control, providers, publishing)
     });
     drop(timing);
     if let Ok(report) = &mut result {
-        report.metadata.timings = timing::project(control.observer().timing(), 0);
+        report.timings = timing::project(control.observer().timing(), 0);
     }
     result
 }
@@ -97,6 +152,7 @@ fn run(
     request: api::AnalyzeRequest,
     control: &Control,
     providers: &crate::rpc_providers::Registry,
+    publishing: publication::Options<'_>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     checkpoint(control)?;
     control.observer().phase(Phase::Validating);
@@ -112,6 +168,7 @@ fn run(
             api::NumericModel::Product,
             control,
             providers,
+            publishing,
         ),
         api::NumericModel::FiniteSet => run_typed(
             request,
@@ -120,6 +177,7 @@ fn run(
             api::NumericModel::FiniteSet,
             control,
             providers,
+            publishing,
         ),
     }
 }
@@ -131,27 +189,45 @@ fn run_typed<D: EvmNumericAlgebra>(
     numeric_model: api::NumericModel,
     control: &Control,
     providers: &crate::rpc_providers::Registry,
+    publishing: publication::Options<'_>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
+    let mut budget = evm_abstract::resource::WorkBudget::new(publishing.max_work);
     let policies = EnginePolicies::default();
     let mut extension = NoExtension;
     let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
     let mut environment = input::environment::<D::Element>(&request.environment)?;
     let fork = input::fork(request.fork);
+    let hybrid_config = input::hybrid_config(&request.limits)?;
     match &request.input {
         api::AnalysisInput::Bytecode(source) => {
             let input = input::bytecode(source, fork, environment)?;
             checkpoint(control)?;
             control.observer().phase(Phase::Analyzing);
-            let hybrid = engine
-                .run_hybrid(input, config, analysis::HybridConfig::default(), control)
-                .map_err(errors::execution)?;
-            report::hybrid::project(
-                &hybrid,
+            let mut staged = publication::Projection::new(
                 &request,
                 api::AnalysisScope::SingleProgram,
                 &algebra,
                 numeric_model,
                 control,
+                publishing.publisher,
+                &mut budget,
+            );
+            let hybrid = engine
+                .run_hybrid_with_publisher(input, config, hybrid_config, control, &mut staged)
+                .map_err(errors::execution);
+            let hybrid = staged.resolve(hybrid)?;
+            let retained = staged.finish(&hybrid)?;
+            report::hybrid::project_with_retained_global(
+                &hybrid,
+                &algebra,
+                control,
+                &mut budget,
+                report::ProjectionInput {
+                    request: &request,
+                    scope: api::AnalysisScope::SingleProgram,
+                    numeric_model,
+                },
+                retained.as_deref(),
             )
         }
         api::AnalysisInput::Rpc(source) => {
@@ -160,7 +236,16 @@ fn run_typed<D: EvmNumericAlgebra>(
             let endpoint = providers.endpoint(&source.provider_id)?;
             let input = input::rpc(source, endpoint, fork, &request.limits)?;
             checkpoint(control)?;
-            let hybrid = analysis::analyze_rpc_hybrid(
+            let mut staged = publication::Projection::new(
+                &request,
+                api::AnalysisScope::RpcWorld,
+                &algebra,
+                numeric_model,
+                control,
+                publishing.publisher,
+                &mut budget,
+            );
+            let hybrid = analysis::analyze_rpc_hybrid_with_publisher(
                 engine,
                 &input,
                 EvmEntry {
@@ -168,11 +253,25 @@ fn run_typed<D: EvmNumericAlgebra>(
                     environment,
                 },
                 config,
-                analysis::HybridConfig::default(),
+                hybrid_config,
                 control,
+                &mut staged,
             )
-            .map_err(rpc_error)?;
-            report::hybrid::rpc::project(hybrid, &request, &algebra, numeric_model, control)
+            .map_err(rpc_error);
+            let hybrid = staged.resolve(hybrid)?;
+            let retained = staged.finish(hybrid.baseline())?;
+            report::hybrid::rpc::project_with_retained_global(
+                hybrid,
+                &algebra,
+                control,
+                &mut budget,
+                report::ProjectionInput {
+                    request: &request,
+                    scope: api::AnalysisScope::RpcWorld,
+                    numeric_model,
+                },
+                retained.as_deref(),
+            )
         }
     }
 }

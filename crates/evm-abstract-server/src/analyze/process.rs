@@ -5,7 +5,7 @@ use super::symbolic::Pool;
 pub(super) use creation::{completion, continuation};
 use evm_abstract::analysis;
 use evm_abstract_protocol as api;
-pub(super) use frame::{invocation, key, operands, source};
+pub(super) use frame::{invocation, key, location, operands, source};
 
 pub(super) fn semantics(native: analysis::TransferSemantics) -> api::TransferSemantics {
     match native {
@@ -75,6 +75,11 @@ pub(super) fn transfer(
     }
     export.charge(0)?;
     Ok(api::ProcessTransfer {
+        control: native
+            .control
+            .as_ref()
+            .map(|region| export.control_region(region))
+            .transpose()?,
         repeat: native.repeat,
         actions,
         creations: native

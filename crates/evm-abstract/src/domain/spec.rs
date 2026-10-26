@@ -38,8 +38,9 @@ impl DomainSpec {
             capacity,
             reduction_rounds,
             fact_limit,
-            // Version 8 pays native summary callers, readers and replay separately.
-            cost_version: 8,
+            // Version 9 pays moved-history preparation and rollback directly,
+            // instead of the former full-payload copy. Prior work units differ.
+            cost_version: 9,
             widening_after_updates: 2,
             provenance_policy: "scoped-expressions-and-value-identities-v3",
             relations: super::relational::RelationLimits::default(),

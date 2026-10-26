@@ -103,6 +103,7 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 | Logical work / `max_work` | 2,000,000,000 |
 | Call depth / `max_call_depth` | 1,025 |
 | Memory bytes / `max_memory_bytes` | 67,108,864（64 MiB） |
+| Detailed code sources / `max_detail_regions`（analyze / explain / Web） | 1 |
 | Jump context depth / `context_depth` | 128 |
 | Numeric model / `numeric_model` | Product（可选 Finite set） |
 | Constants per value / `max_constants` | 512 |
@@ -116,15 +117,21 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 | Response bytes / `rpc_max_response_bytes` | 67,108,864（64 MiB） |
 | Timeout (ms) / `rpc_timeout_ms` | 120,000（120 秒） |
 
-这些仍是用户指定的有限预算，达到执行、精度或采集边界时仍会停止相应工作并报告原因，不会自动改为无限。数值模型是枚举选择；其余参数除 `context_depth` 可以为 0（不保留内部跳转历史）外，都必须是正整数。默认启用局部关系推理、Product 数值域和完整被调用者摘要复用。RPC 的连接与整个请求（包括响应体）都遵循配置的 timeout，不再叠加固定 5 秒连接上限；账户、响应大小及初始槽位也不再有独立的 4096 / 64 MiB / 1024 硬上限。
+这些仍是用户指定的有限预算，达到执行、精度或采集边界时仍会停止相应工作并报告原因，不会自动改为无限。数值模型是枚举选择；`context_depth` 可以为 0（不保留内部跳转历史），`max_detail_regions` 可以为 0（只运行 Global 模型），其余数值参数必须为正整数。默认启用局部关系推理、Product 数值域和完整被调用者摘要复用。RPC 的连接与整个请求（包括响应体）都遵循配置的 timeout，不再叠加固定 5 秒连接上限；账户、响应大小及初始槽位也不再有独立的 4096 / 64 MiB / 1024 硬上限。
+
+**Precision → Detailed code sources** 设置额外局部精度最多选择多少个已捕获的代码来源。默认 1；2 或 3 可以让更多已捕获的被调用者保留局部细节，这些来源继续共享 Global 之后的剩余执行预算。报告分别显示请求上限和实际选中的来源数量，达到预算时保留实际终止状态。省略 HTTP 字段时使用默认 1，Web 表单始终提交明确的有效值。
 
 Web 协议的数值仍受类型可表示范围约束：表中字段均为 `u64`，最大 18,446,744,073,709,551,615。后端还检查需要转换为原生 `usize` 的字段是否能在运行平台表示。超出类型范围的输入不会被夹紧或近似接受。CLI 使用相同的默认配置，显式参数仍可覆盖；对应选项见[CLI 精度与预算表](05-sensitivity.md#7-实验时分别调整精度与预算)。直接使用 Rust 库的 `Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 和 `RpcInput::new()` 时，仍保留各类型原有的较小默认值；它们不会隐式采用 CLI/Web 配置。
 
-wire 20 请求必须提供 `limits.numeric_model: "Product"` 或 `"FiniteSet"`。后端只在应用入口选择一次实际数值代数，报告的 `metadata.limits` 保留这个选择；终止覆盖输入还携带独立的模型标签和实际 `domain_spec`。数值限制与执行预算分别检查，标签不代替来源或策略资格。
+当前 wire 请求必须提供 `limits.numeric_model: "Product"` 或 `"FiniteSet"`。后端只在应用入口选择一次实际数值代数，报告的 `metadata.limits` 保留这个选择；终止覆盖输入还携带独立的模型标签和实际 `domain_spec`。数值限制与执行预算分别检查，标签不代替来源或策略资格。
 
-任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
+新任务运行期间保留上一份结果，并显示任务状态与离散进度。收到当前任务通过校验的最小 Global 模型后即可原子切换，详细路径和富报告可以随后到达；这些补充不会重置未变化的 Global 相机、选择和源码缓存。输入草稿的编辑不会改变报告，迟到的旧任务或旧发布版本也不能替换当前结果。
 
-默认先构建全局过程，再把剩余预算用于详细路径。**Global model** 保留可能的调用、静态回调、构造和出口；**Detailed paths** 查看独立 native 图、指令与 SSA。符号根的详细视图会明确显示额外根地址条件；当前前缀不表示整个区域已完成，待处理路径仍保留。状态栏的全局闭合和 native 精度分别显示，详见[全局模型与详细路径](20-global-and-local.md)。
+默认先支付并发布可用的最小全局模型，再把剩余执行预算用于详细路径。**Global model** 使用来源限定的 regional 控制、调用与返回交付关系，并保留数值输入和联合输出边界；**Detailed paths** 查看独立 Native 图、指令与 SSA。最小模型没有完整机器状态或 SSA 时也可使用。符号根的详细视图仍明确显示额外根地址条件；当前前缀不表示整个区域已完成。任务完成、全局闭合和富报告导出分别显示，详见[全局模型与详细路径](20-global-and-local.md)。
+
+Global 检查器将 **Original inputs** 的原始环境与账户观察、**Procedure input** 的合并过程输入边界分别展示；**Joint outputs** 始终配对显示同一相对出口的数据和 Store，回滚由调用者应用。regional 节点不是 Native 状态或 SSA ID；最小模型中的代码面板只显示源码目录，不把 MAY 控制当成指令执行记录。可选富导出被拒绝或取消时，已经发布的最小模型仍可缩放、选择和检查。
+
+Global 图展开实际 regional 收据中的纯 MAY 控制区域，并从共享的 source/epoch 目录读取块与边。未知跳转使用显式 hub 展示合法 JUMPDEST 目标集合；区域发出的边界义务与已完成的 Body 转移分别保留。相同源码位置在不同 owner、static 或调用输入下仍有各自的区域身份。点击内部点可以定位对应源码块，虚拟 hub、End 和未知代码没有指令位置；调用返回边来自实际 delivery，源码中的潜在返回位置不会被画成已交付返回。
 
 **Execution budget** 保留默认勾选的 **Prepare conservative root terminal coverage**。这个可选辅助属于 native 阶段；未开始或预算不足时可没有记录，三个 tuple 不替代全局控制闭合。关闭完成调用缓存复用仍运行实际 Process 模型。[根终止覆盖](19-root-terminal-coverage.md)说明辅助 tuple 的联合数据/Store 与回滚资格。
 
@@ -147,7 +154,7 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 
 前端准备还可查看 **Result transfer**、**JSON parsing** 和 **First view setup**。首次准备只测实际打开的视图；不会为了统计而提前生成其他视图的 CFG 布局。用户总等待也包含提交和状态轮询等往返延迟，不能把后端处理、排队与前端准备当作覆盖全部等待的精确加总。这里统计实际耗时，`work` 仍表示逻辑工作量；区块 `Timestamp` 和 RPC timeout 保留各自原有含义。
 
-- **Workspace / 0** 根据可用宽度切换布局：宽窗口并排显示三个视图，中等窗口将反汇编与 SSA 放入标签组并与 CFG 并排，窄窗口将三个视图放入标签组。中等与窄布局初始打开 **SSA**，标签顺序保持不变，仍可手动选择反汇编；每档布局分别保留活动标签，重分析也保留活动标签。代码面板初始按实际内容定宽，剩余空间给 CFG；长内容受可用空间限制，仍可横向滚动。拖动分隔线后保留该档布局的手动宽度，窗口空间不足时临时夹紧，恢复空间后还原。**1 / 2 / 3** 分别展开反汇编、CFG 和 SSA；文本框获得焦点时数字键仍用于输入。
+- 在 **Detailed paths** 中，**Workspace / 0** 根据可用宽度切换布局：宽窗口并排显示三个视图，中等窗口将反汇编与 SSA 放入标签组并与 CFG 并排，窄窗口将三个视图放入标签组。中等与窄布局初始打开 **SSA**，标签顺序保持不变，仍可手动选择反汇编；每档布局分别保留活动标签，重分析也保留活动标签。代码面板初始按实际内容定宽，剩余空间给 CFG；长内容受可用空间限制，仍可横向滚动。拖动分隔线后保留该档布局的手动宽度，窗口空间不足时临时夹紧，恢复空间后还原。**1 / 2 / 3** 分别展开反汇编、CFG 和 SSA；文本框获得焦点时数字键仍用于输入。
 - 点击反汇编指令、SSA 指令行、SSA 块标题或状态图节点，在共享的原生状态 ID 与 PC 上联动选择。不同调用帧和上下文保持独立；按实际程序身份切换完整源代码，也能区分根代码委托和 storage 所属账户。基本块总览卡片包含多个实例时，先通过实例列表选择具体 `σᵢ`，再查看对应源码、SSA 和状态检查器。
 - CFG 默认使用 **Blocks** 基本块总览：同一程序、同一基本块的原生状态放进一张卡片，重复连接按端点和边类型聚合并保留原始成员。没有捕获程序代码的状态仍单独显示。它不修改后端报告、分析状态数、预算或完成状态。**States** 切回每个原生状态一张卡片；程序下拉框默认 **All programs**，也可仅查看某个 `Pᵢ` 的代码，筛选不会重新运行分析，也不会改选原生状态；当前所选状态不在可见范围时会显示 **outside view**。
 - 聚合卡片是导航入口，**不是一个新的执行状态**。它可以包含不同跳转历史、调用帧、栈高和 storage owner 的实例；多实例卡片显示覆盖统计、原生 SSA 的数量摘要和共有的反汇编，不合成跨实例的 phi、`%` 或 μ 效果；具体实例的 SSA 在 SSA 面板或 States/Local 状态卡片中查看。总览中相邻的聚合边可能来自不同实例，不能把拼接出的路径当作可行执行轨迹。点击卡片或工具栏 **Instances** 可打开实例列表，选择原生 `σᵢ`；列表保留覆盖状态与实例上下文。
@@ -208,9 +215,15 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议和符号库；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
+报告封套固定保存 `minimum`、`rich_export`、`global`、`native`、`selected_view`，以及共享的 `programs` 指令目录和 `process_controls` MAY 控制目录。首份可用发布可以只有 `minimum`，两张丰富图均为 `null`；此时从最小模型的来源关系导航，不要求 `metadata.root_program` 或 Native 状态存在。机器状态与 SSA 的数字 ID 只在所属图中解释；切换展示不会搬移图。`ProgramInfo` 按来源账户、runtime/initcode、fork 和 hash 区分；丰富图的 CFG 用 `program` + `basic_block` 查指令，根反汇编用该图的 `metadata.root_program` 查同一目录。多个上下文不会重复携带同一指令列表，也不会因为共享指令而合并机器状态。
+
+`process_controls` 的目录项按完整来源与 epoch 限定，`ProcessFrameKey.location` 和实际 transfer 的 `process.control` 在该关系中解释。`Block(i)` 是来源的解码块序号，`JumpTargets` 是共享合法跳转目标集合，`Any` 与 `End` 没有指令位置。导航须核对来源角色、账户、fork、hash、epoch 和块范围；目录或潜在后继的存在不证明 Body 已求值或调用已返回。实际 regional transfer 与 delivery 保留各自的 current、complete、输入 revision 和输出 generation，详见[渐进结果](progressive-results.md)。
+
+每张图的 `metadata.source_snapshot` 与 `metadata.revision` 保留精确输入身份；`snapshot` 另含可用的链上区块头。组合声明、Native 前缀与图来源交叉校验。Process 的 MAY 控制不填入 Native executed PC 或指令 SSA。组合 status/work/transfers、累计 acquisition、后处理实耗和 timings 位于封套，图内保留原始统计；CLI 的原生数值格式独立于此 wire 投影。
+
 协议 9 加入 report-local mixed symbolic DAG。scalar refs、byte views、persistent/transient roots 和完整 path guards 在同一目录中共享；range/join 的待处理 payload 引用有限 pending machine pool。前端校验 node sort、依赖顺序和 pool refs，按可见行显示来源、写入和复制范围。typed export error 保留策略与实耗；MemoryPolicy 的未展开输入与 EVM Failure 分开显示。详情见[第 17 课](17-symbolic-state.md)。
 
-当前 Web 协议版本为 18，原生分析 JSON 为 13，域策略格式为 3，成本版本为 8。协议 16 新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，分别保留共享工作耗尽、取消与 kernel 失败，与局部 `RoundLimit` 区分。此前 cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费；跨成本版本的原始 work 不是同一单位。
+当前 [Web 协议](../crates/evm-abstract-protocol/src/lib.rs)版本为 21，[原生分析 JSON](../crates/evm-abstract/src/analysis.rs)为 16，[域策略格式与成本版本](../crates/evm-abstract/src/domain/spec.rs)为 3 与 9。当前 wire 使用最小模型、独立丰富导出结果和共享控制目录；旧消费者必须迁移完整字段与身份校验，不能只改版本号。此前协议 16 新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，分别保留共享工作耗尽、取消与 kernel 失败，与局部 `RoundLimit` 区分。跨成本版本的原始 work 不是同一单位。
 
 此前版本 15 新增必填布尔 `AnalysisLimits.root_terminal_coverage` 与必填可选 `AnalysisReport.root_terminal_coverage`（无记录为 null）；当前用户默认请求显式设置前者为 true，保留旧关闭策略的对照请求显式设置为 false。`StoreSnapshot` 在所有报告中增加全局 storage/transient base refs、nonce/code/existence/created/pending-destruction defaults，旧字段继续保留。`InputIdentity.scope` 和新增 snapshot namespace/revision/input scope 均为规范十进制字符串，数字编码、前导零、溢出及未知字段会被拒绝；work、transfer 等计数仍是原整数类型。旧报告不能只改版本号。迁移细节见[wire 15 身份与 Store 契约](19-root-terminal-coverage.md)。
 
@@ -222,11 +235,15 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | --- | --- |
 | `GET /api/rpc-providers` | `RpcProvidersReply`：`{"result":{"Ok":[{"id":"mainnet","name":"Ethereum mainnet","endpoint":"https://rpc.example.org/ethereum"}]}}`；无配置时列表为空 |
 | `POST /api/tasks`，body 为 `AnalyzeRequest` | `202` 与 `JobReply`，包含任务 ID |
-| `GET /api/tasks/{id}` | 小型 `JobSnapshot`：状态、阶段、累计计数和实时／冻结的 `timings` |
-| `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
+| `GET /api/tasks/{id}` | `JobReply` 包装的小型 `JobSnapshot`：状态、阶段、累计计数、实时／冻结的 `timings` 与可选 `publication` |
+| `GET /api/tasks/{id}/result` | `JobResultReply`：成功项含 `id`、`publication` 和 `report`；已有发布即可读取，包括任务仍在运行或已取消时；尚无发布返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
 
-版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立使用版本 10，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
+`publication` 的 `version` 是本任务的发布序号；`minimum_version`、`global_version`、`native_version` 分别标识实际保留的最小模型与两张丰富图，`model_closed` 表示来源限定的模型闭合。版本使用规范十进制字符串，任务 ID 仍是整数。可选 Native 或丰富导出可以产生新发布而不改变 `minimum_version`；同版本保留的最小模型、已发布的来源与控制目录项保持原内容。客户端同时核对任务、发布及图命名空间，迟到响应不能替换当前结果。
+
+每个任务的应用后处理账本由服务端 `--postprocess-work` 配置，默认 2,000,000,000，先支付必需最小模型，再支付可选丰富导出。最小模型无法付费会明确失败；已有模型之后的丰富导出拒绝或取消记录在 `rich_export`，不会删除模型。该账本与累计 EVM 执行预算分开，重新发布或 RPC 重启不会刷新任何一份预算。
+
+版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立演进，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
 
 版本 7 为 `JobSnapshot` 和报告的 `metadata` 增加 `AnalysisTimings`。字段均为 `u64` 纳秒：`queue_ns`、`processing_ns`，以及 `validating_ns`、`pinning_ns`、`acquiring_ns`、`analyzing_ns`、`building_ssa_ns`、`projecting_ns`。阶段耗时互不重复，合计为 `processing_ns`；RPC 展示值为 `pinning_ns + acquiring_ns`。直接调用分析服务函数时队列时间为零。成功、失败或取消后，终态快照的计时冻结；成功报告保留同一份后端计时。用户等待与前端准备属于本次浏览器观察，单独保存，不以浏览器与后端的时钟起点相减计算。
 

@@ -46,9 +46,8 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
                 witness
                     .steps
                     .iter()
-                    .filter(|(code, pc)| {
-                        *code == address(ROOT) && *pc == fixture.labels["recursive_call"]
-                    })
+                    .filter(|step| step.code == address(ROOT)
+                        && step.pc == fixture.labels["recursive_call"])
                     .count()
                     >= 6,
                 "the witness must exceed the unfolding bound"
@@ -80,9 +79,11 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
                 .collect();
             assert!(
                 procedures.iter().any(|p| {
-                    let counter =
-                        p.input
-                            .read(address(ROOT), &word(0), native::product().borrowed());
+                    let counter = p
+                        .input
+                        .instantiate(native::product().borrowed())
+                        .unwrap()
+                        .read(address(ROOT), &word(0), native::product().borrowed());
                     counter.contains(U256::from(6))
                         && counter.contains(U256::from(17))
                         && !p.covered_blocks.is_empty()
@@ -93,9 +94,13 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
                 procedures.iter().flat_map(|p| &p.outputs).any(|o| {
                     o.kind == OutcomeKind::Return
                         && o.data
+                            .instantiate(native::product().borrowed())
+                            .unwrap()
                             .read_word(&word(0), native::product().borrowed())
                             .contains(U256::from(17))
                         && o.store
+                            .instantiate(native::product().borrowed())
+                            .unwrap()
                             .read(address(ROOT), &word(0), native::product().borrowed())
                             .contains(U256::from(17))
                 }),
@@ -228,7 +233,12 @@ fn both_strategies_cover_unknown_callbacks_and_each_rollback_scope() {
                 } else {
                     "callback_success"
                 }];
-                assert!(witness.steps.contains(&(address(ROOT), callback_pc)));
+                assert!(
+                    witness
+                        .steps
+                        .iter()
+                        .any(|step| step.code == address(ROOT) && step.pc == callback_pc)
+                );
                 assert_eq!(
                     witness.storage[&(address(ROOT), U256::ZERO)],
                     U256::from(if outer_revert { 0 } else { 7 })
@@ -329,6 +339,8 @@ fn borrowed_summary_policy_changes_published_return_bytes_and_still_covers_revm(
     assert!(!precise_outputs.is_empty());
     assert!(precise_outputs.iter().all(|o| {
         o.data
+            .instantiate(native::product().borrowed())
+            .unwrap()
             .read_word(&word(0), native::product().borrowed())
             .singleton()
             == Some(U256::from(42))
@@ -341,6 +353,8 @@ fn borrowed_summary_policy_changes_published_return_bytes_and_still_covers_revm(
             .flat_map(|p| &p.outputs)
             .any(|o| o.kind == OutcomeKind::Return
                 && o.data
+                    .instantiate(native::product().borrowed())
+                    .unwrap()
                     .read_word(&word(0), native::product().borrowed())
                     .contains(U256::from(43))),
         "the selected output policy must change retained content, including first output"

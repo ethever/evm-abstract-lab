@@ -82,6 +82,7 @@ fn execution() -> crate::analysis::transfer::Execution {
         frontiers: Vec::new(),
         outcomes: Vec::new(),
         completed_calls: Vec::new(),
+        common_successors: None,
         retention_failures: Vec::new(),
     }
 }

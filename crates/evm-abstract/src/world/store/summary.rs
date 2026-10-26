@@ -22,27 +22,32 @@ use crate::{
     },
 };
 use alloy_primitives::{Address, U256};
+use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod caller;
+mod coverage;
 mod layout;
 mod metered;
 mod payment;
 mod process;
 mod process_allocation;
 mod process_effects;
+mod view;
+pub use view::{EvmPlaneSummaryView, EvmStoreSummaryView};
 #[cfg(test)]
 mod test_support;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct SummaryPlane<N: WordElement> {
+    #[serde(serialize_with = "super::serialize_slots")]
     slots: OrderedMap<(Address, U256), EvmValue<N>>,
     defaults: OrderedMap<Address, EvmValue<N>>,
     global_default: EvmValue<N>,
     initial_independence: InitialIndependence,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct SummaryLog<N: WordElement> {
     topics: Vec<EvmValue<N>>,
     data: EvmByteArraySummary<N>,
@@ -51,7 +56,7 @@ struct SummaryLog<N: WordElement> {
 /// Complete canonical procedure payload. Symbolic history and input-output
 /// correlations are forgotten; independent instantiations recover executable
 /// roots constrained by every retained numerical fact.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmStoreSummary<N: WordElement> {
     persistent: SummaryPlane<N>,
     transient: SummaryPlane<N>,
@@ -66,8 +71,32 @@ pub struct EvmStoreSummary<N: WordElement> {
     pending_destruction_default: Option<bool>,
     touched: OrderedMap<Address, Option<bool>>,
     touched_default: Option<bool>,
+    #[serde(serialize_with = "serialize_summary_logs")]
     possible_logs: OrderedMap<LogKey, SummaryLog<N>>,
     logs_unknown: bool,
+}
+
+fn serialize_summary_logs<S: Serializer, N: WordElement>(
+    logs: &OrderedMap<LogKey, SummaryLog<N>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct Log<'a, N: WordElement> {
+        #[serde(flatten)]
+        source: &'a LogKey,
+        #[serde(flatten)]
+        payload: &'a SummaryLog<N>,
+    }
+    let mut sequence = serializer.serialize_seq(Some(logs.len()))?;
+    for (source, payload) in logs {
+        if analysis_control::current_cancellation().is_cancelled() {
+            return Err(serde::ser::Error::custom(
+                "summary log serialization cancelled",
+            ));
+        }
+        sequence.serialize_element(&Log { source, payload })?;
+    }
+    sequence.end()
 }
 
 /// Concrete keys may occur in a root even when no presentation cache retained
@@ -503,6 +532,17 @@ impl<N: WordElement> EvmStore<N> {
 }
 
 impl<N: WordElement> EvmStoreSummary<N> {
+    /// Physical owner/slot numerical upper bound, without symbolic replay.
+    pub fn storage_bound(&self, owner: Address, slot: U256) -> &EvmValue<N> {
+        self.persistent.at(owner, slot)
+    }
+
+    /// Physical code fact retained by the public source/owner projection.
+    /// An absent entry is unknown code, including the outside complement.
+    pub fn code(&self, owner: Address) -> Option<&Code> {
+        self.codes.get(&owner)
+    }
+
     /// Retained numerical payload plus a conservative independent replay bound.
     /// No cost from discarded source identities or write history survives reuse.
     /// Uses the largest replay shape without querying native singletons. These

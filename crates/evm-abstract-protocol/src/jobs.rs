@@ -16,6 +16,52 @@ impl std::fmt::Display for JobId {
         self.0.fmt(formatter)
     }
 }
+
+/// Publication sequence within one job, encoded losslessly in browser transports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(transparent)]
+pub struct PublicationVersion(pub crate::DecimalU64);
+
+impl<'de> serde::Deserialize<'de> for PublicationVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self(serde::Deserialize::deserialize(deserializer)?))
+    }
+}
+
+record! {
+    /// Immutable result identity, independent of the job's execution lifecycle.
+    pub struct JobPublication {
+        /// Monotonic overall publication sequence within this job.
+        pub version: PublicationVersion,
+        /// Canonical Global model identity, independent of optional rich graphs.
+        pub minimum_version: Option<PublicationVersion>,
+        /// Rich conservative graph identity; absent until that graph is exported.
+        pub global_version: Option<PublicationVersion>,
+        /// Version of the Native graph, when one is retained.
+        pub native_version: Option<PublicationVersion>,
+        /// A closed covering model exists under the report's explicit input qualification.
+        pub model_closed: bool,
+    }
+}
+
+record! {
+    /// One version-qualified immutable report; available independently of job completion.
+    pub struct JobResult {
+        /// Job that produced this publication.
+        pub id: JobId,
+        /// Exact publication returned, permitting stale-response rejection.
+        pub publication: JobPublication,
+        /// Source/revision/root-qualified graphs and coverage.
+        pub report: crate::AnalysisReport,
+    }
+}
+record! {
+    /// Result endpoint response, including typed not-ready and scheduling failures.
+    pub struct JobResultReply {
+        /// The retained publication or its exact typed failure.
+        pub result: Result<JobResult, crate::ApiError>,
+    }
+}
 choice! {
     /// Observable work phase; counters remain cumulative across RPC refinement.
     pub enum AnalysisPhase {
@@ -104,7 +150,7 @@ variant! {
         Queued,
         /// Work is executing.
         Running,
-        /// Immutable result is available from the result endpoint.
+        /// Worker finished successfully; its final immutable result is available.
         Completed,
         /// Terminal typed failure.
         Failed(crate::ApiError),
@@ -125,6 +171,8 @@ record! {
         pub progress: AnalysisProgress,
         /// Authoritative cumulative durations, independent of progress-event delivery.
         pub timings: AnalysisTimings,
+        /// Latest immutable result, also available while Running or after cancellation.
+        pub publication: Option<JobPublication>,
     }
 }
 record! {

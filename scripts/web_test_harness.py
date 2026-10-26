@@ -4,11 +4,13 @@ from pathlib import Path
 from contextlib import contextmanager
 from contextvars import ContextVar
 from playwright.sync_api import expect
+import base64
 import json
 import re
 import selectors
 import subprocess
 import time
+from web_test_hybrid import assert_detail_policy, job_result_report, namespace_available
 
 
 _browser_errors = ContextVar("browser_acceptance_errors", default=None)
@@ -54,12 +56,15 @@ def server_url(process: subprocess.Popen[str]) -> str:
     raise RuntimeError("server did not report its bound loopback URL")
 
 @contextmanager
-def analysis_server(args, rpc_config: Path | str | None = None, *, workers: int | None = None):
+def analysis_server(args, rpc_config: Path | str | None = None, *, workers: int | None = None,
+                    postprocess_work: int | None = None):
     command = [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0"]
     if workers is not None:
         command.extend(["--workers", str(workers), "--queue-capacity", str(workers * 2)])
     if rpc_config is not None:
         command.extend(["--rpc-config", str(rpc_config)])
+    if postprocess_work is not None:
+        command.extend(["--postprocess-work", str(postprocess_work)])
     process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, bufsize=1)
     try:
@@ -83,30 +88,112 @@ def rendered_frame(page) -> None:
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
 
 class AnalysisResponse:
-    """Final typed envelope plus the actual originating form submission."""
-    def __init__(self, response, envelope, status):
+    """Task result wire reply or terminal typed error, plus its form submission."""
+    def __init__(self, response, envelope, status, job=None):
         self.request = response.request
         self.status = status
         self.admission_status = response.status
         self.envelope = envelope
+        self.job = job
 
     def json(self):
         return self.envelope
 
+    @property
+    def report(self):
+        return job_result_report(self.envelope, job_id=self.job["id"],
+                                 publication=self.job["publication"])
+
 TIMING_PHASES = ("validating_ns", "pinning_ns", "acquiring_ns", "analyzing_ns",
                  "building_ssa_ns", "projecting_ns")
 
-def measured_backend_timings(report):
-    timing = report["metadata"]["timings"]
+def measured_backend_timings(report, *, require_ssa=True):
+    timing = report["timings"]
     assert set(timing) == {"queue_ns", "processing_ns", *TIMING_PHASES}, timing
     assert all(type(value) is int and value >= 0 for value in timing.values()), timing
     assert sum(timing[field] for field in TIMING_PHASES) == timing["processing_ns"], timing
     assert timing["processing_ns"] > 0, timing
-    assert timing["analyzing_ns"] > 0 and timing["building_ssa_ns"] > 0, timing
+    assert timing["analyzing_ns"] > 0, timing
+    if require_ssa:
+        assert timing["building_ssa_ns"] > 0, timing
     assert timing["projecting_ns"] > 0, timing
     return timing
 
-def complete_submission(page, admitted, timeout_seconds: int = 60):
+def wait_for_report_publication(page, job_id, publication, timeout_ms=60000):
+    """Follow IDs only after Web activates the exact received publication."""
+    status = page.locator("#analysis-status")
+    fields = {"Job ID": str(job_id), "Publication": publication["version"],
+              "Minimum model": publication["minimum_version"], "Global graph": publication["global_version"],
+              "Native graph": publication["native_version"], "Closed model": str(publication["model_closed"]).lower()}
+    for label, value in fields.items():
+        shown = "unavailable" if value is None else value
+        expect(status).to_contain_text(
+            re.compile(rf"(?:^|; ){re.escape(label)}: {re.escape(shown)}(?=;|$)"), timeout=timeout_ms)
+
+
+def hide_world_directory(page, canvas):
+    """Close the painted directory before tests that need the full Native canvas."""
+    def control():
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        return page.evaluate("""async png => {
+            const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+            const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
+            const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+            const scale=image.width/innerWidth;
+            if(innerWidth<800){
+                // Compact chrome puts the open directory in a floating window.
+                // Its real grey titlebar can occlude the namespace selectors.
+                const h=Math.min(c.height,Math.ceil(140*scale));
+                const pixels=ctx.getImageData(0,0,c.width,h).data;
+                let left=c.width,right=-1,top=h,bottom=-1,count=0;
+                for(let y=0;y<h;y++){
+                    let row=0,rowLeft=c.width,rowRight=-1;
+                    for(let x=0;x<c.width;x++){
+                        const i=(y*c.width+x)*4;
+                        if(pixels[i]===45&&pixels[i+1]===45&&pixels[i+2]===45){
+                            rowLeft=Math.min(rowLeft,x);rowRight=Math.max(rowRight,x);row++;
+                        }
+                    }
+                    if(row>200*scale){
+                        left=Math.min(left,rowLeft);right=Math.max(right,rowRight);
+                        top=Math.min(top,y);bottom=Math.max(bottom,y);count+=row;
+                    }
+                }
+                const width=(right-left+1)/scale,height=(bottom-top+1)/scale;
+                return count>1500*scale*scale&&width>=200&&height>=24&&height<=40 ?
+                    {x:(right+1)/scale-17,y:(top+bottom+1)/2/scale}:null;
+            }
+            const p=ctx.getImageData(Math.round((innerWidth-202)*scale),Math.round(4*scale),
+                Math.round(44*scale),Math.round(16*scale)).data;
+            let count=0;
+            for(let i=0;i<p.length;i+=4)if(p[i]===33&&p[i+1]===65&&p[i+2]===75)count++;
+            return count>100*scale*scale ? {x:innerWidth-180,y:12}:null;
+        }""", base64.b64encode(canvas.screenshot()).decode())
+    target=control()
+    if target is not None:
+        canvas.click(position=target)
+        assert control() is None, "World directory did not close"
+
+
+def select_report_namespace(page, report, namespace):
+    """Use the real selector before following IDs in a particular graph."""
+    assert namespace_available(report, namespace), namespace
+    if report["hybrid"] is not None:
+        label, x = {"Baseline": ("Global model", 50), "Native": ("Detailed paths", 148)}[namespace]
+        if namespace == "Baseline" and report["minimum"] is not None:
+            expected = f"Global model {report['minimum']['status']}"
+        else:
+            expected = f"View: {label}"
+        status = page.locator("#analysis-status")
+        if expected not in status.text_content():
+            page.locator("#evm-canvas").click(position={"x": x, "y": 38})
+        expect(status).to_contain_text(expected)
+        settle_gesture(page)
+
+
+def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=None, close_directory=False,
+                        expected_detail_regions=1):
     # Parse raw HTTP text in Python so u64 Job IDs never pass through JS Number.
     reply = json.loads(admitted.text())["result"]
     if "Err" in reply:
@@ -120,17 +207,28 @@ def complete_submission(page, admitted, timeout_seconds: int = 60):
         state = job["state"]
         if state == "Completed":
             result = page.request.get(task_url + "/result")
-            envelope = result.json()
-            timing = measured_backend_timings(envelope["result"]["Ok"])
+            assert result.ok, result.text()
+            envelope = json.loads(result.text())
+            report = job_result_report(envelope, job_id=job_id, publication=job["publication"])
+            if report["hybrid"] is not None:
+                # Only this D5 field has the authoritative omission default1.
+                # Preserve raw request bytes and compare the effective policy.
+                effective = admitted.request.post_data_json["limits"].get("max_detail_regions", 1)
+                assert type(effective) is int and effective == expected_detail_regions
+                assert_detail_policy(report, effective)
+            timing = measured_backend_timings(report, require_ssa=namespace == "Native")
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
-            expect(page.locator("#analysis-status")).to_contain_text(
-                re.compile(rf"(?:^|; )Job ID: {job_id}(?=;|$)"), timeout=timeout_seconds * 1000)
-            return AnalysisResponse(admitted, envelope, result.status)
+            wait_for_report_publication(page, job_id, job["publication"], timeout_seconds * 1000)
+            if close_directory:
+                hide_world_directory(page, page.locator("#evm-canvas"))
+            if namespace is not None:
+                select_report_namespace(page, report, namespace)
+            return AnalysisResponse(admitted, envelope, result.status, job)
         if isinstance(state, dict) and "Failed" in state:
             error = state["Failed"]
             expect(page.locator("#analysis-status")).to_contain_text("Error:", timeout=60000)
-            return AnalysisResponse(admitted, {"result": {"Err": error}}, observed_status)
+            return AnalysisResponse(admitted, {"result": {"Err": error}}, observed_status, job)
         assert state not in ["Cancelling", "Cancelled"], f"unexpected cancellation: {job}"
         page.wait_for_timeout(100)
         result = page.request.get(task_url)
@@ -159,7 +257,7 @@ def open_input(page):
 def posted_bytecode(reply):
     return reply.request.post_data_json["input"]["Bytecode"]["bytecode"]
 
-def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
+def submit_bytecode(page, canvas, bytecode: str, evidence: Path, *, close_directory=False):
     open_input(page)
     page.keyboard.press("Control+A")
     rendered_frame(page)
@@ -171,7 +269,7 @@ def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
     admitted = response.value
     posted = posted_bytecode(admitted)
     assert posted == bytecode, f"editor input did not reach the typed request: expected {bytecode!r}, got {posted!r}"
-    return complete_submission(page, admitted)
+    return complete_submission(page, admitted, namespace="Native", close_directory=close_directory)
 
 def settle_gesture(page) -> None:
     """Wait for consumed input, including the tail of an actual smooth wheel.

@@ -58,7 +58,85 @@ pub(super) fn frame(ui: &mut egui::Ui, key: &evm_abstract_protocol::ProcessFrame
     ui.monospace(format!("Owner class: {}", owner(&key.owner)));
     ui.monospace(format!("Catalogue epoch: {}", key.epoch));
     ui.label(format!("Static: {}", key.is_static));
+    ui.label(format!(
+        "MAY location: {}",
+        crate::app::minimum::location_label(key.location)
+    ));
     source(ui, &key.source);
+}
+
+pub(super) fn control(
+    ui: &mut egui::Ui,
+    report: &evm_abstract_protocol::AnalysisReport,
+    node: &evm_abstract_protocol::RegionalNode,
+    selected: Option<evm_abstract_protocol::ProcessLocation>,
+) {
+    let Some(region) = node
+        .transfer
+        .as_ref()
+        .and_then(|transfer| transfer.process.as_ref())
+        .and_then(|process| process.control.as_ref())
+    else {
+        return;
+    };
+    let Some(relation) = report.process_controls.get(region.relation) else {
+        return;
+    };
+    ui.label(format!(
+        "MAY control directory {} · epoch {} · program {:?}",
+        relation.id, relation.epoch, relation.program
+    ));
+    ui.label(format!(
+        "Region entry: {}",
+        crate::app::minimum::location_label(region.entry)
+    ));
+    ui.label("Boundary effects require their own Body receipt; source geometry alone does not certify coverage.");
+    match selected.or_else(|| node.frame.process.as_ref().map(|frame| frame.location)) {
+        Some(evm_abstract_protocol::ProcessLocation::JumpTargets) => {
+            ui.label(format!(
+                "Unknown-jump hub · legal JUMPDEST block indices: {:?}",
+                relation.jump_targets
+            ));
+        }
+        Some(evm_abstract_protocol::ProcessLocation::Block(index)) => {
+            if let Some(block) = relation.blocks.get(index) {
+                ui.label(format!(
+                    "Source block index {index} · boundary: {}",
+                    block.boundary
+                ));
+                for edge in block.successors.iter().flatten() {
+                    ui.label(format!(
+                        "MAY source edge: {:?} → {:?} · {:?}",
+                        evm_abstract_protocol::ProcessLocation::Block(index),
+                        edge.to,
+                        edge.kind
+                    ));
+                }
+                if let Some(continuation) = block.continuation {
+                    ui.label(format!(
+                        "Potential return location: {} · actual return requires a call delivery",
+                        crate::app::minimum::location_label(continuation)
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    for (label, locations) in [
+        ("Pure MAY locations", &region.through),
+        ("Emitted boundary obligations", &region.boundaries),
+    ] {
+        ui.collapsing(format!("{label} ({})", locations.len()), |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(("process_control_locations", node.id, label))
+                .max_height(160.0)
+                .show_rows(ui, 20.0, locations.len(), |ui, rows| {
+                    for &location in &locations[rows] {
+                        ui.label(crate::app::minimum::location_label(location));
+                    }
+                });
+        });
+    }
 }
 
 pub(super) fn source(ui: &mut egui::Ui, source: &evm_abstract_protocol::ProcessSource) {

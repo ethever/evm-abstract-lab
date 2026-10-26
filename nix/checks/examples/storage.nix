@@ -18,7 +18,7 @@ let
       lib.nameValuePair "example-${name}" (
         mkCheck name [ ] { } ''
           test "$(cat ${report}/exit-code)" = 0
-          jq -e '.analysis.status == "Converged" and (.ssa | type == "object")' ${report}/report.json > /dev/null
+          jq -e '.native.analysis.status == "Converged" and (.native.ssa | type == "object")' ${report}/report.json > /dev/null
           ln -s ${report}/report.json "$out/report.json"
         ''
       )

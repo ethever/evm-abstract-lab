@@ -165,6 +165,7 @@ fn private_payload_clone_keeps_variable_keys_process_fields_and_shape_errors() {
                     owner: ProcessOwner::Named(owner),
                     source: ProcessSource::AnyRuntime { fork: Fork::Osaka },
                     is_static: true,
+                    location: crate::analysis::ProcessLocation::Any,
                 }));
                 input.location.frames[0] = input.frames[0].key.clone();
             }

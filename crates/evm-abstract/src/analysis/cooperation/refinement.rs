@@ -1,6 +1,7 @@
 use super::{
-    Input, InputAlreadyInitialized, InputRoute, Inputs, Ports, RefinementRoute, Refinements,
-    Shared, StackFacts, Subject,
+    Input, InputAlreadyInitialized, InputRoute, Inputs, Ports, ProcessFacts,
+    ProcessRefinementRoute, ProcessRefinements, RefinementRoute, Refinements, Shared, StackFacts,
+    Subject,
 };
 use crate::{
     analysis::{EvmMachinePayload, MachineError},
@@ -62,9 +63,21 @@ where
 {
     type Task = Subject;
     type Error = <Cx as Accepts<Refinements, RefinementRoute>>::Error;
-
     fn reduce(&mut self, subject: &Subject, cx: &mut Cx) -> Result<LocalClosure, Self::Error> {
         cx.accept(Scoped::new(subject.scope, ()), StackFacts::none())?;
+        Ok(LocalClosure::Stable)
+    }
+}
+
+struct InitializeProcessFeedback;
+impl<Cx> Reduction<Cx> for InitializeProcessFeedback
+where
+    Cx: Accepts<ProcessRefinements, ProcessRefinementRoute>,
+{
+    type Task = Subject;
+    type Error = <Cx as Accepts<ProcessRefinements, ProcessRefinementRoute>>::Error;
+    fn reduce(&mut self, subject: &Subject, cx: &mut Cx) -> Result<LocalClosure, Self::Error> {
+        cx.accept(Scoped::new(subject.scope, ()), ProcessFacts::none())?;
         Ok(LocalClosure::Stable)
     }
 }
@@ -91,6 +104,12 @@ pub(crate) fn initialize_feedback<N: WordElement, J, M: Meter, Tail, Global>(
     Registered::new(InitializeFeedback)
         .evaluate(&subject, &mut cx)
         .map_err(InitializationError::Feedback)?;
+    Registered::new(InitializeProcessFeedback)
+        .evaluate(&subject, &mut cx)
+        .map_err(|error| match error {
+            PublishError::Kernel(error) => InitializationError::Kernel(error),
+            PublishError::Policy(never) => match never {},
+        })?;
     Ok(())
 }
 
@@ -160,6 +179,18 @@ pub enum LocalInput<N: WordElement> {
 /// Typed local refinement refusal, distinct from a semantic contradiction.
 #[derive(Debug, thiserror::Error)]
 pub enum RefinementError {
+    /// Process adapter stacks cannot carry Native operand guarantees.
+    #[error("Native stack feedback cannot refine a Process input")]
+    ProcessStack,
+    /// The current effect envelope still owns action-related value/lifecycle
+    /// effects; a local readonly guarantee alone cannot narrow that envelope.
+    #[error(
+        "local readonly Process feedback requires exclusion of every remaining primitive action"
+    )]
+    ProcessActionEffects,
+    /// Process guarantees apply only to executable Process Body subjects.
+    #[error("Process feedback requires an executable Process Body input")]
+    ProcessScope,
     /// Original root work ledger or cancellation refused required work.
     #[error("{0}")]
     Stopped(MachineError),
@@ -193,6 +224,9 @@ pub(crate) fn apply_refinements<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<LocalInput<D::Element>, RefinementError> {
+    if payload.active().key.process.is_some() && *facts != StackFacts::none() {
+        return Err(RefinementError::ProcessStack);
+    }
     let StackFacts::Reachable(facts) = facts else {
         return Ok(LocalInput::Unreachable);
     };

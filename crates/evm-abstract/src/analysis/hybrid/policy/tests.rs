@@ -1,6 +1,9 @@
 use super::*;
 use crate::analysis::{StructuralPartition, machine::fixtures, transfer};
 
+mod opaque;
+mod owned;
+
 #[test]
 fn relative_owned_preparation_checks_location_history_and_preserves_refused_input() {
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);

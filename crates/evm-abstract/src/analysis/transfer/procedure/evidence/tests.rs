@@ -79,7 +79,7 @@ fn same_version_body_preparation_refusal_does_not_recertify_the_previous_transfe
         .with_run(&mut token, solver.budget, |run| Ok(run.job()))
         .unwrap();
     assert!(solver.run_admitted(Arc::clone(&task), token));
-    let before = solver.regional_cfg().unwrap();
+    let (old_rows, before, old_generation) = solver.semantic_snapshot().unwrap();
     let old = before.nodes[body].transfer.as_ref().unwrap();
     assert!(old.current && old.complete && old.visited_block);
     let input_version = solver.track_input(body).unwrap();
@@ -108,7 +108,16 @@ fn same_version_body_preparation_refusal_does_not_recertify_the_previous_transfe
         solver.table.frontiers.last().unwrap().reason,
         FrontierReason::StateJoin(JoinBoundary::IdentityExhausted)
     );
-    let after = solver.regional_cfg().unwrap();
+    let (new_rows, after, new_generation) = solver.semantic_snapshot().unwrap();
+    assert!(
+        old_rows.shares_storage_with(&new_rows),
+        "unchanged numeric bounds remain shared"
+    );
+    assert!(
+        !before.shares_storage_with(&after),
+        "same native revision does not preserve an execution receipt"
+    );
+    assert!(new_generation > old_generation);
     let receipt = after.nodes[body].transfer.as_ref().unwrap();
     assert_eq!(receipt.input_revision, old.input_revision);
     assert_eq!(receipt.outcomes, old.outcomes);
@@ -662,76 +671,4 @@ fn export_checks_captured_and_current_cancellation_and_does_not_revive_a_spent_l
     }));
 }
 
-#[test]
-fn cooperative_exports_withhold_current_even_for_complete_matching_native_receipts() {
-    use super::super::{Cooperation, EvmTable};
-    use crate::analysis::{
-        EnginePolicies,
-        cooperation::{Extension, Subject},
-        worklist::runtime::Runtime,
-    };
-    use analysis_kernel::{Analyzer, LocalClosure};
-    use std::convert::Infallible;
-
-    struct Observe;
-    impl<Cx> Analyzer<Cx> for Observe {
-        type Task = Subject;
-        type Error = Infallible;
-        fn evaluate(&mut self, _: &Subject, _: &mut Cx) -> Result<LocalClosure, Infallible> {
-            Ok(LocalClosure::Stable)
-        }
-    }
-
-    let (world, mut entry) = fixture(&[(0x101, "5f5f5f5f5f6101025af15000"), (0x102, "00")]);
-    entry.environment.caller = AddressInput::unknown_caller();
-    entry.environment.value = TestValue::top();
-    entry.environment.calldata = ByteArray::unknown();
-    let config = config();
-    let algebra = product(NumericLimits::machine().spec());
-    let domain = algebra.borrowed();
-    let input = initial(&world, &entry, domain).unwrap();
-    let mut budget = WorkBudget::new(config.max_work);
-    let mut runtime = Runtime::new(&mut budget).unwrap();
-    runtime.register_world(0, 1, &mut budget).unwrap();
-    let (_, mut caller) = runtime.next(false, &mut budget).unwrap().unwrap();
-    let mut table = EvmTable::default();
-    let mut counters = Counters::default();
-    let policies = EnginePolicies::default();
-    let mut cooperation = Cooperation::new(Extension::new(Observe));
-    let (execution, record) = table.execute_with(
-        0,
-        &world,
-        &entry,
-        input,
-        &config,
-        domain,
-        &policies,
-        &mut budget,
-        &mut counters,
-        StorageReadPolicy::Abstract,
-        &mut runtime,
-        &mut caller,
-        &mut cooperation,
-    );
-    assert!(record.closed, "{:?}", execution.frontiers);
-    assert_indices(&record);
-    let cfg = &record.regional_cfg;
-    assert!(
-        cfg.nodes
-            .iter()
-            .any(|node| node.transfer.as_ref().is_some_and(|receipt| {
-                receipt.complete && receipt.input_revision == node.input_revision
-            }))
-    );
-    assert!(cfg.nodes.iter().all(|node| {
-        node.transfer
-            .as_ref()
-            .is_none_or(|receipt| !receipt.current)
-    }));
-    assert!(cfg.calls.iter().any(|call| !call.deliveries.is_empty()));
-    assert!(
-        cfg.calls
-            .iter()
-            .all(|call| call.deliveries.iter().all(|receipt| !receipt.current))
-    );
-}
+mod cooperation;

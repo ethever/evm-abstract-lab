@@ -7,9 +7,9 @@ use analysis_kernel::{Analyzer, LocalClosure};
 use evm_abstract::{
     Fork,
     analysis::{
-        AnalysisEngine, AnalysisInput, FrontierReason, ProcessBoundary, ProcessSource, Status,
+        AnalysisEngine, AnalysisInput, ProcessSource,
         control::Control,
-        cooperation::{Extension, Subject},
+        cooperation::{CooperationError, Extension, Subject},
     },
     world::{EvmByteArray, EvmWorld},
 };
@@ -88,7 +88,7 @@ fn current_subscribers_match_latest_body_template_and_same_callee_output() {
 }
 
 #[test]
-fn enabled_foreign_analyzer_keeps_process_obligations_open() {
+fn undeclared_native_only_analyzer_is_rejected_before_process_execution() {
     struct Foreign;
     impl<Cx> Analyzer<Cx> for Foreign {
         type Task = Subject;
@@ -102,23 +102,73 @@ fn enabled_foreign_analyzer_keeps_process_obligations_open() {
     let values = native::product();
     let policies = policies();
     let mut foreign = Extension::new(Foreign);
-    let analysis = AnalysisEngine::new(&values, &policies, &mut foreign)
+    let analysis = AnalysisEngine::new(&values, &policies, &mut foreign).run(
+        AnalysisInput::new(world, entry(EvmByteArray::empty())).unwrap(),
+        config(),
+        &Control::default(),
+    );
+    assert!(matches!(
+        analysis,
+        Err(CooperationError::UnsupportedView { .. })
+    ));
+}
+
+#[test]
+fn process_aware_foreign_observer_certifies_real_body_and_return_sources() {
+    use analysis_kernel::{Read, Scoped};
+    use evm_abstract::{
+        analysis::cooperation::{InputRoute, InputView, Inputs},
+        domain::NumericValue,
+    };
+    struct Foreign {
+        processes: usize,
+    }
+    impl<Cx: Read<Inputs<NumericValue>, InputRoute>> Analyzer<Cx> for Foreign {
+        type Task = Subject;
+        type Error = Cx::Error;
+        fn evaluate(
+            &mut self,
+            subject: &Subject,
+            cx: &mut Cx,
+        ) -> Result<LocalClosure, Self::Error> {
+            let input = cx.query(Scoped::new(subject.scope, ()))?;
+            if input
+                .value()
+                .is_some_and(|input| matches!(input.view(), InputView::Process(_)))
+            {
+                self.processes += 1;
+            }
+            Ok(LocalClosure::Stable)
+        }
+    }
+    let mut a = Assembly::default();
+    a.call(opcode::STATICCALL, 0x202, 0, (0, 0), (0, 0))
+        .op(opcode::STOP);
+    let mut world = new_world();
+    insert(&mut world, A, &a.finish(), &[]);
+    insert(&mut world, 0x202, &fixture(&[opcode::STOP]), &[]);
+    let mut extension = Extension::new(Foreign { processes: 0 }).with_process_view();
+    let analysis = AnalysisEngine::new(&native::product(), &policies(), &mut extension)
         .run(
             AnalysisInput::new(world, entry(EvmByteArray::empty())).unwrap(),
             config(),
             &Control::default(),
         )
         .unwrap();
-    evidence("foreign-refusal", &analysis);
-    assert_eq!(analysis.status(), Status::Incomplete);
-    assert!(analysis.frontiers().iter().any(|f| matches!(
-        f.reason,
-        FrontierReason::Process(ProcessBoundary::CooperativeInputs)
-    )));
+    assert!(extension.analyzer.processes > 0);
+    assert_current(&analysis);
     assert!(
         analysis
             .procedure_summaries()
             .iter()
-            .all(|r| !r.source_current && !r.closed)
+            .any(|record| !record.regional_cfg.calls.is_empty())
+    );
+    assert!(
+        analysis
+            .procedure_summaries()
+            .iter()
+            .flat_map(|record| &record.regional_cfg.calls)
+            .flat_map(|call| &call.deliveries)
+            .any(|delivery| delivery.current)
     );
 }

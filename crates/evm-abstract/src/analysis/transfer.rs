@@ -113,6 +113,10 @@ pub(super) struct EvmExecution<N: WordElement> {
     pub instruction_progress: Vec<InstructionProgress>,
     pub instruction_values: Vec<EvmInstructionValue<N>>,
     pub successors: Vec<EvmSuccessor<N>>,
+    /// Taken JUMP/JUMPI alternatives cloned from one constrained payload.
+    /// Only the active block coordinate differs. The false branch is outside
+    /// this producer-owned range; a partial dispatch may leave it absent.
+    pub common_successors: Option<std::ops::Range<usize>>,
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
     pub frontiers: Vec<EvmExecutionFrontier<N>>,
     pub outcomes: Vec<EvmOutcome<N>>,
@@ -137,6 +141,7 @@ fn empty_execution<N: WordElement>(payload: EvmMachinePayload<N>) -> EvmExecutio
         instruction_progress: Vec::new(),
         instruction_values: Vec::new(),
         successors: Vec::new(),
+        common_successors: None,
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
         outcomes: Vec::new(),
@@ -227,6 +232,7 @@ fn resume_summary_inner<D: EvmNumericAlgebra>(
         instruction_progress: Vec::new(),
         instruction_values: Vec::new(),
         successors: Vec::new(),
+        common_successors: None,
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
         outcomes: Vec::new(),
@@ -483,6 +489,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         instruction_progress: Vec::new(),
         instruction_values: Vec::new(),
         successors: Vec::new(),
+        common_successors: None,
         diagnostics: Vec::new(),
         frontiers: Vec::new(),
         outcomes: Vec::new(),
@@ -853,6 +860,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     } else {
                         EdgeKind::BranchTrue
                     };
+                    let common_start = result.successors.len();
                     match targets {
                         Some(targets) => {
                             for target in targets.iter() {
@@ -902,6 +910,21 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                                 successor(&mut result, constrained.clone(), *target, kind);
                             }
                         }
+                    }
+                    let common_end = result.successors.len();
+                    // A normal child failure resumes its parent, so it does
+                    // not share the taken target payload. Only detached runtime
+                    // bodies can certify this contiguous group here.
+                    if context.procedure
+                        && result.payload.call_stack.depth() == 1
+                        && result.payload.active().code == FrameCode::Runtime
+                        && common_end.saturating_sub(common_start) > 1
+                    {
+                        if let Err(error) = crate::resource::clone_payment::pay(context.budget, 3) {
+                            boundary(&mut result, pc, error.into());
+                            return result;
+                        }
+                        result.common_successors = Some(common_start..common_end);
                     }
                 }
                 if let Err(reason) = query::checkpoint(context.budget) {

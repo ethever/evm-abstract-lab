@@ -539,7 +539,7 @@ fn replay_commits_only_small_source_metadata_and_rolls_it_back_with_the_graph() 
 }
 
 #[test]
-fn cooperative_records_are_uncertified_even_after_successful_native_completion() {
+fn cooperative_records_with_current_foreign_receipts_certify_successful_native_completion() {
     use crate::analysis::{
         AnalysisEngine, AnalysisInput,
         control::Control,
@@ -578,12 +578,15 @@ fn cooperative_records_are_uncertified_even_after_successful_native_completion()
             .iter()
             .any(|record| record.closed)
     );
-    assert!(
-        current
-            .procedure_summaries()
-            .iter()
-            .all(|record| !record.source_current)
-    );
+    let mut sources = std::collections::BTreeSet::new();
+    for record in current.procedure_summaries().iter().rev() {
+        if sources.insert(record.source_state) {
+            assert!(
+                record.closed && record.source_current,
+                "each latest successful source needs its actual live foreign receipt"
+            );
+        }
+    }
 }
 
 #[test]

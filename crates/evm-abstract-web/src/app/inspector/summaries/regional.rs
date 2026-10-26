@@ -1,42 +1,13 @@
 //! Regional flow has its own identities and granularity, separate from native SSA.
 use super::process;
 use egui::Ui;
-use evm_abstract_protocol::{
-    CodeKind, RegionalCfg, RegionalNode, SummarySourceStatus, TransferSemantics,
-};
+use evm_abstract_protocol::{CodeKind, RegionalCfg, RegionalNode, SummarySourceStatus};
 
 pub(super) fn status(node: &RegionalNode, source: SummarySourceStatus) -> &'static str {
-    match source {
-        SummarySourceStatus::Historical => return "Historical observation",
-        SummarySourceStatus::Uncertified => return "Final source uncertified",
-        SummarySourceStatus::Current => {}
-    }
-    if node.excluded {
-        return "Excluded input";
-    }
-    match &node.transfer {
-        None => "Admitted; transfer pending",
-        Some(transfer) if !transfer.current || transfer.input_revision != node.input_revision => {
-            "Historical transfer"
-        }
-        Some(transfer)
-            if !transfer.complete && transfer.semantics == TransferSemantics::KnownProcess =>
-        {
-            "Current partial conservative process"
-        }
-        Some(transfer) if !transfer.complete => "Current partial transfer",
-        Some(transfer) if transfer.semantics == TransferSemantics::KnownProcess => {
-            "Current conservative process · possible control"
-        }
-        Some(transfer) if transfer.visited_block => "Current block transfer",
-        Some(_) if node.frame.kind == CodeKind::AbstractEnvironment => {
-            "Current effect/environment abstraction"
-        }
-        Some(_) => "Current transfer; no captured block visit",
-    }
+    crate::report::regional_status(node, source)
 }
 
-pub(super) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) {
+pub(in crate::app::inspector) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) {
     ui.collapsing("Regional control flow", |ui| {
         ui.label("Summarized flow uses regional node IDs; instruction-level SSA is separate.");
         ui.label(format!(
@@ -60,14 +31,18 @@ pub(super) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) 
         ui.collapsing("Calls and returns", |ui| {
             for call in &cfg.calls {
                 ui.push_id(("regional_call", call.id), |ui| {
-                    let local_current = cfg.nodes.get(call.from).is_some_and(|node| {
-                        !node.excluded
-                            && node.transfer.as_ref().is_some_and(|transfer| {
-                                transfer.current
-                                    && transfer.input_revision == node.input_revision
-                                    && transfer.calls.contains(&call.id)
-                            })
-                    });
+                    let local_current = cfg
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == call.from)
+                        .is_some_and(|node| {
+                            !node.excluded
+                                && node.transfer.as_ref().is_some_and(|transfer| {
+                                    transfer.current
+                                        && transfer.input_revision == node.input_revision
+                                        && transfer.calls.contains(&call.id)
+                                })
+                        });
                     let call_scope = match source {
                         SummarySourceStatus::Historical => "historical observation",
                         SummarySourceStatus::Uncertified => "final source uncertified",
@@ -124,7 +99,11 @@ pub(super) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) 
     });
 }
 
-fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
+pub(in crate::app::inspector) fn node_details(
+    ui: &mut Ui,
+    node: &RegionalNode,
+    source: SummarySourceStatus,
+) {
     let frame = &node.frame;
     if let Some(key) = &frame.process {
         process::frame(ui, key);
@@ -174,6 +153,12 @@ fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
     if let Some(transfer) = &node.transfer {
         ui.label(process::interpretation(transfer.semantics));
         if let Some(receipt) = &transfer.process {
+            if let Some(control) = &receipt.control {
+                ui.label(format!(
+                    "MAY control directory {} · entry {:?} · {} pure locations · {} boundary obligations",
+                    control.relation, control.entry, control.through.len(), control.boundaries.len()
+                ));
+            }
             for allocation in &receipt.creations {
                 ui.label(format!(
                     "Allocation action: {} · creator: {}",

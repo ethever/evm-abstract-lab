@@ -127,13 +127,42 @@ cases.append(("expression-limit-ssa",
                "--max-symbolic-nodes", "2", "--format", "json", "--allow-partial-ssa"], 2))
 for fixture in sorted((root / "examples/worlds").glob("*.json")):
     expected = 0
-    arguments = ["analyze", "--world", str(fixture), "--evm.to", entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x", "--format", "json"]
+    fixture_entry = ("0x1111111111111111111111111111111111111111"
+                     if fixture.name == "nested-detail-regions.json" else entry)
+    arguments = ["analyze", "--world", str(fixture), "--evm.to", fixture_entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x", "--format", "json"]
     cases.append((f"{fixture.stem}-analyze", arguments, expected))
     cases.append((f"{fixture.stem}-ssa", arguments + ["--ssa"], expected))
 summary_world = root / "examples/worlds/summary-reuse.json"
 cases.append(("summary-reuse-no-summaries",
               ["analyze", "--world", str(summary_world), "--evm.to", entry, "--evm.caller", "0x0000000000000000000000000000000000001000", "--evm.value", "0", "--evm.calldata", "0x",
                "--format", "json", "--no-summaries"], 0))
+
+def completed_analysis(payload, arguments):
+    """Keep standalone SSA and Hybrid Native evidence in their real slots."""
+    wrapped = arguments[0] == "ssa" or "--ssa" in arguments
+    if arguments[0] == "analyze":
+        global_graph, native_graph = payload.get("global"), payload.get("native")
+        coverage = payload.get("hybrid", {}).get("coverage", {})
+        if (payload.get("schema_version") != 16
+                or not isinstance(global_graph, dict)
+                or not isinstance(native_graph, dict)
+                or payload.get("status") != "Converged"
+                or coverage.get("baseline_current") is not True
+                or coverage.get("detail_current") is not True
+                or global_graph.get("analysis", {}).get("status") != "Converged"):
+            raise ValueError("expected current Global and Native graphs in native16 Hybrid report")
+        analysis, ir = native_graph.get("analysis", {}), native_graph.get("ssa", {})
+    else:
+        analysis = payload.get("analysis", {}) if wrapped else payload
+        ir = payload.get("ssa", {})
+    if (not isinstance(analysis, dict) or analysis.get("status") != "Converged"
+            or analysis.get("frontiers") != []):
+        raise ValueError("expected converged Native analysis without frontiers")
+    if wrapped and (not isinstance(ir, dict) or ir.get("status") != "Converged"
+                    or ir.get("complete") is not True):
+        raise ValueError("expected complete SSA in the analysis graph's own wrapper")
+    return analysis
+
 
 parity = []
 for label, arguments, expected in cases:
@@ -154,14 +183,10 @@ for label, arguments, expected in cases:
         if label == "expression-limit-ssa":
             assert_retained_partial(payload)
         elif arguments[0] != "disasm":
-            wrapped = arguments[0] == "ssa" or "--ssa" in arguments
-            analysis = payload.get("analysis", {}) if wrapped else payload
-            if analysis.get("status") != "Converged" or analysis.get("frontiers") != []:
-                sys.exit(f"{label}/{backend}: expected converged analysis without frontiers")
-            if wrapped:
-                ir = payload.get("ssa", {})
-                if ir.get("status") != "Converged" or ir.get("complete") is not True:
-                    sys.exit(f"{label}/{backend}: expected complete SSA wrapper")
+            try:
+                analysis = completed_analysis(payload, arguments)
+            except ValueError as error:
+                sys.exit(f"{label}/{backend}: {error}")
             if label.startswith("missing-code-"):
                 summaries = analysis.get("procedure_summaries", [])
                 if not summaries or not all(summary.get("closed") is True

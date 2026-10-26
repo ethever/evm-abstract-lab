@@ -202,10 +202,16 @@ where
                 owner,
                 source,
                 is_static: roles.is_static,
+                location: if program.is_some() {
+                    crate::analysis::ProcessLocation::Block(0)
+                } else {
+                    crate::analysis::ProcessLocation::Any
+                },
             });
             payload.pay_clone_with(self.budget)?;
-            self.pay_process_arrays()
-                .map_err(MachineError::frontier_reason)?;
+            let memory = EvmByteArray::memory_with_payment(self.domain, self.budget)?;
+            let calldata = EvmByteArray::empty_with_payment(self.domain, self.budget)?;
+            let returndata = EvmByteArray::empty_with_payment(self.domain, self.budget)?;
             let mut callback = payload.clone();
             let saved_store = payload.store.snapshot();
             if matches!(action, ProcessAction::Call | ProcessAction::StaticCall) {
@@ -221,11 +227,12 @@ where
                     code,
                     program,
                     stack: Vec::new(),
-                    memory: EvmByteArray::memory(),
-                    calldata: EvmByteArray::unknown_checked()
-                        .map_err(|e| MachineError::Bytes(e).frontier_reason())?,
+                    memory,
+                    // Private calldata is arbitrary under the Process
+                    // interpretation, independent of this adapter placeholder.
+                    calldata,
                     environment_calldata: false,
-                    returndata: EvmByteArray::empty(),
+                    returndata,
                     call_value: operands.value,
                     address_operand: Some(operands.address),
                     caller_operand: Some(operands.caller),

@@ -22,7 +22,7 @@ fn product_and_finite_set_use_distinct_native_carriers_and_precision() {
         "5f3560011660021600",
         &["--max-constants", "1", "--numeric-model", "finite-set"],
     );
-    assert_eq!(product["schema_version"], 15);
+    assert_eq!(product["schema_version"], 16);
     assert_eq!(product["numeric_model"], "product");
     assert_eq!(finite["numeric_model"], "finite-set");
     assert_eq!(
@@ -117,7 +117,11 @@ fn initial_world_budget_is_incomplete_with_an_explicit_source_free_frontier() {
         ],
     );
     assert_eq!(output.status.code(), Some(2));
-    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let raw: Value = serde_json::from_slice(&output.stdout).unwrap();
+    super::native::assert_exit(&raw, &output);
+    assert!(raw["native"].is_null());
+    assert_eq!(raw["hybrid"]["coverage"]["detail"], "BaselinePending");
+    let json = crate::native::global(&raw);
     assert_eq!(json["status"], "Incomplete");
     assert!(json["states"].as_array().unwrap().is_empty());
     assert!(json["outcomes"].as_array().unwrap().is_empty());
@@ -127,8 +131,8 @@ fn initial_world_budget_is_incomplete_with_an_explicit_source_free_frontier() {
     assert!(frontiers[0]["target"].is_null());
     assert!(frontiers[0]["pc"].is_null());
     assert_eq!(frontiers[0]["reason"], "Work");
-    assert_eq!(json["schema_version"], 15);
-    assert_eq!(json["numeric_model"], "product");
-    assert_eq!(json["postprocessing_max_work"], 2_000_000_000);
-    assert_eq!(json["postprocessing_work"], 0);
+    assert_eq!(json["schema_version"], 16);
+    assert_eq!(raw["numeric_model"], "product");
+    assert_eq!(raw["postprocessing_max_work"], 2_000_000_000);
+    assert_eq!(raw["postprocessing_work"], 0);
 }

@@ -1,7 +1,7 @@
 use crate::{A, Assembly, address, assert_current, fixture, insert, oracle, run, support};
 use evm_abstract::{
     Fork,
-    analysis::{OutcomeKind, ProcessAction},
+    analysis::{OutcomeKind, ProcessAction, ProcessLocation},
     bytecode::{DecodeError, Program},
     world::{EvmAccount, EvmByteArray, EvmWorld},
 };
@@ -47,6 +47,7 @@ fn every_valid_opcode_has_a_current_primitive_or_collapsed_process_rule() {
             assert_current(&analysis);
             let record = analysis.procedure_summaries().last().unwrap();
             let root = record.root_procedure.unwrap();
+            let mut entry_seen = false;
             for node in record
                 .regional_cfg
                 .nodes
@@ -54,9 +55,24 @@ fn every_valid_opcode_has_a_current_primitive_or_collapsed_process_rule() {
                 .filter(|node| node.procedure == root)
             {
                 let receipt = node.transfer.as_ref().unwrap().process.as_ref().unwrap();
-                assert_eq!(receipt.actions, expected, "opcode={op:02x}, fork={fork:?}");
+                let entry =
+                    node.frame.process.as_ref().unwrap().location == ProcessLocation::Block(0);
+                entry_seen |= entry;
+                // The original fixture and complete opcode/fork inventory stay
+                // intact. Its primitive belongs to the entry block; STOP/EOF
+                // continuations must not repeat a whole-source action bag.
+                assert_eq!(
+                    receipt.actions,
+                    if entry { expected.as_slice() } else { &[] },
+                    "opcode={op:02x}, fork={fork:?}, location={:?}",
+                    node.frame.process.as_ref().unwrap().location
+                );
                 assert!(receipt.unresolved.is_empty());
             }
+            assert!(
+                entry_seen,
+                "missing admitted opcode entry: opcode={op:02x}, fork={fork:?}"
+            );
         }
         assert!(valid > 140);
         eprintln!("process opcode inventory: fork={fork:?}, valid={valid}");

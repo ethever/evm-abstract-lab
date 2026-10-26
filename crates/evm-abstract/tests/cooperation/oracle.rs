@@ -85,7 +85,7 @@ pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
     assert_eq!(failure.output_word(64), U256::ZERO);
     assert_eq!(failure.output_word(0), U256::ZERO);
     eprintln!(
-        "revm CALL witnesses: forwarded GAS -> (status1,data42); forwarded0 -> (status0,data0)"
+        "revm CALL controls in distinct programs: GAS -> (status1,data42); PUSH0 -> (status0,data0)"
     );
     let result = native::run(
         &native::product(),
@@ -96,8 +96,25 @@ pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
     .unwrap();
     assert_eq!(result.status(), Status::Converged);
     success.covers(&result);
-    failure.covers(&result);
+    assert!(
+        !failure.is_covered(&result),
+        "the zero-gas control has different caller bytecode from the original program"
+    );
+    // The zero-forwarded-gas control deliberately changes GAS to PUSH0. Its
+    // observed account code must be checked against that same input program.
+    // The original abstract status0 branch may overapproximate; this control
+    // does not witness reachability in the original transaction.
+    let failure_result = native::run(
+        &native::product(),
+        AnalysisInput::new(failed_world, failed_entry).unwrap(),
+        fixtures::config(1_000_000_000),
+        &Control::default(),
+    )
+    .unwrap();
+    assert_eq!(failure_result.status(), Status::Converged);
+    failure.covers(&failure_result);
     concrete::unchanged(&result, &[fixtures::OWNER, fixtures::CALLEE]);
+    concrete::unchanged(&failure_result, &[fixtures::OWNER, fixtures::CALLEE]);
 }
 
 pub fn assert_guard_coverage(

@@ -58,8 +58,8 @@ pub struct EvmRegionalTransfer {
     pub input_revision: u64,
     /// The native owner finished and this still describes its current input.
     /// A current partial receipt does not establish closure or full coverage.
-    /// Always false for cooperative compositions until foreign-source validity
-    /// can be checked independently of the native slot revision.
+    /// Cooperative receipts additionally require the exact consumed foreign
+    /// universe, owner execution epoch and current client closure.
     pub current: bool,
     /// No transfer or successor-admission obligation was refused or deferred.
     /// When current is false, this describes only the historical transfer.
@@ -124,7 +124,7 @@ pub struct EvmRegionalReturn {
     pub output_generation: usize,
     /// The delivery owner finished and both native delivery stamps still match.
     /// This describes the subscriber/output pair, not closure of the callee.
-    /// Cooperative compositions conservatively withhold this certification.
+    /// Cooperative receipts additionally validate consumed foreign premises.
     pub current: bool,
     /// Caller-body continuations actually admitted by this delivery.
     pub successors: Vec<EvmRegionalEdge>,
@@ -144,6 +144,9 @@ impl EvmRegionalTransfer {
                             .saturating_add(16)
                     }))
                     .saturating_add(4)
+                    // A control receipt shares immutable paid source/region
+                    // allocations; snapshot cloning copies only their handle.
+                    .saturating_add(usize::from(process.control.is_some()).saturating_mul(8))
             }))
             .saturating_add(self.successors.len().saturating_mul(2))
             .saturating_add(self.calls.len())
@@ -229,6 +232,7 @@ impl<
         task: &TaskKind<<X as InputTasks>::Task>,
         current: bool,
     ) {
+        self.table.regional_snapshot = None;
         match task {
             TaskKind::Body(id) => {
                 if let Some(receipt) = &mut self.table.nodes[*id].transfer {
@@ -311,6 +315,35 @@ impl<
         }
     }
 
+    /// The same Body receipt for a numerical Process transfer. No executable
+    /// private carrier was constructed, so this cannot claim a visited PC.
+    pub(super) fn regional_compact_transfer(
+        &mut self,
+        id: usize,
+        input: Version,
+        process: crate::analysis::EvmProcessTransfer,
+        outcomes: Vec<OutcomeKind>,
+    ) -> Result<(), MachineError> {
+        let old = self.table.nodes[id]
+            .transfer
+            .as_ref()
+            .map_or(0, EvmRegionalTransfer::work_size);
+        self.reserve(old.saturating_add(outcomes.len()).saturating_add(32))?;
+        self.table.regional_snapshot = None;
+        self.table.nodes[id].transfer = Some(EvmRegionalTransfer {
+            semantics: self.table.nodes[id].payload.active().semantics,
+            process: Some(process),
+            input_revision: input.get(),
+            current: false,
+            complete: true,
+            visited_block: false,
+            successors: Vec::new(),
+            calls: Vec::new(),
+            outcomes,
+        });
+        Ok(())
+    }
+
     /// observe_body_edge is reached after native node admission, for both
     /// interpreter successors and separately executed Resume deliveries.
     pub(super) fn regional_edge(
@@ -322,6 +355,7 @@ impl<
         if self.active.is_none() {
             return Ok(());
         }
+        self.table.regional_snapshot = None;
         let Some(producer) = self.producer else {
             return Ok(());
         };
@@ -374,6 +408,7 @@ impl<
         if self.active.is_none() {
             return Ok(());
         }
+        self.table.regional_snapshot = None;
         let Some(producer) = self.producer else {
             return Ok(());
         };
@@ -487,6 +522,24 @@ impl<
         #[cfg(test)]
         cancel_after_export_census(self.budget);
         self.reserve(work.saturating_mul(4))?;
+        // Check foreign scopes before borrowing the active runtime Run. Native
+        // version reads below are an additional condition, never a substitute.
+        let mut node_current = Vec::with_capacity(self.table.nodes.len());
+        for id in 0..self.table.nodes.len() {
+            node_current.push(
+                self.cooperation
+                    .source_current(&TaskKind::Body(id), self.runtime, self.budget)
+                    .map_err(|error| self.cooperation.stop(error, self.budget))?,
+            );
+        }
+        let mut call_current = Vec::with_capacity(self.table.subscribers.len());
+        for id in 0..self.table.subscribers.len() {
+            call_current.push(
+                self.cooperation
+                    .source_current(&TaskKind::Resume(id), self.runtime, self.budget)
+                    .map_err(|error| self.cooperation.stop(error, self.budget))?,
+            );
+        }
         let table = &self.table;
         let cfg = self.runtime.with_run(
             self.active
@@ -513,10 +566,7 @@ impl<
                             excluded: node.excluded,
                             successors: node.successors.iter().copied().collect(),
                             transfer: node.transfer.as_ref().map(|receipt| {
-                                // Foreign premise retirement need not change
-                                // native versions. Completion is insufficient
-                                // without an explicit foreign-source guard.
-                                receipt.snapshot(input, node.excluded, !X::ENABLED)
+                                receipt.snapshot(input, node.excluded, node_current[id])
                             }),
                         })
                     })
@@ -538,7 +588,7 @@ impl<
                                     input,
                                     callee.outputs.get(kind).map(|output| output.generation),
                                     subscriber.delivered.get(kind).copied(),
-                                    !X::ENABLED,
+                                    call_current[id],
                                 )
                             })
                             .collect();

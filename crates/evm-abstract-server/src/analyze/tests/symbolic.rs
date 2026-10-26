@@ -25,9 +25,11 @@ fn roundtrip(report: api::AnalysisReport) -> api::AnalysisReport {
 fn actual_symbolic_storage_write_read_reaches_protocol_and_ssa() {
     let report = roundtrip(analyze_hex("5f3580600790555400"));
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .symbolic
             .nodes
             .iter()
@@ -35,6 +37,8 @@ fn actual_symbolic_storage_write_read_reaches_protocol_and_ssa() {
     );
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .states
             .iter()
             .filter_map(|state| state.exit.as_ref())
@@ -43,7 +47,7 @@ fn actual_symbolic_storage_write_read_reaches_protocol_and_ssa() {
                 .last()
                 .is_some_and(|v| v.constants == Some(vec!["0x7".into()]))))
     );
-    assert!(report.ssa.values.iter().any(|v| {
+    assert!(report.selected_graph().unwrap().ssa.values.iter().any(|v| {
         matches!(&v.origin,api::SsaValueOrigin::Instruction(origin) if origin.pc==7)
             && v.facts.iter().any(|fact| {
                 fact.status == api::SsaFactStatus::Current
@@ -56,10 +60,12 @@ fn actual_symbolic_storage_write_read_reaches_protocol_and_ssa() {
 fn actual_storage_alias_keeps_both_ordered_values_and_the_read_address() {
     let report = roundtrip(analyze_hex("5f358060079055602035600990555400"));
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
     // select(store(store(S,k,7),q,9),k) preserves the conditional aliasing
     // directly; the native graph need not materialize a separate scalar Ite.
     let read = report
+        .selected_graph()
+        .unwrap()
         .symbolic
         .nodes
         .iter()
@@ -68,24 +74,30 @@ fn actual_storage_alias_keeps_both_ordered_values_and_the_read_address() {
             _ => None,
         })
         .unwrap();
-    let api::Expression::Store(latest) = &report.symbolic.nodes[read.state.node] else {
+    let api::Expression::Store(latest) =
+        &report.selected_graph().unwrap().symbolic.nodes[read.state.node]
+    else {
         panic!("read retains the latest update")
     };
-    let api::Expression::Store(earlier) = &report.symbolic.nodes[latest.previous.node] else {
+    let api::Expression::Store(earlier) =
+        &report.selected_graph().unwrap().symbolic.nodes[latest.previous.node]
+    else {
         panic!("read retains the earlier update")
     };
     assert_eq!(read.key, earlier.key);
     assert_ne!(read.key, latest.key);
     assert_eq!(
-        report.symbolic.nodes[latest.value.node],
+        report.selected_graph().unwrap().symbolic.nodes[latest.value.node],
         api::Expression::Constant("0x9".into())
     );
     assert_eq!(
-        report.symbolic.nodes[earlier.value.node],
+        report.selected_graph().unwrap().symbolic.nodes[earlier.value.node],
         api::Expression::Constant("0x7".into())
     );
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .states
             .iter()
             .filter_map(|state| state.exit.as_ref())
@@ -100,6 +112,8 @@ fn actual_storage_alias_keeps_both_ordered_values_and_the_read_address() {
     );
     assert_eq!(
         report
+            .selected_graph()
+            .unwrap()
             .symbolic
             .nodes
             .iter()
@@ -114,6 +128,8 @@ fn consumed_symbolic_memory_address_keeps_complete_non_singleton_numeric_facts()
     let report = roundtrip(analyze_hex("5f356010166007905200"));
     assert_eq!(report.status, api::AnalysisStatus::Converged);
     let facts = report
+        .selected_graph()
+        .unwrap()
         .byte_arrays
         .iter()
         .filter(|bytes| bytes.memory)
@@ -132,50 +148,63 @@ fn consumed_symbolic_memory_address_keeps_complete_non_singleton_numeric_facts()
 fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     let report = roundtrip(analyze_hex("366000803700"));
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
-    assert!(report.ssa.complete);
-    let state = &report.states[0];
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
+    assert!(report.selected_graph().unwrap().ssa.complete);
+    let state = &report.selected_graph().unwrap().states[0];
     let exit = state.exit.as_ref().unwrap();
     let frame = exit.frames.last().unwrap();
-    let input = &report.byte_arrays[frame.calldata.unwrap()];
+    let input = &report.selected_graph().unwrap().byte_arrays[frame.calldata.unwrap()];
     let length = input.length.expression.unwrap();
     assert!(
-        matches!(&report.symbolic.nodes[length.node], api::Expression::Input(identity)
+        matches!(&report.selected_graph().unwrap().symbolic.nodes[length.node], api::Expression::Input(identity)
         if identity.symbol.kind == api::InputSymbolKind::CalldataLength)
     );
-    let api::Expression::View(memory) =
-        &report.symbolic.nodes[report.byte_arrays[frame.memory.unwrap()].symbolic.node]
-    else {
+    let api::Expression::View(memory) = &report.selected_graph().unwrap().symbolic.nodes[report
+        .selected_graph()
+        .unwrap()
+        .byte_arrays[frame.memory.unwrap()]
+    .symbolic
+    .node] else {
         panic!("memory retains its typed view")
     };
-    let api::Expression::Copy(copy) = &report.symbolic.nodes[memory.state.node] else {
+    let api::Expression::Copy(copy) =
+        &report.selected_graph().unwrap().symbolic.nodes[memory.state.node]
+    else {
         panic!("the successful side commits the lazy copy")
     };
     assert!(matches!(
-        report.symbolic.nodes[copy.previous.node],
+        report.selected_graph().unwrap().symbolic.nodes[copy.previous.node],
         api::Expression::BytesZero
     ));
     assert_eq!(
-        report.symbolic.nodes[copy.destination.node],
+        report.selected_graph().unwrap().symbolic.nodes[copy.destination.node],
         api::Expression::Constant("0x0".into())
     );
     assert_eq!(copy.length, length);
-    let api::Expression::View(source) = &report.symbolic.nodes[copy.source.node] else {
+    let api::Expression::View(source) =
+        &report.selected_graph().unwrap().symbolic.nodes[copy.source.node]
+    else {
         panic!("the copy captures the immutable calldata view")
     };
-    let api::Expression::View(input_view) = &report.symbolic.nodes[input.symbolic.node] else {
+    let api::Expression::View(input_view) =
+        &report.selected_graph().unwrap().symbolic.nodes[input.symbolic.node]
+    else {
         panic!("calldata retains its input view")
     };
     assert_eq!(source.state, input_view.state);
     assert_eq!(source.offset, input_view.offset);
     assert_eq!(source.length, length);
-    let api::Expression::PathAnd(paths) = &report.symbolic.nodes[exit.path.node] else {
+    let api::Expression::PathAnd(paths) =
+        &report.selected_graph().unwrap().symbolic.nodes[exit.path.node]
+    else {
         panic!("success retains the logical range assumption")
     };
     let guard = paths
         .iter()
         .find_map(|path| {
-            let api::Expression::PathAtoms(atoms) = &report.symbolic.nodes[path.node] else {
+            let api::Expression::PathAtoms(atoms) =
+                &report.selected_graph().unwrap().symbolic.nodes[path.node]
+            else {
                 return None;
             };
             atoms.iter().find_map(|atom| match atom {
@@ -184,32 +213,40 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
             })
         })
         .unwrap();
-    let api::Expression::Operation(guard) = &report.symbolic.nodes[guard.node] else {
+    let api::Expression::Operation(guard) =
+        &report.selected_graph().unwrap().symbolic.nodes[guard.node]
+    else {
         panic!("the memory guard retains its empty-or-fitting predicate")
     };
     assert_eq!(guard.opcode, 0x17);
     assert_eq!(guard.arguments.len(), 2);
-    let api::Expression::Operation(empty) = &report.symbolic.nodes[guard.arguments[0].node] else {
+    let api::Expression::Operation(empty) =
+        &report.selected_graph().unwrap().symbolic.nodes[guard.arguments[0].node]
+    else {
         panic!("the empty branch retains ISZERO(length)")
     };
     assert_eq!(empty.opcode, 0x15);
     assert_eq!(empty.arguments, [length]);
-    let api::Expression::Operation(fits) = &report.symbolic.nodes[guard.arguments[1].node] else {
+    let api::Expression::Operation(fits) =
+        &report.selected_graph().unwrap().symbolic.nodes[guard.arguments[1].node]
+    else {
         panic!("the nonempty branch retains both endpoint checks")
     };
     assert_eq!(fits.opcode, 0x16);
     assert_eq!(fits.arguments.len(), 2);
     assert_eq!(
-        report.symbolic.nodes[fits.arguments[0].node],
+        report.selected_graph().unwrap().symbolic.nodes[fits.arguments[0].node],
         api::Expression::Constant("0x1".into())
     );
-    let api::Expression::Operation(size_fits) = &report.symbolic.nodes[fits.arguments[1].node]
+    let api::Expression::Operation(size_fits) =
+        &report.selected_graph().unwrap().symbolic.nodes[fits.arguments[1].node]
     else {
         panic!("the requested size retains its upper bound")
     };
     assert_eq!(size_fits.opcode, 0x15);
     assert_eq!(size_fits.arguments.len(), 1);
-    let api::Expression::Operation(too_large) = &report.symbolic.nodes[size_fits.arguments[0].node]
+    let api::Expression::Operation(too_large) =
+        &report.selected_graph().unwrap().symbolic.nodes[size_fits.arguments[0].node]
     else {
         panic!("the size check uses the original calldata length")
     };
@@ -217,11 +254,11 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     assert_eq!(too_large.arguments.len(), 2);
     assert_eq!(too_large.arguments[0], length);
     assert_eq!(
-        report.symbolic.nodes[too_large.arguments[1].node],
+        report.selected_graph().unwrap().symbolic.nodes[too_large.arguments[1].node],
         api::Expression::Constant(format!("0x{}e0", "ff".repeat(31)))
     );
     assert!(frame.stack.is_empty());
-    let copy_instruction = report.ssa.blocks[0]
+    let copy_instruction = report.selected_graph().unwrap().ssa.blocks[0]
         .instructions
         .iter()
         .find(|instruction| instruction.pc == 4)
@@ -234,7 +271,7 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     assert_eq!(copy_instruction.operands.len(), 3);
     assert_eq!(copy_instruction.operands[0], copy_instruction.operands[1]);
     assert!(
-        matches!(&report.ssa.values[copy_instruction.operands[2]].origin,
+        matches!(&report.selected_graph().unwrap().ssa.values[copy_instruction.operands[2]].origin,
         api::SsaValueOrigin::Instruction(origin) if origin.pc == 0)
     );
     assert!(copy_instruction.results.is_empty());
@@ -256,9 +293,17 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     assert!(combined.hybrid.as_ref().unwrap().coverage.baseline_current);
     let partial = roundtrip(super::native_detail(combined));
     assert_eq!(partial.status, api::AnalysisStatus::Incomplete);
-    assert!(!partial.ssa.complete);
-    assert_eq!(partial.metadata.limits.max_expression_nodes, 3);
-    let [frontier] = partial.frontiers.as_slice() else {
+    assert!(!partial.selected_graph().unwrap().ssa.complete);
+    assert_eq!(
+        partial
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .limits
+            .max_expression_nodes,
+        3
+    );
+    let [frontier] = partial.selected_graph().unwrap().frontiers.as_slice() else {
         panic!("expected only the mandatory logical range refusal")
     };
     assert_eq!(frontier.kind, api::FrontierKind::Relations);
@@ -274,7 +319,12 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
         range.request.limit.constants,
         Some(vec![format!("0x{}e0", "ff".repeat(31))])
     );
-    let length = partial.byte_arrays[partial.states[0].entry.frames[0].calldata.unwrap()]
+    let length =
+        partial.selected_graph().unwrap().byte_arrays[partial.selected_graph().unwrap().states[0]
+            .entry
+            .frames[0]
+            .calldata
+            .unwrap()]
         .length
         .expression
         .unwrap();
@@ -285,24 +335,29 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
         "the refused guard cannot be fabricated"
     );
     assert_eq!(range.nonzero, None);
-    let pending = &partial.pending_machines[range.payload];
+    let pending = &partial.selected_graph().unwrap().pending_machines[range.payload];
     let frame = pending.frames.last().unwrap();
-    let memory = &partial.byte_arrays[frame.memory.unwrap()];
+    let memory = &partial.selected_graph().unwrap().byte_arrays[frame.memory.unwrap()];
     assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
-    let api::Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
+    let api::Expression::View(view) =
+        &partial.selected_graph().unwrap().symbolic.nodes[memory.symbolic.node]
+    else {
         panic!("the pending state retains the unchanged memory view")
     };
     assert!(matches!(
-        partial.symbolic.nodes[view.state.node],
+        partial.selected_graph().unwrap().symbolic.nodes[view.state.node],
         api::Expression::BytesZero
     ));
     assert!(frame.stack.is_empty());
-    let state = &partial.states[0];
+    let state = &partial.selected_graph().unwrap().states[0];
     let exit = state.exit.as_ref().unwrap();
     assert_eq!(pending.frames, exit.frames);
     assert_eq!(pending.store, exit.store);
     assert_eq!(exit.store, state.entry.store);
-    let instruction = partial.ssa.blocks[0].instructions.last().unwrap();
+    let instruction = partial.selected_graph().unwrap().ssa.blocks[0]
+        .instructions
+        .last()
+        .unwrap();
     assert_eq!((instruction.pc, instruction.opcode), (4, 0x37));
     assert_eq!(
         instruction.progress,
@@ -311,7 +366,7 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     assert_eq!(instruction.operands.len(), 3);
     assert_eq!(instruction.operands[0], instruction.operands[1]);
     assert!(
-        matches!(&partial.ssa.values[instruction.operands[2]].origin,
+        matches!(&partial.selected_graph().unwrap().ssa.values[instruction.operands[2]].origin,
         api::SsaValueOrigin::Instruction(origin) if origin.pc == 0)
     );
     assert!(instruction.results.is_empty());
@@ -320,11 +375,21 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
         instruction.operation,
         api::SsaOperation::Opcode(_)
     ));
-    assert!(!partial.ssa.values.iter().any(|value| {
-        matches!(&value.origin, api::SsaValueOrigin::Instruction(origin) if origin.pc == 4)
-    }));
+    assert!(
+        !partial
+            .selected_graph()
+            .unwrap()
+            .ssa
+            .values
+            .iter()
+            .any(|value| {
+                matches!(&value.origin, api::SsaValueOrigin::Instruction(origin) if origin.pc == 4)
+            })
+    );
     assert!(
         partial
+            .selected_graph()
+            .unwrap()
             .symbolic
             .nodes
             .iter()
@@ -332,6 +397,8 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     );
     assert!(
         partial
+            .selected_graph()
+            .unwrap()
             .outcomes
             .iter()
             .all(|outcome| outcome.kind == api::OutcomeKind::Failure)
@@ -342,9 +409,11 @@ fn legal_twenty_four_kib_codecopy_exports_one_lazy_copy_and_exact_source() {
     let source = format!("616000600a5f3900{}", "00".repeat(24 * 1024 - 8));
     let report = roundtrip(analyze_hex(&source));
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
     assert_eq!(
         report
+            .selected_graph()
+            .unwrap()
             .symbolic
             .nodes
             .iter()
@@ -353,12 +422,20 @@ fn legal_twenty_four_kib_codecopy_exports_one_lazy_copy_and_exact_source() {
         1
     );
     assert!(
-        report.symbolic.nodes.iter().any(
+        report.selected_graph().unwrap().symbolic.nodes.iter().any(
             |node| matches!(node,api::Expression::BytesExact(bytes) if bytes.len()==2+24*1024*2)
         )
     );
-    assert!(report.symbolic.nodes.len() < 64);
-    assert!(report.metadata.export_usage.exact_bytes >= 24 * 1024);
+    assert!(report.selected_graph().unwrap().symbolic.nodes.len() < 64);
+    assert!(
+        report
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .export_usage
+            .exact_bytes
+            >= 24 * 1024
+    );
 }
 #[test]
 fn symbolic_export_limits_and_cancellation_are_typed_without_changing_native_values() {

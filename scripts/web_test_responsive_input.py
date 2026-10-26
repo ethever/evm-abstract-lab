@@ -13,7 +13,7 @@ def run_responsive_input(context):
         page.set_viewport_size({"width": width, "height": height})
         rendered_frame(page)
         reply = submit_bytecode(page, canvas, "600160020100",
-                                context.output / f"editor-{width}x{height}.png")
+                                context.output / f"editor-{width}x{height}.png", close_directory=True)
         assert reply.status == 200
         expect(status).to_contain_text("Converged")
         responsive_input[f"{width}x{height}"] = posted_bytecode(reply)

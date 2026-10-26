@@ -256,13 +256,24 @@ fn explain_accepts_every_world_analysis_option_except_output_selection() {
         .filter_map(|arg| arg.get_long())
         .collect::<std::collections::BTreeSet<_>>();
     for flag in analyze.get_arguments().filter_map(|arg| arg.get_long()) {
-        if !matches!(flag, "format" | "ssa") {
+        if !matches!(flag, "format" | "ssa" | "staged-json") {
             assert!(
                 explain_flags.contains(flag),
                 "world explain is missing --{flag}"
             );
         }
     }
+    assert!(!explain_flags.contains("staged-json"));
+    let error = Cli::try_parse_from([
+        "evm-abstract",
+        "explain",
+        "--world",
+        "examples/delegatecall-proxy.json",
+        "--staged-json",
+    ])
+    .err()
+    .expect("staged JSON is an analyze output mode");
+    assert_eq!(error.kind(), ErrorKind::UnknownArgument);
 }
 
 #[test]

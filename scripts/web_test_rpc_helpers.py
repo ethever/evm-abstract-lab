@@ -9,6 +9,7 @@ import json
 import re
 import time
 from web_test_harness import analysis_server, complete_submission, open_input, rendered_frame, settle_gesture
+from web_test_hybrid import oracle_graph, source_program
 
 
 RPC_PROVIDERS = [
@@ -51,13 +52,13 @@ class EntryRpcFixture(RpcFixture):
 def automatic_rpc_entry(page, url: str, provider, output: Path, name: str):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    reply = complete_submission(page, initial.value)
+    reply = complete_submission(page, initial.value, namespace="Native")
     request = reply.request.post_data_json
     assert request["input"] == {"Rpc": {"provider_id": provider["id"], "address": USDC_ENTRY, "block": "Latest", "accounts": []}}, request
     assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
-    report = reply.json()["result"]["Ok"]
+    report = oracle_graph(reply.report, "Native")
     assert report["metadata"]["entry_address"].lower() == USDC_ENTRY.lower()
-    assert len(report["cfg"]) == 1 and report["programs"][0]["bytecode"] in ("00", "0x00"), "preset fixture unexpectedly analyzed live code"
+    assert len(report["cfg"]) == 1 and source_program(report, report["metadata"]["root_program"])["bytecode"] in ("00", "0x00"), "preset fixture unexpectedly analyzed live code"
     (output / f"{name}-automatic-usdc.json").write_text(json.dumps({"request": request, "entry_address": report["metadata"]["entry_address"], "status": report["status"]}, indent=2) + "\n")
     return request
 
@@ -93,7 +94,8 @@ def select_rpc_provider(page, canvas, index: int, output: Path, name: str):
     canvas.click(position={"x": 460, "y": 428 + index * 23})
     settle_gesture(page)
 
-def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, providers):
+def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, providers,
+               *, configure_form=None):
     expect(page.locator("#analysis-status")).to_contain_text(
         f"RPC provider: {providers[0]['name']} ({providers[0]['endpoint']})")
     open_rpc_input(page, canvas)
@@ -106,6 +108,8 @@ def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, 
     page.keyboard.press("Control+A")
     page.keyboard.type(rpc.root_address, delay=3)
     rendered_frame(page)
+    if configure_form is not None:
+        configure_form()
     canvas.screenshot(path=str(output / f"{name}-input.png"))
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
         page.keyboard.press("Control+Enter")
@@ -116,6 +120,51 @@ def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, 
     assert RPC_TEST_TOKEN not in admitted.request.post_data
     assert request["environment"]["number"] is None
     return admitted
+
+
+def native_call_summary(report, state):
+    """Borrow a closed relative Native body without giving it World PCs or SSA."""
+    summary, = [item for item in report["abstract_summaries"]
+                if item["kind"] == "KnownCall" and item["source_state"] == state["id"]]
+    assert summary["source_current"] is True and summary["closed"] is True
+    assert state["executed_pcs"] == []
+    block, = [item for item in report["ssa"]["blocks"] if item["state"] == state["id"]]
+    assert block["instructions"] == []
+    snapshot, = [item for item in report["states"] if item["state"] == state["id"]]
+    assert snapshot["entry"] == snapshot["exit"]
+    procedures = summary["procedures"]
+    assert procedures and 0 <= summary["root_procedure"] < len(procedures)
+    active = snapshot["entry"]["frames"][-1]
+    root = procedures[summary["root_procedure"]]
+    assert (root["code_address"], root["code_hash"], root["kind"],
+            root["storage_address"], root["is_static"]) == (
+                active["code_address"], active["code_hash"], active["kind"],
+                active["storage_address"], active["is_static"])
+    nodes = summary["regional_cfg"]["nodes"]
+    assert len(nodes) == summary["state_count"]
+    for index, procedure in enumerate(procedures):
+        assert procedure["semantics"] == "Native" and procedure["process"] is None
+        assert procedure["process_input"] is None
+        program, = [item for item in report["programs"]
+                    if (item["code_address"], item["code_hash"], item["kind"]) ==
+                    (procedure["code_address"], procedure["code_hash"], procedure["kind"])]
+        assert program["fork"] == report["fork"]
+        body = [node for node in nodes if node["procedure"] == index]
+        assert set(procedure["covered_blocks"]) == {node["frame"]["basic_block"] for node in body}
+        for node in body:
+            frame, transfer = node["frame"], node["transfer"]
+            assert frame["process"] is None and node["excluded"] is False
+            assert type(frame["basic_block"]) is int
+            assert (frame["code_address"], frame["code_hash"], frame["kind"],
+                    frame["storage_address"], frame["is_static"]) == (
+                        program["code_address"], program["code_hash"], program["kind"],
+                        procedure["storage_address"], procedure["is_static"])
+            assert any(block["id"] == frame["basic_block"] for block in program["blocks"])
+            assert transfer["semantics"] == "Native" and transfer["process"] is None
+            assert transfer["current"] is True and transfer["complete"] is True
+            assert transfer["visited_block"] is True
+            assert transfer["input_revision"] == node["input_revision"]
+    return summary
 
 @contextmanager
 def configured_rpc_server(args):

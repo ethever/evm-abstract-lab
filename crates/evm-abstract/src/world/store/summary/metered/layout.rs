@@ -93,6 +93,44 @@ impl<N: WordElement> SummaryPlane<N> {
 }
 
 impl<N: WordElement> EvmStoreSummary<N> {
+    /// Coarse normalization keeps only the structural part of layout projection.
+    /// Numeric cells, defaults, nonces and logs are forgotten regardless of the
+    /// layout, so projecting those first would execute discarded native hooks.
+    pub(crate) fn forget_loop_numeric_in_layout_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        layout: &Self,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, CloneError> {
+        pay_structure(
+            self.clone_prefix_work()
+                .saturating_add(layout.clone_prefix_work()),
+            budget,
+        )?;
+        let mut out = self.forget_loop_numeric_with_payment(domain, budget)?;
+        out.codes
+            .retain(|owner, _| layout.codes.get(owner).is_some());
+        out.existence
+            .retain(|owner, _| layout.existence.get(owner).is_some());
+        (out.created, out.created_default) = sparse::project(
+            (&self.created, &self.created_default),
+            &layout.created,
+            lifecycle::join,
+        );
+        (out.pending_destruction, out.pending_destruction_default) = sparse::project(
+            (&self.pending_destruction, &self.pending_destruction_default),
+            &layout.pending_destruction,
+            lifecycle::join,
+        );
+        (out.touched, out.touched_default) = sparse::project(
+            (&self.touched, &self.touched_default),
+            &layout.touched,
+            lifecycle::join,
+        );
+        checkpoint(budget)?;
+        Ok(out)
+    }
+
     /// Forget numeric coordinates without copying payloads that are discarded.
     /// Code, lifecycle, existence and transaction touch facts survive exactly.
     pub(crate) fn forget_loop_numeric_with_payment<D: EvmNumericAlgebra<Element = N>>(

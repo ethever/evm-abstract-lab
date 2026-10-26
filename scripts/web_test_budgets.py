@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 from web_test_harness import complete_submission, observe_webgpu, open_input, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_modal
-from web_test_hybrid import assert_hybrid
+from web_test_hybrid import assert_hybrid, graph, job_result_report, oracle_graph
 from web_test_pixels import text_pixels
 
 
@@ -41,27 +41,37 @@ def budget_interactions(browser, url: str, output: Path):
     def large_export_work(route):
         response = route.fetch()
         envelope = response.json()
-        metadata = envelope["result"]["Ok"]["metadata"]
-        assert "max_work" not in metadata["export_limits"], metadata
-        metadata["export_usage"]["work"] = reported_export_work
+        report = job_result_report(envelope)
+        rewritten = False
+        for namespace in ["Baseline", "Native"]:
+            selected = graph(report, namespace)
+            if selected is not None:
+                metadata = selected["metadata"]
+                assert "max_work" not in metadata["export_limits"], metadata
+                metadata["export_usage"]["work"] = reported_export_work
+                rewritten = True
+        # Minimum export usage is paid and bounded by its actual application
+        # allowance. This u64 control edits only informational rich counters.
         # The intercepted body was decoded before editing. Do not label the
         # replacement plain JSON with the upstream response's content coding.
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
         headers.pop("content-length", None)
         route.fulfill(status=response.status, headers=headers, body=json.dumps(envelope))
-        decoded_export_work.append(reported_export_work)
+        if rewritten:
+            decoded_export_work.append(reported_export_work)
 
     page.route("**/api/tasks/*/result", large_export_work)
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    initial_reply = complete_submission(page, initial.value)
+    initial_reply = complete_submission(page, initial.value, namespace="Native")
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
-    initial_report = initial_reply.json()["result"]["Ok"]
+    initial_report = initial_reply.report
     assert_hybrid(initial_report)
-    assert initial_report["schema_version"] == 20
+    assert initial_report["schema_version"] == 21
+    initial_report = oracle_graph(initial_report, "Native")
     assert initial_report["metadata"]["postprocessing_max_work"] == 2_000_000_000
     assert 0 <= initial_report["metadata"]["postprocessing_work"] <= 2_000_000_000
     assert "max_work" not in initial_report["metadata"]["export_limits"]
@@ -136,14 +146,15 @@ def budget_interactions(browser, url: str, output: Path):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as submitted:
         page.keyboard.press("Control+Enter")
-    reply = complete_submission(page, submitted.value)
+    reply = complete_submission(page, submitted.value, namespace="Native")
     assert reply.admission_status == 202, reply.json()
     assert reply.status == 200, reply.json()
     request = json.loads(reply.request.post_data)
-    report = reply.json()["result"]["Ok"]
+    report = reply.report
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
     assert_hybrid(report)
-    assert report["schema_version"] == 20
+    assert report["schema_version"] == 21
+    report = oracle_graph(report, "Native")
     # This independent finite allowance does not inherit the edited execution
     # budget or the deliberately huge informational export work counter.
     assert report["metadata"]["postprocessing_max_work"] == 2_000_000_000

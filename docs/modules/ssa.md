@@ -30,15 +30,15 @@
 
 ## 单元三：MLOAD 只弹出了参数，报告该怎样写？
 
-**起点与范围：**完整做 [MLOAD 中途停止实验](../04-ssa.md#从块中途停下的实际输出开始)，使用同一份 [`partial-ssa-memory.json`](../../examples/partial-ssa-memory.json)，只改变正文中的 1/32 字节上限。这里不需要真实 RPC，也没有外部调用。
+**起点与范围：**完整做 [MLOAD 中途停止实验](../04-ssa.md#从块中途停下的实际输出开始)，使用同一份 [`partial-ssa-memory.json`](../../examples/partial-ssa-memory.json)，只改变正文中的执行 work 上限，保持具体字节提取上限为 1。这里不需要真实 RPC，也没有外部调用。
 
-先预测 MLOAD 的结果名字和 ADD 是否出现，再观察输出。上限 1 时，偏移 `%1` 已消费，MLOAD 为 `OperandsConsumed`，留下 `recorded prefix stack: f₀: [%0]`；上限 32 时，MLOAD 和 ADD 才分别定义 `%2`、`%3`。两次剩余数值都可为 1，来源却不同。
+先预测 MLOAD 的结果名字和 ADD 是否出现，再观察输出。执行 work 为 2,000,000 时，Native 的偏移 `%1` 已消费，MLOAD 为 `OperandsConsumed`，留下 `recorded prefix stack: f₀: [%0]`；恢复默认 work 时，Native 的 MLOAD 和 ADD 才分别定义 `%2`、`%3`。两次剩余数值都可为 1，来源却不同。
 
 接着读[指令阶段](../04-ssa.md#一条指令已经走到哪一步)和[效果链](../04-ssa.md#进度和效果链怎样一起读)，按正文加 `--verbose`。`%n` 连接栈值，`μᵢ` 连接粗粒度整机效果，`progress` 说明已走到的阶段；出现新的效果名字不证明 storage 被修改，也不证明指令正常完成。
 
-从 [`transfer.rs`](../../crates/evm-abstract/src/analysis/transfer.rs) 依次找到消费参数、`touch_memory`、提前返回，再到 [`evidence.rs`](../../crates/evm-abstract/src/analysis/machine/evidence.rs) 和 [`ssa/partial/build.rs`](../../crates/evm-abstract/src/ssa/partial/build.rs)核对如何命名这段记录。理论检验是：名字只能对应有证据支持的定义，不能按操作码通常的栈效果补造结果。
+从 [`transfer.rs`](../../crates/evm-abstract/src/analysis/transfer.rs) 依次找到消费参数、`prepare_word_read` 的付费与提前返回、`touch_memory`，再到 [`evidence.rs`](../../crates/evm-abstract/src/analysis/machine/evidence.rs) 和 [`ssa/partial/build.rs`](../../crates/evm-abstract/src/ssa/partial/build.rs)核对如何命名这段记录。理论检验是：名字只能对应有证据支持的定义，不能按操作码通常的栈效果补造结果。
 
-**停在这里的产物：**列出两次的已访问 pc、剩余栈、状态和退出码，核对 [练习 13](../07-exercises.md#13-判断部分-ssa-究竟记录到了哪里)的内存表格。能解释 `f₀`、栈底 `slot 0` 和 `exit_frames=[[0]]`，就已覆盖这一小步。
+**停在这里的产物：**列出两次的已访问 pc、剩余栈、状态和退出码，并区分全局 Converged 与 Native Incomplete，核对 [练习 13](../07-exercises.md#13-判断部分-ssa-究竟记录到了哪里)的工作额度表格。能解释 `f₀`、栈底 `slot 0` 和 `exit_frames=[[0]]`，就已覆盖这一小步。
 
 ## 单元四：块走完了，为什么 φ 仍是 partial？
 

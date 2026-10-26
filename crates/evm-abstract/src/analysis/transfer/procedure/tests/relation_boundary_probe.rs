@@ -84,7 +84,12 @@ fn relation_boundary_probe() {
             record.propagations,
             record.reused,
         );
-        for (procedure, summary) in record.procedures.iter().enumerate() {
+        let rich = record.materialize(domain, &mut WorkBudget::new(100_000_000));
+        assert_eq!(
+            rich.outcome,
+            crate::analysis::ProcedureReportOutcome::Complete
+        );
+        for (procedure, summary) in rich.procedures.iter().enumerate() {
             for (index, output) in summary.outputs.iter().enumerate() {
                 let value = output.data.read_word(&word(0), domain);
                 println!(

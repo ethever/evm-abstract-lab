@@ -134,6 +134,7 @@ pub(super) fn run_reusing<
     identity: (&super::layers::SnapshotId, super::layers::FactRevision),
     cooperation: Cooperation<D::Element, X, E>,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>> {
+    cooperation.validate_view(policies.state.runtime_execution())?;
     if let Some(reuse) = &mut reuse {
         reuse.begin();
         reuse
@@ -628,6 +629,11 @@ struct EvmEngine<
 struct WorldWork<N: WordElement> {
     id: usize,
     payload: EvmMachinePayload<N>,
+    /// Exact immutable foreign universe consumed before any nested execution.
+    consumed: Option<super::cooperation::Subject>,
+    /// Previously delivered numerical rows for this exact World input scope.
+    /// This permits skipping duplicate admission, never source certification.
+    previous_record: Option<usize>,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -831,8 +837,35 @@ impl<
             // A dependency wake may leave the input slot's version unchanged.
             // Even a failed read/preparation is a new evaluation, so neither an
             // older region record nor an older execution receipt can certify it.
+            let previous = if X::ENABLED {
+                self.source_records[id].and_then(|record| {
+                    self.result.states[id]
+                        .execution_evidence()
+                        .filter(|evidence| evidence.is_current())?;
+                    self.cooperation
+                        .as_ref()?
+                        .subject(Point {
+                            namespace: 0,
+                            kind: PointKind::World,
+                            index: id,
+                        })
+                        .map(|subject| (record, subject))
+                })
+            } else {
+                None
+            };
             self.source_records[id] = None;
             self.result.states[id].invalidate_execution();
+            if X::ENABLED {
+                let cooperation = self.cooperation.as_mut().ok_or(MachineError::Shape)?;
+                cooperation
+                    .begin_owner(
+                        &mut self.runtime,
+                        self.active.as_mut().ok_or(MachineError::Shape)?,
+                        self.budget,
+                    )
+                    .map_err(|error| cooperation.stop(error, self.budget))?;
+            }
             #[cfg(test)]
             {
                 tests::source_current::world_read_probe(id)?;
@@ -873,7 +906,12 @@ impl<
                 if !self.budget.charge(0) {
                     return Err(MachineError::work_failure());
                 }
-                return Ok(Some(WorldWork { id, payload: input }));
+                return Ok(Some(WorldWork {
+                    id,
+                    payload: input,
+                    consumed: None,
+                    previous_record: None,
+                }));
             }
             let view = cooperation
                 .input(
@@ -918,9 +956,18 @@ impl<
                             kind: super::DiagnosticKind::FactExchangeLimited(status),
                         });
                     }
+                    let consumed = cooperation.subject(Point {
+                        namespace: 0,
+                        kind: PointKind::World,
+                        index: id,
+                    });
                     return Ok(Some(WorldWork {
                         id,
                         payload: *payload,
+                        consumed,
+                        previous_record: previous
+                            .filter(|(_, subject)| Some(*subject) == consumed)
+                            .map(|(record, _)| record),
                     }));
                 }
                 LocalInput::Unreachable => {
@@ -959,7 +1006,12 @@ impl<
             let _ = self.runtime.finish(token, self.budget);
         }
         loop {
-            let WorldWork { id, payload: input } = match self.next_input() {
+            let WorldWork {
+                id,
+                payload: input,
+                consumed,
+                previous_record,
+            } = match self.next_input() {
                 Ok(Some(work)) => work,
                 Ok(None) => break,
                 Err(error) => {
@@ -993,8 +1045,16 @@ impl<
                 == super::RuntimeExecution::Process)
                 || entry.active().code == super::FrameCode::Unknown
                 || transfer::procedure::is_recursive_entry(entry)
-                || (self.policies.state.supports_early_known_admission()
-                    && transfer::procedure::is_known_call_entry(entry));
+                || (transfer::procedure::is_known_call_entry(entry)
+                    && self
+                        .policies
+                        .state
+                        .summarize_known_call(&entry.active().key))
+                || (transfer::procedure::is_known_root_entry(entry)
+                    && self
+                        .policies
+                        .state
+                        .summarize_known_root(&entry.active().key));
             if (relative_procedure
                 || cache
                     .as_ref()
@@ -1017,6 +1077,7 @@ impl<
             }
             let reused = matches!(attempt, SummaryAttempt::Hit);
             let mut reported_work = false;
+            let mut delivered = false;
             if !reused {
                 let execution = if relative_procedure {
                     let (execution, evidence) = self.procedures.execute_with(
@@ -1037,6 +1098,25 @@ impl<
                             .expect("composition is owned by this run"),
                     );
                     self.result.transfers = self.counters.transfers;
+                    // Reproof still executes and retains fresh foreign/regional
+                    // guards. Identical native output versions need no second
+                    // admission under the same immutable World input receipt.
+                    if let Some(previous) = previous_record
+                        && execution.frontiers.is_empty()
+                        && self.budget.can_afford(16)
+                        && self.budget.charge(16)
+                    {
+                        let old = &self.result.procedure_summaries()[previous];
+                        delivered = evidence.root_procedure.is_some_and(|root| {
+                            old.root_procedure == Some(root)
+                                && old.procedures.get(root).is_some_and(|prior| {
+                                    evidence
+                                        .procedures
+                                        .get(root)
+                                        .is_some_and(|next| prior.version == next.version)
+                                })
+                        });
+                    }
                     source_record = Some(self.result.procedure_summaries.len());
                     self.result.procedure_summaries.push(evidence);
                     execution
@@ -1061,7 +1141,7 @@ impl<
                         }
                     }
                 };
-                self.execution(id, execution, cache.as_mut());
+                self.execution(id, execution, cache.as_mut(), delivered);
             }
             // 本轮传播后再检查候选子图是否闭合。候选 callee 入口若与登记时不同，
             // 或子图还有待处理节点/前沿，就不能发表完整可复用证书。
@@ -1080,11 +1160,25 @@ impl<
             self.cache = cache;
             if X::ENABLED && self.result.frontiers.len() == frontiers_before {
                 let cooperation = self.cooperation.as_mut().expect("composition owner");
-                if let Err(error) = cooperation.complete_native(
-                    &mut self.runtime,
-                    self.active.as_mut().expect("complete world evaluation"),
-                    self.budget,
-                ) {
+                let completion = cooperation
+                    .complete_native(
+                        &mut self.runtime,
+                        self.active.as_mut().expect("complete world evaluation"),
+                        self.budget,
+                    )
+                    .and_then(|ready| {
+                        if ready {
+                            cooperation.record_source(
+                                &mut self.runtime,
+                                self.active.as_mut().expect("complete world evaluation"),
+                                self.budget,
+                                consumed,
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    });
+                if let Err(error) = completion {
                     let error = cooperation.stop(error, self.budget);
                     self.stop_pending(id, error.frontier_reason());
                     break;
@@ -1156,8 +1250,7 @@ impl<
             return;
         }
         let records = self.result.procedure_summaries.len();
-        if X::ENABLED
-            || records == 0
+        if records == 0
             || !self.result.procedure_summaries.is_unique()
             || MachineError::check_cancelled().is_err()
         {
@@ -1194,9 +1287,30 @@ impl<
             // An unidentified in-flight owner cannot supply a World certificate.
             return;
         }
-        let eligible = (0..self.source_records.len())
-            .filter_map(|id| self.current_source_record(id, &pending))
-            .collect::<Vec<_>>();
+        let mut eligible = Vec::new();
+        for id in 0..self.source_records.len() {
+            if let Some(record) = self.current_source_record(id, &pending) {
+                let valid = self.cooperation.as_ref().is_some_and(|cooperation| {
+                    cooperation
+                        .source_current(
+                            &TaskKind::World { node: id, depth: 0 },
+                            &self.runtime,
+                            self.budget,
+                        )
+                        .unwrap_or(false)
+                        && cooperation
+                            .regional_sources_current(
+                                &self.result.procedure_summaries()[record].regional_cfg,
+                                &self.runtime,
+                                self.budget,
+                            )
+                            .unwrap_or(false)
+                });
+                if valid {
+                    eligible.push(record);
+                }
+            }
+        }
         if !permit.publish_allowed() || MachineError::check_cancelled().is_err() {
             return;
         }
@@ -1332,6 +1446,8 @@ impl<
 
     /// 把一次块转换的结果接入图：更新本节点出口，收集诊断、前沿和终结结果，
     /// 再把每个可继续传播的后继交给 `successor` 汇合与调度。
+    /// A same-input, same-output reproof retains the already admitted delivery
+    /// edges while still installing new transfer metadata and diagnostics.
     ///
     /// `exit`、`executed_pcs` 和 `completed_calls[id]` 是本次转换的证据，重访会
     /// 替换它们；edges 和 diagnostics 则累计保留。CALL 后继还要登记为摘要入口。
@@ -1340,6 +1456,7 @@ impl<
         id: usize,
         mut execution: transfer::EvmExecution<D::Element>,
         mut cache: Option<&mut EvmCache<D::Element, P::Class>>,
+        delivered: bool,
     ) {
         self.terminal_boundary.retention(id, &execution);
         execution.payload.normalize();
@@ -1348,10 +1465,18 @@ impl<
         }
         self.result.states[id].exit_stack = execution.payload.active().stack.clone();
         self.result.states[id].executed_pcs = execution.executed_pcs;
-        self.result.states[id].execution_evidence = Some(EvmExecutionEvidence::new(
-            execution.instruction_progress,
-            execution.instruction_values,
-        ));
+        let mut receipt =
+            EvmExecutionEvidence::new(execution.instruction_progress, execution.instruction_values);
+        if delivered {
+            receipt.successors = std::mem::take(
+                &mut self.result.states[id]
+                    .execution_evidence
+                    .as_mut()
+                    .expect("previous complete World delivery")
+                    .successors,
+            );
+        }
+        self.result.states[id].execution_evidence = Some(receipt);
         self.result.states[id].exit = Some(execution.payload);
         self.completed_calls[id] = execution.completed_calls;
         for (pc, kind) in execution.diagnostics {
@@ -1379,6 +1504,9 @@ impl<
                 payload,
                 range,
             });
+        }
+        if delivered {
+            return;
         }
         for outcome in execution.outcomes {
             self.result.outcomes.push(EvmMachineOutcome {

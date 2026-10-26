@@ -8,7 +8,7 @@ const ENTRY: &str = "0x0000000000000000000000000000000000000101";
 const JUMP: &str = "6003565b00";
 const NOTE: &str = "Root terminal coverage (conservative)";
 
-fn report(output: &Output, exit: i32) -> Json {
+fn raw_report(output: &Output, exit: i32) -> Json {
     assert_eq!(
         output.status.code(),
         Some(exit),
@@ -18,8 +18,12 @@ fn report(output: &Output, exit: i32) -> Json {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn report(output: &Output, exit: i32) -> Json {
+    native::select(&raw_report(output, exit))
+}
+
 fn assert_certificate(analysis: &Json) {
-    assert_eq!(analysis["schema_version"], 15);
+    assert_eq!(analysis["schema_version"], 16);
     assert_eq!(analysis["status"], "Incomplete");
     assert!(!analysis["frontiers"].as_array().unwrap().is_empty());
     let coverage = &analysis["root_terminal_coverage"];
@@ -37,6 +41,9 @@ fn assert_certificate(analysis: &Json) {
 
 fn assert_baseline_pending(report: &Json, requested: bool) {
     assert_eq!(report["status"], "Incomplete");
+    assert!(report["native"].is_null());
+    assert_eq!(report["selected_view"], "Baseline");
+    assert_eq!(report["hybrid"]["local_detail"], json!([]));
     if report["hybrid"]["rpc"].is_object() {
         assert_eq!(report["hybrid"]["rpc"]["precision"], "BaselinePending");
         assert_eq!(report["hybrid"]["coverage"]["detail"], "Disabled");
@@ -47,10 +54,11 @@ fn assert_baseline_pending(report: &Json, requested: bool) {
         report["hybrid"]["coverage"]["requested_native_terminal_coverage"],
         requested
     );
-    assert!(report["hybrid"]["detail"].is_null());
-    assert_eq!(report["config"]["root_terminal_coverage"], false);
-    assert!(report.get("root_terminal_coverage").is_none());
-    assert!(!report["frontiers"].as_array().unwrap().is_empty());
+    assert!(report["hybrid"].get("detail").is_none());
+    let global = native::global(report);
+    assert_eq!(global["config"]["root_terminal_coverage"], false);
+    assert!(global.get("root_terminal_coverage").is_none());
+    assert!(!global["frontiers"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -141,9 +149,10 @@ fn plain_native_and_world_ssa_json_forward_only_core_owned_coverage() {
     ] {
         let mut arguments = vec!["--max-transfers", "1"];
         arguments.extend(extra);
-        let report = report(&analyze("call-return-branch", &arguments), 2);
+        let report = raw_report(&analyze("call-return-branch", &arguments), 2);
         assert_baseline_pending(&report, true);
-        assert!(report.get("ssa").is_none() && report.get("partial_ssa").is_none());
+        let global = &report["global"];
+        assert!(global.get("ssa").is_none() && global.get("partial_ssa").is_none());
     }
 }
 
@@ -238,7 +247,7 @@ fn default_and_explicit_switches_without_a_certificate_keep_the_existing_output_
                 arguments.push(flag);
             }
             let report = report(&run_concrete(&arguments), exit);
-            assert_eq!(report["schema_version"], 15);
+            assert_eq!(report["schema_version"], 16);
             assert!(report.get("root_terminal_coverage").is_none());
         }
         let mut arguments = vec!["explain", "--hex", "00"];
@@ -289,10 +298,10 @@ fn fixed_rpc_forwards_default_and_explicit_coverage_with_and_without_discovery()
                     let enabled = flag != Some("--no-root-terminal-coverage");
                     if command == "analyze" {
                         arguments.extend(["--format", "json", "--ssa", "--allow-partial-ssa"]);
-                        let report = report(&run_concrete(&arguments), 2);
+                        let report = raw_report(&run_concrete(&arguments), 2);
                         assert_baseline_pending(&report, enabled);
-                        assert_eq!(report["config"]["max_work"], 2_000_000_000);
-                        assert!(report.get("partial_ssa").is_none());
+                        assert_eq!(native::global(&report)["config"]["max_work"], 2_000_000_000);
+                        assert!(report["global"].get("partial_ssa").is_none());
                     } else {
                         let output = run_concrete(&arguments);
                         assert_eq!(output.status.code(), Some(2));

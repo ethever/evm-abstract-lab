@@ -314,6 +314,33 @@
       ]
     },
     {
+      "name": "dylint-serde-example-source-isolation",
+      "description": "Serde UI example edits reach UI and formatting only, retaining production plugin and dependency caches.",
+      "mutations": [
+        {
+          "path": "lints/no_dyn/examples/serde_accepted.rs",
+          "append": "\n// Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-dyn-ui",
+        "no-dyn-fmt"
+      ]
+    },
+    {
+      "name": "dylint-serde-example-diagnostic-isolation",
+      "description": "Serde UI diagnostics reach only the UI check.",
+      "mutations": [
+        {
+          "path": "lints/no_dyn/examples/serde_rejected.stderr",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-dyn-ui"
+      ]
+    },
+    {
       "name": "lean-proof-source-isolation",
       "description": "A proof source content edit rebuilds only the standalone Lean checker; documentation reads proof target names, not Lean contents.",
       "mutations": [
@@ -324,6 +351,37 @@
       ],
       "only_changed": [
         "lean-proofs"
+      ]
+    },
+    {
+      "name": "benchmark-http-consumer-isolation",
+      "description": "The fake HTTP consumer and its controls reach only the independent Python check, preserving engine and browser derivations.",
+      "mutations": [
+        {
+          "path": "scripts/benchmark_known_recursion/workbench.py",
+          "append": "\n# Cache boundary probe.\n"
+        },
+        {
+          "path": "scripts/test_benchmark_known_recursion.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "benchmark-consumer-contracts"
+      ]
+    },
+    {
+      "name": "benchmark-shared-report-adapter-isolation",
+      "description": "Shared report admission reaches both explicit Python consumers without rebuilding engine or browser checks.",
+      "mutations": [
+        {
+          "path": "scripts/benchmark_known_recursion/report.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "benchmark-consumer-contracts",
+        "no-smt-scale-contracts"
       ]
     },
     {
@@ -605,6 +663,24 @@
         "cargo-concurrency",
         "dylint-driver-concurrency",
         "lean-proofs"
+      ]
+    },
+    {
+      "name": "pure-runtime-report-oracle-isolation",
+      "description": "Pure report checker edits invalidate its offline leaf and current runtime browser consumers, without rebuilding Rust or Wasm.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_runtime_report.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-report-oracles",
+        "web-browser-runtime-weth9",
+        "web-browser-runtime-router02",
+        "web-browser-runtime-multicall3",
+        "web-browser-registry",
+        "web-browser"
       ]
     }
   ]

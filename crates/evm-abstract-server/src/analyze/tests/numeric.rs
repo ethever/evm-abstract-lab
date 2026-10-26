@@ -58,13 +58,40 @@ fn typed_terminal<D: EvmNumericAlgebra>(
     .unwrap();
     report.validate().unwrap();
     assert_eq!(
-        report.metadata.postprocessing_max_work,
+        report
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .postprocessing_max_work,
         DEFAULT_POSTPROCESS_WORK as u64
     );
-    assert!(report.metadata.postprocessing_work <= report.metadata.postprocessing_max_work);
-    let projected = &report.root_terminal_coverage.as_ref().unwrap().input;
-    let failure_data =
-        &report.byte_arrays[report.root_terminal_coverage.as_ref().unwrap().outcomes[2].data];
+    assert!(
+        report
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .postprocessing_work
+            <= report
+                .selected_graph()
+                .unwrap()
+                .metadata
+                .postprocessing_max_work
+    );
+    let projected = &report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap()
+        .input;
+    let failure_data = &report.selected_graph().unwrap().byte_arrays[report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap()
+        .outcomes[2]
+        .data];
     let failure_length = native.root_terminal_coverage().unwrap().outcomes()[2]
         .data()
         .len()
@@ -89,20 +116,34 @@ fn typed_terminal<D: EvmNumericAlgebra>(
     );
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .symbolic
             .nodes
             .get(projected.storage_source.node)
             .is_some()
     );
-    assert!(!report.ssa.complete);
+    assert!(!report.selected_graph().unwrap().ssa.complete);
 
-    // The public request dispatcher reaches the same semantic boundary for
-    // either selected model, with its actual numeric policy in the binding.
-    let dispatched = super::native_detail(analyze(request).unwrap());
+    // The default dispatcher honestly stops at the unclosed Global cap; the
+    // explicit Native control preserves terminal-policy checks at that cap.
+    let global = analyze(request.clone()).unwrap();
+    global.validate().unwrap();
+    assert_eq!(global.status, api::AnalysisStatus::Incomplete);
+    assert!(!global.hybrid.as_ref().unwrap().coverage.baseline_current);
+    assert!(global.native.is_none());
+    assert_eq!(
+        global.global.as_ref().unwrap().metadata.limits,
+        request.limits
+    );
+    let dispatched = super::captured::native_bytecode(&request, &Control::default()).unwrap();
     dispatched.validate().unwrap();
     assert_eq!(
         dispatched
+            .selected_graph()
+            .unwrap()
             .root_terminal_coverage
+            .as_ref()
             .unwrap()
             .input
             .numeric_model,

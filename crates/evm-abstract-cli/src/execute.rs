@@ -8,7 +8,10 @@ use crate::{AnalysisArgs, WorldArgs, error::CliError, hybrid::WorldAnalysis, wor
 use evm_abstract::{
     analysis::{
         self, AnalysisEngine, AnalysisInput, Config, EnginePolicies, EvmWorldAnalysis,
-        ExecutionConfig, control::Control, cooperation::NoExtension,
+        ExecutionConfig,
+        control::Control,
+        cooperation::NoExtension,
+        publication::{NoopPublisher, StagePublisher},
     },
     domain::{EvmNumericAlgebra, ValueAlgebra, WordElement},
     world::{
@@ -58,17 +61,30 @@ impl WorldArgs {
         algebra: &ValueAlgebra<D>,
         control: &Control,
     ) -> Result<WorldAnalysis<D::Element>, CliError> {
+        self.analyze_hybrid_with_publisher(algebra, control, &mut NoopPublisher)
+    }
+
+    pub(crate) fn analyze_hybrid_with_publisher<
+        D: EvmNumericAlgebra,
+        T: StagePublisher<D::Element>,
+    >(
+        self,
+        algebra: &ValueAlgebra<D>,
+        control: &Control,
+        publisher: &mut T,
+    ) -> Result<WorldAnalysis<D::Element>, CliError> {
+        let hybrid = analysis::HybridConfig {
+            max_detail_regions: self.max_detail_regions,
+            ..Default::default()
+        };
         let (source, config) = self.prepare()?;
         let policies: EnginePolicies = EnginePolicies::default();
         let mut extension = NoExtension;
         let mut engine = AnalysisEngine::new(algebra, &policies, &mut extension);
         match source {
-            WorldSource::Offline(input) => Ok(WorldAnalysis::from(engine.run_hybrid(
-                *input,
-                config,
-                analysis::HybridConfig::default(),
-                control,
-            )?)),
+            WorldSource::Offline(input) => Ok(WorldAnalysis::from(
+                engine.run_hybrid_with_publisher(*input, config, hybrid, control, publisher)?,
+            )),
             WorldSource::Rpc {
                 input,
                 entry,
@@ -76,20 +92,16 @@ impl WorldArgs {
             } => {
                 if !discovery {
                     let world = rpc::load_with_control(&input, control)?;
-                    Ok(WorldAnalysis::from(engine.run_hybrid(
+                    Ok(WorldAnalysis::from(engine.run_hybrid_with_publisher(
                         AnalysisInput::new(world, *entry)?,
                         config,
-                        analysis::HybridConfig::default(),
+                        hybrid,
                         control,
+                        publisher,
                     )?))
                 } else {
-                    let result = analysis::analyze_rpc_hybrid(
-                        engine,
-                        &input,
-                        *entry,
-                        config,
-                        analysis::HybridConfig::default(),
-                        control,
+                    let result = analysis::analyze_rpc_hybrid_with_publisher(
+                        engine, &input, *entry, config, hybrid, control, publisher,
                     )?;
                     for failure in result.failures() {
                         eprintln!("RPC discovery: {failure}");

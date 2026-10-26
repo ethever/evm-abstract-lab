@@ -1,10 +1,11 @@
 """Overview browser acceptance cases."""
 
+from web_test_hybrid import oracle_graph
 from pathlib import Path
 from playwright.sync_api import expect
 import json
 from web_test_graph_helpers import graph_mode, graph_scope, pick_graph_instance, symbol
-from web_test_harness import complete_submission, observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_harness import complete_submission, hide_world_directory, observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import node_snapshot, screenshot_metrics
 
@@ -16,11 +17,11 @@ def block_overview_interactions(browser, url: str, output: Path):
     page.on("pageerror", lambda error: errors.append(str(error)))
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    initial_reply = complete_submission(page, initial.value)
-    full_report = initial_reply.json()["result"]["Ok"]
+    initial_reply = complete_submission(page, initial.value, namespace="Native")
+    full_report = initial_reply.report
     (output / "overview-initial-full-analysis.json").write_text(json.dumps(full_report, indent=2) + "\n")
     assert full_report["hybrid"]["coverage"]["baseline_current"]
-    report = full_report["hybrid"]["detail"]
+    report = oracle_graph(full_report, "Native")
     assert len(report["cfg"]) == len(report["ssa"]["blocks"]) == 5
     identities = {state["id"]: (state["program"], state["basic_block"], state["start_pc"]) for state in report["cfg"]}
     assert len(set(identities.values())) == 4
@@ -30,6 +31,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     page.on("request", lambda request: submitted.append(request.post_data_json)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
     canvas = page.locator("#evm-canvas")
+    hide_world_directory(page, canvas)
     hide_inspector(page, canvas)
     page.keyboard.press("2")
     settle_gesture(page)
@@ -53,10 +55,11 @@ def block_overview_interactions(browser, url: str, output: Path):
     # every trip. Distinct stack heights retain 129 instances at PC 2 even
     # when repeated jump sources are canonicalized to a single context entry.
     loop_reply = submit_bytecode(page, canvas, "60815b600190035f908060025700", output / "overview-loop-input.png")
+    hide_world_directory(page, canvas)
     assert loop_reply.status == 200 and "Ok" in loop_reply.json()["result"], loop_reply.json()
-    loop = loop_reply.json()["result"]["Ok"]
+    loop = loop_reply.report
     (output / "overview-loop-analysis.json").write_text(json.dumps(loop, indent=2) + "\n")
-    loop = loop["hybrid"]["detail"]
+    loop = oracle_graph(loop, "Native")
     assert loop["metadata"]["limits"]["context_depth"] == 128
     assert loop["status"] == "Converged" and loop["ssa"]["complete"]
     assert len(loop["cfg"]) == len(loop["ssa"]["blocks"]) == 131
@@ -85,7 +88,8 @@ def block_overview_interactions(browser, url: str, output: Path):
         settle_gesture(page)
         if f"Selected {symbol('σ', 1)};" in status.text_content():
             break
-    expect(status).to_contain_text(f"Selected {symbol('σ', 1)}; source P₀")
+    root = loop["metadata"]["root_program"]
+    expect(status).to_contain_text(f"Selected {symbol('σ', 1)}; source {symbol('P', root)}")
     canvas.screenshot(path=str(output / "overview-loop-instances.png"))
     search_forms = [(128, "128"), (129, "σ₁₂₉"), (128, "σ128"), (129, "σ_129"),
                     (128, "sigma_128"), (129, "\\sigma_{129}"), (128, "S128"), (129, "s129"),
@@ -94,7 +98,7 @@ def block_overview_interactions(browser, url: str, output: Path):
         if index:
             canvas.click(position={"x": 300, "y": 133})  # Instances toolbar
             settle_gesture(page)
-        pick_graph_instance(page, canvas, state, query)
+        pick_graph_instance(page, canvas, state, query, program=root)
     canvas.screenshot(path=str(output / "overview-loop-symbol-search.png"))
     graph_scope(page, "Blocks", 3, 131, 131)
     # Expose both the native inspector and the full SSA table for the selected
@@ -103,7 +107,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     page.keyboard.press("3")
     page.wait_for_timeout(800)
     rendered_frame(page)
-    expect(status).to_contain_text("Selected σ₁₂₉; source P₀")
+    expect(status).to_contain_text(f"Selected σ₁₂₉; source {symbol('P', root)}")
     expect(status).to_contain_text("Inspector: Frame")
     expect(status).to_contain_text("Frame f₀")
     png = canvas.screenshot(path=str(output / "overview-loop-native-ssa.png"))
@@ -118,7 +122,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     settle_gesture(page)
     canvas.click(position={"x": 300, "y": 133})  # Instances toolbar
     settle_gesture(page)
-    pick_graph_instance(page, canvas, 129)
+    pick_graph_instance(page, canvas, 129, program=root)
     graph_mode(page, canvas, "Local")
     neighborhood = graph_scope(page, "Local", 4, 4, 131)
     assert neighborhood["hidden_states"] == 127 and neighborhood["boundary_edges"] == 1

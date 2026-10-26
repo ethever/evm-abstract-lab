@@ -269,12 +269,12 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     assert!(ssa::build_world(covered).is_err());
 
     let native = serde_json::to_value(covered).unwrap();
-    assert_eq!(analysis::SCHEMA_VERSION, 15);
+    assert_eq!(analysis::SCHEMA_VERSION, 16);
     assert_eq!(native["schema_version"], analysis::SCHEMA_VERSION);
     let binding = &native["root_terminal_coverage"]["input"]["domain_spec"];
     assert_eq!(binding, &native["domain_spec"]);
     assert_eq!(binding["schema_version"], 3);
-    assert_eq!(binding["cost_version"], 8);
+    assert_eq!(binding["cost_version"], 9);
     assert_eq!(
         native["status"],
         serde_json::to_value(Status::Incomplete).unwrap()

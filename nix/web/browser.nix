@@ -69,8 +69,24 @@ let
       ++ lib.concatMap (specification: specification.dependencies) cases
     )
   );
+  # Pure report mutations require neither Chromium nor a built server/Wasm.
+  # Browser cases still apply this same checker to their current transport data.
+  reportSource = inputs.files [
+    "scripts/web_test_hybrid.py"
+    "scripts/web_test_runtime_report.py"
+    "scripts/test_web_test_runtime_report.py"
+  ];
 in
 {
+  web-report-oracles =
+    pkgs.runCommand "evm-abstract-web-report-oracles"
+      {
+        nativeBuildInputs = [ pkgs.python3 ];
+      }
+      ''
+        python -B ${reportSource}/scripts/test_web_test_runtime_report.py
+        touch "$out"
+      '';
   web-browser-registry =
     pkgs.runCommand "evm-abstract-web-browser-registry"
       {

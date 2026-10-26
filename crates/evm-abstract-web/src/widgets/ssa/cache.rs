@@ -1,5 +1,5 @@
-//! Rows belong to one immutable analysis report. Workspace clears this cache
-//! when replacing the report. Ordinary selection and failed jobs keep the rows;
+//! Rows belong to one explicitly identified report view.
+//! Ordinary selection and failed jobs keep the rows;
 //! display changes or revealing a hidden instruction rebuild the visible rows.
 
 #[cfg(test)]
@@ -7,10 +7,13 @@ mod tests;
 
 use std::collections::BTreeSet;
 
-use evm_abstract_protocol::AnalysisReport;
+use crate::report::ReportView;
 
 use super::{Row, scoped_rows, scoped_states};
-use crate::{app::Selection, ssa_display::SsaDisplay};
+use crate::{
+    app::{Selection, model::ReportViewId},
+    ssa_display::SsaDisplay,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scope {
@@ -20,6 +23,7 @@ enum Scope {
 
 #[derive(Default)]
 pub(crate) struct SsaCache {
+    identity: ReportViewId,
     scope: Option<Scope>,
     display: Option<SsaDisplay>,
     hidden: BTreeSet<(usize, usize)>,
@@ -29,19 +33,23 @@ pub(crate) struct SsaCache {
 }
 
 impl SsaCache {
-    /// Must be called before using a newly accepted report, even when its
-    /// program IDs match the previous report. Retained reports keep their rows.
-    pub(crate) fn clear(&mut self) {
-        *self = Self::default();
+    pub(crate) fn activate(&mut self, identity: ReportViewId) {
+        if self.identity != identity {
+            *self = Self {
+                identity,
+                ..Self::default()
+            };
+        }
     }
 
     pub(super) fn prepare(
         &mut self,
-        report: &AnalysisReport,
+        report: &ReportView<'_>,
         program: Option<usize>,
         display: SsaDisplay,
         selection: Selection,
     ) {
+        self.activate(report.identity());
         let mut selection = selection;
         selection.value = None;
         let scope = match program {

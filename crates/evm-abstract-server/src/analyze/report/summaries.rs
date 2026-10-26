@@ -117,7 +117,7 @@ pub(super) fn project<N: WordElement>(
     Ok(records)
 }
 
-fn outcome(kind: analysis::OutcomeKind) -> api::OutcomeKind {
+pub(super) fn outcome(kind: analysis::OutcomeKind) -> api::OutcomeKind {
     match kind {
         analysis::OutcomeKind::Return => api::OutcomeKind::Return,
         analysis::OutcomeKind::Revert => api::OutcomeKind::Revert,

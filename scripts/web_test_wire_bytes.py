@@ -38,6 +38,14 @@ class _Graph:
             assert isinstance(payload, str) and payload.startswith("0x") and len(payload) % 2 == 0
             assert all(char in "0123456789abcdef" for char in payload[2:])
 
+    def zero_window(self, ref, before, start, end):
+        """Prove an untouched window of a literal zero or exact byte leaf."""
+        self.background(ref, before)
+        _, value = self.node(ref, before)
+        if value != "BytesZero":
+            # BytesExact has zero padding beyond its complete content.
+            assert not any(bytes.fromhex(value["BytesExact"][2:])[start:end])
+
 
 def _numeric_contains(value, actual):
     """Check one fixed Word256 against every stored numeric component."""
@@ -103,6 +111,20 @@ def _stored_upper_bounds(data, expected):
         assert _numeric_contains(value, byte)
 
 
+def assert_empty_return_data(report, index):
+    """Prove the zero-byte view; backing byte states and pool IDs may differ."""
+    data = _buffer(report, index, False, 0)
+    assert data["cells"] == []
+    graph = _Graph(report)
+    view_id, view = graph.view(data["symbolic"], len(graph.nodes), 0)
+    _, state = graph.node(view["state"], view_id)
+    if isinstance(state, str):
+        assert state == "BytesZero"
+    else:
+        assert isinstance(state, dict) and len(state) == 1
+        assert next(iter(state)) in {"BytesInput", "BytesExact", "WriteByte", "WriteWord", "Copy", "Slice", "BytesIte"}
+
+
 def assert_return_word42(report, outcome):
     """One root-owned Return must jointly contain all 32 bytes of word 42."""
     assert outcome["kind"] == "Return"
@@ -148,3 +170,37 @@ def assert_child_bytes(report, frame):
     assert read_view["state"] == input_view["state"]
     _stored_upper_bounds(calldata, bytes([0xab]))
     _stored_upper_bounds(memory, bytes([0xab]) + bytes(31))
+
+
+def assert_summary_child_bytes(report, child, caller_before, caller_after):
+    """Match this fixture's relative return and the same caller's output copy."""
+    graph = _Graph(report)
+    calldata = _buffer(report, child["calldata"], False, 1)
+    input_id, input_view = graph.view(calldata["symbolic"], len(graph.nodes), 1)
+    slice_id, source = graph.node(input_view["state"], input_id, "Slice")
+    source_id, source_view = graph.view(source, slice_id, 1)
+    byte_id, write_byte = graph.node(source_view["state"], source_id, "WriteByte",
+                                     ("previous", "offset", "value"))
+    assert graph.node(write_byte["offset"], byte_id, "Constant")[1] == "0x0"
+    assert graph.node(write_byte["value"], byte_id, "Constant")[1] == "0xab"
+    graph.zero_window(write_byte["previous"], byte_id, 1, 64)
+    # The relative delivery instantiates the complete fixed return window as
+    # exact bytes with zero padding; it is not a fabricated child memory frame.
+    returned = _buffer(report, caller_after["returndata"], False, 32)
+    return_id, return_view = graph.view(returned["symbolic"], len(graph.nodes), 32)
+    assert graph.node(return_view["state"], return_id, "BytesExact")[1] == "0xab"
+    before = _buffer(report, caller_before["memory"], True, 64)
+    after = _buffer(report, caller_after["memory"], True, 64)
+    before_id, before_view = graph.view(before["symbolic"], len(graph.nodes), 64)
+    assert before_view["state"] == source_view["state"]
+    after_id, after_view = graph.view(after["symbolic"], len(graph.nodes), 64)
+    copy_id, copy = graph.node(after_view["state"], after_id, "Copy",
+                               ("previous", "destination", "source", "length"))
+    assert copy["previous"] == before_view["state"]
+    assert copy["source"] == returned["symbolic"]
+    assert graph.node(copy["destination"], copy_id, "Constant")[1] == "0x20"
+    assert graph.node(copy["length"], copy_id, "Constant")[1] == "0x20"
+    _stored_upper_bounds(calldata, bytes([0xab]))
+    _stored_upper_bounds(returned, bytes([0xab]) + bytes(31))
+    _stored_upper_bounds(before, bytes([0xab]) + bytes(63))
+    _stored_upper_bounds(after, (bytes([0xab]) + bytes(31)) * 2)

@@ -9,6 +9,7 @@ use crate::world::LogKey;
 use alloy_primitives::U256;
 use std::collections::VecDeque;
 
+mod calldata_origin;
 mod context;
 mod delivery;
 pub(super) mod native_engine;
@@ -83,7 +84,12 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
         StorageReadPolicy::Abstract,
     );
     assert!(record.closed);
-    for procedure in record.procedures {
+    let report = record.materialize(domain, &mut WorkBudget::new(100_000_000));
+    assert_eq!(
+        report.outcome,
+        crate::analysis::ProcedureReportOutcome::Complete
+    );
+    for procedure in report.procedures {
         for output in procedure
             .outputs
             .into_iter()
@@ -326,10 +332,9 @@ fn equal_exit_buffers_share_one_invocation_source_but_later_calls_are_fresh() {
 }
 
 #[test]
-fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
-    // This protected owner loops forever. Static callbacks preserve its values,
-    // while touch metadata remains possible. Every caller-visible outcome is in the
-    // unknown process's envelope irrespective of this code's closure.
+fn static_environment_covers_known_callback_control_and_preserves_values() {
+    // This protected owner loops forever. Static callbacks preserve its values
+    // while the relative worklist must still interpret its known control.
     let (world, mut entry) = fixture(&[(0x102, "5b5f56")]);
     entry.environment.is_static = true;
     let config = crate::analysis::ExecutionConfig::default();
@@ -382,7 +387,11 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
         )
         .environment(payload.clone());
     assert!(result.frontiers.is_empty());
-    assert!(result.successors.is_empty());
+    assert_eq!(result.successors.len(), 1);
+    let callback = result.successors[0].payload.active();
+    assert_eq!(callback.key.address, address(0x102));
+    assert!(callback.key.is_static);
+    assert_eq!(callback.call_value.singleton(), Some(U256::ZERO));
     assert_eq!(result.payload, touched_payload);
     assert_eq!(result.outcomes.len(), 3);
     for kind in [
@@ -424,9 +433,20 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
     );
     assert!(result.frontiers.is_empty());
     assert!(evidence.closed);
-    assert_eq!(evidence.procedures.len(), 1);
-    assert_eq!(evidence.procedures[0].frame.mode, FrameCode::Unknown);
-    assert!(evidence.procedures[0].covered_blocks.is_empty());
+    assert_eq!(evidence.procedures.len(), 2);
+    assert!(evidence.procedures.iter().any(|procedure| {
+        procedure.frame.mode == FrameCode::Unknown && procedure.covered_blocks.is_empty()
+    }));
+    assert!(evidence.regional_cfg.nodes.iter().any(|node| {
+        node.frame.address == address(0x102)
+            && node.frame.is_static
+            && node.transfer.as_ref().is_some_and(|transfer| {
+                transfer.semantics == crate::analysis::TransferSemantics::Native
+                    && transfer.visited_block
+                    && transfer.current
+                    && transfer.complete
+            })
+    }));
 }
 
 #[test]

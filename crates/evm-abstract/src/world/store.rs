@@ -35,7 +35,7 @@ use thiserror::Error;
 
 #[cfg(test)]
 use crate::world::test_support::{TestLog, TestStore};
-pub use summary::EvmStoreSummary;
+pub use summary::{EvmPlaneSummaryView, EvmStoreSummary, EvmStoreSummaryView};
 
 /// Ordered state observations with the selected snapshot storage backend.
 pub use snapshot_state::OrderedMap;
@@ -169,8 +169,9 @@ struct Plane<N: WordElement> {
 /// represented path. Weak writes retain the baseline dependency; a strong write,
 /// creation reset or havoc replaces it. Initial RPC facts refine the World and
 /// require reexecution, never direct replacement of a transaction-local value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct InitialIndependence {
+    #[serde(serialize_with = "serialize_slots")]
     slots: OrderedMap<(Address, U256), bool>,
     defaults: OrderedMap<Address, bool>,
     global_default: bool,
@@ -247,15 +248,15 @@ impl InitialIndependence {
     }
 }
 
-fn serialize_slots<S: Serializer, N: WordElement>(
-    slots: &OrderedMap<(Address, U256), EvmValue<N>>,
+fn serialize_slots<S: Serializer, V: Serialize + Clone>(
+    slots: &OrderedMap<(Address, U256), V>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     #[derive(Serialize)]
-    struct Slot<'a, N: WordElement> {
+    struct Slot<'a, V: Serialize> {
         address: Address,
         slot: U256,
-        value: &'a EvmValue<N>,
+        value: &'a V,
     }
     let mut sequence = serializer.serialize_seq(Some(slots.len()))?;
     for ((address, slot), value) in slots {

@@ -5,49 +5,97 @@ use crate::{
 };
 mod rpc;
 
+/// Public input qualification exists before rich machine/history projection.
+struct GlobalInput<'a> {
+    fork: crate::Fork,
+    to: &'a crate::AddressValue,
+    entry_address: &'a str,
+    root_binding: &'a crate::RootInputBinding,
+    snapshot: &'a crate::RootTerminalSnapshot,
+    revision: crate::DecimalU64,
+    max_work: u64,
+}
+impl GlobalInput<'_> {
+    fn input_namespace(&self) -> Option<&str> {
+        match self.root_binding {
+            crate::RootInputBinding::Namespace(source) => Some(&source.coordinate),
+            crate::RootInputBinding::Physical(_) => None,
+        }
+    }
+}
+
 fn invalid(kind: Kind) -> ReportValidationFailure {
     ReportValidationFailure::Hybrid(kind)
 }
 
 impl AnalysisReport {
-    /// Resolve IDs only within their recorded graph namespace.
-    pub fn graph(&self, namespace: AnalysisNamespace) -> Option<&Self> {
-        let Some(hybrid) = &self.hybrid else {
-            return (namespace == AnalysisNamespace::Native).then_some(self);
-        };
-        if namespace == hybrid.namespace() {
-            Some(self)
-        } else {
-            match namespace {
-                AnalysisNamespace::Baseline => hybrid.baseline.as_deref(),
-                AnalysisNamespace::Native => hybrid.detail.as_deref(),
-            }
-        }
-    }
-
     pub(super) fn validate_hybrid(&self) -> Result<(), ReportValidationFailure> {
         let Some(hybrid) = &self.hybrid else {
+            let graph = self
+                .native
+                .as_ref()
+                .ok_or_else(|| invalid(Kind::Namespace))?;
+            if self.global.is_some()
+                || self.selected_view != AnalysisNamespace::Native
+                || self.status != graph.status
+                || self.work != graph.metadata.work
+                || self.transfers != graph.transfers
+            {
+                return Err(invalid(Kind::Coverage));
+            }
             return Ok(());
         };
         let coverage = &hybrid.coverage;
         let precision = hybrid.native_coverage();
-        if hybrid
-            .baseline
-            .as_ref()
-            .is_some_and(|report| report.hybrid.is_some())
-            || hybrid
-                .detail
-                .as_ref()
-                .is_some_and(|report| report.hybrid.is_some())
-            || match hybrid.namespace() {
-                AnalysisNamespace::Baseline => hybrid.baseline.is_some(),
-                AnalysisNamespace::Native => hybrid.baseline.is_none() || hybrid.detail.is_some(),
-            }
+        if coverage.requested_detail_regions != precision.requested_detail_regions
+            || [&self.global, &self.native]
+                .into_iter()
+                .flatten()
+                .any(|graph| {
+                    graph.metadata.limits.max_detail_regions != coverage.requested_detail_regions
+                })
+            || [coverage, precision].into_iter().any(|coverage| {
+                coverage.detail_regions.len() as u64 > coverage.requested_detail_regions
+                    || (coverage.requested_detail_regions == 0
+                        && (coverage.detail_config.is_some()
+                            || coverage.detail_revision.is_some()
+                            || coverage.local_detail_sites != 0))
+            })
         {
-            return Err(invalid(Kind::Namespace));
+            return Err(invalid(Kind::Coverage));
         }
-        for other in [&hybrid.baseline, &hybrid.detail].into_iter().flatten() {
-            other.validate()?;
+        let baseline = if let Some(graph) = self.global.as_ref() {
+            GlobalInput {
+                fork: graph.fork,
+                to: &graph.metadata.environment.to,
+                entry_address: &graph.metadata.entry_address,
+                root_binding: &graph.metadata.root_binding,
+                snapshot: &graph.metadata.source_snapshot,
+                revision: graph.metadata.revision,
+                max_work: graph.metadata.limits.max_work,
+            }
+        } else if let Some(minimum) = self.minimum.as_ref() {
+            GlobalInput {
+                fork: minimum.fork,
+                to: &minimum.environment.to,
+                entry_address: &minimum.entry_address,
+                root_binding: &minimum.root_binding,
+                snapshot: &minimum.source_snapshot,
+                revision: minimum.revision,
+                max_work: minimum.config.max_work,
+            }
+        } else {
+            return Err(invalid(Kind::Namespace));
+        };
+        let complete_export = matches!(self.rich_export, crate::RichExportOutcome::Complete);
+        if *baseline.snapshot != coverage.snapshot
+            || baseline.revision != coverage.baseline_revision
+            || self.native.as_ref().is_some_and(|graph| {
+                graph.metadata.source_snapshot != precision.snapshot
+                    || Some(graph.metadata.revision) != precision.detail_revision
+            })
+        {
+            return Err(invalid(Kind::Source));
         }
         if self.status
             != if coverage.baseline_current {
@@ -55,9 +103,11 @@ impl AnalysisReport {
             } else {
                 AnalysisStatus::Incomplete
             }
-            || precision.local_detail_sites != hybrid.local_prefixes.len()
+            || ((complete_export || self.native.is_some())
+                && precision.local_detail_sites != hybrid.local_prefixes.len())
             || (coverage.chosen == HybridInterpretation::ProcessWithDetail
-                && (!coverage.baseline_current || hybrid.local_prefixes.is_empty()))
+                && (!coverage.baseline_current
+                    || (complete_export && hybrid.local_prefixes.is_empty())))
             || (coverage.chosen == HybridInterpretation::Native
                 && (!coverage.baseline_current
                     || !coverage.detail_current
@@ -76,21 +126,18 @@ impl AnalysisReport {
                     .preparation
                     .checked_add(work.detail)
                     .is_none_or(|sum| sum > work.detail_allowance)
-                || work.total > self.metadata.limits.max_work
+                || work.total > baseline.max_work
             {
                 return Err(invalid(Kind::Work));
             }
         }
-        self.validate_rpc_hybrid(hybrid)?;
+        self.validate_rpc_hybrid(hybrid, baseline.max_work, complete_export)?;
         let native = self.graph(AnalysisNamespace::Native);
         if !coverage.baseline_current && native.is_some() {
             return Err(invalid(Kind::Coverage));
         }
-        let baseline = self
-            .graph(AnalysisNamespace::Baseline)
-            .ok_or_else(|| invalid(Kind::Namespace))?;
         for region in &precision.detail_regions {
-            let valid = region.source.fork() == self.fork
+            let valid = region.source.fork() == baseline.fork
                 && match &region.source {
                     crate::ProcessSource::Runtime(source) => {
                         region.code_address.as_ref() == Some(&source.source)
@@ -108,8 +155,8 @@ impl AnalysisReport {
             }
         }
         if coverage.baseline_config.root_terminal_coverage
-            || native.is_some() != precision.detail_revision.is_some()
-            || native.is_some() != precision.detail_config.is_some()
+            || precision.detail_revision.is_some() != precision.detail_config.is_some()
+            || (complete_export && native.is_some() != precision.detail_revision.is_some())
         {
             return Err(invalid(Kind::Source));
         }
@@ -118,20 +165,15 @@ impl AnalysisReport {
         // the immutable baseline deliberately retains its original Symbolic To.
         match &precision.detail_binding {
             HybridNativeBinding::OriginalOwner => {
-                if !matches!(
-                    baseline.metadata.environment.to,
-                    crate::AddressValue::Concrete(_)
-                ) || native.is_some_and(|native| {
-                    native.metadata.environment.to != baseline.metadata.environment.to
-                }) {
+                if !matches!(baseline.to, crate::AddressValue::Concrete(_))
+                    || native.is_some_and(|native| &native.metadata.environment.to != baseline.to)
+                {
                     return Err(invalid(Kind::Source));
                 }
             }
             HybridNativeBinding::SymbolicOwnerNamespace(binding) => {
-                if !matches!(
-                    baseline.metadata.environment.to,
-                    crate::AddressValue::Symbolic(_)
-                ) || binding.namespace != baseline.metadata.entry_address
+                if !matches!(baseline.to, crate::AddressValue::Symbolic(_))
+                    || binding.namespace != baseline.entry_address
                     || native.is_some_and(|native| {
                         binding.namespace != native.metadata.entry_address
                             || native.metadata.environment.to
@@ -224,10 +266,15 @@ impl AnalysisReport {
                     .map(|instruction| instruction.pc)
                     .ne(block.executed_pcs.iter().copied())
                 || prefix.instructions.iter().any(|instruction| {
-                    !block
-                        .instructions
-                        .iter()
-                        .any(|source| source.pc == instruction.pc)
+                    block
+                        .source_block()
+                        .and_then(|source| self.source_block(source))
+                        .is_none_or(|source| {
+                            !source
+                                .instructions
+                                .iter()
+                                .any(|source| source.pc == instruction.pc)
+                        })
                 })
                 || native
                     .ssa

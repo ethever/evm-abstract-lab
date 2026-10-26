@@ -10,7 +10,7 @@
 //! The owner reserves [`Worklist::enqueue_work`] before enqueueing. Kernel fanout
 //! reserves a batch bound including geometric vector growth before any wake.
 
-use crate::{KernelError, Meter, kernel::reserve};
+use crate::{KernelError, Meter, cost, kernel::reserve};
 use std::collections::{BTreeMap, btree_map::Entry};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,25 +39,13 @@ impl<K: Copy + Ord> Default for Worklist<K> {
     }
 }
 impl<K: Copy + Ord> Worklist<K> {
-    fn tree_work(len: usize) -> usize {
-        len.saturating_add(1).ilog2() as usize + 2
-    }
-
     /// Conservative lookup, insertion, link and possible vector growth work.
     pub fn enqueue_work(&self) -> usize {
         self.enqueue_work_for(1)
     }
 
     pub(crate) fn enqueue_work_for(&self, additional: usize) -> usize {
-        let maximum = self.len().saturating_add(additional);
-        let insertions = additional.saturating_mul(Self::tree_work(maximum).saturating_add(6));
-        if additional <= self.nodes.capacity() - self.nodes.len() {
-            return insertions;
-        }
-        // Enqueue explicitly doubles full storage. Over a batch, the sum of
-        // copied lengths is less than twice its maximum live length. Each node
-        // has three fields; this pays all reallocations before any insertion.
-        insertions.saturating_add(maximum.saturating_mul(6))
+        cost::enqueue_work(self.len(), self.nodes.capacity(), additional)
     }
 
     /// Enqueue after the caller reserves `enqueue_work`; duplicates keep position.
@@ -85,9 +73,7 @@ impl<K: Copy + Ord> Worklist<K> {
 
     /// Conservative map removal, moved-node lookup and constant link repairs.
     pub(crate) fn removal_work(&self) -> usize {
-        Self::tree_work(self.len())
-            .saturating_mul(2)
-            .saturating_add(12)
+        cost::removal_work(self.len())
     }
 
     /// Remove an obligation immediately; a later enqueue receives a fresh tail.
@@ -178,10 +164,7 @@ impl<K: Copy + Ord> Worklist<K> {
         if self.is_empty() {
             return Ok(None);
         }
-        let cost = self
-            .len()
-            .checked_add(self.removal_work())
-            .ok_or(KernelError::CostOverflow)?;
+        let cost = cost::selection_work(self.len());
         reserve(meter, cost)?;
         let mut choice = None;
         for id in self.in_order() {
@@ -210,11 +193,7 @@ impl<K: Copy + Ord> Worklist<K> {
         if self.is_empty() {
             return Ok(None);
         }
-        let cost = self
-            .len()
-            .checked_mul(2)
-            .and_then(|work| work.checked_add(self.removal_work()))
-            .ok_or(KernelError::CostOverflow)?;
+        let cost = cost::priority_selection_work(self.len());
         reserve(meter, cost)?;
         let mut choice = None;
         let mut maximum = 0;
@@ -243,3 +222,7 @@ impl<K: Copy + Ord> FromIterator<K> for Worklist<K> {
         result
     }
 }
+
+#[cfg(test)]
+#[path = "tests/queue_cost.rs"]
+mod tests;

@@ -215,6 +215,8 @@ fn captured_usdc_self_delegate_reverts_and_restores_observed_initial_state() {
         assert_eq!(
             procedure
                 .input
+                .instantiate(values.borrowed())
+                .unwrap()
                 .read(
                     owner,
                     &EvmValue::<NumericValue>::constant(implementation_slot),

@@ -17,6 +17,7 @@ fn api_errors_stay_below_the_large_result_error_threshold() {
 #[test]
 fn execution_and_work_failures_keep_their_typed_wire_categories() {
     for details in [
+        ErrorDetails::Execution(ExecutionFailureKind::UnsupportedView),
         ErrorDetails::Execution(ExecutionFailureKind::Protocol),
         ErrorDetails::Execution(ExecutionFailureKind::Initialization),
         ErrorDetails::Execution(ExecutionFailureKind::Refinement),
@@ -277,7 +278,8 @@ fn export_payload_keeps_strict_typed_field_validation() {
             "\"max_nodes\":64",
             "\"max_nodes\":64,\"max_output_bytes\":67108864",
         ),
-        json.replace("\"ExactBytes\"", "\"Work\""),
+        json.replace("\"ExactBytes\"", "\"Unpaid\""),
+        json.replace("\"ExactBytes\"", "\"LegacyWork\""),
         json.replace("\"ExactBytes\"", "\"OutputBytes\""),
         json.replace("\"ExactBytes\"", "\"UnknownBoundary\""),
     ] {
@@ -290,5 +292,36 @@ fn export_payload_keeps_strict_typed_field_validation() {
             serde_json::from_str::<AnalyzeReply>(&reply).is_err(),
             "{reply}"
         );
+    }
+    for kind in [ExportFailureKind::Work, ExportFailureKind::Numeric] {
+        let mut error: ApiError = serde_json::from_str(json).unwrap();
+        let ErrorDetails::Export(failure) = &mut error.details else {
+            unreachable!()
+        };
+        failure.kind = kind;
+        assert_eq!(
+            serde_json::from_slice::<ApiError>(&serde_json::to_vec(&error).unwrap()).unwrap(),
+            error
+        );
+    }
+}
+
+#[test]
+fn mandatory_projection_work_and_numeric_refusals_roundtrip_without_new_limit_fields() {
+    let original: ApiError =
+        serde_json::from_str(include_str!("fixtures/api-errors/export-api-error.json")).unwrap();
+    for kind in [ExportFailureKind::Work, ExportFailureKind::Numeric] {
+        let mut error = original.clone();
+        error.message = format!("mandatory projection refused: {kind:?}");
+        let ErrorDetails::Export(detail) = &mut error.details else {
+            unreachable!()
+        };
+        detail.kind = kind;
+        detail.required = 9_007_199_254_740_993;
+        let encoded = serde_json::to_string(&error).unwrap();
+        let decoded: ApiError = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, error);
+        assert!(!encoded.contains("\"max_work\""));
+        assert!(!encoded.contains("\"max_output_bytes\""));
     }
 }

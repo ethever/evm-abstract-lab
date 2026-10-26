@@ -13,7 +13,7 @@ use crate::{
     bytecode::Program,
     domain::{AlgebraRef, EvmValue, SingletonProof},
     resource::WorkBudget,
-    world::{Code, EvmStore},
+    world::{Code, EvmByteArray, EvmStore},
 };
 use revm_bytecode::opcode;
 
@@ -43,15 +43,16 @@ pub(super) fn quotation_work<D: EvmNumericAlgebra>(
                 .uniform_word_write_work(&args[0], &args[1], domain)
                 .is_some() =>
         {
-            // The injected algebra owns this cached-only complete quote,
-            // including all literal construction in the certified writer.
+            // The writer composes cached structural and injected numeric
+            // quotes, including all literal construction in the fast path.
             0
         }
         opcode::MSTORE | opcode::MSTORE8
-            if domain.memory_write_passes(
+            if EvmByteArray::memory_write_passes(
                 &args[0],
                 &args[1],
                 if op == opcode::MSTORE { 32 } else { 1 },
+                domain,
             ) == 0 =>
         {
             0
@@ -330,7 +331,7 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
             .saturating_add(environment.projection_work(domain)),
         opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::MSTORE => {
-            let passes = domain.memory_write_passes(&args[0], &args[1], 32);
+            let passes = EvmByteArray::memory_write_passes(&args[0], &args[1], 32, domain);
             if passes == 0 {
                 return byte_work(&[&args[0], &args[1]], 32, array_size, domain);
             }
@@ -365,7 +366,7 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
             )
         }
         opcode::MSTORE8 => {
-            let passes = domain.memory_write_passes(&args[0], &args[1], 1);
+            let passes = EvmByteArray::memory_write_passes(&args[0], &args[1], 1, domain);
             if passes == 0 {
                 return byte_work(&[&args[0], &args[1]], 1, array_size, domain);
             }

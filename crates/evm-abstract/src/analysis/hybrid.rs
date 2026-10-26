@@ -8,6 +8,7 @@ mod input;
 mod policy;
 mod run;
 
+use super::publication::ModelHandle;
 use super::{EvmMachineState, EvmWorldAnalysis, Status};
 use crate::domain::WordElement;
 use serde::{Serialize, Serializer, ser::SerializeStruct};
@@ -80,7 +81,8 @@ pub enum HybridInterpretation {
     /// Closed process coverage with bounded current native local observations.
     /// These never exclude a baseline route or imply whole-native closure.
     ProcessWithDetail,
-    /// Fully current native detail under the identical original input binding.
+    /// Current Native detail under the original binding, additionally qualified
+    /// for complete known-code control without an Environment omission.
     Native,
 }
 
@@ -89,6 +91,8 @@ pub enum HybridInterpretation {
 pub enum DetailState {
     /// No work was requested for optional precision.
     Disabled,
+    /// The closed global model is published before optional Native preparation.
+    Pending,
     /// Baseline has a frontier or lacks a current source/closure certificate.
     BaselinePending,
     /// Caller supplied process policies rather than a native precision policy.
@@ -98,6 +102,8 @@ pub enum DetailState {
     /// Native detail retains its actual incomplete frontiers or stale evidence.
     Incomplete,
     /// Native detail is closed and current under its explicit input binding.
+    /// Complete known-code control and original binding are separate conditions
+    /// for selecting it instead of Process.
     Current,
 }
 
@@ -124,7 +130,8 @@ pub struct HybridCoverage {
     /// Baseline kernel closure and all retained procedure source guards hold.
     pub baseline_current: bool,
     /// Native kernel closure and source guards hold under `detail_binding`.
-    /// This alone does not authorize whole-native substitution.
+    /// This alone does not establish original binding or complete known-code
+    /// control, and therefore does not authorize whole-native substitution.
     pub detail_current: bool,
     /// Qualification of the original root owner in native preparation.
     pub detail_binding: HybridNativeBinding,
@@ -138,6 +145,8 @@ pub struct HybridCoverage {
     pub detail: DetailState,
     /// Original requested cap, before remaining-work admission.
     pub requested_detail_work: usize,
+    /// Original source-region bound, independent of the actually admitted list.
+    pub requested_detail_regions: usize,
     /// Original explicit auxiliary option; produced coverage, if any, belongs
     /// only to detail and never establishes either phase's completion.
     pub requested_native_terminal_coverage: bool,
@@ -149,7 +158,7 @@ pub struct HybridCoverage {
 /// SSA. Snapshot, fact revision and source identities are preserved across both.
 #[derive(Debug)]
 pub struct HybridAnalysis<N: WordElement> {
-    baseline: EvmWorldAnalysis<N>,
+    baseline: ModelHandle<N>,
     detail: Option<EvmWorldAnalysis<N>>,
     coverage: HybridCoverage,
 }
@@ -224,6 +233,29 @@ fn local<N: WordElement>(state: &EvmMachineState<N>) -> bool {
 }
 
 impl<N: WordElement> HybridAnalysis<N> {
+    /// An outer RPC adapter first runs only Global, then admits Native under
+    /// its retained payer. Qualify that initial publication with the outer
+    /// request before exposing it; the immutable graph itself never changes.
+    pub(in crate::analysis) fn defer_detail(&mut self, requested: HybridConfig) {
+        debug_assert!(self.detail.is_none());
+        self.coverage.requested_detail_work = requested.max_detail_work;
+        self.coverage.requested_detail_regions = requested.max_detail_regions;
+        if self.coverage.baseline_current {
+            self.coverage.detail =
+                if requested.max_detail_work == 0 || requested.max_detail_regions == 0 {
+                    DetailState::Disabled
+                } else {
+                    DetailState::Pending
+                };
+        }
+    }
+
+    /// Retain this graph independently of optional precision and worker lifetime.
+    /// Its snapshot, revision, root binding and source evidence remain unchanged.
+    pub fn baseline_handle(&self) -> ModelHandle<N> {
+        self.baseline.clone()
+    }
+
     /// Conservative process graph, with real action/callback dependencies.
     pub fn baseline(&self) -> &EvmWorldAnalysis<N> {
         &self.baseline
@@ -236,9 +268,13 @@ impl<N: WordElement> HybridAnalysis<N> {
     pub fn coverage(&self) -> &HybridCoverage {
         &self.coverage
     }
-    /// Bounded, source-qualified local precision, available independently of
+    /// Outer machine instruction receipts, available independently of
     /// whole-detail completion. Each state's receipt supplies its current
-    /// instruction phases and installed successors. Preserve the coarse graph.
+    /// instruction phases and installed successors. Unselected relative callees
+    /// use `regional_cfg` in `detail()`'s `procedure_summaries()` records. Qualify
+    /// each record by `version`/`source_current` and each transfer by `current`
+    /// and `input_revision`. IDs there are regional; block visits do not supply
+    /// instruction-PC or SSA proof. Preserve the coarse graph.
     pub fn local_detail(&self) -> impl Iterator<Item = HybridLocalDetail<'_, N>> {
         self.detail.iter().flat_map(|detail| {
             detail
@@ -301,14 +337,14 @@ impl<N: WordElement> HybridAnalysis<N> {
     pub fn work(&self) -> usize {
         self.coverage.work.total
     }
+    /// Actual cumulative transfers, including earlier use of the shared counters.
+    /// Native retains that counter's latest snapshot, which already includes
+    /// the baseline. Without Native execution the baseline snapshot is latest.
+    pub fn transfers(&self) -> usize {
+        self.detail().unwrap_or_else(|| self.baseline()).transfers()
+    }
     /// Transfer ownership to applications without cloning either native graph.
-    pub fn into_parts(
-        self,
-    ) -> (
-        EvmWorldAnalysis<N>,
-        Option<EvmWorldAnalysis<N>>,
-        HybridCoverage,
-    ) {
+    pub fn into_parts(self) -> (ModelHandle<N>, Option<EvmWorldAnalysis<N>>, HybridCoverage) {
         (self.baseline, self.detail, self.coverage)
     }
 }

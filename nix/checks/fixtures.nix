@@ -1,6 +1,6 @@
 # Installed world reports are shared inputs, rather than each consumer running
-# the same abstract execution again. One --ssa invocation contains both the
-# analysis and (when converged) SSA; incomplete worlds retain their raw report.
+# the same abstract execution again. One --ssa invocation contains both graph
+# slots and optional Native SSA; preserve the raw envelope and each graph status.
 {
   pkgs,
   sourceRoot,
@@ -19,11 +19,23 @@ let
     "--evm.calldata"
     "0x"
   ];
+  # This new three-source example uses repeated-byte addresses. Other installed
+  # fixtures retain their original 0x101 root and transaction observations.
+  defaultEnvironment =
+    world:
+    if world == "examples/worlds/nested-detail-regions.json" then
+      [
+        "--evm.to"
+        "0x1111111111111111111111111111111111111111"
+      ]
+      ++ lib.drop 2 concrete
+    else
+      concrete;
   worldReport =
     {
       world,
       variant ? "default",
-      environment ? concrete,
+      environment ? defaultEnvironment world,
       extraArgs ? [ ],
     }:
     let
@@ -58,13 +70,24 @@ let
       import sys
       root = Path(sys.argv[1])
       report = json.loads((root / "report.json").read_text())
-      analysis = report.get("analysis", report)
+      assert report["schema_version"] == 16
+      baseline = report["global"]["analysis"]
+      native = report["native"]
+      namespace = "Native" if native is not None else "Baseline"
+      analysis = native["analysis"] if native is not None else baseline
       code = int((root / "exit-code").read_text())
-      assert analysis["status"] == ("Converged" if code == 0 else "Incomplete")
+      assert report["status"] == ("Converged" if code == 0 else "Incomplete")
+      assert report["hybrid"]["coverage"]["baseline_current"] == (code == 0)
       if code == 0:
-          assert isinstance(report["ssa"], dict)
-      else:
-          assert "ssa" not in report
+          assert baseline["status"] == "Converged"
+      assert report["selected_view"] in ("Native", "Baseline")
+      if native is not None:
+          if analysis["status"] == "Converged":
+              assert isinstance(native["ssa"], dict) and native["ssa"]["complete"]
+          else:
+              assert "ssa" not in native
+      (root / "analysis-namespace").write_text(namespace + "\n")
+      (root / "global.json").write_text(json.dumps(baseline, indent=2) + "\n")
       (root / "analysis.json").write_text(json.dumps(analysis, indent=2) + "\n")
       PY
     '';

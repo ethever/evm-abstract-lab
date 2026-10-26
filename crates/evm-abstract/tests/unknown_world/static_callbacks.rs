@@ -5,8 +5,8 @@ use crate::native;
 use alloy_primitives::U256;
 use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{FrameCode, OutcomeKind},
-    world::{EvmAccount, EvmByteArray, Existence},
+    analysis::{FrameCode, OutcomeKind, TransferSemantics},
+    world::{Code, EvmAccount, EvmByteArray, Existence},
 };
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
@@ -105,9 +105,49 @@ fn real_static_reentry_reads_known_owners_and_handles_a_failed_write() {
 
     let analysis = run(world, input);
     complete_unknown(&analysis);
-    // Reentry is present in the concrete trace. The static effect envelope
-    // covers its complete output and Store without claiming analyzed callback PCs.
     observed.covers(&analysis);
+    for step in observed
+        .steps
+        .iter()
+        .filter(|step| step.is_static && (step.code == address(A) || step.code == address(C)))
+    {
+        let Code::Runtime(program) = &analysis.world().account(step.code).unwrap().code else {
+            panic!("captured runtime source");
+        };
+        let block = program
+            .blocks()
+            .iter()
+            .find(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .any(|instruction| instruction.pc == step.pc)
+            })
+            .unwrap()
+            .id;
+        assert!(
+            analysis
+                .procedure_summaries()
+                .iter()
+                .filter(|record| record.source_current)
+                .any(|record| {
+                    record.regional_cfg.nodes.iter().any(|node| {
+                        node.frame.code_address == step.code
+                            && node.frame.code_hash == alloy_primitives::keccak256(program.bytes())
+                            && node.frame.address == step.owner
+                            && node.frame.is_static
+                            && node.frame.basic_block_index == block
+                            && node.transfer.as_ref().is_some_and(|transfer| {
+                                transfer.semantics == TransferSemantics::Native
+                                    && transfer.current
+                                    && transfer.complete
+                                    && transfer.visited_block
+                            })
+                    })
+                }),
+            "missing actual known static callback control for {step:?}"
+        );
+    }
     for outcome in analysis.outcomes() {
         only(&read(&outcome.store, A, 0), &[42]);
         only(&read(&outcome.store, C, 0), &[5]);

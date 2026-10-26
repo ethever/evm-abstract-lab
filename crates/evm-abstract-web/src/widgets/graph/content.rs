@@ -1,5 +1,6 @@
 //! Bounded CFG card previews. Native instance details are formatted only when
 //! hovered; folding source blocks never merges SSA names or effect histories.
+use crate::report::ReportView;
 
 use evm_abstract_notation::Symbol;
 mod aggregate;
@@ -7,7 +8,7 @@ mod leaf;
 mod outcome;
 
 use egui::{Color32, FontId, Painter, Vec2};
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage};
+use evm_abstract_protocol::BlockCoverage;
 
 use super::{
     HEADER_HEIGHT, LINE_HEIGHT, PAD, index::ReportIndex, projection::DisplayNode,
@@ -121,7 +122,7 @@ impl NodeText {
 #[cfg(test)]
 pub(super) fn node_preview(
     painter: &Painter,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     node: &DisplayNode,
     view: NodeView,
@@ -139,7 +140,7 @@ pub(super) fn node_preview(
 
 pub(super) fn node_preview_with_display(
     painter: &Painter,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     node: &DisplayNode,
     view: NodeView,
@@ -185,7 +186,7 @@ pub(super) fn node_preview_with_display(
     text.with_termination(termination).measured(painter)
 }
 pub(super) fn node_tooltip(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     node: &DisplayNode,
     view: NodeView,
@@ -211,7 +212,7 @@ pub(super) fn node_tooltip(
 #[cfg(test)]
 pub(super) fn node_text(
     painter: &Painter,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     block: &evm_abstract_protocol::CfgBlock,
     view: NodeView,
 ) -> NodeText {

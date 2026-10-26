@@ -2,8 +2,8 @@
 
 use super::{
     BLOCK, CALLEE, CALLER, ENTRY, Fixture, LEAF, Reply, RpcServer,
-    assert_pinned as assert_account_pinned, call, contains, execute, native_bytes, requests_for,
-    result, verified_export,
+    assert_pinned as assert_account_pinned, assert_policy, call, contains, execute, native_bytes,
+    relative_procedure, requests_for, result, slot_contains, verified_export,
 };
 use alloy_primitives::U256;
 use serde_json::{Value as Json, json};
@@ -170,111 +170,153 @@ fn explicit_slot_and_fetched_zero_are_cached_across_repeated_sloads() {
 #[test]
 fn nested_delegatecall_fetches_proxy_storage_instead_of_implementation_storage() {
     for additional in [false, true] {
-        thread::scope(|scope| {
-            let entry_code = format!("{}5000", call(0xf4, 0x200, 0));
-            let implementation_code = format!("{}5000", call(0xf4, 0x300, 0));
-            let fixture = Fixture::new(&[
-                (ENTRY, &entry_code),
-                (CALLEE, &implementation_code),
-                (LEAF, "5f5400"),
-            ]);
-            let server = RpcServer::new(scope, move |request| {
-                if request["method"] == "eth_getStorageAt" {
-                    assert_eq!(request["params"][0], ENTRY);
-                    storage_reply(request, U256::from(42))
+        for regions in [1, 3] {
+            thread::scope(|scope| {
+                let entry_code = format!("{}5000", call(0xf4, 0x200, 0));
+                let implementation_code = format!("{}5000", call(0xf4, 0x300, 0));
+                let fixture = Fixture::new(&[
+                    (ENTRY, &entry_code),
+                    (CALLEE, &implementation_code),
+                    (LEAF, "5f5400"),
+                ]);
+                let server = RpcServer::new(scope, move |request| {
+                    if request["method"] == "eth_getStorageAt" {
+                        assert_eq!(request["params"][0], ENTRY);
+                        storage_reply(request, U256::from(42))
+                    } else {
+                        fixture.reply(request)
+                    }
+                });
+                let mut args = if additional {
+                    vec!["--ssa", "--max-work", "5000000000"]
                 } else {
-                    fixture.reply(request)
+                    vec!["--ssa"]
+                };
+                if regions == 3 {
+                    args.extend(["--max-detail-regions", "3"]);
                 }
-            });
-            let args = if additional {
-                vec!["--ssa", "--max-work", "5000000000"]
-            } else {
-                vec!["--ssa"]
-            };
-            let output = execute(&server, &args);
-            let report: Json = serde_json::from_slice(&output.stdout).unwrap();
-            crate::native::assert_exit(&report, &output);
-            assert_eq!(report["status"], "Converged");
-            let export = crate::native::select(&report);
-            let analysis = export.get("analysis").unwrap_or(&export);
-            if additional || analysis["status"] == "Converged" {
-                let analysis = verified_export(&export);
-                assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
-                    let frame = state["key"]["frames"].as_array().unwrap().last().unwrap();
-                    frame["code_address"] == LEAF
-                        && frame["address"] == ENTRY
-                        && state["exit_stack"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .any(|value| contains(value, U256::from(42)))
-                }));
-            } else {
-                // The fixed default snapshot has already acquired the proxy slot,
-                // but optional execution still refers to the earlier revision.
-                // Preserve that pending prefix rather than claim the loaded word.
-                let rpc = &report["hybrid"]["rpc"];
-                assert_eq!(rpc["precision"], "Work");
-                assert_eq!(rpc["detail_at_current_revision"], false);
-                assert!(rpc["detail_revision"].as_u64() < rpc["current_revision"].as_u64());
-                assert!(
-                    analysis["frontiers"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|frontier| frontier["reason"]["MissingStorage"]["address"] == ENTRY)
+                let export = result(execute(&server, &args), 0);
+                assert_policy(
+                    &export,
+                    regions,
+                    if additional {
+                        5_000_000_000
+                    } else {
+                        2_000_000_000
+                    },
                 );
-            }
-            let requests = server.finish();
-            assert_eq!(requests_for(&requests, "eth_getStorageAt", ENTRY).len(), 1);
-            for implementation in [CALLEE, LEAF] {
-                assert!(requests_for(&requests, "eth_getStorageAt", implementation).is_empty());
-            }
-            assert_pinned(&requests);
-        });
+                let analysis = verified_export(&export);
+                if regions == 3 {
+                    assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
+                        let frame = state["key"]["frames"].as_array().unwrap().last().unwrap();
+                        frame["code_address"] == LEAF
+                            && frame["address"] == ENTRY
+                            && state["exit_stack"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .any(|value| contains(value, U256::from(42)))
+                    }));
+                } else {
+                    let leaf = relative_procedure(
+                        analysis,
+                        LEAF,
+                        ENTRY,
+                        &analysis["world"]["code_hashes"][LEAF],
+                    )
+                    .expect("default Native relative leaf retains the proxy owner");
+                    assert_eq!(leaf["frame"]["caller"]["Concrete"], CALLER);
+                    assert!(slot_contains(&leaf["input"], ENTRY, 0, U256::from(42)));
+                    assert!(analysis["states"].as_array().unwrap().iter().all(|state| {
+                        state["key"]["frames"].as_array().unwrap().last().unwrap()["code_address"]
+                            != LEAF
+                    }));
+                }
+                let requests = server.finish();
+                assert_eq!(requests_for(&requests, "eth_getStorageAt", ENTRY).len(), 1);
+                for implementation in [CALLEE, LEAF] {
+                    assert!(requests_for(&requests, "eth_getStorageAt", implementation).is_empty());
+                }
+                assert_pinned(&requests);
+            });
+        }
     }
 }
 
 #[test]
 fn child_revert_preserves_fetched_snapshot_and_caller_strong_write() {
     thread::scope(|scope| {
-        for written in [false, true] {
-            let prefix = if written { "60075f55" } else { "" };
-            let entry_code = format!("{prefix}{}505f545f5260205ff3", call(0xf4, 0x200, 0));
-            let fixture = Fixture::new(&[(ENTRY, &entry_code), (CALLEE, "5f545060015f555f5ffd")]);
-            let server = RpcServer::new(scope, move |request| {
-                if request["method"] == "eth_getStorageAt" {
-                    storage_reply(request, U256::from(42))
-                } else {
-                    fixture.reply(request)
+        for regions in [1, 2] {
+            for written in [false, true] {
+                let prefix = if written { "60075f55" } else { "" };
+                let entry_code = format!("{prefix}{}505f545f5260205ff3", call(0xf4, 0x200, 0));
+                let fixture =
+                    Fixture::new(&[(ENTRY, &entry_code), (CALLEE, "5f545060015f555f5ffd")]);
+                let server = RpcServer::new(scope, move |request| {
+                    if request["method"] == "eth_getStorageAt" {
+                        storage_reply(request, U256::from(42))
+                    } else {
+                        fixture.reply(request)
+                    }
+                });
+                let mut extra = vec!["--ssa"];
+                if regions == 2 {
+                    extra.extend(["--max-detail-regions", "2"]);
                 }
-            });
-            let export = result(execute(&server, &["--ssa"]), 0);
-            let analysis = verified_export(&export);
-            assert!(
-                analysis["edges"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|edge| edge["kind"] == "Revert")
-            );
-            assert!(
-                analysis["outcomes"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|outcome| outcome["kind"] == "Return"
+                let export = result(execute(&server, &extra), 0);
+                assert_policy(&export, regions, 2_000_000_000);
+                let analysis = verified_export(&export);
+                if regions == 2 {
+                    assert!(
+                        analysis["edges"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|edge| edge["kind"] == "Revert")
+                    );
+                } else {
+                    assert!(
+                        analysis["edges"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|edge| edge["kind"] == json!({"Summary":"Revert"}))
+                    );
+                    let child = relative_procedure(
+                        analysis,
+                        CALLEE,
+                        ENTRY,
+                        &analysis["world"]["code_hashes"][CALLEE],
+                    )
+                    .expect("default Native relative child preserves rollback");
+                    assert!(
+                        child["outputs"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|output| output["kind"] == "Revert")
+                    );
+                }
+                assert!(analysis["outcomes"].as_array().unwrap().iter().any(
+                    |outcome| outcome["kind"] == "Return"
+                        && slot_contains(
+                            &outcome["store"],
+                            ENTRY,
+                            0,
+                            U256::from(if written { 7 } else { 42 })
+                        )
                         && native_bytes::word_matches(
                             &outcome["data"],
                             U256::from(if written { 7 } else { 42 }),
-                        ))
-            );
-            let requests = server.finish();
-            assert_eq!(
-                requests_for(&requests, "eth_getStorageAt", ENTRY).len(),
-                usize::from(!written)
-            );
-            assert_pinned(&requests);
+                        )
+                ));
+                let requests = server.finish();
+                assert_eq!(
+                    requests_for(&requests, "eth_getStorageAt", ENTRY).len(),
+                    usize::from(!written)
+                );
+                assert_pinned(&requests);
+            }
         }
     });
 }

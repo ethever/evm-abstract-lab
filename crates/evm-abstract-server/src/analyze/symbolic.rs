@@ -1,5 +1,7 @@
 //! Report-local interning of immutable state and path graphs. Native keys stay
 //! alive during projection; only typed local references cross the wire.
+mod control;
+mod minimum;
 mod nodes;
 mod paths;
 
@@ -72,6 +74,11 @@ impl Root {
 
 pub(super) struct Pool<'a> {
     control: &'a Control,
+    // Minimum projection borrows the job's existing application allowance.
+    // Rich export retains its established enclosing-operation accounting.
+    minimum_budget: Option<&'a mut evm_abstract::resource::WorkBudget>,
+    control_budget: Option<&'a mut evm_abstract::resource::WorkBudget>,
+    control_directory: control::Directory,
     memo: BTreeMap<Key, usize>,
     // Paths use Arc pointer identities; keeping them alive prevents pointer reuse.
     paths: Vec<RelationPath>,
@@ -85,6 +92,9 @@ impl<'a> Pool<'a> {
     pub fn new(control: &'a Control) -> Self {
         Self {
             control,
+            minimum_budget: None,
+            control_budget: None,
+            control_directory: control::Directory::default(),
             memo: BTreeMap::new(),
             paths: Vec::new(),
             graph: api::SymbolicGraph { nodes: vec![] },
@@ -100,6 +110,15 @@ impl<'a> Pool<'a> {
             },
             fresh: BTreeMap::new(),
             relations: BTreeMap::new(),
+        }
+    }
+    pub fn minimum(
+        control: &'a Control,
+        budget: &'a mut evm_abstract::resource::WorkBudget,
+    ) -> Self {
+        Self {
+            minimum_budget: Some(budget),
+            ..Self::new(control)
         }
     }
     pub fn payload(&mut self, bytes: usize) -> Result<(), api::ApiError> {
@@ -131,6 +150,22 @@ impl<'a> Pool<'a> {
     pub fn charge(&mut self, work: usize) -> Result<(), api::ApiError> {
         if checkpoint(self.control).is_err() {
             return Err(self.failure(api::ExportFailureKind::Cancelled, self.usage.work));
+        }
+        if let Some(budget) = self.minimum_budget.as_mut() {
+            let refusal = if work == usize::MAX {
+                Some(api::ExportFailureKind::Work)
+            } else if !budget.charge(work) {
+                Some(if budget.charge(0) {
+                    api::ExportFailureKind::Work
+                } else {
+                    api::ExportFailureKind::Cancelled
+                })
+            } else {
+                None
+            };
+            if let Some(kind) = refusal {
+                return Err(self.failure(kind, work as u64));
+            }
         }
         // Work is an informational total. Even after saturation every charge
         // remains a cancellation checkpoint.
@@ -267,12 +302,53 @@ impl<'a> Pool<'a> {
         &mut self,
         source: &EvmValue<N>,
     ) -> Result<api::ValueInfo, api::ApiError> {
+        if self.minimum_budget.is_some() {
+            return self.numeric_value(source);
+        }
         self.charge(source.numeric().work_size().saturating_add(1))?;
         let mut info = value::info(source);
         info.expression = source
             .expression()
             .map(|expr| self.expression(expr))
             .transpose()?;
+        Ok(info)
+    }
+
+    fn numeric_value<N: WordElement>(
+        &mut self,
+        source: &EvmValue<N>,
+    ) -> Result<api::ValueInfo, api::ApiError> {
+        let required = self.usage.nodes.saturating_add(1);
+        if required > self.limits.max_nodes {
+            return Err(self.failure(api::ExportFailureKind::Nodes, required as u64));
+        }
+        // O(1) capability: never silently discard a custom scalar predicate.
+        if source.numeric().requires_retained_binding() {
+            return Err(self.failure(api::ExportFailureKind::Numeric, required as u64));
+        }
+        self.charge(source.numeric().work_size().saturating_add(1))?;
+        let observation = source.numeric().observation();
+        self.charge(0)?;
+        // Fund formatting/copying the neutral vocabulary after the paid native
+        // observation and before materializing any strings or candidate list.
+        self.charge(observation.work_size().saturating_mul(256))?;
+        let mut info = value::observation(&observation);
+        info.origins = source
+            .provenance()
+            .origins()
+            .sources()
+            .map(|sources| sources.iter().copied().map(value::origin).collect());
+        info.code_address_role = source.provenance().is_code_address();
+        info.identity = source
+            .identity()
+            .input()
+            .map(|identity| api::InputIdentity {
+                scope: api::DecimalU64(identity.scope()),
+                symbol: value::symbol(identity.symbol()),
+            });
+        info.symbolic_limit = source.symbolic_limit_reached();
+        self.usage.nodes = required;
+        self.charge(0)?;
         Ok(info)
     }
 }

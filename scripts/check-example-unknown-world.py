@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Check the bounded immutable carriers of the six unknown-world examples."""
+"""Check Native carriers and default Hybrid coverage of the six examples."""
 
+import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 import json
-import sys
 
 
 WORD_MAX = (1 << 256) - 1
 SIGN = 1 << 255
-# These captures need at most 19 nodes, 64 bytes, one read and three choices,
+# The private-carrier oracle needs at most 19 nodes, 64 bytes, one read and three choices,
 # plus one runtime word whose explicit numeric certificate is a singleton.
 MAX_NODES, MAX_BYTES, MAX_CHOICES = 19, 64, 3
 MAX_RUNTIME_WORDS = 1
@@ -17,6 +18,8 @@ OBSERVATION_FIELDS = {"Constants", "known_bits", "interval", "congruence", "nonz
 OWNER_A = "0x0000000000000000000000000000000000000101"
 OWNER_C = "0x0000000000000000000000000000000000000301"
 TRUE = {"constraints": [], "bottom": False, "path": {"root": 0, "nodes": ["True"]}}
+PRIVATE_CALLEE = {"external-change", "outer-revert"}
+MAX_WORK = 2_000_000_000
 
 
 def number(value):
@@ -462,7 +465,280 @@ def check(name, analysis):
         assert possible == expected, (name, possible)
 
 
+def native_analysis(name, report, regions):
+    """Select the Native namespace even when Global is the chosen model."""
+    assert report["schema_version"] == 16 and report["status"] == "Converged", "Hybrid schema/status"
+    assert report["selected_view"] == "Baseline", "selected Global view"
+    assert report["numeric_model"] == "product", "numeric model"
+    assert report["postprocessing_max_work"] == MAX_WORK, "postprocess allowance"
+    assert 0 <= report["postprocessing_work"] <= MAX_WORK, "postprocess work"
+    coverage = report["hybrid"]["coverage"]
+    assert coverage["chosen"] == "ProcessWithDetail", "Global control with Native detail"
+    assert coverage["baseline_current"] is True and coverage["detail_current"] is True, "current graphs"
+    assert coverage["detail"] == "Current" and coverage["detail_binding"] == "OriginalOwner", "Native binding"
+    assert type(coverage["requested_detail_regions"]) is int and coverage["requested_detail_regions"] == regions, "detail region request"
+    assert coverage["requested_detail_work"] == (1 << 64) - 1, "shared detail allowance"
+    assert coverage["requested_native_terminal_coverage"] is True, "terminal coverage policy"
+    assert isinstance(report.get("native"), dict), "missing Native graph"
+    graph, global_graph = report["native"], report["global"]
+    analysis, global_analysis = graph["analysis"], global_graph["analysis"]
+    config = {"analysis": {"context_depth": 128, "max_states": 100000, "max_transfers": 10000000},
+              "max_work": MAX_WORK, "max_call_depth": 1025, "max_memory_bytes": 67108864,
+              "use_summaries": True, "root_terminal_coverage": True}
+    assert analysis["config"] == config, "original execution policy"
+    assert global_analysis["config"] == dict(config, root_terminal_coverage=False), "Global policy"
+    for key in ("world", "entry", "domain_spec", "snapshot", "revision"):
+        assert analysis[key] == global_analysis[key], ("graph input identity", key)
+    for current in (analysis, global_analysis):
+        assert current["schema_version"] == 16 and current["status"] == "Converged", "graph schema/status"
+        assert current["frontiers"] == [], "graph frontiers"
+        summaries = current["procedure_summaries"]
+        assert summaries and all(s["closed"] is True and s["procedures"] for s in summaries), "closed procedures"
+    assert "ssa" not in global_graph and "partial_ssa" not in global_graph, "Global has no Native SSA"
+    assert all(s["executed_pcs"] == [] for s in global_analysis["states"]), "Global MAY is not executed PCs"
+    world, entry = analysis["world"], analysis["entry"]
+    assert world["fork"] == "osaka" and world["provenance"] == f"offline:unknown-world:{name}:v1", "fixture world"
+    assert entry["binding"] == {"Physical": {"address": OWNER_A}} and entry["address"] == OWNER_A, "entry owner"
+    environment = entry["environment"]
+    assert environment["to"] == {"Concrete": OWNER_A}, "entry target"
+    assert environment["caller"] == {"Concrete": "0x0000000000000000000000000000000000000900"}, "entry caller"
+    assert environment["is_static"] is False and numeric(evm_numeric(environment["value"]))[1] == {0}, "entry value/static"
+    calldata = environment["calldata"]
+    assert numeric(evm_numeric(calldata["length"]))[1] == {0}, "entry calldata length"
+    assert calldata["root"]["nodes"] == [{"BytesExact": []}] and calldata["root"]["root"] == 0, "entry calldata"
+    expected = [OWNER_A] + ([OWNER_C] if regions == 2 else [])
+    assert coverage["detail_regions"] == [
+        {"source": {"Runtime": {"source": owner, "hash": world["code_hashes"][owner], "fork": world["fork"]}},
+         "code_hash": world["code_hashes"][owner]} for owner in expected
+    ], "selected source regions"
+    work = coverage["work"]
+    assert all(type(v) is int and v >= 0 for v in work.values()), "work counters"
+    assert work["prior"] == 0 and work["baseline"] == global_analysis["work"], "original payer"
+    assert work["detail_allowance"] == MAX_WORK - work["baseline"], "remaining shared allowance"
+    assert work["total"] == sum(work[k] for k in ("prior", "baseline", "preparation", "detail")), "cumulative work"
+    assert report["work"] == analysis["work"] == work["total"] <= MAX_WORK, "execution work"
+    assert global_analysis["transfers"] <= report["transfers"] == analysis["transfers"] <= config["analysis"]["max_transfers"], "cumulative transfers"
+    states = {state["id"]: state for state in analysis["states"]}
+    assert states and len(states) == len(analysis["states"]), "Native states"
+    ssa = graph.get("ssa")
+    assert isinstance(ssa, dict) and ssa["complete"] is True and ssa["status"] == "Converged", "Native SSA"
+    assert ssa["frontiers"] == [] and ssa["deferred_edges"] == [], "closed Native SSA"
+    blocks = {block["state"]: block for block in ssa["blocks"]}
+    assert len(blocks) == len(ssa["blocks"]) and blocks.keys() == states.keys(), "Native SSA states"
+    executed_sources = set()
+    for state_id, state in states.items():
+        assert type(state_id) is int and state_id >= 0, "Native state id"
+        stack = state["entry"]["call_stack"]
+        frames = [stack["root"]["state"]] + [child["state"] for child in stack["children"]]
+        assert [frame["key"] for frame in frames] == state["key"]["frames"], "Native source frames"
+        frame, pcs, instructions = frames[-1], state["executed_pcs"], blocks[state_id]["instructions"]
+        assert [instruction["pc"] for instruction in instructions] == pcs, "Native SSA PCs"
+        if pcs:
+            key = frame["key"]
+            assert key["code_hash"] == world["code_hashes"][key["code_address"]], "Native source hash"
+            block, = [block for block in frame["program"]["blocks"] if block["id"] == key["basic_block_index"]]
+            original = block["instructions"][:len(pcs)]
+            assert [(i["pc"], i["opcode"]) for i in instructions] == [(i["pc"], i["opcode"]) for i in original], "Native instruction source"
+            executed_sources.add(key["code_address"])
+    assert executed_sources == set(expected), "actual Native source coverage"
+    return analysis
+
+
+def physical_input(analysis):
+    """Only the two input ExprArena scope labels are fresh across CLI runs."""
+    result = deepcopy({key: analysis[key] for key in
+                       ("world", "entry", "config", "domain_spec", "snapshot", "revision")})
+    source = result["world"]["storage_source"]
+    calldata = result["entry"]["environment"]["calldata"]["root"]
+    assert isinstance(source["identity_scope"], str) and source["identity_scope"], "input expression scope"
+    assert source["identity_scope"] == calldata["identity_scope"], "shared input expression scope"
+    source["identity_scope"] = calldata["identity_scope"] = "input scope"
+    return result
+
+
+def check_relative_callee(name, analysis):
+    """Default1 retains relative C receipts; its coarse data is not a joint oracle."""
+    states = {state["id"]: state for state in analysis["states"]}
+    outcomes = analysis["outcomes"]
+    assert outcomes and any(o["kind"] == ("Revert" if name == "outer-revert" else "Return") for o in outcomes), "root terminal outcomes"
+    for outcome in outcomes:
+        reader = Outcome(outcome, states)
+        if name == "outer-revert":
+            assert outcome["kind"] in {"Revert", "Failure"}, "outer revert outcomes"
+            final, = reader.slots(outcome["store"], OWNER_C, [0])
+            saved, = reader.slots(reader.frame["saved_store"], OWNER_C, [0])
+            assert reader.rows((final, saved)) == {(5, 5)}, "rollback checkpoint"
+        if outcome["kind"] in {"Return", "Revert"}:
+            data = outcome["data"]
+            assert data["failure"] is None and data["memory"] is False and data["conditional"] == [], "relative root data"
+            _, lengths = numeric(evm_numeric(data["length"]))
+            allowed_lengths = {0, 64} if name == "outer-revert" else {64} if outcome["kind"] == "Return" else {0}
+            assert len(lengths) == 1 and lengths <= allowed_lengths, "relative root length"
+            if lengths == {64}:
+                graph = data["root"]
+                assert graph["identity_scope"] == reader.scope and graph["root"] == len(graph["nodes"]) - 1, "relative data source"
+                nodes = graph["nodes"]
+                view = nodes[nodes[-1]["Slice"]["source"]]["View"]
+                write = nodes[view["state"]]["WriteWord"]
+                assert nodes[view["offset"]] == {"Constant": "0x0"} and nodes[view["length"]] == {"Constant": "0x40"}, "relative return view"
+                assert nodes[write["offset"]] == {"Constant": "0x0"} and nodes[write["value"]] == {"Constant": "0x5"}, "original first word"
+    summaries = [s for s in analysis["procedure_summaries"] if s["source_current"] and s["kind"] == "KnownCall"]
+    assert summaries, "current relative callee"
+    for summary in summaries:
+        state = states[summary["source_state"]]
+        procedure = summary["procedures"][summary["root_procedure"]]
+        frame = procedure["frame"]
+        assert procedure["semantics"] == "Native" and frame == state["key"]["frames"][-1], "relative source frame"
+        assert frame["code_address"] == frame["address"] == OWNER_C and frame["caller"] == {"Concrete": OWNER_A}, "relative callee owner"
+        assert frame["code_hash"] == analysis["world"]["code_hashes"][OWNER_C] and frame["is_static"] is False, "relative source/static"
+        assert state["executed_pcs"] == [], "relative receipt is not World execution"
+        nodes = [n for n in summary["regional_cfg"]["nodes"] if n["procedure"] == summary["root_procedure"] and not n["excluded"]]
+        source_fields = ("code_address", "code_hash", "mode", "address", "address_value", "caller", "is_static")
+        assert all(all(n["frame"][key] == frame[key] for key in source_fields) for n in nodes), "relative control source/owner"
+        assert nodes and all(n["transfer"]["semantics"] == "Native" and n["transfer"]["current"] is True
+                             and n["transfer"]["complete"] is True and n["transfer"]["visited_block"] is True for n in nodes), "current relative control"
+        assert any(e["from"] == state["id"] and e["kind"] == {"Summary": "Return"}
+                   and states[e["to"]]["key"]["frames"][-1]["code_address"] == OWNER_A
+                   for e in analysis["edges"]), "relative call return"
+        outputs = procedure["outputs"]
+        assert {o["kind"] for o in outputs} == {"Return", "Failure"}, "relative callee outputs"
+        for output in outputs:
+            data = output["data"]
+            expected_length = 32 if output["kind"] == "Return" else 0
+            assert data.keys() == {"length", "memory", "content", "words"} and data["words"] == {}, "relative data payload"
+            assert data["memory"] is False and numeric(evm_numeric(data["length"]))[1] == {expected_length}, "relative callee data"
+            allowed = ("Zero",) if expected_length == 0 else ({"Cells": {}}, {"Exact": [0] * 31 + [5]})
+            assert data["content"] in allowed, "relative callee content"
+        for store in [procedure["input"]] + [o["store"] for o in outputs]:
+            cells = [s for s in store["persistent"]["slots"] if s["address"] == OWNER_C]
+            slots = {number(s["slot"]): s["value"] for s in cells}
+            assert len(cells) == len(slots) == 2 and slots.keys() == {0, 1}, "relative callee Store"
+            evm_numeric(slots[0])  # Top is honest here; the region2 check proves the joint finite facts.
+            assert numeric(evm_numeric(slots[1]))[1] == {1}, "relative callee guard"
+
+
+def check_report(name, report, detail_report=None):
+    analysis = native_analysis(name, report, 1)
+    if name in PRIVATE_CALLEE:
+        # The old shared-source proof needs C's selected private carriers. Keep
+        # default1 as a separate checked request, with no execution-budget reset.
+        assert detail_report is not None, "additional region2 private oracle required"
+        check_relative_callee(name, analysis)
+        detail = native_analysis(name, detail_report, 2)
+        assert physical_input(analysis) == physical_input(detail), "same original input and budget"
+        check(name, detail)
+    else:
+        assert detail_report is None, "unexpected additional detail report"
+        check(name, analysis)
+
+
+def selftest(name, report, detail_report):
+    """Mutate real fixture envelopes; none of these checks reruns execution."""
+    check_report(name, report, detail_report)
+
+    def rejected(change, message):
+        changed, detail = deepcopy(report), deepcopy(detail_report)
+        change(changed, detail)
+        try:
+            check_report(name, changed, detail)
+        except AssertionError:
+            return
+        raise AssertionError(message)
+
+    rejected(lambda r, _: r.update(native=None), "accepted missing Native")
+    rejected(lambda r, _: r["global"]["analysis"]["states"][0].update(executed_pcs=[0]), "accepted Global executed PCs")
+    rejected(lambda r, _: r["native"].update(ssa=None), "accepted missing Native SSA")
+    rejected(lambda r, _: r["hybrid"]["coverage"].update(requested_detail_regions=2), "accepted replaced default1")
+    rejected(lambda r, _: r["hybrid"]["coverage"]["work"].update(total=r["work"] + 1), "accepted fresh execution payer")
+    rejected(lambda r, _: r["native"]["ssa"]["blocks"][0]["instructions"][0].update(opcode=0xfe), "accepted wrong SSA source")
+
+    def larger_budget(r, _):
+        for namespace in ("global", "native"):
+            r[namespace]["analysis"]["config"]["max_work"] += 1
+
+    rejected(larger_budget, "accepted raised original budget")
+
+    def substitute_global(r, _):
+        config = r["native"]["analysis"]["config"]
+        r["native"]["analysis"] = deepcopy(r["global"]["analysis"])
+        r["native"]["analysis"]["config"] = config
+
+    rejected(substitute_global, "accepted Global as Native")
+    if detail_report is not None:
+        def different_input(_, detail):
+            for namespace in ("global", "native"):
+                detail[namespace]["analysis"]["world"]["fingerprint"] = "different"
+
+        rejected(different_input, "accepted changed detail input")
+        rejected(lambda _, d: d["hybrid"]["coverage"].update(requested_detail_regions=1), "accepted unlabeled detail request")
+        rejected(lambda r, _: r["native"]["analysis"]["procedure_summaries"].clear(), "accepted empty relative evidence")
+
+        def foreign_source(r, _):
+            summaries = r["native"]["analysis"]["procedure_summaries"]
+            summary = next(s for s in summaries if s["source_current"] and s["kind"] == "KnownCall")
+            node = next(n for n in summary["regional_cfg"]["nodes"] if n["procedure"] == summary["root_procedure"] and not n["excluded"])
+            node["frame"]["code_hash"] = "0x" + "00" * 32
+
+        rejected(foreign_source, "accepted foreign relative control source")
+
+        if name == "external-change":
+            def empty_return(r, _):
+                outcome = next(o for o in r["native"]["analysis"]["outcomes"] if o["kind"] == "Return")
+                outcome["data"]["length"] = {"numeric": {"constants": ["0x0"]}}
+
+            rejected(empty_return, "accepted empty root Return")
+
+        def empty_relative(r, _, field):
+            summaries = r["native"]["analysis"]["procedure_summaries"]
+            summary = next(s for s in summaries if s["source_current"] and s["kind"] == "KnownCall")
+            procedure = summary["procedures"][summary["root_procedure"]]
+            procedure["outputs"][0][field] = {}
+
+        # Missing canonical payloads must fail closed before any private proof.
+        for field in ("store", "data"):
+            changed = deepcopy(report)
+            empty_relative(changed, None, field)
+            try:
+                check_report(name, changed, detail_report)
+            except (AssertionError, KeyError):
+                pass
+            else:
+                raise AssertionError("accepted empty relative " + field)
+
+        def separate_source(_, detail):
+            # Change only the data source, retaining all numeric certificates.
+            def fresh(value):
+                if isinstance(value, dict):
+                    if "Fresh" in value:
+                        value["Fresh"] += 1000000
+                    else:
+                        for child in value.values():
+                            fresh(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        fresh(child)
+
+            outcomes = detail["native"]["analysis"]["outcomes"]
+            outcome = next(o for o in outcomes if any(isinstance(n, dict) and "SlotsInput" in n for n in o["data"]["root"]["nodes"]))
+            fresh(outcome["data"])
+
+        rejected(separate_source, "accepted independent data/Store source certificates")
+
+
 if __name__ == "__main__":
-    name, path = sys.argv[1:]
-    with open(path) as report:
-        check(name, json.load(report)["analysis"])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("name")
+    parser.add_argument("report")
+    parser.add_argument("--detail-report", help="same input with explicit max-detail-regions2 for the private C oracle")
+    parser.add_argument("--selftest", action="store_true", help="also reject corrupted copies of this fixture report")
+    args = parser.parse_args()
+    with open(args.report) as source:
+        report = json.load(source)
+    detail = None
+    if args.detail_report:
+        with open(args.detail_report) as source:
+            detail = json.load(source)
+    if args.selftest:
+        selftest(args.name, report, detail)
+    else:
+        check_report(args.name, report, detail)

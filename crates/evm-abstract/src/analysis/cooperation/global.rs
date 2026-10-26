@@ -5,7 +5,7 @@
 //! missing providers and incomplete discovery do not establish unreachability.
 
 use super::{
-    ImmutableInputPolicy, Inputs, Point, Refinements, StackMeet,
+    ImmutableInputPolicy, Inputs, Point, ProcessMeet, ProcessRefinements, Refinements, StackMeet,
     navigation::{Callees, DescriptorPolicy, ProcedureEntries},
 };
 use crate::{
@@ -429,6 +429,7 @@ type ContinuationChannel<N> =
 pub(crate) struct Shared<N: WordElement> {
     pub inputs: Channel<Inputs<N>, ImmutableInputPolicy<N>>,
     pub refinements: Channel<Refinements, Descending<StackMeet>>,
+    pub process_refinements: Channel<ProcessRefinements, Descending<ProcessMeet>>,
     pub points: Channel<Points, Ascending<SetUnion<Point>>>,
     pub generations: Channel<Generations, EntryPolicy>,
     pub callees: Channel<Callees, Ascending<SetUnion<ProcedureId>>>,
@@ -448,6 +449,7 @@ impl<N: WordElement> Shared<N> {
         Ok(Self {
             inputs: kernel.channel(ImmutableInputPolicy::default(), meter)?,
             refinements: kernel.channel(Descending(StackMeet), meter)?,
+            process_refinements: kernel.channel(Descending(ProcessMeet), meter)?,
             points: kernel.channel(Ascending(SetUnion::default()), meter)?,
             generations: kernel.channel(EntryPolicy, meter)?,
             callees: kernel.channel(Ascending(SetUnion::default()), meter)?,

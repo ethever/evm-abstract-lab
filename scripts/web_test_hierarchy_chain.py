@@ -8,12 +8,17 @@ from web_test_graph_helpers import graph_mode, symbol
 from web_test_harness import settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_camera_intervals, layout_card_extent, layout_ink, node_snapshot
+from web_test_hybrid import source_instructions
 
 
 def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-linear-chain", native_projection=False):
     page, canvas, errors = layout_page(browser, url)
     code, metadata = layout_fixture(fixture_name)
     report = layout_submission(page, canvas, code, output, fixture_name)
+    # Namespace activation preserves the previous Global camera. Establish the
+    # all-content Native fit required by the affine pixel measurement below.
+    canvas.click(position={"x":132,"y":110})  # Native Fit graph, with World closed.
+    page.mouse.move(2,2);settle_gesture(page)
     assert report["status"] == "Converged", report["frontiers"]
     assert len(report["cfg"]) == metadata["expected_native_states"]
     assert len(report["edges"]) == metadata["expected_original_edges"]
@@ -23,9 +28,20 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
     if native_projection:
         assert hashlib.sha256(bytes.fromhex(code)).hexdigest() == metadata["code_sha256"]
         request = json.loads((output/f"{fixture_name}-request.json").read_text())
+        assert request["input"]["Bytecode"]["address"] is None
         assert request["limits"] == report["metadata"]["limits"] == LAYOUT_DEFAULT_LIMITS
         assert not report["frontiers"] and report["ssa"]["complete"]
-        assert len(report["programs"]) == metadata["expected_programs"]
+        programs = {program["id"]: program for program in report["programs"]}
+        assert len(programs) == len(report["programs"])
+        native_sources = {node["program"] for node in report["cfg"]}
+        assert native_sources == {report["metadata"]["root_program"]}
+        assert len(native_sources) == metadata["expected_programs"]
+        # The shared catalog also retains the original symbolic-address input;
+        # it is not another program executed by this Native fixture.
+        template, = [program for program in programs.values() if program["code_address"] is None]
+        assert template["id"] not in native_sources and set(programs) == native_sources | {template["id"]}
+        assert all(program["kind"] == "Runtime" and program["fork"] == report["fork"]
+                   and program["bytecode"].removeprefix("0x") == code for program in programs.values())
         assert len(report["ssa"]["blocks"]) == metadata["expected_ssa_blocks"]
         assert {block["state"] for block in report["ssa"]["blocks"]} == {node["id"] for node in report["cfg"]}
         assert {node["frame_depth"] for node in report["cfg"]} == {metadata["expected_frame_depth"]}
@@ -36,7 +52,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert {(pcs[edge["from"]],pcs[edge["to"]]) for edge in report["edges"]} == {
             (pc,pc+stride) for pc in range(0,metadata["last_block_start_pc"],stride)}
         assert any(instruction["pc"] == metadata["stop_pc"] and instruction["opcode"] == 0
-                   for node in report["cfg"] for instruction in node["instructions"])
+                   for node in report["cfg"] for instruction in source_instructions(report, node))
         assert scene["nodes"] >= 600 and scene["hidden_states"] == scene["boundary_edges"] == 0
     status = page.locator("#analysis-status").text_content()
     fit_zoom = float(re.search(r"; CFG zoom: ([0-9.]+)%", status)[1])

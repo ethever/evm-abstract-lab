@@ -1,10 +1,11 @@
 //! Explain summarized interactions beside the actual caller and return edges.
-mod regional;
+use crate::report::ReportView;
+pub(super) mod regional;
 
 use super::process;
 use crate::palette;
 use egui::{RichText, Ui};
-use evm_abstract_protocol::{AnalysisReport, ProcedureSummaryKind, SummarySourceStatus};
+use evm_abstract_protocol::{ProcedureSummaryKind, SummarySourceStatus};
 
 pub(super) fn label(kind: ProcedureSummaryKind) -> &'static str {
     match kind {
@@ -36,7 +37,7 @@ pub(super) fn coverage_label(closed: bool, source: SummarySourceStatus) -> &'sta
 
 /// The original World input and its joined process relation have different
 /// payloads. Keep the input snapshot separately labelled instead of retyping it.
-pub(super) fn original_input(report: &AnalysisReport, selected: Option<usize>) -> bool {
+pub(super) fn original_input(report: &ReportView<'_>, selected: Option<usize>) -> bool {
     report
         .cfg
         .iter()
@@ -55,7 +56,7 @@ pub(super) fn original_input(report: &AnalysisReport, selected: Option<usize>) -
             })
 }
 
-pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>) {
+pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, selected: Option<usize>) {
     let Some(state) = selected else { return };
     let latest = report
         .abstract_summaries

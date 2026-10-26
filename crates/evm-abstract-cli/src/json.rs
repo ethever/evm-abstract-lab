@@ -71,29 +71,36 @@ pub(crate) fn hybrid<N: WordElement>(
     budget: &WorkBudget,
 ) -> Result<String, render::json::JsonError> {
     let native_chosen = source.coverage().chosen == analysis::HybridInterpretation::Native;
-    let local_detail = local_detail(source);
     render::json::pretty(&Report {
         metadata: Metadata::captured(numeric_model, budget),
         native: HybridEnvelope {
+            schema_version: analysis::SCHEMA_VERSION,
+            selected_view: if native_chosen {
+                evm_abstract_protocol::AnalysisNamespace::Native
+            } else {
+                evm_abstract_protocol::AnalysisNamespace::Baseline
+            },
             status: source.status(),
             work: source.work(),
-            analysis: render::world::hybrid_evidence(source)?,
-            ir,
+            transfers: source.transfers(),
+            global: NativeGraph {
+                analysis: render::world::evidence(source.baseline())?,
+                ir: None,
+            },
+            native: source
+                .detail()
+                .map(|graph| {
+                    Ok::<_, render::json::JsonError>(NativeGraph {
+                        analysis: render::world::evidence(graph)?,
+                        ir: if native_chosen { ir } else { detail_ir },
+                    })
+                })
+                .transpose()?,
             hybrid: HybridEvidence {
-                selected_graph: progress(source.chosen()),
                 coverage: source.coverage(),
-                baseline: native_chosen
-                    .then(|| render::world::evidence(source.baseline()))
-                    .transpose()?,
-                detail: if native_chosen {
-                    None
-                } else {
-                    source.detail().map(render::world::evidence).transpose()?
-                },
-                local_detail,
+                local_detail: local_detail(source),
                 precision: None,
                 rpc: None,
-                detail_ssa: detail_ir,
             },
         },
     })
@@ -109,15 +116,26 @@ pub(crate) fn rpc_hybrid<N: WordElement>(
     render::json::pretty(&Report {
         metadata: Metadata::captured(numeric_model, budget),
         native: HybridEnvelope {
+            schema_version: analysis::SCHEMA_VERSION,
+            selected_view: evm_abstract_protocol::AnalysisNamespace::Baseline,
             status: source.status(),
             work: source.work(),
-            analysis: render::world::rpc_hybrid_evidence(source)?,
-            ir,
+            transfers: source.coverage().transfers,
+            global: NativeGraph {
+                analysis: render::world::evidence(source.baseline().baseline())?,
+                ir,
+            },
+            native: source
+                .detail()
+                .map(|graph| {
+                    Ok::<_, render::json::JsonError>(NativeGraph {
+                        analysis: render::world::evidence(graph)?,
+                        ir: detail_ir,
+                    })
+                })
+                .transpose()?,
             hybrid: HybridEvidence {
-                selected_graph: progress(source.chosen()),
                 coverage: source.baseline().coverage(),
-                baseline: None,
-                detail: source.detail().map(render::world::evidence).transpose()?,
                 local_detail: source.detail_report().map(local_detail).unwrap_or_default(),
                 precision: source
                     .detail_report()
@@ -131,7 +149,6 @@ pub(crate) fn rpc_hybrid<N: WordElement>(
                         .collect(),
                     preparation_failure: source.preparation_failure().map(ToString::to_string),
                 }),
-                detail_ssa: detail_ir,
             },
         },
     })
@@ -177,65 +194,39 @@ struct LocalPrefix<'a, N: WordElement> {
 
 #[derive(Serialize)]
 struct HybridEvidence<'a, N: WordElement> {
-    selected_graph: GraphProgress,
     coverage: &'a analysis::HybridCoverage,
-    baseline: Option<render::world::EvmJsonEvidence<'a, N>>,
-    detail: Option<render::world::EvmJsonEvidence<'a, N>>,
     local_detail: Vec<LocalPrefix<'a, N>>,
     precision: Option<&'a analysis::HybridCoverage>,
     rpc: Option<RpcEvidence<'a>>,
-    /// Native companion SSA uses Native state IDs and retains its own status.
-    detail_ssa: Option<&'a NormalizedSsa<N>>,
 }
 
 #[derive(Serialize)]
-struct GraphProgress {
+struct HybridEnvelope<'a, N: WordElement> {
+    schema_version: u16,
+    selected_view: evm_abstract_protocol::AnalysisNamespace,
     status: analysis::Status,
     work: usize,
     transfers: usize,
-}
-
-fn progress<N: WordElement>(graph: &EvmWorldAnalysis<N>) -> GraphProgress {
-    GraphProgress {
-        status: graph.status(),
-        work: graph.work(),
-        transfers: graph.transfers(),
-    }
-}
-
-struct HybridEnvelope<'a, N: WordElement> {
-    status: analysis::Status,
-    work: usize,
-    analysis: render::world::EvmJsonEvidence<'a, N>,
+    global: NativeGraph<'a, N>,
+    native: Option<NativeGraph<'a, N>>,
     hybrid: HybridEvidence<'a, N>,
+}
+
+// Native evidence remains its own intentional format. A graph has the same
+// placement whether SSA is requested and whether the chosen view changes.
+struct NativeGraph<'a, N: WordElement> {
+    analysis: render::world::EvmJsonEvidence<'a, N>,
     ir: Option<&'a NormalizedSsa<N>>,
 }
-impl<N: WordElement> Serialize for HybridEnvelope<'_, N> {
+impl<N: WordElement> Serialize for NativeGraph<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.ir.is_none() {
-            return FlatHybrid {
-                analysis: &self.analysis,
-                hybrid: &self.hybrid,
-            }
-            .serialize(serializer);
-        }
-        let mut map = serializer.serialize_map(Some(4 + usize::from(self.ir.is_some())))?;
-        map.serialize_entry("status", &self.status)?;
-        map.serialize_entry("work", &self.work)?;
+        let mut map = serializer.serialize_map(Some(1 + usize::from(self.ir.is_some())))?;
         map.serialize_entry("analysis", &self.analysis)?;
-        map.serialize_entry("hybrid", &self.hybrid)?;
         if let Some(ir) = self.ir {
             map.serialize_entry(if ir.complete() { "ssa" } else { "partial_ssa" }, ir)?;
         }
         map.end()
     }
-}
-
-#[derive(Serialize)]
-struct FlatHybrid<'a, 'b, N: WordElement> {
-    #[serde(flatten)]
-    analysis: &'a render::world::EvmJsonEvidence<'b, N>,
-    hybrid: &'a HybridEvidence<'b, N>,
 }
 
 pub(crate) fn cfg<N: WordElement>(

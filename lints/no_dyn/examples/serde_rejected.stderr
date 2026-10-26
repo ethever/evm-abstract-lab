@@ -1,0 +1,246 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:4:22
+   |
+LL | type ExpectedAlias = Box<dyn serde::de::Expected>;
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:4:26
+   |
+LL | type ExpectedAlias = Box<dyn serde::de::Expected>;
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:9:15
+   |
+LL |     expected: Option<Box<dyn serde::de::Expected>>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:9:22
+   |
+LL |     expected: Option<Box<dyn serde::de::Expected>>,
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:9:26
+   |
+LL |     expected: Option<Box<dyn serde::de::Expected>>,
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:11:12
+   |
+LL |     alias: Option<ExpectedAlias>,
+   |            ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:11:19
+   |
+LL |     alias: Option<ExpectedAlias>,
+   |                   ^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:13:15
+   |
+LL |     callback: Option<fn(u8) -> u8>,
+   |               ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:13:22
+   |
+LL |     callback: Option<fn(u8) -> u8>,
+   |                      ^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:6:10
+   |
+LL | #[derive(serde::Deserialize)]
+   |          ^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the derive macro `serde::Deserialize` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:8:5
+   |
+LL | /     #[serde(skip_deserializing)]
+LL | |     expected: Option<Box<dyn serde::de::Expected>>,
+   | |__________________________________________________^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:10:5
+   |
+LL | /     #[serde(skip_deserializing)]
+LL | |     alias: Option<ExpectedAlias>,
+   | |________________________________^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:12:5
+   |
+LL | /     #[serde(skip_deserializing)]
+LL | |     callback: Option<fn(u8) -> u8>,
+   | |__________________________________^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:17:26
+   |
+LL |     E::invalid_length(1, &"two elements")
+   |                          ^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:23:34
+   |
+LL |             E::invalid_length(1, &"two elements")
+   |                                  ^^^^^^^^^^^^^^^
+...
+LL | Deserialize!();
+   | -------------- in this macro invocation
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: this error originates in the macro `Deserialize` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:29:24
+   |
+LL | fn signature(expected: &dyn serde::de::Expected) {
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:29:25
+   |
+LL | fn signature(expected: &dyn serde::de::Expected) {
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:29:14
+   |
+LL | fn signature(expected: &dyn serde::de::Expected) {
+   |              ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:30:13
+   |
+LL |     let _ = expected;
+   |             ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:30:9
+   |
+LL |     let _ = expected;
+   |         ^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:40:34
+   |
+LL |     let callback: fn(u8) -> u8 = |value| value;
+   |                                  ^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:40:9
+   |
+LL |     let callback: fn(u8) -> u8 = |value| value;
+   |         ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:40:19
+   |
+LL |     let callback: fn(u8) -> u8 = |value| value;
+   |                   ^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:41:13
+   |
+LL |     let _ = callback;
+   |             ^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:41:9
+   |
+LL |     let _ = callback;
+   |         ^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:54:25
+   |
+LL |     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:54:34
+   |
+LL |     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+   |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:54:68
+   |
+LL |       fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+   |  ____________________________________________________________________^
+LL | |         None
+LL | |     }
+   | |_____^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_rejected.rs:55:9
+   |
+LL |         None
+   |         ^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 29 previous errors
+
