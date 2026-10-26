@@ -6,6 +6,11 @@ use crate::{framework, notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 
+mod calls;
+mod scoped;
+
+pub(super) use scoped::Action;
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Kind {
     #[default]
@@ -18,6 +23,9 @@ pub(super) struct Directory {
     pub(super) open: bool,
     kind: Kind,
     filter: String,
+    context_namespace: Option<evm_abstract_protocol::AnalysisNamespace>,
+    scoped: scoped::Rows,
+    calls: calls::Calls,
 }
 
 pub(super) enum Pick {
@@ -27,6 +35,13 @@ pub(super) enum Pick {
 }
 
 impl Directory {
+    /// Display candidates without changing the canonical model or focus.
+    pub(super) fn choose_context(&mut self, namespace: evm_abstract_protocol::AnalysisNamespace) {
+        self.kind = Kind::Programs;
+        self.context_namespace = Some(namespace);
+        self.filter.clear();
+    }
+
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
