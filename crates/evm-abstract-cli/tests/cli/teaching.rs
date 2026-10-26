@@ -93,6 +93,36 @@ fn assert_diagnostics(explanation: &str, report: &Json) {
     }
 }
 
+fn assert_frontiers(explanation: &str, report: &Json) {
+    let frontiers = explanation.split_once("\nFrontiers\n").unwrap().1;
+    let rows = frontiers
+        .lines()
+        .filter(|line| {
+            line.trim_start().strip_prefix('U').is_some_and(|tail| {
+                tail.starts_with(|character: char| matches!(character, '₀'..='₉'))
+                    && tail.contains(" | from=")
+            })
+        })
+        .count();
+    assert_eq!(rows, report["frontiers"].as_array().unwrap().len());
+    for (id, frontier) in report["frontiers"].as_array().unwrap().iter().enumerate() {
+        let line = frontiers
+            .lines()
+            .find(|line| {
+                line.trim_start()
+                    .starts_with(&format!("{} | from=", Symbol::Frontier(id)))
+            })
+            .unwrap();
+        assert!(line.contains(variant(&frontier["reason"])));
+        let source = frontier["from"].as_u64().map_or_else(
+            || "none".to_owned(),
+            |state| format!("{}", Symbol::State(state as usize)),
+        );
+        assert!(line.contains(&format!("from={source}")));
+    }
+    assert_diagnostics(explanation, report);
+}
+
 struct EntryCode(PathBuf);
 
 impl EntryCode {
@@ -220,7 +250,53 @@ fn teaching_transitions_explain_deferred_results_and_commit_or_rollback() {
     let call = text(&call);
     assert!(call.contains("CALL result %") && call.contains(" = 1") && call.contains(" = 0"));
     assert!(call.contains("rollback checkpoint"));
-    assert!(call.contains("commit child effects"));
+    assert!(call.contains("from Return summary; apply summarized child effects"));
+    assert!(call.contains("from Failure summary; rollback to saved checkpoint"));
+
+    // The default uses a relative callee. Retain the original private-frame
+    // transition oracle as a separate two-source request with unchanged inputs.
+    let detail = world(
+        "explain",
+        "call-return-branch",
+        &["--max-detail-regions", "2"],
+    );
+    success(&detail);
+    let detail = text(&detail);
+    assert!(detail.contains("CALL result %") && detail.contains(" = 1") && detail.contains(" = 0"));
+    assert!(detail.contains("rollback checkpoint"));
+    assert!(detail.contains("commit child effects"));
+    let original = json(&world(
+        "analyze",
+        "call-return-branch",
+        &["--format", "json"],
+    ));
+    let detailed = json(&world(
+        "analyze",
+        "call-return-branch",
+        &["--format", "json", "--max-detail-regions", "2"],
+    ));
+    assert_eq!(
+        original["hybrid"]["coverage"]["requested_detail_regions"],
+        1
+    );
+    assert_eq!(
+        detailed["hybrid"]["coverage"]["requested_detail_regions"],
+        2
+    );
+    let input = |report: &Json| {
+        serde_json::json!([
+            report["entry"],
+            report["world"],
+            report["config"],
+            report["domain_spec"]
+        ])
+    };
+    assert_eq!(
+        super::native::canonical(&input(&original)),
+        super::native::canonical(&input(&detailed))
+    );
+    assert_eq!(original["config"]["max_work"], 2_000_000_000_u64);
+    assert_eq!(original["config"]["analysis"]["max_transfers"], 10_000_000);
 
     let revert = world("explain", "revert-rollback", &[]);
     success(&revert);
@@ -252,8 +328,117 @@ fn teaching_code_catalogue_preserves_proxy_init_runtime_and_native_identity() {
             "missing distinct code/owner {address}"
         );
     }
-    assert!(proxy.contains("DELEGATECALL") && proxy.contains("SSTORE"));
+    assert!(proxy.contains("DELEGATECALL"));
     assert!(proxy.contains("owner=") || proxy.contains("storage owner="));
+    // The implementation's Native relative blocks have no private instruction
+    // listing in this renderer. Check the complete source catalogue, then its
+    // disassembly and qualified execution independently of World PC/SSA IDs.
+    let report = json(&world("analyze", "proxy-storage", &["--format", "json"]));
+    assert_eq!(report["hybrid"]["coverage"]["requested_detail_regions"], 1);
+    assert_eq!(report["hybrid"]["coverage"]["detail_current"], true);
+    let input: Json = serde_json::from_slice(&fs::read(fixture("proxy-storage")).unwrap()).unwrap();
+    for account in input["accounts"].as_array().unwrap() {
+        let address = account["address"].as_str().unwrap();
+        let captured = &report["world"]["accounts"][address]["code"]["Runtime"];
+        assert_eq!(captured["bytecode"], account["code"], "{address}");
+        assert_eq!(captured["fork"], "osaka");
+        assert_eq!(
+            captured["byte_len"].as_u64().unwrap() as usize,
+            (account["code"].as_str().unwrap().len() - 2) / 2
+        );
+    }
+    let implementation = "0x0000000000000000000000000000000000000300";
+    let code = report["world"]["accounts"][implementation]["code"]["Runtime"]["bytecode"]
+        .as_str()
+        .unwrap();
+    let disassembly = run_concrete(&["disasm", "--hex", code]);
+    success(&disassembly);
+    let listing = text(&disassembly);
+    let instructions: Vec<_> = listing
+        .lines()
+        .filter_map(|line| {
+            let (pc, instruction) = line.trim().split_once(':')?;
+            (pc.len() == 4 && pc.chars().all(|digit| digit.is_ascii_hexdigit()))
+                .then(|| instruction.split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+        .collect();
+    assert_eq!(
+        instructions,
+        [
+            "PUSH0 0x0",
+            "SLOAD",
+            "PUSH1 0x1",
+            "ADD",
+            "DUP1",
+            "PUSH0 0x0",
+            "SSTORE",
+            "PUSH0 0x0",
+            "MSTORE",
+            "ADDRESS",
+            "PUSH1 0x1",
+            "SSTORE",
+            "CALLER",
+            "PUSH1 0x2",
+            "SSTORE",
+            "CALLVALUE",
+            "PUSH1 0x3",
+            "SSTORE",
+            "PUSH1 0x20",
+            "PUSH0 0x0",
+            "RETURN",
+        ]
+    );
+    let hash = format!(
+        "{:#x}",
+        alloy_primitives::keccak256(alloy_primitives::hex::decode(code).unwrap())
+    );
+    for owner in [
+        "0x0000000000000000000000000000000000000201",
+        "0x0000000000000000000000000000000000000202",
+    ] {
+        let summary = report["procedure_summaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|summary| {
+                summary["regional_cfg"]["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|node| {
+                        node["frame"]["code_address"] == implementation
+                            && node["frame"]["address"] == owner
+                    })
+            })
+            .unwrap();
+        assert_eq!(summary["closed"], true);
+        assert_eq!(summary["source_current"], true);
+        let node = summary["regional_cfg"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| {
+                node["frame"]["code_address"] == implementation && node["frame"]["address"] == owner
+            })
+            .unwrap();
+        assert_eq!(node["frame"]["code_hash"], hash);
+        assert_eq!(
+            node["frame"]["caller"],
+            serde_json::json!({"Concrete":ENTRY})
+        );
+        assert_eq!(node["frame"]["is_static"], false);
+        assert_eq!(node["frame"]["basic_block_index"], 0);
+        assert_eq!(node["excluded"], false);
+        assert_eq!(node["transfer"]["semantics"], "Native");
+        assert_eq!(node["transfer"]["input_revision"], node["input_revision"]);
+        for field in ["current", "complete", "visited_block"] {
+            assert_eq!(node["transfer"][field], true, "{field}");
+        }
+        assert!(proxy.contains(&format!(
+            "code={implementation} | storage namespace={owner} | static=false"
+        )));
+        assert!(proxy.contains(&format!("frame identity hash={hash}")));
+    }
 
     let creation = world("explain", "create-runtime", &[]);
     success(&creation);
@@ -294,74 +479,191 @@ fn empty_code_and_unstarted_analysis_never_fabricate_captured_instructions() {
 
 #[test]
 fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
-    for (name, extra) in [
-        ("missing-code", vec!["--max-call-depth", "1"]),
-        ("call-return-branch", vec!["--max-work", "1"]),
-        ("call-return-branch", vec!["--max-symbolic-nodes", "2"]),
-        ("reentry", vec!["--max-call-depth", "2"]),
-        ("call-return-branch", vec!["--max-states", "1"]),
-        ("call-return-branch", vec!["--max-transfers", "1"]),
+    for (name, extra, global_status, native_status) in [
+        (
+            "missing-code",
+            vec!["--max-call-depth", "1"],
+            "Converged",
+            Some("Incomplete"),
+        ),
+        (
+            "call-return-branch",
+            vec!["--max-work", "1"],
+            "Incomplete",
+            None,
+        ),
+        (
+            "call-return-branch",
+            vec!["--max-symbolic-nodes", "2"],
+            "Incomplete",
+            None,
+        ),
+        (
+            "reentry",
+            vec!["--max-call-depth", "2"],
+            "Converged",
+            Some("Converged"),
+        ),
+        // Retain the original depth-2 request above. Selecting the child as
+        // well exercises its private nested call and the original CallDepth
+        // frontier, while sharing the same work and transfer limits.
+        (
+            "reentry",
+            vec!["--max-call-depth", "2", "--max-detail-regions", "2"],
+            "Converged",
+            Some("Incomplete"),
+        ),
+        (
+            "call-return-branch",
+            vec!["--max-states", "1"],
+            "Incomplete",
+            None,
+        ),
+        (
+            "call-return-branch",
+            vec!["--max-transfers", "1"],
+            "Incomplete",
+            None,
+        ),
     ] {
         let mut detail = extra.clone();
         detail.push("--no-root-terminal-coverage");
         let output = world("explain", name, &detail);
-        super::native::text_exit(&output, 2);
         let explanation = text(&output);
-        assert!(explanation.contains("Incomplete"));
-        assert!(explanation.contains("SSA unavailable") && !explanation.contains(VERIFIED));
         let mut query = detail.clone();
         query.extend(["--format", "json"]);
         let report = world("analyze", name, &query);
         let raw: Json = serde_json::from_slice(&report.stdout).unwrap();
-        let raw = crate::native::select(&raw);
         super::native::assert_exit(&raw, &report);
-        let report = super::native::select(&raw);
-        assert!(!report["frontiers"].as_array().unwrap().is_empty());
-        if extra == ["--max-symbolic-nodes", "2"] {
-            assert_eq!(report["domain_spec"]["relations"]["max_nodes"], 2);
-            assert!(
-                report["frontiers"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|frontier| {
-                        frontier["reason"] == serde_json::json!({"Relations":"ExpressionLimit"})
-                            && frontier["from"].is_u64()
-                            && frontier["pc"].is_u64()
-                    })
-            );
-        }
-        let frontiers = explanation.split_once("\nFrontiers\n").unwrap().1;
-        let rows = frontiers
-            .lines()
-            .filter(|line| {
-                line.trim_start().strip_prefix('U').is_some_and(|tail| {
-                    tail.starts_with(|character: char| matches!(character, '₀'..='₉'))
-                        && tail.contains(" | from=")
-                })
-            })
-            .count();
+        super::native::assert_exit(&raw, &output);
+        assert_eq!(raw["status"], global_status);
+        let global = super::native::global(&raw);
+        assert_eq!(global["status"], global_status);
+        let native = (!raw["native"].is_null()).then(|| super::native::select(&raw));
         assert_eq!(
-            rows,
-            report["frontiers"].as_array().unwrap().len(),
-            "{name}"
+            native
+                .as_ref()
+                .map(|native| native["status"].as_str().unwrap()),
+            native_status
         );
-        for (id, frontier) in report["frontiers"].as_array().unwrap().iter().enumerate() {
-            let line = frontiers
-                .lines()
-                .find(|line| {
-                    line.trim_start()
-                        .starts_with(&format!("{} | from=", Symbol::Frontier(id)))
-                })
-                .unwrap();
-            assert!(line.contains(variant(&frontier["reason"])));
-            let source = frontier["from"].as_u64().map_or_else(
-                || "none".to_owned(),
-                |state| format!("{}", Symbol::State(state as usize)),
-            );
-            assert!(line.contains(&format!("from={source}")));
+        let regions = if extra.contains(&"--max-detail-regions") {
+            2
+        } else {
+            1
+        };
+        assert_eq!(
+            raw["hybrid"]["coverage"]["requested_detail_regions"],
+            regions
+        );
+        assert_eq!(global["config"]["root_terminal_coverage"], false);
+        assert_eq!(
+            raw["hybrid"]["coverage"]["baseline_current"],
+            global_status == "Converged"
+        );
+        assert_eq!(
+            raw["hybrid"]["coverage"]["requested_native_terminal_coverage"],
+            false
+        );
+        let work = &raw["hybrid"]["coverage"]["work"];
+        assert_eq!(work["total"], raw["work"]);
+        assert_eq!(
+            work["total"].as_u64().unwrap(),
+            ["prior", "baseline", "preparation", "detail"]
+                .into_iter()
+                .map(|field| work[field].as_u64().unwrap())
+                .sum::<u64>()
+        );
+        assert!(raw["work"].as_u64().unwrap() <= global["config"]["max_work"].as_u64().unwrap());
+        let refusal = match extra[0] {
+            "--max-work" => Some(serde_json::json!("Work")),
+            "--max-states" => Some(serde_json::json!({"Budget":"States"})),
+            "--max-transfers" => Some(serde_json::json!({"Budget":"Transfers"})),
+            _ => None,
+        };
+        if let Some(refusal) = refusal {
+            let frontiers = global["frontiers"].as_array().unwrap();
+            assert!(!frontiers.is_empty());
+            for frontier in frontiers {
+                assert_eq!(frontier["reason"], refusal);
+            }
         }
-        assert_diagnostics(&explanation, &report);
+
+        // Each rendered graph owns its own state/frontier IDs. A closed Global
+        // relation can coexist with pending Native paths in the same response.
+        let (primary, companion) = explanation
+            .split_once("\nDetailed paths (Native state IDs; conditions and pending work above):\n")
+            .map_or((explanation.as_str(), None), |(primary, companion)| {
+                (primary, Some(companion))
+            });
+        if raw["selected_view"] == "Native" {
+            let native = native.as_ref().unwrap();
+            assert_frontiers(primary, native);
+            assert!(primary.contains(VERIFIED));
+            assert_eq!(native["frontiers"], serde_json::json!([]));
+        } else {
+            assert_frontiers(primary, global);
+            assert!(primary.contains("SSA unavailable") && !primary.contains(VERIFIED));
+            if let Some(native) = native.as_ref() {
+                let companion = companion.unwrap();
+                assert_frontiers(companion, native);
+                assert!(companion.contains("Incomplete"));
+                assert!(companion.contains("SSA unavailable") && !companion.contains(VERIFIED));
+                assert!(
+                    native["frontiers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|frontier| {
+                            frontier["reason"] == "CallDepth"
+                                && frontier["from"].is_u64()
+                                && frontier["pc"].is_u64()
+                        })
+                );
+            }
+        }
+        if extra == ["--max-symbolic-nodes", "2"] {
+            assert_eq!(global["domain_spec"]["relations"]["max_nodes"], 2);
+            let frontiers = global["frontiers"].as_array().unwrap();
+            assert_eq!(frontiers.len(), 3);
+            for frontier in frontiers {
+                assert_eq!(
+                    frontier["reason"],
+                    serde_json::json!({"Relations":"ExpressionLimit"})
+                );
+                assert!(frontier["from"].is_u64() && frontier["pc"].is_u64());
+            }
+            assert!(frontiers.iter().any(|frontier| frontier["pc"] == 13));
+            // Global refusal locations are source-control coordinates, while
+            // executed instruction PCs remain absent from the Process state.
+            assert_eq!(global["states"][0]["executed_pcs"], serde_json::json!([]));
+        }
+        if name == "reentry" {
+            assert_eq!(global["config"]["max_call_depth"], 2);
+            assert_eq!(global["config"]["max_work"], 2_000_000_000_u64);
+            assert_eq!(global["config"]["analysis"]["max_transfers"], 10_000_000);
+            if regions == 1 {
+                let native = native.as_ref().unwrap();
+                let summary = &native["procedure_summaries"][0];
+                assert_eq!(summary["source_current"], true);
+                assert_eq!(summary["closed"], true);
+                assert_eq!(
+                    summary["regional_cfg"]["calls"].as_array().unwrap().len(),
+                    1
+                );
+                for source in [ENTRY, "0x0000000000000000000000000000000000000200"] {
+                    assert!(
+                        summary["procedures"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|procedure| {
+                                procedure["semantics"] == "Native"
+                                    && procedure["frame"]["code_address"] == source
+                            })
+                    );
+                }
+            }
+        }
     }
 }
 
