@@ -6,9 +6,9 @@ from playwright.sync_api import expect
 import json
 from web_test_hybrid import assert_hybrid, oracle_graph
 from web_test_graph_helpers import symbol
-from web_test_harness import analysis_server, complete_submission, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_harness import analysis_server, click_control, complete_submission, edit_control, observe_webgpu, open_input, posted_bytecode, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import inspector_diagnostics_region, select_inspector_tab
-from web_test_layout_helpers import layout_detail_regions, layout_modal
+from web_test_layout_helpers import layout_detail_regions
 from web_test_pixels import text_pixels
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, native_call_summary, submit_rpc
 
@@ -30,17 +30,10 @@ def diagnostics_interactions(browser, url: str, args):
     select_inspector_tab(page, canvas, "Diagnostics")
 
     def submit(code, fork, name):
-        open_input(page)
-        page.keyboard.press("Control+A")
-        page.keyboard.insert_text(code)
-        rendered_frame(page)
-        modal = layout_modal(page, canvas)
-        # The actual fork selector sits beside Bytecode and RPC account.
-        canvas.click(position={"x": modal[0] + 220, "y": modal[1] + 44})
-        settle_gesture(page)
-        canvas.click(position={"x": modal[0] + 220,
-                               "y": modal[1] + 70 + {"Cancun": 0, "Prague": 1, "Osaka": 2}[fork] * 23})
-        settle_gesture(page)
+        open_input(page, mode="Bytecode")
+        edit_control(page, canvas, "Runtime bytecode", code)
+        click_control(page, canvas, "form_fork", role="combobox")
+        click_control(page, canvas, fork, role="tab")
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                                   and response.request.method == "POST") as submitted:
             page.keyboard.press("Control+Enter")
