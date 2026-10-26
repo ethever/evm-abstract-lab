@@ -149,9 +149,12 @@ impl<N: WordElement, E> RpcHybridAnalysis<N, E> {
         self.detail_report().and_then(HybridAnalysis::detail)
     }
 
-    /// Local native receipts keep their exact retained-input revision, additional
-    /// root condition, source and phases. Native15 original/effective Entry.binding
-    /// stays available even when no state or local receipt was admitted.
+    /// Outer machine instruction receipts keep their exact retained-input revision,
+    /// root condition, source and phases. Original/effective Entry.binding stays
+    /// available even when no state or local receipt was admitted. Unselected
+    /// relative callees use `regional_cfg` in `detail()`'s `procedure_summaries()`
+    /// records, with `version`/`source_current`, transfer `current`/`input_revision`
+    /// and regional IDs. Block visits there do not supply instruction-PC or SSA proof.
     /// Receipts from an older revision are historical observations of that input,
     /// even when their original per-entry currentness guard still holds.
     pub fn local_detail(&self) -> impl Iterator<Item = HybridLocalDetail<'_, N>> {

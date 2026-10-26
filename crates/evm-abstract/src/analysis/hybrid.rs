@@ -261,9 +261,13 @@ impl<N: WordElement> HybridAnalysis<N> {
     pub fn coverage(&self) -> &HybridCoverage {
         &self.coverage
     }
-    /// Bounded, source-qualified local precision, available independently of
+    /// Outer machine instruction receipts, available independently of
     /// whole-detail completion. Each state's receipt supplies its current
-    /// instruction phases and installed successors. Preserve the coarse graph.
+    /// instruction phases and installed successors. Unselected relative callees
+    /// use `regional_cfg` in `detail()`'s `procedure_summaries()` records. Qualify
+    /// each record by `version`/`source_current` and each transfer by `current`
+    /// and `input_revision`. IDs there are regional; block visits do not supply
+    /// instruction-PC or SSA proof. Preserve the coarse graph.
     pub fn local_detail(&self) -> impl Iterator<Item = HybridLocalDetail<'_, N>> {
         self.detail.iter().flat_map(|detail| {
             detail
