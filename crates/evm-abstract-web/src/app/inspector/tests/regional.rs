@@ -493,29 +493,154 @@ fn source_current_does_not_restore_a_stale_local_receipt() {
 
 #[test]
 fn regional_static_unknown_remains_an_effect_environment_abstraction_with_no_invented_pc() {
-    let report = observation_report("5f5f5f5f6102015afa5000");
-    let cfg = &report.abstract_summaries[0].regional_cfg;
+    let code = "5f5f5f5f6102015afa5000";
+    // Keccak256 of the fixed input bytes, independent of the projected source.
+    let expected_hash = "0x2e6963788ed56561b28953e622d7c6f0088d5c26c34186c3d4f9c8546eeea283";
+    let root_owner = "0x1111111111111111111111111111111111111111";
+    let report = observation_report(code);
+    let summary = &report.abstract_summaries[0];
+    let cfg = &summary.regional_cfg;
+    let environment = summary.root_procedure.unwrap();
+    let opaque = &summary.procedures[environment];
+    assert_eq!(opaque.kind, api::CodeKind::AbstractEnvironment);
+    assert_eq!(
+        opaque.code_address.as_deref(),
+        Some("0x0000000000000000000000000000000000000201")
+    );
+    assert!(opaque.is_static && opaque.code_hash.is_none() && opaque.covered_blocks.is_empty());
     let node = cfg
         .nodes
         .iter()
         .find(|node| {
-            node.frame.kind == api::CodeKind::AbstractEnvironment
+            node.procedure == environment
+                && node.frame.kind == api::CodeKind::AbstractEnvironment
                 && node.transfer.as_ref().is_some_and(|transfer| {
-                    transfer.current
-                        && transfer.complete
-                        && !transfer.visited_block
-                        && transfer.calls.is_empty()
+                    transfer.current && transfer.complete && !transfer.visited_block
                 })
         })
         .unwrap_or_else(|| panic!("expected current coarse environment receipt: {:?}", cfg));
     let transfer = node.transfer.as_ref().unwrap();
-    assert!(
-        transfer.current
-            && transfer.complete
-            && !transfer.visited_block
-            && transfer.calls.is_empty()
-    );
+    assert!(transfer.current && transfer.complete && !transfer.visited_block);
     assert!(node.frame.basic_block.is_none() && node.frame.code_hash.is_none());
+    assert!(node.frame.is_static);
+    assert!(!transfer.calls.is_empty());
+    // Unknown code stays opaque, while its real static callback can execute
+    // the captured root. Keep their source and instruction evidence separate.
+    let callback = summary
+        .procedures
+        .iter()
+        .position(|procedure| procedure.kind == api::CodeKind::Runtime)
+        .unwrap();
+    assert_eq!(summary.procedures.len(), 2);
+    let known = &summary.procedures[callback];
+    assert!(known.is_static);
+    assert_eq!(known.code_address.as_deref(), Some(root_owner));
+    assert_eq!(known.storage_address.as_deref(), Some(root_owner));
+    assert_eq!(known.code_hash.as_deref(), Some(expected_hash));
+    assert_eq!(known.covered_blocks, [0, 1]);
+    assert_eq!(opaque.dependencies, [callback]);
+    assert_eq!(known.dependencies, [environment]);
+    assert_ne!(known.code_address, opaque.code_address);
+    let program = report
+        .model
+        .programs
+        .iter()
+        .find(|program| {
+            program.kind == api::CodeKind::Runtime
+                && program.code_address == known.code_address
+                && Some(program.code_hash.as_str()) == known.code_hash.as_deref()
+                && program.fork == report.fork
+        })
+        .unwrap();
+    assert_eq!(program.bytecode.trim_start_matches("0x"), code);
+    let source_blocks: std::collections::BTreeSet<_> =
+        program.blocks.iter().map(|block| block.id).collect();
+    assert_eq!(source_blocks, [0, 1].into_iter().collect());
+    let mut visited = std::collections::BTreeSet::new();
+    for node in &cfg.nodes {
+        let transfer = node.transfer.as_ref().unwrap();
+        assert!(transfer.current && transfer.complete && node.frame.is_static);
+        if node.procedure == environment {
+            assert_eq!(node.frame.kind, api::CodeKind::AbstractEnvironment);
+            assert!(
+                node.frame.basic_block.is_none()
+                    && node.frame.code_hash.is_none()
+                    && !transfer.visited_block
+            );
+        } else {
+            assert_eq!(node.procedure, callback);
+            assert_eq!(node.frame.kind, api::CodeKind::Runtime);
+            assert_eq!(node.frame.code_address.as_deref(), Some(root_owner));
+            assert_eq!(node.frame.storage_address.as_deref(), Some(root_owner));
+            assert_eq!(node.frame.code_hash.as_deref(), Some(expected_hash));
+            let block = node.frame.basic_block.unwrap();
+            assert!(source_blocks.contains(&block) && transfer.visited_block);
+            visited.insert(block);
+        }
+    }
+    assert_eq!(visited, source_blocks);
+    for id in &transfer.calls {
+        let call = cfg.calls.iter().find(|call| call.id == *id).unwrap();
+        assert_eq!(call.from, node.id);
+        assert_eq!(call.callee, callback);
+        assert!(!call.entries.is_empty() && !call.deliveries.is_empty());
+        assert!(call.deliveries.iter().any(|delivery| delivery.current
+            && delivery.kind == api::OutcomeKind::Return
+            && delivery.input_revision == call.input_revision
+            && delivery.output_generation > 0
+            && !delivery.successors.is_empty()));
+        assert!(call.entries.iter().all(|id| {
+            cfg.nodes
+                .iter()
+                .any(|node| node.id == *id && node.procedure == callback)
+        }));
+    }
+    assert!(cfg.calls.iter().any(|call| {
+        call.callee == environment
+            && cfg
+                .nodes
+                .iter()
+                .any(|node| node.id == call.from && node.procedure == callback)
+            && call
+                .deliveries
+                .iter()
+                .any(|delivery| delivery.current && delivery.kind == api::OutcomeKind::Return)
+    }));
+    let unknown_states: Vec<_> = report
+        .states
+        .iter()
+        .filter(|state| {
+            state
+                .entry
+                .frames
+                .last()
+                .is_some_and(|frame| frame.kind == api::CodeKind::AbstractEnvironment)
+        })
+        .collect();
+    assert!(!unknown_states.is_empty());
+    for state in unknown_states {
+        assert!(state.entry.frames.last().unwrap().program.is_none());
+        let block = report
+            .cfg
+            .iter()
+            .find(|block| block.id == state.state)
+            .unwrap();
+        assert!(block.source_block().is_none() && block.executed_pcs.is_empty());
+    }
+    let captured = cfg
+        .nodes
+        .iter()
+        .find(|node| node.procedure == callback && node.frame.basic_block == Some(0))
+        .unwrap();
+    let captured_transfer = captured.transfer.as_ref().unwrap();
+    assert_eq!(captured.frame.code_address, known.code_address);
+    assert_eq!(captured.frame.code_hash, known.code_hash);
+    assert!(
+        captured.frame.is_static
+            && captured_transfer.current
+            && captured_transfer.complete
+            && captured_transfer.visited_block
+    );
     let context = context();
     let mut time = 0.0;
     click(&context, &mut time, &report, "Regional control flow");
@@ -541,5 +666,26 @@ fn regional_static_unknown_remains_an_effect_environment_abstraction_with_no_inv
         !text.contains("Program block:")
             && !text.contains("Frame identity hash:")
             && !text.contains("pc 0x")
+    );
+    click(
+        &context,
+        &mut time,
+        &report,
+        &format!(
+            "r{} · procedure {} · Current block transfer",
+            captured.id, captured.procedure
+        ),
+    );
+    let visible = draw(&context, &mut time, &report, vec![]);
+    let text = visible
+        .iter()
+        .map(|(text, _)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("Program block: 0")
+            && text.contains("Frame identity hash:")
+            && text.contains("captured block visited: true"),
+        "{text}"
     );
 }
