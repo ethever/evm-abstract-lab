@@ -519,6 +519,8 @@ impl Workspace {
             if self.form.open { "open" } else { "closed" },
             if self.form.open && self.directory.open {
                 "suspended during input"
+            } else if self.directory.open && self.inspector.maximized() {
+                "suspended during maximized inspection"
             } else if self.directory.open {
                 "open"
             } else {

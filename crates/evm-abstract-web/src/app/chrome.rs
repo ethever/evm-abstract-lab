@@ -68,18 +68,23 @@ impl Workspace {
                         .on_hover_text(self.inspector.visibility_hint(ui.ctx()))
                         .changed()
                         && self.inspector.expanded
-                        && (self.panels.compact() || self.inspector.maximized())
+                        && self.panels.compact()
                     {
                         self.directory.open = false;
                     }
-                    if controls::toggle(ui, &mut self.directory.open, "Sources", density)
+                    let mut sources = self.sources_visible();
+                    if controls::toggle(ui, &mut sources, "Sources", density)
                         .on_hover_text(
                             "Captured code, compatible contexts and original account observations",
                         )
                         .changed()
-                        && self.directory.open
                     {
-                        self.open_sources();
+                        if sources {
+                            self.open_sources();
+                        } else {
+                            self.directory.open = false;
+                        }
+                        ui.ctx().request_discard("source visibility changed");
                     }
                 });
             });

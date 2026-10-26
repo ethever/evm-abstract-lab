@@ -221,7 +221,11 @@ fn sources_and_context_chooser_remain_reachable_after_maximize() {
             workbench.workspace.inspector.maximized(),
             "retain the user's full-panel preference"
         );
-        assert!(!workbench.workspace.directory.open);
+        assert!(!workbench.workspace.sources_visible());
+        assert!(
+            workbench.workspace.directory.open,
+            "retain the source-panel preference while Inspect is maximized"
+        );
         workbench.click("Restore");
         assert!((workbench.rect("world_inspector").height() - preferred).abs() < 2.0);
         assert_eq!(workbench.workspace.view, route);

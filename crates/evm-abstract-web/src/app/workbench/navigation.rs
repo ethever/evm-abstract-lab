@@ -13,6 +13,10 @@ use egui::{RichText, Ui};
 use evm_abstract_protocol::{AnalysisNamespace, ProcessLocation, ProcessOwner};
 
 impl Workspace {
+    pub(in crate::app) fn sources_visible(&self) -> bool {
+        self.directory.open && !self.inspector.maximized() && !self.form.open
+    }
+
     pub(in crate::app) fn open_sources(&mut self) {
         self.directory.open = true;
         if self.panels.compact() || self.inspector.maximized() {
