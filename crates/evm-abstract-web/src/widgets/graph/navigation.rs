@@ -58,7 +58,10 @@ impl Graph {
             return;
         }
         let canvas = response.rect;
-        if response.dragged() {
+        let touch = ui.input(|input| input.multi_touch());
+        // A two-finger gesture also emulates a first-finger pointer drag.
+        // Apply its centroid transform once instead of combining both motions.
+        if response.dragged() && touch.is_none() {
             self.fitted = false;
             self.pan += response.drag_delta();
         }
@@ -79,14 +82,17 @@ impl Graph {
         {
             let (scroll, zoom, pointer) = ui.input(|input| {
                 (
-                    input.smooth_scroll_delta(),
+                    input.smooth_scroll_delta()
+                        + touch.map_or(Vec2::ZERO, |touch| touch.translation_delta),
                     input.zoom_delta(),
-                    input.pointer.hover_pos(),
+                    touch
+                        .map(|touch| touch.center_pos - touch.translation_delta)
+                        .or_else(|| input.pointer.hover_pos()),
                 )
             });
             if let Some(pointer) = pointer {
-                // eframe maps browser pinch gestures to Zoom; egui also maps
-                // modified wheel events to zoom_delta and removes their pan.
+                // Zoom at the previous centroid, then translate to its current
+                // position. Wheel/Zoom without touches keeps pointer focus.
                 self.zoom_at(pointer - canvas.min, zoom);
                 if scroll.is_finite() && scroll != Vec2::ZERO {
                     self.fitted = false;
