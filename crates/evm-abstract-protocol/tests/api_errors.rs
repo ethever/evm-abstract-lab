@@ -17,6 +17,7 @@ fn api_errors_stay_below_the_large_result_error_threshold() {
 #[test]
 fn execution_and_work_failures_keep_their_typed_wire_categories() {
     for details in [
+        ErrorDetails::Execution(ExecutionFailureKind::UnsupportedView),
         ErrorDetails::Execution(ExecutionFailureKind::Protocol),
         ErrorDetails::Execution(ExecutionFailureKind::Initialization),
         ErrorDetails::Execution(ExecutionFailureKind::Refinement),

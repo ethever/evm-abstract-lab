@@ -10,6 +10,23 @@ use evm_abstract::{
     world::{EvmAccount, EvmWorld},
 };
 
+#[test]
+fn unsupported_execution_view_preserves_its_typed_category_and_native_diagnostic() {
+    let native = CooperationError::UnsupportedView {
+        supported: evm_abstract::analysis::cooperation::InputViews::Native,
+        requested: evm_abstract::analysis::RuntimeExecution::Process,
+    };
+    let message = native.to_string();
+    let error = execution(native);
+    assert_eq!(error.code, api::ApiErrorCode::Internal);
+    assert_eq!(error.message, message);
+    assert_eq!(
+        error.details,
+        api::ErrorDetails::Execution(api::ExecutionFailureKind::UnsupportedView)
+    );
+    roundtrip(&error);
+}
+
 fn world(expression: ExprId) -> EvmWorld<NumericValue> {
     let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "typed fingerprint failure");
     let mut account = EvmAccount::<NumericValue>::empty();
