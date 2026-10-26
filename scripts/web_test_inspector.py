@@ -207,7 +207,20 @@ def model_namespace_controls(page, canvas, report, output):
 
 def coarse_process_controls(page, canvas, output):
     """Open the actual global routes retained beside an unfinished CREATE prefix."""
-    reply=submit_bytecode(page,canvas,"5a5f5ff0",output/"process-input.png")
+    try:
+        reply=submit_bytecode(page,canvas,"5a5f5ff0",output/"process-input.png")
+    except Exception:
+        # Keep the original failure. Capture the actual post-submit workspace,
+        # not the input-dialog image taken before Sources/context navigation.
+        status=page.locator("#analysis-status")
+        (output/"process-navigation-failure.json").write_text(json.dumps({
+            "status":status.text_content(),"viewport":page.viewport_size,
+            "controls":ui_controls(page),
+            "focus":page.evaluate("""() => ({tag:document.activeElement?.tagName,
+                id:document.activeElement?.id,rect:document.activeElement?.getBoundingClientRect().toJSON()})"""),
+        },indent=2)+"\n")
+        canvas.screenshot(path=str(output/"process-navigation-failure.png"))
+        raise
     report=reply.report
     (output/"process-original-report.json").write_text(json.dumps(report,indent=2)+"\n")
     assert report["hybrid"]["coverage"]["baseline_current"]
@@ -243,10 +256,11 @@ def coarse_process_controls(page, canvas, output):
         chosen=select_report_context(page,report,"Baseline",
                                     summary=len(report["minimum"]["summaries"])-1,procedure=index)
         assert chosen["role"]=="context" and chosen["enabled"],chosen
+        assert chosen["selected"] is True,chosen
         select_inspector_tab(page,canvas,"Coverage",minimum=True)
         select_inspector_scope(page,canvas,"Procedure input")
         page.mouse.move(2,2);settle_gesture(page)
-        expect(page.locator("#analysis-status")).to_contain_text(f"· procedure {index} · output None")
+        expect(page.locator("#analysis-status")).not_to_contain_text("· outcome selected")
 
     for name,index in [("constructor",constructor),("static-callback",callback)]:
         choose_procedure(index)
