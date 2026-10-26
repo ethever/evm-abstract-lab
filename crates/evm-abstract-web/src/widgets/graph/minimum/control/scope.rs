@@ -5,7 +5,40 @@ use evm_abstract_protocol::{
     DecimalU64, EdgeKind, ProcessAction, ProcessLocation, SummarySourceStatus,
 };
 
-pub(crate) const DEFAULT_POINT_LIMIT: usize = 12;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GraphWindow {
+    #[default]
+    Entry,
+    Nearby {
+        point_limit: usize,
+    },
+    FullSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrontierDirection {
+    Incoming,
+    Outgoing,
+}
+
+/// A crossing remains typed evidence and navigation data without a layout node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FrontierFlow {
+    pub from: ProjectionTarget,
+    pub to: ProjectionTarget,
+    pub kind: EdgeKind,
+    pub level: EdgeLevel,
+    pub origin: FlowOrigin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WindowFrontier {
+    /// Visible endpoint's display-card index in this projection.
+    pub card: usize,
+    pub direction: FrontierDirection,
+    pub target_set: usize,
+    pub flows: Vec<FrontierFlow>,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum GraphLevel {
@@ -231,6 +264,8 @@ pub(crate) struct ScopeCounts {
     pub unexpanded_points: usize,
     pub displayed_unexpanded_points: usize,
     pub hidden_flows: usize,
+    pub incoming_flows: usize,
+    pub outgoing_flows: usize,
     pub calls: usize,
     pub displayed_calls: usize,
     pub deliveries: usize,
@@ -241,6 +276,7 @@ pub(crate) struct ScopeCounts {
 #[derive(Clone, Debug)]
 pub(crate) struct GraphProjection {
     pub scope: GraphScope,
+    pub window: GraphWindow,
     pub level: GraphLevel,
     pub source_status: SummarySourceStatus,
     pub cards: Vec<ProjectionCard>,
@@ -249,6 +285,8 @@ pub(crate) struct GraphProjection {
     pub counts: ScopeCounts,
     /// Display card containing the exact requested entry/anchor.
     pub anchor: Option<usize>,
+    pub core: Vec<usize>,
+    pub frontiers: Vec<WindowFrontier>,
     /// Complete omitted-source membership, including disconnected observations.
     pub hidden_set: Option<usize>,
     pub model_relations: Vec<ModelRelation>,
@@ -267,4 +305,6 @@ pub(crate) enum ProjectionError {
     InvalidAnchor,
     #[error("The control directory does not match this source and epoch")]
     SourceMismatch,
+    #[error("The control edge has no matching retained origin")]
+    MissingFlowOrigin,
 }

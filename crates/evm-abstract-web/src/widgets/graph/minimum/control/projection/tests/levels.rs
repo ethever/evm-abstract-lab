@@ -2,7 +2,7 @@ use super::super::super::{
     Control,
     scope::{
         CardKind, ControlOrigin, Destination, EdgeLevel, FlowOrigin, GraphLevel, GraphProjection,
-        GraphScope,
+        GraphScope, GraphWindow,
     },
 };
 use super::{report, scope};
@@ -131,7 +131,9 @@ fn original_six_hundred_window_has_adjacent_first_blocks_and_no_terminal_shortcu
         .trim(),
     );
     let scope = scope(&report);
-    let projected = GraphProjection::build(&report, scope).unwrap();
+    let projected =
+        GraphProjection::with_window(&report, scope, GraphWindow::Nearby { point_limit: 12 })
+            .unwrap();
     let mut blocks: Vec<_> = (0..projected.cards.len())
         .filter_map(|id| source_index(&projected, id))
         .collect();

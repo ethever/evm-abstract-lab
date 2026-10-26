@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CardKind, Control, Destination, Edge, FlowOrigin, GraphProjection, GraphScope, ProjectionError,
-    TargetSet, TargetSetKind, card, compact_owner,
+    CardKind, Control, Destination, Edge, FlowOrigin, GraphProjection, GraphScope, GraphWindow,
+    ProjectionError, TargetSet, TargetSetKind, card, compact_owner,
 };
 use crate::{app::minimum::location_label, palette};
 use evm_abstract_protocol::{AnalysisReport, CodeKind, EdgeKind, ProcessLocation};
@@ -26,6 +26,23 @@ impl Control {
     ) -> Result<Self, ProjectionError> {
         let projection = GraphProjection::with_limit(report, scope, point_limit)?;
         Ok(Self::from_projection(report, projection))
+    }
+
+    pub(crate) fn scoped_window(
+        report: &AnalysisReport,
+        scope: GraphScope,
+        window: GraphWindow,
+    ) -> Result<Self, ProjectionError> {
+        match window {
+            GraphWindow::Entry => Self::scoped(report, scope),
+            GraphWindow::Nearby { point_limit } => {
+                Self::scoped_with_limit(report, scope, point_limit)
+            }
+            GraphWindow::FullSource => {
+                let projection = GraphProjection::with_window(report, scope, window)?;
+                Ok(Self::from_projection(report, projection))
+            }
+        }
     }
 
     fn from_projection(report: &AnalysisReport, projection: GraphProjection) -> Self {
@@ -182,9 +199,12 @@ impl Control {
                 })
                 .count(),
             scope: Some(scope),
+            window: projection.window,
             counts: projection.counts,
             target_sets: projection.target_sets,
             anchor: projection.anchor,
+            core: projection.core,
+            frontiers: projection.frontiers,
             hidden_set: projection.hidden_set,
             level: projection.level,
             model_relations: projection.model_relations,

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use super::{
     super::scope::{
         CardKind, ControlOrigin, Destination, EdgeLevel, FlowOrigin, GraphLevel, GraphProjection,
-        GraphScope, ModelRelation, OriginEvidence, ProjectionCard, ProjectionError,
+        GraphScope, GraphWindow, ModelRelation, OriginEvidence, ProjectionCard, ProjectionError,
         ProjectionTarget, ScopeCounts, TargetEntry, TargetSet, TargetSetKind,
     },
     edge,
@@ -89,6 +89,7 @@ pub(super) fn build(
         groups: BTreeMap::new(),
         projection: GraphProjection {
             scope,
+            window: GraphWindow::FullSource,
             level,
             source_status: status,
             cards: Vec::new(),
@@ -96,6 +97,8 @@ pub(super) fn build(
             target_sets: Vec::new(),
             counts: ScopeCounts::default(),
             anchor: None,
+            core: Vec::new(),
+            frontiers: Vec::new(),
             hidden_set: None,
             model_relations: Vec::new(),
             model_set: None,
