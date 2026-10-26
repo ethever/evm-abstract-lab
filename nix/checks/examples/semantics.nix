@@ -46,17 +46,17 @@ let
                 ) catch false;
               .hybrid.coverage.chosen == "Native" and
               .hybrid.coverage.baseline_current and .hybrid.coverage.detail_current and
-              .analysis.schema_version == 15 and .analysis.status == "Converged" and
-              .analysis.frontiers == [] and .ssa.complete and
-              (.analysis.procedure_summaries | length) > 0 and
-              all(.analysis.procedure_summaries[];
+              .native.analysis.schema_version == 16 and .native.analysis.status == "Converged" and
+              .native.analysis.frontiers == [] and .native.ssa.complete and
+              (.native.analysis.procedure_summaries | length) > 0 and
+              all(.native.analysis.procedure_summaries[];
                 .kind == "KnownRecursion" and .closed and
                 (.root_procedure as $root | $root != null and
                   .procedures[$root].frame.mode == "Runtime" and
                   (.procedures[$root].covered_blocks | length) > 0)) and
-              ([.analysis.states[].key.frames | length] | max) == 3 and
-              any(.analysis.outcomes[]; .kind == "Return") and
-              all(.analysis.outcomes[] | select(.kind == "Return");
+              ([.native.analysis.states[].key.frames | length] | max) == 3 and
+              any(.native.analysis.outcomes[]; .kind == "Return") and
+              all(.native.analysis.outcomes[] | select(.kind == "Return");
                 .data as $data | ($data | has("failure")) and
                 $data.failure == null and $data.memory == false and
                 $data.length.numeric.constants == ["0x20"] and ($data.root | word42))
@@ -74,30 +74,54 @@ let
     ln -s ${
       fixtures.worldReport { world = "examples/worlds/missing-code.json"; }
     }/report.json missing.json
-    jq -e '.analysis.status == "Converged" and .analysis.frontiers == [] and (.analysis.procedure_summaries | length) > 0 and all(.analysis.procedure_summaries[]; .closed) and (.ssa | type == "object")' missing.json > /dev/null
+    jq -e '.native.analysis.status == "Converged" and .native.analysis.frontiers == [] and (.native.analysis.procedure_summaries | length) > 0 and all(.native.analysis.procedure_summaries[]; .closed) and (.native.ssa | type == "object")' missing.json > /dev/null
     cp -a missing.json "$out/"
   '';
-  summary = mkCheck "summary-reuse" [ pkgs.python3 ] { } ''
-    ln -s ${
-      fixtures.worldReport { world = "examples/worlds/summary-reuse.json"; }
-    }/analysis.json summary-on.json
-    ln -s ${
-      fixtures.worldReport {
+  summaryCheck =
+    regions:
+    let
+      precisionArgs = lib.optionals (regions != 1) [
+        "--max-detail-regions"
+        (toString regions)
+      ];
+      name = if regions == 1 then "summary-reuse" else "summary-reuse-native-cache";
+      enabled = fixtures.worldReport {
         world = "examples/worlds/summary-reuse.json";
-        extraArgs = [ "--no-summaries" ];
+        extraArgs = precisionArgs;
+      };
+      disabled = fixtures.worldReport {
+        world = "examples/worlds/summary-reuse.json";
+        extraArgs = precisionArgs ++ [ "--no-summaries" ];
+      };
+    in
+    mkCheck name [ pkgs.python3 ] { } ''
+      ln -s ${enabled}/analysis.json summary-on.json
+      ln -s ${disabled}/analysis.json summary-off.json
+      for report in ${enabled}/report.json ${disabled}/report.json; do
+        jq -e '.hybrid.coverage.requested_detail_regions == ${toString regions} and
+          .hybrid.coverage.baseline_current and .hybrid.coverage.detail_current and
+          .native.analysis.status == "Converged" and .native.ssa.complete' "$report" > /dev/null
+      done
+      ${
+        if regions == 1 then
+          # Default one-region execution uses paid callee-relative procedures.
+          # The separate two-region control retains the original full-cache oracle.
+          "jq -e '.status == \"Converged\" and .summary_stats.hits == 0 and .summaries == [] and any(.procedure_summaries[]; .closed and .source_current)' summary-on.json > /dev/null"
+        else
+          "jq -e '.status == \"Converged\" and .summary_stats.hits > 0 and .summary_stats.imported_states > 0 and any(.summaries[]; (.reused_at | length) > 0) and .world.identity.kind == \"offline\" and (.world.fingerprint | test(\"^0x[0-9a-f]{64}$\"))' summary-on.json > /dev/null"
       }
-    }/analysis.json summary-off.json
-    jq -e '.status == "Converged" and .summary_stats.hits > 0 and .summary_stats.imported_states > 0 and any(.summaries[]; (.reused_at | length) > 0) and .world.identity.kind == "offline" and (.world.fingerprint | test("^0x[0-9a-f]{64}$"))' summary-on.json > /dev/null
-    jq -e '.status == "Converged" and .summary_stats.hits == 0 and .summaries == []' summary-off.json > /dev/null
-    # Producer namespaces are opaque across reports. Normalize the complete
-    # reports bijectively before projecting, preserving all shared leaves.
-    python3 ${inputs.file "scripts/normalize_identity_scopes.py"} < summary-on.json > normalized-on.json
-    python3 ${inputs.file "scripts/normalize_identity_scopes.py"} < summary-off.json > normalized-off.json
-    jq -S '[.outcomes[] | {kind,data,store}] | unique' normalized-on.json > on-relations.json
-    jq -S '[.outcomes[] | {kind,data,store}] | unique' normalized-off.json > off-relations.json
-    cmp on-relations.json off-relations.json
-    cp -a summary-on.json summary-off.json "$out/"
-  '';
+      jq -e '.status == "Converged" and .summary_stats.hits == 0 and .summaries == []' summary-off.json > /dev/null
+      # Normalize each complete report bijectively before projecting the joint
+      # outcomes, preserving every source/read binding and data/Store pair.
+      python3 ${inputs.file "scripts/normalize_identity_scopes.py"} < summary-on.json > normalized-on.json
+      python3 ${inputs.file "scripts/normalize_identity_scopes.py"} < summary-off.json > normalized-off.json
+      jq -S '[.outcomes[] | {kind,data,store}] | unique' normalized-on.json > on-relations.json
+      jq -S '[.outcomes[] | {kind,data,store}] | unique' normalized-off.json > off-relations.json
+      cmp on-relations.json off-relations.json
+      cp -a summary-on.json summary-off.json "$out/"
+    '';
+  summary = summaryCheck 1;
+  nativeSummary = summaryCheck 2;
   creation = mkCheck "creation" [ ] { } ''
     ln -s ${
       fixtures.worldReport { world = "examples/worlds/create-runtime.json"; }
@@ -132,7 +156,7 @@ let
         ) catch false;
       . as $report |
       {"Precompile": "0x0000000000000000000000000000000000000004"} as $native |
-      .schema_version == 15 and .status == "Converged" and .frontiers == [] and
+      .schema_version == 16 and .status == "Converged" and .frontiers == [] and
       any(.states[]; .key.frames[-1].mode == $native) and
       any(.outcomes[];
         . as $outcome |
@@ -156,6 +180,7 @@ in
   checks = known // {
     example-missing-code-summary = missing;
     example-summary-reuse = summary;
+    example-summary-reuse-native-cache = nativeSummary;
     example-creation = creation;
     example-destruction = destruction;
     example-precompile = precompile;
