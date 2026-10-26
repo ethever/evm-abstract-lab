@@ -72,6 +72,11 @@ def touch_scroll_storage(page, region, *, swipes=3, trace_path=None):
             rendered_frame(page)
             event.update(gpu_submissions_after=page.evaluate("window.__webgpuEvidence.submissions"),status="painted")
             persist()
+            if trace_path is not None and phase == "touchStart":
+                start_png=Path(trace_path).with_name(Path(trace_path).stem+"-start.png")
+                canvas_screenshot(page,path=str(start_png))
+                event["phase_png"]=str(start_png)
+                persist()
         except Exception as error:
             event.update(status="failed",error=str(error))
             try:
