@@ -54,6 +54,17 @@ def focus_inspector_value(page, canvas):
     return focus_text_control(page, canvas, "inspector_ssa_value")
 
 
+def select_inspector_value(page, canvas, value):
+    """Commit an explicit namespace-local value through the real DragValue."""
+    assert type(value) is int and value >= 0, value
+    focus_inspector_value(page, canvas)
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text(str(value))
+    page.keyboard.press("Enter")
+    settle_gesture(page)
+    expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: SSA value %{value}")
+
+
 def model_namespace_controls(page, canvas, report, output):
     """Use the real selectors; equal numeric IDs never retain another graph's selection."""
     status = page.locator("#analysis-status")
@@ -85,7 +96,12 @@ def model_namespace_controls(page, canvas, report, output):
     select_report_context(page, report, "Native", state=target["id"])
     expect(status).to_contain_text(f"Selected {symbol('σ', target['id'])}; source {symbol('P', root['id'])}")
     select_inspector_tab(page, canvas, "SSA value")
-    expect(status).to_contain_text("Inspector: SSA value %0")
+    target_value = next(value for value in native["ssa"]["values"]
+                        if value["origin"].get("Instruction", {}).get("state") == target["id"])
+    target_definition = target_value["origin"]["Instruction"]
+    select_inspector_value(page, canvas, target_value["id"])
+    expect(status).to_contain_text(f"Selected {symbol('σ', target['id'])}; source {symbol('P', root['id'])}")
+    expect(status).to_contain_text(f"Instruction {symbol('σ', target['id'])} · pc 0x{target_definition['pc']:x}")
     canvas.screenshot(path=str(output / "namespace-native-selected.png"))
     model = report["minimum"]
     assert model["namespace"] == "Baseline" and model["current"] and model["status"] == "Converged"
@@ -139,12 +155,16 @@ def model_namespace_controls(page, canvas, report, output):
     expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', root['id'])}")
     expect(status).to_contain_text(f"Additional condition: root ADDRESS = {coordinate}")
     expect(status).to_contain_text(f"{len(native['cfg'])} CFG states")
-    # The Native SSA inspector deliberately picks ValueId0 on reopening.
-    # Qualify that new default against Native, never a Global/old-state ID.
+    # A context pick has no implicit value selection. Both explicit numeric
+    # edits below belong to the retained root context in this Native namespace.
     definition = native["ssa"]["values"][0]["origin"]["Instruction"]
     assert definition["state"] == 0 and definition["pc"] == 0
     assert definition["state"] == entry["id"], (definition, entry)
     select_inspector_tab(page, canvas, "SSA value")
+    alternate = next(value for value in native["ssa"]["values"]
+                     if value["id"] != 0 and value["origin"].get("Instruction", {}).get("state") == entry["id"])
+    select_inspector_value(page, canvas, alternate["id"])
+    select_inspector_value(page, canvas, 0)
     expect(status).to_contain_text("Inspector: SSA value %0")
     expect(status).to_contain_text("Instruction σ₀ · pc 0x0")
     select_inspector_tab(page, canvas, "Frame")
@@ -153,6 +173,7 @@ def model_namespace_controls(page, canvas, report, output):
     settle_gesture(page)
     canvas.screenshot(path=str(output / "namespace-native-reset.png"))
     return {"native_selected_state": target["id"], "global_regional_node": root_node["id"],
+            "native_selected_value": target_value["id"], "native_value_definition": target_definition,
             "global_may_location": point, "returned_native_state": entry["id"],
             "root_condition": coordinate, "global_has_no_ssa_selection": True,
             "native_selection_reset": True, "graph_ids_separate": True}
