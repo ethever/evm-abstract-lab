@@ -96,8 +96,19 @@ pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
     .unwrap();
     assert_eq!(result.status(), Status::Converged);
     success.covers(&result);
-    failure.covers(&result);
+    // The zero-forwarded-gas control deliberately changes GAS to PUSH0. Its
+    // observed account code must be checked against that same input program.
+    let failure_result = native::run(
+        &native::product(),
+        AnalysisInput::new(failed_world, failed_entry).unwrap(),
+        fixtures::config(1_000_000_000),
+        &Control::default(),
+    )
+    .unwrap();
+    assert_eq!(failure_result.status(), Status::Converged);
+    failure.covers(&failure_result);
     concrete::unchanged(&result, &[fixtures::OWNER, fixtures::CALLEE]);
+    concrete::unchanged(&failure_result, &[fixtures::OWNER, fixtures::CALLEE]);
 }
 
 pub fn assert_guard_coverage(
