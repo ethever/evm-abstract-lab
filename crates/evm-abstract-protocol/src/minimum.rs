@@ -12,6 +12,8 @@ choice! {
     pub enum MinimumValidationKind {
         /// Snapshot, namespace or execution qualification is inconsistent.
         Identity,
+        /// The captured numerical policy has an invalid structural shape.
+        DomainSpec,
         /// A closed observation has no retained producer generation/root.
         Closure,
         /// Numerical row and relation indices or output alternatives disagree.

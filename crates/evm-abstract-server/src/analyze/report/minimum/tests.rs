@@ -361,6 +361,55 @@ fn unchanged_numerical_table_uses_paid_handles_without_projecting_the_rows_again
 }
 
 #[test]
+fn minimum_rejects_invalid_numeric_policy_and_changed_process_source_epoch() {
+    let (source, request, algebra) = baseline_fixture();
+    let control = Control::default();
+    let mut budget = WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK);
+    let report = project(
+        &source,
+        &algebra,
+        &control,
+        &mut budget,
+        ProjectionInput {
+            request: &request,
+            scope: api::AnalysisScope::SingleProgram,
+            numeric_model: api::NumericModel::Product,
+        },
+    )
+    .unwrap();
+    let minimum = report.minimum.as_ref().unwrap();
+    let mut invalid = (**minimum).clone();
+    invalid.domain_spec.word_bits = 255;
+    assert_eq!(
+        invalid.validate(),
+        Err(api::ReportValidationFailure::Minimum(
+            api::MinimumValidationKind::DomainSpec
+        ))
+    );
+    let mut invalid = (**minimum).clone();
+    let summary = invalid
+        .summaries
+        .iter_mut()
+        .find(|summary| summary.relation.closed)
+        .unwrap();
+    let index = summary
+        .relation
+        .procedures
+        .iter()
+        .position(|procedure| procedure.process.is_some())
+        .unwrap();
+    Arc::make_mut(&mut summary.bounds)[index]
+        .version
+        .source_epoch = Some("different-source-epoch".into());
+    assert_eq!(
+        invalid.validate(),
+        Err(api::ReportValidationFailure::Minimum(
+            api::MinimumValidationKind::Source
+        ))
+    );
+}
+
+#[test]
 fn required_minimum_refusal_does_not_invent_a_public_model_or_reset_payment() {
     let (source, request, algebra) = baseline_fixture();
     let control = Control::default();

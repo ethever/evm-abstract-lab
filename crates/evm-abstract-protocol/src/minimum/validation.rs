@@ -120,6 +120,23 @@ impl MinimumModel {
     }
 
     fn validate_numerical(&self) -> Checked {
+        let domain = &self.domain_spec;
+        if domain.schema_version == 0
+            || domain.word_bits != 256
+            || domain.cost_version == 0
+            || domain.provenance_policy.is_empty()
+            || [
+                domain.capacity,
+                domain.reduction_rounds,
+                domain.fact_limit,
+                domain.relations.max_constraints,
+                domain.relations.max_nodes,
+                domain.relations.max_depth,
+            ]
+            .contains(&0)
+        {
+            return Err(MinimumValidationKind::DomainSpec);
+        }
         if self.namespace != crate::AnalysisNamespace::Baseline
             || self.declared_root_source.fork() != self.fork
         {
@@ -195,6 +212,11 @@ impl MinimumModel {
             }
             for (procedure, bounds) in relation.procedures.iter().zip(summary.bounds.iter()) {
                 if let Some(process) = &procedure.process {
+                    if bounds.version.source_epoch.as_deref()
+                        != Some(process.epoch.to_string().as_str())
+                    {
+                        return Err(MinimumValidationKind::Source);
+                    }
                     if process.source.fork() != self.fork
                         || process.source.semantics() != procedure.semantics
                         || process.is_static != procedure.is_static
