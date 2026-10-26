@@ -128,6 +128,8 @@ wire 20 请求必须提供 `limits.numeric_model: "Product"` 或 `"FiniteSet"`�
 
 Global 检查器将 **Original inputs** 的原始环境与账户观察、**Procedure input** 的合并过程输入边界分别展示；**Joint outputs** 始终配对显示同一相对出口的数据和 Store，回滚由调用者应用。regional 节点不是 Native 状态或 SSA ID；最小模型中的代码面板只显示源码目录，不把 MAY 控制当成指令执行记录。可选富导出被拒绝或取消时，已经发布的最小模型仍可缩放、选择和检查。
 
+Global 图展开实际 regional 收据中的纯 MAY 控制区域，并从共享的 source/epoch 目录读取块与边。未知跳转使用显式 hub 展示合法 JUMPDEST 目标集合；区域发出的边界义务与已完成的 Body 转移分别保留。相同源码位置在不同 owner、static 或调用输入下仍有各自的区域身份。点击内部点可以定位对应源码块，虚拟 hub、End 和未知代码没有指令位置；调用返回边来自实际 delivery，源码中的潜在返回位置不会被画成已交付返回。
+
 **Execution budget** 保留默认勾选的 **Prepare conservative root terminal coverage**。这个可选辅助属于 native 阶段；未开始或预算不足时可没有记录，三个 tuple 不替代全局控制闭合。关闭完成调用缓存复用仍运行实际 Process 模型。[根终止覆盖](19-root-terminal-coverage.md)说明辅助 tuple 的联合数据/Store 与回滚资格。
 
 ## 分析耗时

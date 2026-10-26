@@ -147,6 +147,7 @@ pub(crate) fn empty_report() -> AnalysisReport {
     let address = |kind| api::AddressValue::Symbolic(api::InputSymbol { kind, index: None });
     AnalysisReport {
         model: api::AnalysisReport {
+            process_controls: Vec::new(),
             schema_version: SCHEMA_VERSION,
             minimum: None,
             rich_export: api::RichExportOutcome::Complete,

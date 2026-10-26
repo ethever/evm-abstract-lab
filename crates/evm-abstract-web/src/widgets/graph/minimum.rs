@@ -11,101 +11,48 @@ use crate::{
     palette,
     widgets::heading,
 };
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use evm_abstract_layout as geometry;
-use evm_abstract_protocol::{EdgeKind, MinimumModel, RegionalNode, SummarySourceStatus};
+use evm_abstract_protocol::{AnalysisReport, SummarySourceStatus};
 
-struct Edge {
-    from: usize,
-    to: usize,
-    kind: EdgeKind,
-    label: String,
-    color: Color32,
-}
+mod control;
+use control::{Card, Control, Edge};
 
 pub(super) struct Scene {
     summary: usize,
     placement: super::Placement,
     edges: Vec<Edge>,
     nodes: usize,
+    cards: Vec<Card>,
+    source_edges: usize,
+    hubs: usize,
     calls: usize,
     deliveries: usize,
     selected: Option<usize>,
     error: Option<geometry::LayoutError>,
-    positions: std::collections::BTreeMap<usize, usize>,
     nodes_visible: super::Visibility,
     edges_visible: super::Visibility,
 }
 
-fn collect_edges(model: &MinimumModel, summary: usize) -> Vec<Edge> {
-    let cfg = &model.summaries[summary].relation.regional_cfg;
-    let mut edges = Vec::new();
-    for node in &cfg.nodes {
-        for &to in &node.successors {
-            let kind = node
-                .transfer
-                .as_ref()
-                .and_then(|transfer| transfer.successors.iter().find(|edge| edge.to == to))
-                .map_or(EdgeKind::Fallthrough, |edge| edge.kind);
-            edges.push(Edge {
-                from: node.id,
-                to,
-                kind,
-                label: format!("MAY {kind:?}"),
-                color: palette::MUTED,
-            });
-        }
-    }
-    for call in &cfg.calls {
-        for &to in &call.entries {
-            edges.push(Edge {
-                from: call.from,
-                to,
-                kind: EdgeKind::Call,
-                label: format!("call c{}", call.id),
-                color: palette::PURPLE,
-            });
-        }
-        for delivery in &call.deliveries {
-            for target in &delivery.successors {
-                edges.push(Edge {
-                    from: call.from,
-                    to: target.to,
-                    kind: target.kind,
-                    label: format!(
-                        "c{} {:?} · generation {}",
-                        call.id, delivery.kind, delivery.output_generation
-                    ),
-                    color: if delivery.current && delivery.input_revision == call.input_revision {
-                        palette::BLUE
-                    } else {
-                        palette::MUTED
-                    },
-                });
-            }
-        }
-    }
-    edges
-}
-
 impl Scene {
-    fn new(model: &MinimumModel, summary: usize, ui: &Ui) -> Self {
+    fn new(report: &AnalysisReport, summary: usize, ui: &Ui) -> Self {
+        let model = report.minimum.as_ref().unwrap();
         let relation = &model.summaries[summary].relation;
-        let edges = collect_edges(model, summary);
+        let control = Control::new(report, summary);
+        let edges = control.edges;
         let input = geometry::Input {
-            nodes: relation
-                .regional_cfg
-                .nodes
+            nodes: control
+                .cards
                 .iter()
-                .map(|node| geometry::Node {
-                    id: node.id,
-                    size: geometry::Size::new(260.0, 77.0),
+                .enumerate()
+                .map(|(id, card)| geometry::Node {
+                    id,
+                    size: geometry::Size::new(330.0, 86.0),
                     program: None,
-                    // The geometry-only grouping coordinate is the actual regional
-                    // ID. No program/basic-block assertion is exported from it.
-                    block: node.id,
+                    // Private display ordering is not a Native block assertion.
+                    block: id,
                     frame_depth: None,
-                    boundary: node.excluded || node.transfer.is_none(),
+                    boundary: card.boundary,
                 })
                 .collect(),
             edges: edges
@@ -149,17 +96,13 @@ impl Scene {
             })
             .collect();
         let edges_visible = super::Visibility::new(&edge_bounds);
-        let positions = relation
-            .regional_cfg
-            .nodes
-            .iter()
-            .enumerate()
-            .map(|(index, node)| (node.id, index))
-            .collect();
         Self {
             summary,
             placement,
             nodes: relation.regional_cfg.nodes.len(),
+            cards: control.cards,
+            source_edges: control.source_edges,
+            hubs: control.hubs,
             calls: relation.regional_cfg.calls.len(),
             deliveries: relation
                 .regional_cfg
@@ -170,22 +113,17 @@ impl Scene {
             edges,
             selected: None,
             error,
-            positions,
             nodes_visible,
             edges_visible,
         }
     }
 }
 
-fn title(node: &RegionalNode) -> String {
-    format!("r{} · procedure {}", node.id, node.procedure)
-}
-
 impl Graph {
     pub(crate) fn show_minimum(
         &mut self,
         ui: &mut Ui,
-        model: &MinimumModel,
+        report: &AnalysisReport,
         identity: ReportViewId,
         selection: &mut Selection,
     ) {
@@ -193,6 +131,7 @@ impl Graph {
             return;
         }
         self.activate(identity);
+        let model = report.minimum.as_deref().unwrap();
         let Some(summary) = model.summaries.get(selection.summary) else {
             heading(ui, "GLOBAL CONTROL", "No procedure relation attached");
             self.viewport = Some(ui.available_size());
@@ -201,11 +140,13 @@ impl Graph {
                 placement: super::Placement::default(),
                 edges: Vec::new(),
                 nodes: 0,
+                cards: Vec::new(),
+                source_edges: 0,
+                hubs: 0,
                 calls: 0,
                 deliveries: 0,
                 selected: None,
                 error: None,
-                positions: Default::default(),
                 nodes_visible: Default::default(),
                 edges_visible: Default::default(),
             });
@@ -241,7 +182,7 @@ impl Graph {
             .as_ref()
             .is_none_or(|scene| scene.summary != selection.summary)
         {
-            self.scene.minimum = Some(Scene::new(model, selection.summary, ui));
+            self.scene.minimum = Some(Scene::new(report, selection.summary, ui));
         }
         let (response, painter) = ui.allocate_painter(
             ui.available_size().max(Vec2::splat(1.0)),
@@ -307,15 +248,16 @@ impl Graph {
         }
         let source = minimum::source_status(model, selection.summary);
         for id in scene.nodes_visible.query(visible) {
-            let node = &summary.relation.regional_cfg.nodes[scene.positions[&id]];
-            let Some(world) = scene.placement.nodes.get(&node.id) else {
+            let card = &scene.cards[id];
+            let node = &summary.relation.regional_cfg.nodes[card.node];
+            let Some(world) = scene.placement.nodes.get(&id) else {
                 continue;
             };
             let rect = self.screen_rect(canvas, *world);
             if !rect.intersects(canvas) {
                 continue;
             }
-            let selected = selection.node == Some(node.id);
+            let selected = selection.node == Some(node.id) && selection.control == card.location;
             let current = source == SummarySourceStatus::Current
                 && node.transfer.as_ref().is_some_and(|transfer| {
                     transfer.current
@@ -325,6 +267,8 @@ impl Graph {
                 && !node.excluded;
             let color = if selected {
                 palette::ACCENT
+            } else if card.boundary {
+                palette::WARNING
             } else if current {
                 palette::BLUE
             } else {
@@ -350,7 +294,7 @@ impl Graph {
             painter.text(
                 at,
                 Align2::LEFT_TOP,
-                title(node),
+                &card.title,
                 font.clone(),
                 palette::TEXT,
             );
@@ -358,36 +302,40 @@ impl Graph {
                 painter.text(
                     at + egui::vec2(0.0, 22.0 * self.zoom),
                     Align2::LEFT_TOP,
-                    "Source-qualified possible control",
+                    &card.caption,
                     FontId::proportional(11.0 * self.zoom),
                     color,
                 );
                 painter.text(
                     at + egui::vec2(0.0, 43.0 * self.zoom),
                     Align2::LEFT_TOP,
-                    format!(
-                        "input revision {} · {:?}",
-                        node.input_revision, node.frame.kind
-                    ),
+                    &card.qualifier,
                     FontId::monospace(10.0 * self.zoom),
                     palette::MUTED,
                 );
             }
             let hit = ui.interact(
                 rect.intersect(canvas),
-                ui.id()
-                    .with(("minimum_control", selection.summary, node.id)),
+                ui.id().with(("minimum_control", selection.summary, id)),
                 Sense::click(),
             );
             if hit.clicked() {
                 selection.select_node(model, node.id);
+                selection.control = card.location;
             }
-            hit.on_hover_text(format!("{}\n{}\nRegional identity in this relation; instruction-level SSA belongs to Detailed paths.", title(node), crate::report::regional_status(node, source)));
+            hit.on_hover_text(format!(
+                "{}\n{}\n{}\n{}\n{}",
+                card.title,
+                card.caption,
+                card.hover,
+                crate::report::regional_status(node, source),
+                "Instruction-level SSA belongs to Detailed paths."
+            ));
         }
         self.scene.minimum.as_mut().unwrap().selected = selection.node;
     }
 
     pub(super) fn minimum_summary(&self) -> String {
-        self.scene.minimum.as_ref().map_or_else(|| "Global control: awaiting display".into(), |scene| format!("Global control: {} regional nodes; {} calls; {} output deliveries; Selected regional {}; Global zoom: {:.3}%", scene.nodes, scene.calls, scene.deliveries, scene.selected.map_or("none".into(), |id| format!("r{id}")), self.zoom * 100.0))
+        self.scene.minimum.as_ref().map_or_else(|| "Global control: awaiting display".into(), |scene| format!("Global control: {} regional nodes; {} MAY source points; {} MAY source edges; {} expanded unknown-jump hubs; {} calls; {} output deliveries; Selected regional {}; Global zoom: {:.3}%", scene.nodes, scene.cards.len(), scene.source_edges, scene.hubs, scene.calls, scene.deliveries, scene.selected.map_or("none".into(), |id| format!("r{id}")), self.zoom * 100.0))
     }
 }

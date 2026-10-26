@@ -114,6 +114,7 @@ impl Inspector {
             if procedure != selected.procedure {
                 selected.procedure = procedure;
                 selected.output = None;
+                selected.control = None;
                 selected.node = summary
                     .relation
                     .regional_cfg
@@ -143,6 +144,13 @@ impl Inspector {
                     ui.label(RichText::new(format!("Regional node r{}", node.id)).strong());
                     ui.label(crate::report::regional_status(node, source));
                     summaries::regional::node_details(ui, node, source);
+                    if let Some(location) = selected.control {
+                        ui.label(format!(
+                            "Selected MAY source: {}",
+                            minimum::location_label(location)
+                        ));
+                    }
+                    process::control(ui, report, node, selected.control);
                 }
                 summaries::regional::show(ui, &summary.relation.regional_cfg, source);
                 return;
