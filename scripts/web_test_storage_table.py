@@ -7,7 +7,7 @@ from playwright.sync_api import expect
 import json
 from web_test_harness import observe_webgpu, rendered_frame, set_control, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_boundary, select_inspector_tab
-from web_test_storage_helpers import STORAGE_SLOT_WORD, assert_storage_cell_text, assert_storage_literal_pixels, assert_storage_preference, assert_storage_reviewed_pixels, assert_storage_suffix, drag_storage_separator, storage_content_region, storage_copy_full_slot, storage_glyph_cells, storage_hover_snapshot, storage_pixel_report, storage_reviewed_raster, storage_scrolled_snapshot, storage_separator_offset, storage_table_snapshot
+from web_test_storage_helpers import STORAGE_SLOT_WORD, assert_storage_cell_text, assert_storage_literal_pixels, assert_storage_preference, assert_storage_reviewed_pixels, assert_storage_suffix, drag_storage_separator, storage_content_region, storage_copy_full_slot, storage_current_palette_raster, storage_glyph_cells, storage_hover_snapshot, storage_pixel_report, storage_reviewed_raster, storage_scrolled_snapshot, storage_separator_offset, storage_table_snapshot
 
 
 def storage_table_interactions(browser, url: str, output: Path):
@@ -109,11 +109,12 @@ def storage_table_interactions(browser, url: str, output: Path):
         storage_copy_full_slot(page,canvas,initial["rows"][0]["slot"],"0x0")
         full_copy=storage_copy_full_slot(page,canvas,full,word)
         full_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-full-slot-hover",initial["rows"][-1]["slot"])
-        # This varied literal fits one proportional-font tooltip line. Require
-        # its complete reviewed raster, including the original 0x prefix.
-        assert len(full_hover["text"]["rows"])==1 and full_hover["ink"]["mask_size"]==[465,10],storage_pixel_report(full_hover)
-        full_hover_comparison=assert_storage_reviewed_pixels(full_hover["raster"],"slot_hover",word,[476,23],
-            "c24455921e771f31c4dff3e171ab62b12271f5c29b07f653f4492e6b0092488a")
+        # The accepted slot widget now uses ui.monospace in the tooltip. Reuse
+        # the independent complete Slot raster, with the exact tooltip palette,
+        # rather than the earlier proportional-font hover's window margins.
+        assert len(full_hover["text"]["rows"])==1 and full_hover["ink"]["mask_size"]==[514,10],storage_pixel_report(full_hover)
+        full_hover_comparison=assert_storage_reviewed_pixels(full_hover["ink"],"full_slot",word,[514,10],
+            "7f1ebe5c7ae6c51205b1c0ab84b5f70a7f2d6e0c00c2254e8bfb973e378fb7b0",tooltip=True)
         if kind=="transient":
             assert initial["rows"][0]["value"]["mask_sha256"]!=results["storage"]["initial"]["rows"][0]["value"]["mask_sha256"], "Transient rendered the persistent value"
         drag_storage_separator(page,initial,initial["separator"]+320)
@@ -259,8 +260,8 @@ def storage_table_interactions(browser, url: str, output: Path):
     expect(status).to_contain_text("Observed exit")
     wrong=storage_table_snapshot(page,canvas,output,"storage-table-wrong-last-glyph",tab[3],len(slots))
     wrong_value=wrong["rows"][2]["value"]
-    reference=storage_reviewed_raster("full_value","{"+word+"}",[531,12],
-        "441542c8fa375969f42f890a0240ae01222ff506ba5da7a71cfbee95695caa2e")
+    reference=storage_current_palette_raster(storage_reviewed_raster("full_value","{"+word+"}",[531,12],
+        "441542c8fa375969f42f890a0240ae01222ff506ba5da7a71cfbee95695caa2e"))
     assert wrong_value["mask_size"]==reference["mask_size"],storage_pixel_report(wrong_value)
     first,last=base64.b64decode(reference["rgb_raster"]),base64.b64decode(wrong_value["rgb_raster"])
     differences=[abs(a-b) for a,b in zip(first,last,strict=True)]

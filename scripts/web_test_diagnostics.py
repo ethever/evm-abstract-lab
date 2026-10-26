@@ -20,7 +20,9 @@ def select_diagnostic(page, canvas, diagnostic):
              f" · InvalidOpcode · 0x{fault['opcode']:02x}")
     if fault["mnemonic"] is not None:
         label += f" ({fault['mnemonic']})"
-    return click_control(page, canvas, label, role="diagnostic")
+    # The native receipt link paints selected=false even after activation;
+    # its retained state/source is checked by the caller after the real click.
+    return click_control(page, canvas, label, role="diagnostic", selected=False)
 
 
 def diagnostics_interactions(browser, url: str, args):
