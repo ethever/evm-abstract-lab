@@ -167,8 +167,71 @@ impl Drop for WorldFile {
 fn callee_diagnostic_uses_its_opcode_in_all_world_views() {
     // The root has PUSH0 at PC 0; the called program has undefined 0xef there.
     let world = WorldFile::new("5f5f5f5f5f6102006207a120f100", "ef", &[]);
-    let report: Value = serde_json::from_str(&world.run("analyze", &["--format", "json"])).unwrap();
-    let report = crate::native::select(&report);
+    let original: Value =
+        serde_json::from_str(&world.run("analyze", &["--format", "json"])).unwrap();
+    assert_eq!(
+        original["hybrid"]["coverage"]["requested_detail_regions"],
+        1
+    );
+    assert_eq!(original["hybrid"]["coverage"]["detail_current"], true);
+    let relative = crate::native::select(&original);
+    assert_eq!(relative["status"], "Converged");
+    assert_eq!(relative["diagnostics"], json!([]));
+    let summary = &relative["procedure_summaries"][0];
+    assert_eq!(summary["source_current"], true);
+    assert_eq!(summary["closed"], true);
+    let procedure = &summary["procedures"][0];
+    assert_eq!(procedure["semantics"], "Native");
+    assert_eq!(procedure["frame"]["code_address"], CHILD);
+    assert_eq!(procedure["frame"]["address"], CHILD);
+    assert_eq!(procedure["frame"]["caller"], json!({"Concrete":ROOT}));
+    assert_eq!(procedure["frame"]["is_static"], false);
+    assert_eq!(
+        procedure["frame"]["code_hash"],
+        format!("{:#x}", alloy_primitives::keccak256([0xef]))
+    );
+    assert_eq!(procedure["covered_blocks"], json!([0]));
+    let node = &summary["regional_cfg"]["nodes"][0];
+    assert_eq!(node["frame"], procedure["frame"]);
+    assert_eq!(node["excluded"], false);
+    assert_eq!(node["transfer"]["semantics"], "Native");
+    assert_eq!(node["transfer"]["input_revision"], node["input_revision"]);
+    for field in ["current", "complete", "visited_block"] {
+        assert_eq!(node["transfer"][field], true, "{field}");
+    }
+    assert_eq!(node["transfer"]["outcomes"], json!(["Failure"]));
+    let child = relative["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["id"] == summary["source_state"])
+        .unwrap();
+    assert_eq!(child["key"]["frames"][1], procedure["frame"]);
+    assert_eq!(child["executed_pcs"], json!([]));
+
+    // An opcode diagnostic needs the additional child's private instruction
+    // evidence; the default relative Failure is not an executed-PC diagnostic.
+    let raw: Value = serde_json::from_str(&world.run(
+        "analyze",
+        &["--format", "json", "--max-detail-regions", "2"],
+    ))
+    .unwrap();
+    assert_eq!(raw["hybrid"]["coverage"]["requested_detail_regions"], 2);
+    let report = crate::native::select(&raw);
+    let input = |report: &Value| {
+        json!([
+            report["entry"],
+            report["world"],
+            report["config"],
+            report["domain_spec"]
+        ])
+    };
+    assert_eq!(
+        crate::native::canonical(&input(&report)),
+        crate::native::canonical(&input(&relative))
+    );
+    assert_eq!(report["config"]["max_work"], 2_000_000_000_u64);
+    assert_eq!(report["config"]["analysis"]["max_transfers"], 10_000_000);
     assert_eq!(report["status"], "Converged");
     let diagnostics = report["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 1);
@@ -177,12 +240,37 @@ fn callee_diagnostic_uses_its_opcode_in_all_world_views() {
         diagnostics[0]["kind"]["InvalidOpcode"]["Instruction"]["opcode"],
         0xef
     );
+    assert_eq!(
+        diagnostics[0]["kind"]["InvalidOpcode"]["Instruction"]["reason"],
+        "UndefinedOpcode"
+    );
+    let state = report["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["id"] == diagnostics[0]["state"])
+        .unwrap();
+    assert_eq!(state["key"]["frames"][1]["code_address"], CHILD);
+    assert_eq!(state["executed_pcs"], json!([0]));
     for (command, extra) in [
         ("analyze", vec![]),
         ("explain", vec![]),
         ("explain", vec!["--verbose"]),
     ] {
         let output = world.run(command, &extra);
+        let diagnostics = output
+            .split_once("\nDiagnostics\n")
+            .unwrap()
+            .1
+            .split_once("\nFrontiers\n")
+            .unwrap()
+            .0;
+        assert!(diagnostics.contains("(none)"));
+        assert!(!diagnostics.contains("InvalidOpcode"));
+
+        let mut detailed = extra;
+        detailed.extend(["--max-detail-regions", "2"]);
+        let output = world.run(command, &detailed);
         let diagnostics = output
             .split_once("\nDiagnostics\n")
             .unwrap()

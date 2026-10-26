@@ -418,9 +418,97 @@ fn every_supplied_environment_reaches_raw_world_and_delegated_frames() {
     let extra: Vec<_> = supplied().into_iter().skip(2).collect();
     let output = world.run("analyze", &extra);
     success(&output);
-    let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
-    let analysis = crate::native::select(&analysis);
+    let original: Json = serde_json::from_slice(&output.stdout).unwrap();
+    crate::native::assert_exit(&original, &output);
+    let analysis = crate::native::select(&original);
+    assert_eq!(
+        original["hybrid"]["coverage"]["requested_detail_regions"],
+        1
+    );
+    assert_eq!(original["hybrid"]["coverage"]["detail_current"], true);
+    assert_supplied_environment(&json!({"environment":analysis["entry"]["environment"]}));
     let states = analysis["states"].as_array().unwrap();
+    let root = states
+        .iter()
+        .find(|state| {
+            state["key"]["frames"].as_array().unwrap().len() == 1
+                && state["exit_stack"].as_array().unwrap().len() == 18
+        })
+        .unwrap();
+    assert_supplied(
+        root["exit_stack"].as_array().unwrap(),
+        TO,
+        CALLER,
+        U256::from(9),
+        U256::from(1),
+    );
+    // The default retains the delegated execution as a qualified Native
+    // relative block, without exporting a private child stack or instruction PCs.
+    let summary = analysis["procedure_summaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|summary| summary["procedures"][0]["frame"]["code_address"] == CALLEE)
+        .unwrap();
+    assert_eq!(summary["source_current"], true);
+    assert_eq!(summary["closed"], true);
+    let procedure = &summary["procedures"][0];
+    assert_eq!(procedure["semantics"], "Native");
+    assert_eq!(procedure["frame"]["mode"], "Runtime");
+    assert_eq!(
+        procedure["frame"]["code_hash"],
+        format!(
+            "{:#x}",
+            alloy_primitives::keccak256(alloy_primitives::hex::decode(&code).unwrap())
+        )
+    );
+    assert_eq!(procedure["frame"]["address"], TO);
+    assert_eq!(procedure["frame"]["caller"], json!({"Concrete":CALLER}));
+    assert_eq!(procedure["frame"]["is_static"], true);
+    assert_eq!(procedure["covered_blocks"], json!([0]));
+    let block = &summary["regional_cfg"]["nodes"][0];
+    assert_eq!(block["frame"], procedure["frame"]);
+    assert_eq!(block["excluded"], false);
+    let transfer = &block["transfer"];
+    assert_eq!(transfer["semantics"], "Native");
+    assert_eq!(transfer["input_revision"], block["input_revision"]);
+    assert_eq!(transfer["current"], true);
+    assert_eq!(transfer["complete"], true);
+    assert_eq!(transfer["visited_block"], true);
+    assert_eq!(transfer["outcomes"], json!(["Return"]));
+    let child = states
+        .iter()
+        .find(|state| state["id"] == summary["source_state"])
+        .unwrap();
+    assert_eq!(child["key"]["frames"][1], procedure["frame"]);
+    assert_eq!(child["executed_pcs"], json!([]));
+    assert_eq!(child["exit_stack"], json!([]));
+
+    // Selecting both captured sources preserves the original full-frame oracle
+    // on the same physical input and the same cumulative work/transfer limits.
+    let mut detailed = extra.clone();
+    detailed.extend(["--max-detail-regions", "2"]);
+    let output = world.run("analyze", &detailed);
+    success(&output);
+    let raw: Json = serde_json::from_slice(&output.stdout).unwrap();
+    crate::native::assert_exit(&raw, &output);
+    assert_eq!(raw["hybrid"]["coverage"]["requested_detail_regions"], 2);
+    let detail = crate::native::select(&raw);
+    let input = |report: &Json| {
+        json!([
+            report["entry"],
+            report["world"],
+            report["config"],
+            report["domain_spec"]
+        ])
+    };
+    assert_eq!(
+        crate::native::canonical(&input(&detail)),
+        crate::native::canonical(&input(&analysis))
+    );
+    assert_eq!(detail["config"]["max_work"], 2_000_000_000_u64);
+    assert_eq!(detail["config"]["analysis"]["max_transfers"], 10_000_000);
+    let states = detail["states"].as_array().unwrap();
     for depth in [1, 2] {
         let state = states
             .iter()
