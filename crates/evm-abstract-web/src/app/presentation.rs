@@ -104,6 +104,8 @@ pub(crate) enum ResolvedContext<'a> {
         source_status: SummarySourceStatus,
     },
     Graph {
+        /// Retained input revision and SSA completeness belong to this graph,
+        /// independently of whether its evidence is available for browsing.
         graph: &'a AnalysisGraph,
         state: &'a CfgBlock,
         frame: Option<&'a FrameSnapshot>,
@@ -154,8 +156,10 @@ impl Capability {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Capabilities {
     pub(crate) code: Capability,
+    /// Scoped analysis CFG requires an explicitly chosen execution context.
     pub(crate) cfg: Capability,
     pub(crate) native_state: Capability,
+    /// Retained executed SSA is browseable even under historical/partial scope.
     pub(crate) ssa: Capability,
 }
 

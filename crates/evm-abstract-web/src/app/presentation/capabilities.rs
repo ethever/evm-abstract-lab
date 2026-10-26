@@ -17,7 +17,7 @@ impl<'a> Presentation<'a> {
         };
         let mut result = Capabilities {
             code,
-            cfg: code,
+            cfg: Capability::Unavailable(UnavailableReason::SelectContext),
             native_state: Capability::Unavailable(UnavailableReason::SelectContext),
             ssa: Capability::Unavailable(UnavailableReason::SelectContext),
         };
@@ -54,13 +54,13 @@ impl<'a> Presentation<'a> {
                     || focus.view.namespace() != AnalysisNamespace::Native
                 {
                     Capability::Unavailable(UnavailableReason::ConservativeEvidence)
-                } else if !self.native_at_current_revision() {
-                    Capability::Unavailable(UnavailableReason::HistoricalReceipt)
                 } else {
+                    // Retained Current/Stale receipts permit browsing, without
+                    // requiring latest inputs or whole-graph closure. An entry
+                    // that never executed still has no execution receipt.
                     match ssa.map(|ssa| ssa.coverage) {
-                        Some(BlockCoverage::Current) => Capability::Available,
-                        Some(BlockCoverage::Stale) => {
-                            Capability::Unavailable(UnavailableReason::HistoricalReceipt)
+                        Some(BlockCoverage::Current | BlockCoverage::Stale) => {
+                            Capability::Available
                         }
                         Some(BlockCoverage::Unexecuted) => {
                             Capability::Unavailable(UnavailableReason::Unexecuted)

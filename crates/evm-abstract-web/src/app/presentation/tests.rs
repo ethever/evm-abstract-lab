@@ -3,6 +3,9 @@ use crate::app::{Selection, model::navigation::*};
 use evm_abstract_protocol as api;
 use std::sync::{Arc, OnceLock};
 
+#[path = "tests/capabilities.rs"]
+mod capabilities;
+
 fn native() -> AnalysisReport {
     crate::tests::report().into()
 }
@@ -320,10 +323,7 @@ fn retained_ssa_coverage_is_resolved_without_claiming_current_execution() {
         assert_eq!(resolved, Some(coverage));
         assert!(at_current_revision);
         let expected = match coverage {
-            api::BlockCoverage::Current => Capability::Available,
-            api::BlockCoverage::Stale => {
-                Capability::Unavailable(UnavailableReason::HistoricalReceipt)
-            }
+            api::BlockCoverage::Current | api::BlockCoverage::Stale => Capability::Available,
             api::BlockCoverage::Unexecuted => {
                 Capability::Unavailable(UnavailableReason::Unexecuted)
             }
