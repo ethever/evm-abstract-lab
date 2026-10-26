@@ -33,7 +33,7 @@ impl Workspace {
         let mut command = None;
         if presentation.job_id.is_some()
             || presentation.report_job_id.is_some()
-            || self.report.is_some()
+            || (self.report.is_some() && self.task.snapshot.is_some())
         {
             Density::Inline.scope(ui, |ui| {
                 for (label, id) in self.job_identities() {
@@ -70,6 +70,10 @@ impl Workspace {
                 ui.spinner();
                 let label = if self.preparing_current_view() { self.task_label() } else { presentation.label() };
                 ui.add(egui::Label::new(RichText::new(label).color(palette::ACCENT)).truncate()).on_hover_text(label);
+                if matches!(presentation.detail, DetailPresentation::Refused | DetailPresentation::Cancelled) {
+                    ui.colored_label(palette::WARNING, detail_label(presentation.detail))
+                        .on_hover_text(self.report.as_ref().map(super::super::minimum::rich_status).unwrap_or_default());
+                }
                 if wide && let Some(snapshot) = &self.task.snapshot {
                     ui.label(format!("{:?} · {} accounts · {} states · {} transfers", snapshot.progress.phase,
                         snapshot.progress.accounts, snapshot.progress.states, snapshot.progress.transfers));

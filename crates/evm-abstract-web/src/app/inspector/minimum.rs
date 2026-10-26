@@ -5,9 +5,6 @@ mod bytes;
 mod original;
 mod stores;
 
-#[cfg(test)]
-use super::{InspectionAction, InspectionTarget, OriginalAccount};
-
 use super::{Inspector, Tab, process, scroll, summaries, value};
 use crate::{
     app::minimum::{self, Selection},
@@ -69,38 +66,6 @@ impl Inspector {
                 ""
             },
         )
-    }
-
-    #[cfg(test)]
-    pub(in crate::app) fn show_minimum(
-        &mut self,
-        ui: &mut Ui,
-        report: &api::AnalysisReport,
-        model: &MinimumModel,
-        selected: &mut Selection,
-    ) {
-        if self.scope == Scope::Original && selected.summary(model).is_none() {
-            self.inspect(
-                ui,
-                InspectionTarget::Original {
-                    report,
-                    account: selected
-                        .account
-                        .map_or(OriginalAccount::Root, OriginalAccount::Minimum),
-                },
-            );
-            return;
-        }
-        if let Some(InspectionAction::Global(next)) = self.inspect(
-            ui,
-            InspectionTarget::Global {
-                report,
-                model,
-                selection: *selected,
-            },
-        ) {
-            *selected = next;
-        }
     }
 
     pub(super) fn minimum_contents(

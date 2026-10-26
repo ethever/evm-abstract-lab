@@ -31,11 +31,6 @@ impl ReportViewId {
     }
 
     #[cfg(test)]
-    pub(crate) fn version(self) -> Option<evm_abstract_protocol::PublicationVersion> {
-        self.version
-    }
-
-    #[cfg(test)]
     pub(crate) fn fixture(generation: u64, namespace: AnalysisNamespace) -> Self {
         Self {
             generation: ReportGeneration(generation),
@@ -220,6 +215,18 @@ pub(super) enum Activation {
     // Historical namespace-entry oracles use this adapter; user navigation is Focus-based.
     #[cfg(test)]
     Namespace(AnalysisNamespace),
+}
+
+impl Workspace {
+    /// Typography fixtures mutate source catalogs directly; production accepts
+    /// immutable publications through install_report instead.
+    #[cfg(test)]
+    pub(crate) fn refresh_fixture_index(&mut self) {
+        self.report_view.index = presentation::ReportIndex::default();
+        if let Some(report) = &self.report {
+            self.report_view.refresh_index(report);
+        }
+    }
 }
 
 impl Workspace {

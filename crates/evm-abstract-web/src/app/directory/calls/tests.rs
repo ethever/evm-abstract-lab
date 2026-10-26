@@ -296,7 +296,7 @@ fn choosing_the_same_code_with_another_owner_opens_that_exact_context() {
             }
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     render_with_actions(
         &context,

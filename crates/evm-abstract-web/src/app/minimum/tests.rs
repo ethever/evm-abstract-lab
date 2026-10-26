@@ -273,8 +273,10 @@ fn minimum_only_renders_all_views_and_mobile_directory_without_private_state_or_
             assert!(workspace.report_view.identity().is_minimum());
             assert_eq!(workspace.selection, crate::app::Selection::default());
             if view == View::Ssa {
+                workspace.directory.open = false;
+                let output = render(&ctx, &mut workspace, size);
                 assert!(crate::tests::painted_text(&output).iter().any(|(text, _)| {
-                    text.contains("Instruction SSA is available in Detailed paths")
+                    text == crate::app::model::presentation::UnavailableReason::ConservativeEvidence.label()
                 }));
             }
         }
@@ -383,7 +385,7 @@ fn refused_and_cancelled_details_keep_the_same_usable_minimum_and_joint_bounds()
     assert!(
         crate::tests::painted_text(&output)
             .iter()
-            .any(|(text, _)| text.contains("presentation refused"))
+            .any(|(text, _)| text == "Detail refused")
     );
     assert!(workspace.task.cancellable());
     assert_eq!(workspace.report_view.identity(), identity);

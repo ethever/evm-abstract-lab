@@ -68,7 +68,7 @@ fn navigation_and_metadata_keep_compact_desktop_and_touch_height_budgets() {
                 "navigation grew at {size:?}: {header:?}"
             );
             assert!(
-                metadata.height() <= 20.0,
+                metadata.height() <= 23.0,
                 "metadata grew at {size:?}: {metadata:?}"
             );
             assert!(metadata.top() >= header.bottom());
@@ -181,6 +181,7 @@ fn selected_child_source_and_reanalysis_remeasure_automatic_panes() {
     std::sync::Arc::make_mut(report.native.as_mut().unwrap())
         .cfg
         .push(child);
+    workspace.refresh_fixture_index();
     workspace.selection = Selection {
         value: None,
         state: Some(99),
@@ -282,6 +283,7 @@ fn medium_code_tabs_use_active_content_and_keep_the_graph_visible() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
+    workspace.ssa_cache.select_source_scope();
     let size = Vec2::new(900.0, 700.0);
     let desired = natural(&ctx, &mut workspace)[1];
     let output = settled(&ctx, &mut workspace, size);

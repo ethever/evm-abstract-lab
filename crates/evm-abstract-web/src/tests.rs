@@ -957,7 +957,7 @@ fn stale_and_unexecuted_blocks_never_claim_current_exit_evidence() {
         workspace.view = View::Disassembly;
         let output = frame(&ctx, &mut workspace, vec![]);
         let add_is_muted = output.shapes.iter().any(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.text() == "ADD" => {
+            egui::Shape::Text(text) if text.galley.text().ends_with("  ADD") => {
                 text.galley.job.sections[0].format.color == crate::palette::MUTED
             }
             _ => false,
@@ -996,11 +996,8 @@ fn child_without_bytecode_has_no_invented_program_counter() {
     crate::notation::initialize_fonts(&ctx);
     let output = frame(&ctx, &mut workspace, vec![]);
     let labels = painted_text(&output);
-    assert!(
-        labels
-            .iter()
-            .any(|(text, _)| text == "No captured bytecode for this frame or account")
-    );
+    assert!(labels.iter().any(|(text, _)| text
+        == crate::app::model::presentation::UnavailableReason::NoCapturedSource.label()));
     assert!(!labels.iter().any(|(text, _)| text == "B0  ·  0x0000"));
 }
 

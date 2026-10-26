@@ -292,24 +292,6 @@ pub(crate) fn ssa(
     );
 }
 
-#[cfg(test)]
-pub(crate) fn natural_width(
-    ui: &Ui,
-    report: &ReportView<'_>,
-    program: Option<usize>,
-    display: SsaDisplay,
-    selection: Selection,
-) -> f32 {
-    natural_width_cached(
-        ui,
-        report,
-        program,
-        display,
-        selection,
-        &mut SsaCache::default(),
-    )
-}
-
 struct Token {
     text: String,
     color: Color32,
