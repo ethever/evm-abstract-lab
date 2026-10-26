@@ -11,6 +11,7 @@ mod minimum;
 mod native;
 mod navigation;
 mod observation;
+mod original;
 mod outcomes;
 mod panel;
 mod process;
@@ -31,7 +32,9 @@ use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
     ApiError, BlockCoverage, FrameSnapshot, MachineSnapshot, StoreSnapshot,
 };
-pub(in crate::app) use selection::{InspectionAction, InspectionSource, InspectionTarget};
+pub(in crate::app) use selection::{
+    InspectionAction, InspectionSource, InspectionTarget, OriginalAccount,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Tab {
@@ -279,6 +282,19 @@ impl Inspector {
         selection: &mut Selection,
         account: Option<&str>,
     ) {
+        if selection.state.is_none()
+            && selection.value.is_none()
+            && let Some(address) = account
+        {
+            self.inspect(
+                ui,
+                InspectionTarget::Original {
+                    report: report.model,
+                    account: OriginalAccount::Address(address),
+                },
+            );
+            return;
+        }
         // The legacy shell has no typed source focus. With no observation at
         // all, its root source is still inspectable without choosing a state.
         if selection.state.is_none()

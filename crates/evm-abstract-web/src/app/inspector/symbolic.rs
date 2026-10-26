@@ -188,7 +188,7 @@ fn reachable(graph: &api::SymbolicGraph, root: usize) -> Vec<usize> {
     }
     seen.into_iter().collect()
 }
-pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, root: usize, title: &str) {
+pub(super) fn show(ui: &mut Ui, report: &api::AnalysisGraph, root: usize, title: &str) {
     egui::CollapsingHeader::new(format!("{title} · root #{root}"))
         .id_salt(("symbolic_root",title,root))
         .show(ui,|ui| {

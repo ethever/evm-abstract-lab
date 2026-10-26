@@ -1,6 +1,4 @@
 //! Sparse byte observations keep their length and unspecified-byte defaults.
-use crate::report::ReportView;
-
 use super::value;
 use crate::palette;
 use egui::{RichText, Ui};
@@ -36,7 +34,12 @@ pub(super) fn exact(ui: &mut Ui, bytes: &str, id: &str) {
         );
 }
 
-pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, id: usize, title: &str) {
+pub(super) fn show(
+    ui: &mut Ui,
+    report: &evm_abstract_protocol::AnalysisGraph,
+    id: usize,
+    title: &str,
+) {
     let Some(bytes) = report.byte_arrays.get(id) else {
         ui.colored_label(
             palette::ERROR,

@@ -159,7 +159,7 @@ pub(super) fn plane(ui: &mut Ui, id: &str, plane: &MinimumPlane) {
     });
 }
 
-pub(super) fn original_slots(ui: &mut Ui, entries: &[api::StorageEntry]) {
+pub(in crate::app::inspector) fn original_slots(ui: &mut Ui, entries: &[api::StorageEntry]) {
     let id = "minimum_original_slots";
     let table = ui.id().with(egui::IdSalt::new(id));
     let width = slots::default_width(ui);

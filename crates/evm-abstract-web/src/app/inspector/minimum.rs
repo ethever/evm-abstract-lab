@@ -6,7 +6,8 @@ mod original;
 mod stores;
 
 use super::{
-    InspectionAction, InspectionTarget, Inspector, Tab, process, scroll, summaries, value,
+    InspectionAction, InspectionTarget, Inspector, OriginalAccount, Tab, process, scroll,
+    summaries, value,
 };
 use crate::{
     app::minimum::{self, Selection},
@@ -16,6 +17,10 @@ use crate::{
 use bytes::show as bytes;
 use egui::{RichText, Ui};
 use evm_abstract_protocol::{self as api, MinimumModel};
+
+pub(super) use bytes::show as original_calldata;
+pub(super) use original::{account as original_account, environment as original_environment};
+pub(super) use stores::original_slots;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Scope {
@@ -73,6 +78,18 @@ impl Inspector {
         model: &MinimumModel,
         selected: &mut Selection,
     ) {
+        if self.scope == Scope::Original && selected.summary(model).is_none() {
+            self.inspect(
+                ui,
+                InspectionTarget::Original {
+                    report,
+                    account: selected
+                        .account
+                        .map_or(OriginalAccount::Root, OriginalAccount::Minimum),
+                },
+            );
+            return;
+        }
         if let Some(InspectionAction::Global(next)) = self.inspect(
             ui,
             InspectionTarget::Global {
