@@ -7,13 +7,14 @@ mod actor;
 
 use evm_abstract::analysis::control::Control;
 use evm_abstract_protocol::{
-    AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode, ErrorDetails, JobId, JobSnapshot,
-    WorkerErrorKind, WorkerFailure,
+    AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode, ErrorDetails, JobId, JobPublication,
+    JobSnapshot, WorkerErrorKind, WorkerFailure,
 };
 use std::{
     io,
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, SyncSender},
     },
     thread,
@@ -65,6 +66,61 @@ pub trait Executor: Clone + Send + 'static {
         request: AnalyzeRequest,
         control: &Control,
     ) -> Result<AnalysisReport, ApiError>;
+
+    /// Publish immutable results during execution when supported by this runner.
+    fn execute_with_publisher(
+        &self,
+        request: AnalyzeRequest,
+        control: &Control,
+        _publisher: &Publisher,
+    ) -> Result<AnalysisReport, ApiError> {
+        self.execute(request, control)
+    }
+}
+
+/// Worker-owned channel for at most a baseline and a final publication.
+/// It sends handles to the coordinator, never waits for HTTP consumers.
+pub struct Publisher {
+    sender: SyncSender<actor::Command>,
+    worker: usize,
+    id: JobId,
+    published: AtomicBool,
+}
+
+impl Publisher {
+    /// Retain a report without changing the job's running/cancellation lifecycle.
+    pub fn publish(&self, report: AnalysisReport) -> bool {
+        self.publish_shared(Arc::new(report))
+    }
+
+    pub(crate) fn publish_shared(&self, report: Arc<AnalysisReport>) -> bool {
+        // A worker can expose one early model, then its normal final result.
+        // This keeps projection/channel retention bounded even for custom executors.
+        if self.published.swap(true, Ordering::Relaxed) {
+            return false;
+        }
+        let (installed, receipt) = mpsc::sync_channel(1);
+        self.sender
+            .send(actor::Command::Published {
+                worker: self.worker,
+                id: self.id,
+                report,
+                installed,
+            })
+            .is_ok()
+            && receipt.recv().is_ok()
+    }
+}
+
+/// One immutable result and its exact publication identity, without graph cloning.
+#[derive(Debug)]
+pub struct PublishedResult {
+    /// Originating task.
+    pub id: JobId,
+    /// Version of this handle, independent of subsequent worker activity.
+    pub publication: JobPublication,
+    /// Immutable source-qualified report.
+    pub report: Arc<AnalysisReport>,
 }
 
 #[derive(Clone)]
@@ -78,6 +134,15 @@ impl Executor for Native {
         control: &Control,
     ) -> Result<AnalysisReport, ApiError> {
         crate::analyze::analyze_with_control_and_providers(request, control, &self.providers)
+    }
+
+    fn execute_with_publisher(
+        &self,
+        request: AnalyzeRequest,
+        control: &Control,
+        publisher: &Publisher,
+    ) -> Result<AnalysisReport, ApiError> {
+        crate::analyze::analyze_with_publisher(request, control, &self.providers, publisher)
     }
 }
 
@@ -177,8 +242,13 @@ impl Pool {
         result.recv().map_err(|_| channel_error())?
     }
 
-    /// Borrow an immutable completed report through a shared ownership handle.
+    /// Borrow the latest immutable report, including while optional work runs.
     pub fn result(&self, id: JobId) -> Result<Arc<AnalysisReport>, ApiError> {
+        self.published_result(id).map(|result| result.report)
+    }
+
+    /// Read publication identity and report atomically; cancellation retains it.
+    pub fn published_result(&self, id: JobId) -> Result<PublishedResult, ApiError> {
         let (reply, result) = mpsc::sync_channel(1);
         self.send(actor::Command::Result { id, reply })?;
         result.recv().map_err(|_| channel_error())?

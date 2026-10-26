@@ -75,9 +75,9 @@ pub(super) async fn result(
         Err(error) => return error_response(error),
     };
     match tokio::task::spawn_blocking(move || {
-        state.jobs.result(id).and_then(|report| {
-            super::export::report(
-                &report,
+        state.jobs.published_result(id).and_then(|result| {
+            super::export::publication(
+                &result,
                 &evm_abstract::analysis::control::Control::default(),
             )
         })

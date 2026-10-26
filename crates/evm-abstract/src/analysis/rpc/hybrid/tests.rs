@@ -1,5 +1,6 @@
 //! Installed tests cross Session, the native engine and real finite HTTP RPC.
 
+mod publication;
 mod transport;
 
 use super::{RpcBaselineRelation, RpcHybridAnalysis, RpcPrecisionOutcome};

@@ -4,7 +4,10 @@ use super::{AnalysisSession, SessionError, project_input, session_clone_error};
 use crate::{
     analysis::{
         ContextPolicy, HybridAnalysis, HybridConfig, PartitionPolicy, StatePolicy,
-        control::Control, cooperation::Composition, transfer::StorageReadPolicy,
+        control::Control,
+        cooperation::Composition,
+        publication::{NoopPublisher, StagePublisher},
+        transfer::StorageReadPolicy,
     },
     domain::EvmNumericAlgebra,
     resource::WorkBudget,
@@ -26,6 +29,32 @@ where
         storage_reads: StorageReadPolicy,
         control: &Control,
     ) -> HybridRunResult<D::Element, <X as Composition<D::Element>>::Error> {
+        self.run_hybrid_uncached_with_publisher(hybrid, storage_reads, control, &mut NoopPublisher)
+    }
+
+    /// Run both interpretations using this session's cumulative ledger, publishing
+    /// a certified global model before optional precision. Facts are never relabelled.
+    pub fn run_hybrid_with_publisher<T: StagePublisher<D::Element>>(
+        &mut self,
+        hybrid: HybridConfig,
+        control: &Control,
+        publisher: &mut T,
+    ) -> HybridRunResult<D::Element, <X as Composition<D::Element>>::Error> {
+        self.run_hybrid_uncached_with_publisher(
+            hybrid,
+            StorageReadPolicy::Abstract,
+            control,
+            publisher,
+        )
+    }
+
+    pub(in crate::analysis) fn run_hybrid_uncached_with_publisher<T: StagePublisher<D::Element>>(
+        &mut self,
+        hybrid: HybridConfig,
+        storage_reads: StorageReadPolicy,
+        control: &Control,
+        publisher: &mut T,
+    ) -> HybridRunResult<D::Element, <X as Composition<D::Element>>::Error> {
         control.scope(|| {
             control.checkpoint()?;
             let entry_code = self.entry_code();
@@ -46,13 +75,13 @@ where
                 self.engine.algebra.borrowed(),
                 budget,
             )?;
-            let report = self.engine.run_hybrid_metered(
+            let report = self.engine.run_hybrid_metered_with_publisher(
                 input,
                 self.config.clone(),
                 hybrid,
-                budget,
-                &mut self.counters,
+                (budget, &mut self.counters),
                 storage_reads,
+                publisher,
             )?;
             if budget.cancellation().is_cancelled() {
                 return Err(SessionError::Cancelled(crate::analysis::control::Cancelled));

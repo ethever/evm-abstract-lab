@@ -4,8 +4,8 @@
 mod requests;
 
 use evm_abstract_protocol::{
-    AnalysisInput, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockSelector, BytecodeInput,
-    ErrorDetails, JobReply, JobState, RpcInput, RpcProvidersReply,
+    AnalysisInput, AnalyzeRequest, ApiErrorCode, BlockSelector, BytecodeInput, ErrorDetails,
+    JobReply, JobResultReply, JobState, RpcInput, RpcProvidersReply,
 };
 use evm_abstract_server::http::{router, serve_with_shutdown};
 use evm_abstract_server::jobs::{Config, Pool};
@@ -119,7 +119,7 @@ fn with_server<T>(assets: &Path, pool: &Pool, interact: impl FnOnce(SocketAddr) 
     })
 }
 
-fn decode(bytes: &[u8]) -> (String, AnalyzeReply) {
+fn decode(bytes: &[u8]) -> (String, JobResultReply) {
     let boundary = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -166,7 +166,9 @@ fn real_transport_roundtrip_returns_structured_analysis() {
         &pool,
     ));
     assert!(header.starts_with("HTTP/1.1 200"));
-    let report = reply.result.unwrap();
+    let result = reply.result.unwrap();
+    assert_eq!(result.id, id);
+    let report = result.report;
     report.validate().unwrap();
     let hybrid = report.hybrid.as_ref().unwrap();
     assert!(hybrid.coverage.baseline_current);
@@ -598,7 +600,7 @@ fn analysis_json_compression_negotiates_client_encodings_and_roundtrips_exactly(
         let (_, expected) = read_response(&mut BufReader::new(identity.as_slice()));
         assert!(expected.len() > 1024);
         assert!(
-            serde_json::from_slice::<AnalyzeReply>(&expected)
+            serde_json::from_slice::<JobResultReply>(&expected)
                 .unwrap()
                 .result
                 .is_ok()
