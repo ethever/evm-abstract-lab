@@ -13,6 +13,7 @@ mod providers;
 mod startup;
 mod terminal_coverage;
 pub(crate) mod timing;
+mod workbench;
 
 use crate::{palette, widgets};
 use directory::{Directory, Pick};
@@ -30,7 +31,7 @@ pub(crate) use inspector::shortcut::{
 };
 pub use job::{Command, JobOperation, Message};
 use job::{Task, TaskError, TaskPhase};
-use layout::{AnalysisPanes, Pane, PaneLayout};
+use layout::PaneLayout;
 
 /// Browser request failures, distinct from the backend's typed analysis errors.
 #[derive(Debug, thiserror::Error)]
@@ -89,9 +90,9 @@ impl Selection {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum View {
-    #[default]
     Split,
     Disassembly,
+    #[default]
     Graph,
     Ssa,
 }
@@ -112,6 +113,7 @@ pub struct Workspace {
     form: AnalysisForm,
     directory: Directory,
     inspector: Inspector,
+    panels: chrome::PanelLayout,
     previous_report: bool,
     pub(crate) selection: Selection,
     pub(crate) view: View,
@@ -141,9 +143,10 @@ impl Default for Workspace {
             form: AnalysisForm::default(),
             directory: Directory::default(),
             inspector: Inspector::default(),
+            panels: chrome::PanelLayout::default(),
             previous_report: false,
             selection: Selection::default(),
-            view: View::Split,
+            view: View::Graph,
             program: None,
             account: None,
             previous_state: None,
@@ -167,6 +170,9 @@ impl Workspace {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn toggle_inspector(&mut self) {
         self.inspector.expanded = !self.inspector.expanded;
+        if self.inspector.expanded && self.panels.compact() {
+            self.directory.open = false;
+        }
     }
 
     /// End a graph wheel gesture cancelled by Fit before new events are applied.
@@ -199,6 +205,16 @@ impl Workspace {
 
     /// Render the pure UI. The browser adapter executes the returned command.
     pub fn show(&mut self, ui: &mut Ui) -> Option<Command> {
+        let viewport = ui.available_size();
+        if self.report.is_some() {
+            self.panels.prepare(
+                viewport,
+                self.report_view.identity(),
+                self.view == View::Graph,
+                &mut self.directory.open,
+                &mut self.inspector.expanded,
+            );
+        }
         let prepare_started = timing::now();
         let preparing_report = self
             .report_timing
@@ -212,10 +228,16 @@ impl Workspace {
         // before the browser can open its downloads page. Native input uses
         // the same exact chord and focus guards directly in egui.
         #[cfg(not(target_arch = "wasm32"))]
-        self.inspector.handle_shortcut(
-            ui.ctx(),
-            self.report.is_some() && !self.form.open && ui.is_enabled(),
-        );
+        {
+            let expanded = self.inspector.expanded;
+            self.inspector.handle_shortcut(
+                ui.ctx(),
+                self.report.is_some() && !self.form.open && ui.is_enabled(),
+            );
+            if !expanded && self.inspector.expanded && self.panels.compact() {
+                self.directory.open = false;
+            }
+        }
         if !self.form.open && !ui.ctx().text_edit_focused() && !egui::Popup::is_any_open(ui.ctx()) {
             for (key, view) in [
                 (Key::Num0, View::Split),
@@ -231,7 +253,6 @@ impl Workspace {
         if !self.form.open && ui.input_mut(|input| input.consume_key(Modifiers::CTRL, Key::Enter)) {
             self.form.open = true;
         }
-        let viewport = ui.available_size();
         let modal_open = self.form.open;
         ui.add_enabled_ui(!modal_open, |ui| {
             egui::Panel::top("workspace_header")
@@ -248,158 +269,10 @@ impl Workspace {
                 ui.ctx().request_discard("status panel size changed");
             }
             self.sync_selection();
-            // Freeze this frame's presentation: a title action takes effect on
-            // the next frame, keeping the inspector's widget IDs unique.
-            let inspector_maximized = self.report.is_some() && self.inspector.maximized();
-            if self
-                .report
-                .as_ref()
-                .is_some_and(|report| report.hybrid.is_some())
-            {
-                egui::Panel::top("model_scope")
-                    .frame(palette::chrome_frame())
-                    .show(ui, |ui| self.model_selector(ui));
-            }
-            if self
-                .report
-                .as_ref()
-                .is_some_and(|report| self.report_view.minimum(report).is_some())
-            {
-                view_ready = self.show_minimum(ui, viewport);
-                view_shown = !ui.is_sizing_pass();
-                return;
-            }
-            if let Some(report) = &self.report {
-                let report = &self.report_view.shown(report);
-                egui::Panel::top("result_context")
-                    .frame(palette::chrome_frame())
-                    .show(ui, |ui| {
-                        chrome::result_context(
-                            ui,
-                            report,
-                            self.program,
-                            self.previous_report,
-                            &mut self.ssa_display,
-                        );
-                    });
-                if self.inspector.expanded && !inspector_maximized {
-                    let response = self.inspector.docked_panel(ui, viewport.y).show(ui, |ui| {
-                        // Reserve the chosen panel height even for an empty snapshot;
-                        // otherwise egui shrinks it after the graph's initial fit.
-                        ui.set_min_height(ui.available_height());
-                        self.inspector.show(
-                            ui,
-                            report,
-                            &mut self.selection,
-                            self.account.as_deref(),
-                        );
-                    });
-                    self.inspector.remember_resize(ui, response.response.rect);
-                }
-            }
-            let mut pick = None;
-            if self.directory.open
-                && !inspector_maximized
-                && viewport.x >= 1050.0
-                && let Some(report) = &self.report
-            {
-                let report = &self.report_view.shown(report);
-                egui::Panel::left("world_directory")
-                    .resizable(true)
-                    .default_size(196.0)
-                    .min_size(140.0)
-                    .max_size(320.0)
-                    .frame(palette::chrome_frame())
-                    .show(ui, |ui| {
-                        pick =
-                            self.directory
-                                .show(ui, report, self.program, self.account.as_deref());
-                    });
-            }
-            if let Some(pick) = pick {
-                self.pick(pick);
-            }
-            egui::CentralPanel::default()
-                .frame(
-                    egui::Frame::new()
-                        .fill(palette::BACKGROUND)
-                        .inner_margin(4.0),
-                )
-                .show(ui, |ui| {
-                    if let Some(report) = &self.report {
-                        let report = &self.report_view.shown(report);
-                        if inspector_maximized {
-                            self.inspector.show(
-                                ui,
-                                report,
-                                &mut self.selection,
-                                self.account.as_deref(),
-                            );
-                            view_shown = !ui.is_sizing_pass();
-                            return;
-                        }
-                        let mut panes = AnalysisPanes {
-                            report,
-                            selection: &mut self.selection,
-                            program: self.program,
-                            graph: &mut self.graph,
-                            disasm_focus: &mut self.disasm_focus,
-                            ssa_focus: &mut self.ssa_focus,
-                            ssa_cache: &mut self.ssa_cache,
-                            ssa_display: self.ssa_display,
-                            view_shown: &mut view_shown,
-                            view_ready: &mut view_ready,
-                        };
-                        match self.view {
-                            View::Split => self.layout.show(ui, &mut panes),
-                            View::Disassembly => panes.show(ui, Pane::Disassembly),
-                            View::Graph => panes.show(ui, Pane::Graph),
-                            View::Ssa => panes.show(ui, Pane::Ssa),
-                        }
-                    } else {
-                        widgets::empty(
-                            ui,
-                            if self.startup.loading() {
-                                "Loading the initial example…"
-                            } else if self.task.busy() {
-                                "Analysis is running. Progress and cancellation are below."
-                            } else {
-                                "Select New analysis to load bytecode or an RPC account."
-                            },
-                        );
-                    }
-                });
+            let preparation = self.show_workbench(ui, viewport);
+            view_shown = preparation.shown;
+            view_ready = preparation.ready;
         });
-        if self.directory.open
-            && viewport.x < 1050.0
-            && !self.form.open
-            && !self.inspector.maximized()
-            && self
-                .report
-                .as_ref()
-                .is_none_or(|report| self.report_view.minimum(report).is_none())
-        {
-            let mut open = true;
-            let mut pick = None;
-            if let Some(report) = &self.report {
-                let report = &self.report_view.shown(report);
-                egui::Window::new("Programs and accounts")
-                    .id(egui::Id::new("directory_window"))
-                    .open(&mut open)
-                    .default_width((viewport.x - 30.0).min(360.0))
-                    .max_height((viewport.y - 80.0).max(80.0))
-                    .show(ui.ctx(), |ui| {
-                        pick =
-                            self.directory
-                                .show(ui, report, self.program, self.account.as_deref())
-                    });
-            }
-            self.directory.open = open;
-            if let Some(pick) = pick {
-                self.pick(pick);
-                self.directory.open = false;
-            }
-        }
         if self.form.open {
             self.startup = startup::Startup::Finished;
         }

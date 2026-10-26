@@ -37,7 +37,7 @@ fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
 }
 
 #[test]
-fn navigation_and_metadata_preserve_the_original_analysis_height_budget() {
+fn navigation_and_metadata_keep_compact_desktop_and_touch_height_budgets() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
@@ -59,10 +59,11 @@ fn navigation_and_metadata_preserve_the_original_analysis_height_budget() {
             let metadata = egui::PanelState::load(&ctx, egui::Id::new("result_context"))
                 .unwrap()
                 .outer_rect;
-            // The original 20-point navigation row plus padding and separator
-            // occupied 25 points; the metadata strip occupied 20. A styling change must not take analysis space.
+            // Desktop keeps its original compact row. Phones reserve one
+            // 32-point target row, while metadata stays at its native height.
+            let header_budget = if size.x < 680.0 { 37.0 } else { 25.0 };
             assert!(
-                header.height() <= 25.0,
+                header.height() <= header_budget,
                 "navigation grew at {size:?}: {header:?}"
             );
             assert!(

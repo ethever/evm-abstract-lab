@@ -322,38 +322,18 @@ impl super::Workspace {
         }
         let mut picked = None;
         if self.directory.open && !maximized {
-            if viewport.x >= 1050.0 {
-                egui::Panel::left("world_directory")
-                    .resizable(true)
-                    .default_size(196.0)
-                    .frame(crate::palette::chrome_frame())
-                    .show(ui, |ui| {
-                        picked = directory(
-                            ui,
-                            report,
-                            model,
-                            self.program,
-                            self.minimum_selection.account,
-                        );
-                    });
-            } else {
-                let mut open = true;
-                egui::Window::new("Programs and accounts")
-                    .id(egui::Id::new("minimum_directory_window"))
-                    .open(&mut open)
-                    .default_width((viewport.x - 30.0).min(360.0))
-                    .max_height((viewport.y - 80.0).max(80.0))
-                    .show(ui.ctx(), |ui| {
-                        picked = directory(
-                            ui,
-                            report,
-                            model,
-                            self.program,
-                            self.minimum_selection.account,
-                        );
-                    });
-                self.directory.open = open && picked.is_none();
-            }
+            let mut open = true;
+            super::chrome::source_panel(ui, viewport).show(ui, |ui| {
+                super::chrome::source_heading(ui, &mut open);
+                picked = directory(
+                    ui,
+                    report,
+                    model,
+                    self.program,
+                    self.minimum_selection.account,
+                );
+            });
+            self.directory.open = open && (viewport.x >= 900.0 || picked.is_none());
         }
         if let Some(pick) = picked {
             match pick {
@@ -404,18 +384,26 @@ impl super::Workspace {
                         });
                 }
                 if self.view == super::View::Ssa {
-                    ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        crate::widgets::heading(ui, "SSA", "Native evidence required");
                         ui.label("Instruction SSA is available in Detailed paths.");
-                        if ui
-                            .add_enabled(
-                                report.native.is_some(),
-                                egui::Button::new("Open Detailed paths"),
-                            )
-                            .clicked()
-                        {
+                        ui.label(
+                            egui::RichText::new("This source has conservative control-flow evidence. Select a compatible Native context to inspect instruction values and before/after states.")
+                                .color(crate::palette::MUTED),
+                        );
+                        if crate::controls::action_enabled(
+                            ui,
+                            report.native.is_some(),
+                            "Open Detailed paths",
+                            crate::controls::Density::Regular,
+                        ).clicked() {
                             self.minimum_native_requested = true;
                         }
+                        if report.native.is_none() {
+                            ui.label(rich_status(report));
+                        }
                     });
+                    return;
                 }
                 self.graph
                     .show_minimum(ui, report, identity, &mut self.minimum_selection);

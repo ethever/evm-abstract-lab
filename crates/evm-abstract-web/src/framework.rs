@@ -17,7 +17,7 @@ pub(crate) fn bytecode_editor(ui: &mut egui::Ui, bytecode: &mut String, height: 
         .min_scrolled_height(height)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            ui.add(
+            let response = ui.add(
                 egui::TextEdit::multiline(bytecode)
                     .id(egui::Id::new("runtime_bytecode"))
                     .font(egui::TextStyle::Monospace)
@@ -25,6 +25,7 @@ pub(crate) fn bytecode_editor(ui: &mut egui::Ui, bytecode: &mut String, height: 
                     .desired_rows(1)
                     .hint_text("Runtime bytecode: 0x60806040…"),
             );
+            crate::controls::observe(ui, &response, "Runtime bytecode", "text", None);
         });
 }
 
@@ -45,12 +46,14 @@ pub(crate) fn line_editor(
     text: &mut String,
     hint: &str,
 ) -> egui::Response {
-    ui.add(
+    let response = ui.add(
         egui::TextEdit::singleline(text)
             .id(egui::Id::new(id))
             .desired_width(ui.available_width())
             .hint_text(crate::notation::widget(ui, hint)),
-    )
+    );
+    crate::controls::observe(ui, &response, id, "text", None);
+    response
 }
 
 /// Repeated rows use a parent-scoped ID instead of a global field identity.
@@ -61,10 +64,12 @@ pub(crate) fn scoped_editor(
     hint: &str,
     width: f32,
 ) -> egui::Response {
-    ui.add(
+    let response = ui.add(
         egui::TextEdit::singleline(text)
             .id(ui.make_persistent_id(id))
             .desired_width(width)
             .hint_text(crate::notation::widget(ui, hint)),
-    )
+    );
+    crate::controls::observe(ui, &response, id, "text", None);
+    response
 }

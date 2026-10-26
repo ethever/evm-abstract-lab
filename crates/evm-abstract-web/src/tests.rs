@@ -420,8 +420,9 @@ pub(crate) fn report() -> AnalysisReport {
 
 pub(crate) fn ready() -> Workspace {
     let mut workspace = Workspace::default();
+    workspace.view = View::Split;
     // Existing source/SSA identity and camera regressions exercise native
-    // states. The overview integration tests construct the product default.
+    // states in Compare. Product-default tests construct Workspace directly.
     workspace.graph.set_mode(widgets::GraphMode::States);
     report().validate().expect("consumer fixture must validate");
     workspace.initial_command();

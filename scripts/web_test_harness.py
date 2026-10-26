@@ -4,7 +4,6 @@ from pathlib import Path
 from contextlib import contextmanager
 from contextvars import ContextVar
 from playwright.sync_api import expect
-import base64
 import json
 import re
 import selectors
@@ -131,63 +130,65 @@ def wait_for_report_publication(page, job_id, publication, timeout_ms=60000):
             re.compile(rf"(?:^|; ){re.escape(label)}: {re.escape(shown)}(?=;|$)"), timeout=timeout_ms)
 
 
+def ui_controls(page):
+    """Read opt-in geometry from actual egui responses in the accepted UI pass."""
+    status = page.locator("#analysis-status")
+    expect(status).to_have_attribute("data-controls", re.compile(r"^\["))
+    return json.loads(status.get_attribute("data-controls"))
+
+
+def ui_control(page, label, *, role=None, selected=None, enabled=True):
+    # A disabled background control behind a modal cannot satisfy an enabled
+    # target. All interaction still enters through the real canvas.
+    fields = dict(label=label)
+    fields.update((key, value) for key, value in
+                  [("role", role), ("selected", selected), ("enabled", enabled)]
+                  if value is not None)
+    # Poll the real DOM attribute, so an idle WebGPU page need not schedule an
+    # animation frame merely to run the acceptance predicate.
+    terms = [re.escape(json.dumps(key) + ":" + json.dumps(value, ensure_ascii=False))
+             for key, value in fields.items()]
+    pattern = re.compile(r"\{" + "".join(r"(?=[^{}]*" + term + ")" for term in terms) + r"[^{}]*\}")
+    expect(page.locator("#analysis-status")).to_have_attribute("data-controls", pattern)
+    candidates = [control for control in ui_controls(page)
+                  if control["label"] == label
+                  and (role is None or control["role"] == role)
+                  and (selected is None or control["selected"] == selected)
+                  and (enabled is None or control["enabled"] == enabled)]
+    assert len(candidates) == 1, f"expected one rendered {label!r} control: {candidates}"
+    return candidates[0]
+
+
+def click_control(page, canvas, label, **query):
+    control = ui_control(page, label, **query)
+    left, top, right, bottom = control["rect"]
+    assert 0 <= left < right <= page.viewport_size["width"], control
+    assert 0 <= top < bottom <= page.viewport_size["height"], control
+    canvas.click(position=dict(x=(left + right) / 2, y=(top + bottom) / 2))
+    settle_gesture(page)
+    return control
+
+
 def hide_world_directory(page, canvas):
-    """Close the painted directory before tests that need the full Native canvas."""
-    def control():
-        page.mouse.move(2, 2)
-        settle_gesture(page)
-        return page.evaluate("""async png => {
-            const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
-            const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
-            const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
-            const scale=image.width/innerWidth;
-            if(innerWidth<800){
-                // Compact chrome puts the open directory in a floating window.
-                // Its real grey titlebar can occlude the namespace selectors.
-                const h=Math.min(c.height,Math.ceil(140*scale));
-                const pixels=ctx.getImageData(0,0,c.width,h).data;
-                let left=c.width,right=-1,top=h,bottom=-1,count=0;
-                for(let y=0;y<h;y++){
-                    let row=0,rowLeft=c.width,rowRight=-1;
-                    for(let x=0;x<c.width;x++){
-                        const i=(y*c.width+x)*4;
-                        if(pixels[i]===45&&pixels[i+1]===45&&pixels[i+2]===45){
-                            rowLeft=Math.min(rowLeft,x);rowRight=Math.max(rowRight,x);row++;
-                        }
-                    }
-                    if(row>200*scale){
-                        left=Math.min(left,rowLeft);right=Math.max(right,rowRight);
-                        top=Math.min(top,y);bottom=Math.max(bottom,y);count+=row;
-                    }
-                }
-                const width=(right-left+1)/scale,height=(bottom-top+1)/scale;
-                return count>1500*scale*scale&&width>=200&&height>=24&&height<=40 ?
-                    {x:(right+1)/scale-17,y:(top+bottom+1)/2/scale}:null;
-            }
-            const p=ctx.getImageData(Math.round((innerWidth-202)*scale),Math.round(4*scale),
-                Math.round(44*scale),Math.round(16*scale)).data;
-            let count=0;
-            for(let i=0;i<p.length;i+=4)if(p[i]===33&&p[i+1]===65&&p[i+2]===75)count++;
-            return count>100*scale*scale ? {x:innerWidth-180,y:12}:null;
-        }""", base64.b64encode(canvas.screenshot()).decode())
-    target=control()
-    if target is not None:
-        canvas.click(position=target)
-        assert control() is None, "World directory did not close"
+    """Close the anchored Sources lane through its actual header toggle."""
+    control = ui_control(page, "Sources", role="toggle")
+    if control["selected"]:
+        click_control(page, canvas, "Sources", role="toggle", selected=True)
+        ui_control(page, "Sources", role="toggle", selected=False)
 
 
 def select_report_namespace(page, report, namespace):
     """Use the real selector before following IDs in a particular graph."""
     assert namespace_available(report, namespace), namespace
     if report["hybrid"] is not None:
-        label, x = {"Baseline": ("Global model", 50), "Native": ("Detailed paths", 148)}[namespace]
+        label = {"Baseline": "Global model", "Native": "Detailed paths"}[namespace]
         if namespace == "Baseline" and report["minimum"] is not None:
             expected = f"Global model {report['minimum']['status']}"
         else:
             expected = f"View: {label}"
         status = page.locator("#analysis-status")
         if expected not in status.text_content():
-            page.locator("#evm-canvas").click(position={"x": x, "y": 38})
+            click_control(page, page.locator("#evm-canvas"), label, role="tab")
         expect(status).to_contain_text(expected)
         settle_gesture(page)
 
@@ -304,6 +305,18 @@ def observe_webgpu(page, unavailable: str | None = None) -> None:
         page.on("pageerror", lambda error: errors.append(str(error)))
     page.add_init_script("""(() => {
         const unavailable = UNAVAILABLE;
+        const observeControls = () => {
+            const status=document.querySelector('#analysis-status');
+            if (!status) return false;
+            status.setAttribute('data-observe-controls', '');
+            return true;
+        };
+        if (!observeControls()) {
+            const observer=new MutationObserver(() => {
+                if (observeControls()) observer.disconnect();
+            });
+            observer.observe(document, {childList:true, subtree:true});
+        }
         window.__webTestLastWheel = -Infinity;
         addEventListener('wheel', () => { window.__webTestLastWheel = performance.now(); },
                          {capture: true, passive: true});
