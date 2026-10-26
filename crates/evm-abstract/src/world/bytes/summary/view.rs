@@ -55,8 +55,16 @@ pub enum ByteSummaryProjectionError {
     #[error("byte summary projection cancelled")]
     Cancelled,
     /// The original array has a typed range or retained-state failure.
-    #[error(transparent)]
-    Source(#[from] RangeError),
+    #[error("{0}")]
+    Source(RangeError),
+}
+
+// Keep the concrete cause and conversion without generating Error::source's
+// dynamic dispatch in the statically dispatched core.
+impl From<RangeError> for ByteSummaryProjectionError {
+    fn from(error: RangeError) -> Self {
+        Self::Source(error)
+    }
 }
 
 impl<N: WordElement> EvmByteArray<N> {
