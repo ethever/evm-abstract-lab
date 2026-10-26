@@ -10,7 +10,7 @@ fn widths(workspace: &Workspace, size: Vec2) -> [f32; 3] {
     [Pane::Disassembly, Pane::Graph, Pane::Ssa].map(|pane| pane_rect(tree, pane).width())
 }
 
-fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
+fn natural(ctx: &Context, workspace: &mut Workspace) -> [f32; 2] {
     let mut widths = [0.0; 2];
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         let report = workspace.report.as_ref().unwrap();
@@ -22,12 +22,13 @@ fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
                 workspace.selection,
             )
             .max(PANE_MIN),
-            widgets::ssa_width(
+            widgets::ssa_width_cached(
                 ui,
                 &crate::tests::fixture_view(report),
                 workspace.program,
                 workspace.ssa_display,
                 workspace.selection,
+                &mut workspace.ssa_cache,
             )
             .max(PANE_MIN),
         ];
@@ -37,7 +38,7 @@ fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
 }
 
 #[test]
-fn navigation_and_metadata_preserve_the_original_analysis_height_budget() {
+fn navigation_and_metadata_keep_compact_desktop_and_touch_height_budgets() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
@@ -59,10 +60,11 @@ fn navigation_and_metadata_preserve_the_original_analysis_height_budget() {
             let metadata = egui::PanelState::load(&ctx, egui::Id::new("result_context"))
                 .unwrap()
                 .outer_rect;
-            // The original 20-point navigation row plus padding and separator
-            // occupied 25 points; the metadata strip occupied 20. A styling change must not take analysis space.
+            // Desktop keeps its original compact row. Phones reserve one
+            // 32-point target row, while metadata stays at its native height.
+            let header_budget = if size.x < 680.0 { 37.0 } else { 25.0 };
             assert!(
-                header.height() <= 25.0,
+                header.height() <= header_budget,
                 "navigation grew at {size:?}: {header:?}"
             );
             assert!(
@@ -92,7 +94,7 @@ fn first_frame_sizes_short_code_from_its_tables_and_gives_growth_to_cfg() {
     let size = Vec2::new(1440.0, 900.0);
     frame(&ctx, &mut workspace, size, Vec::new());
     let first = widths(&workspace, size);
-    let desired = natural(&ctx, &workspace);
+    let desired = natural(&ctx, &mut workspace);
     assert!((first[0] - desired[0]).abs() < 1.0);
     assert!((first[2] - desired[1]).abs() < 1.0);
     assert!(
@@ -113,6 +115,7 @@ fn long_push_and_phi_keep_a_graph_budget_without_hiding_source_data() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
+    workspace.ssa_cache.select_source_scope();
     let report = workspace.report.as_mut().unwrap();
     let immediate = format!("0x{}", "fe".repeat(32));
     std::sync::Arc::make_mut(&mut report.programs[0]).blocks[0].instructions[0].name =
@@ -133,7 +136,7 @@ fn long_push_and_phi_keep_a_graph_budget_without_hiding_source_data() {
     let size = Vec2::new(1440.0, 900.0);
     let output = settled(&ctx, &mut workspace, size);
     let allocated = widths(&workspace, size);
-    let desired = natural(&ctx, &workspace);
+    let desired = natural(&ctx, &mut workspace);
     assert!(allocated.iter().all(|width| *width >= PANE_MIN - 1.0));
     assert!(allocated[1] >= GRAPH_AUTO_MIN - 1.0);
     assert!(
@@ -280,7 +283,7 @@ fn medium_code_tabs_use_active_content_and_keep_the_graph_visible() {
     crate::palette::configure(&ctx);
     let mut workspace = ready();
     let size = Vec2::new(900.0, 700.0);
-    let desired = natural(&ctx, &workspace)[1];
+    let desired = natural(&ctx, &mut workspace)[1];
     let output = settled(&ctx, &mut workspace, size);
     let ssa = pane_rect(&workspace.layout.medium, Pane::Ssa).width();
     assert!((ssa - desired).abs() < 1.0);
@@ -301,7 +304,7 @@ fn medium_code_tabs_use_active_content_and_keep_the_graph_visible() {
     let disassembly = pane_rect(&workspace.layout.medium, Pane::Disassembly).width();
     assert!(ssa > disassembly + 30.0);
     assert!(pane_rect(&workspace.layout.medium, Pane::Graph).width() >= GRAPH_AUTO_MIN - 1.0);
-    let desired = natural(&ctx, &workspace)[0];
+    let desired = natural(&ctx, &mut workspace)[0];
     assert!((disassembly - desired).abs() < 1.0);
 }
 

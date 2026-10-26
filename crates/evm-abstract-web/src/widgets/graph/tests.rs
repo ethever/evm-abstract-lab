@@ -115,7 +115,7 @@ fn a_sizing_pass_cannot_consume_the_first_layout_or_fit() {
     });
     output.textures_delta.clear();
     assert!(graph.scene.placement.nodes.is_empty());
-    assert!(graph.scene.layout_pending && graph.fit_pending);
+    assert!(graph.scene.layout_pending && (graph.fit_pending || graph.entry_pending));
     render(&ctx, &mut graph, &report, Vec2::new(900.0, 600.0));
     assert_eq!(graph.scene.placement.nodes.len(), report.cfg.len());
     assert_scene_fits(&graph);
@@ -225,17 +225,23 @@ fn report() -> AnalysisReport {
 }
 
 // These fixtures exercise source-card geometry and deliberately carry no SSA.
-// Default SSA behavior is tested with real typed SSA blocks in content/tests.rs.
+// Explicit overview/Fit retains the full-layout geometry oracle. Default entry
+// readability and scoped boundaries have separate production-path regressions.
 fn disassembly_graph() -> Graph {
     let mut graph = Graph {
         content: super::content::NodeView::Disassembly,
+        whole_scope: true,
         ..Graph::default()
     };
     graph.set_mode(crate::widgets::GraphMode::States);
+    graph.queue_fit();
     graph
 }
 
 fn render(ctx: &Context, graph: &mut Graph, report: &AnalysisReport, size: Vec2) {
+    if graph.whole_scope && graph.entry_pending {
+        graph.queue_fit();
+    }
     let mut output = ctx.run_ui(
         RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
@@ -373,7 +379,9 @@ fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     let mut graph = disassembly_graph();
-    for size in [Vec2::new(1440.0, 1200.0), Vec2::new(1440.0, 1600.0)] {
+    render(&ctx, &mut graph, &report, Vec2::new(1440.0, 1200.0));
+    let width = graph.scene.placement.bounds.width().max(1440.0) + 64.0;
+    for size in [Vec2::new(width, 1200.0), Vec2::new(width, 1600.0)] {
         render(&ctx, &mut graph, &report, size);
         graph.queue_fit();
         render(&ctx, &mut graph, &report, size);
@@ -560,7 +568,7 @@ fn content_measurement_shrinks_short_nodes_and_retains_empty_frame_semantics() {
             super::NodeView::Disassembly,
         );
         assert!(empty.lines.is_empty());
-        assert!(empty.detail.starts_with("no bytecode"));
+        assert!(empty.detail.contains("no bytecode"));
         assert!(empty.size.y < short.size.y);
         sizes = Some((short.size, long.size));
     });
@@ -659,6 +667,10 @@ fn painted_virtual_labels_remain_outside_state_cards_when_zoomed() {
             );
             for edge in &report.edges {
                 let name = super::edge_label(edge.id, edge.kind);
+                if zoom < 0.9 {
+                    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == name)));
+                    continue;
+                }
                 let text = output
                     .shapes
                     .iter()

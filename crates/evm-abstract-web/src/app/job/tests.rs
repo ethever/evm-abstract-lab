@@ -2,6 +2,8 @@ use super::*;
 use crate::Workspace;
 use evm_abstract_protocol::AnalysisProgress;
 
+mod presentation;
+
 fn task() -> Task {
     let mut task = Task::default();
     task.start(AnalyzeRequest::default());

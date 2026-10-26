@@ -1,103 +1,88 @@
 """Inspector helpers browser acceptance helpers."""
 
-import base64
 from playwright.sync_api import expect
 import re
-from web_test_harness import settle_gesture
+import time
+from web_test_harness import click_control, set_control, ui_control, ui_controls
 
 
-INSPECTOR_TAB_POSITIONS = {
-    "Coverage": 40, "Frame": 102, "Stack": 152, "SSA value": 213, "Memory": 282,
-    "Storage": 346, "Transient": 413, "Calldata": 480, "Returndata": 553,
-    "Outcomes": 633, "Acquisition": 712, "Environment": 799, "Timing": 871, "Diagnostics": 938,
+INSPECTOR_GROUPS = {
+    "Frame": "State", "Stack": "State", "SSA value": "State",
+    "Memory": "Data", "Calldata": "Data", "Returndata": "Data",
+    "Storage": "Effects", "Transient": "Effects", "Outcomes": "Effects",
+    "Coverage": "Evidence", "Acquisition": "Evidence", "Environment": "Evidence",
+    "Diagnostics": "Evidence", "Timing": "Timing",
 }
-MINIMUM_INSPECTOR_TAB_POSITIONS = {
-    "Original inputs": 55, "Control": 135, "Procedure input": 222,
-    "Joint outputs": 323, "Timing": 399,
-}
+
+
+def show_inspector(page, canvas):
+    """Open the actual Inspector lane without resetting its tab or panel size."""
+    return set_control(page, canvas, "Inspect", True)
+
 
 def hide_inspector(page, canvas):
-    # Native geometry tests cover this right-aligned header control; the action
-    # is exercised with an actual pointer and leaves more canvas for gestures.
-    canvas.click(position={"x": page.viewport_size["width"] - 124, "y": 12})
-    settle_gesture(page)
+    """Keep an initially collapsed Inspector closed, including on narrow views."""
+    return set_control(page, canvas, "Inspect", False)
+
+
+def inspector_choice(page, canvas, menu, label, *, role="tab"):
+    """Pick an actual popup response, disambiguated from the underlying tabs."""
+    before = {control["id"] for control in ui_controls(page)}
+    click_control(page, canvas, menu, role="combobox")
+    deadline = time.monotonic() + 5
+    while True:
+        choices = [control for control in ui_controls(page)
+                   if control["id"] not in before and control["label"] == label
+                   and control["role"] == role and control["enabled"]]
+        if choices or time.monotonic() >= deadline:
+            break
+        page.wait_for_timeout(25)
+    assert len(choices) == 1, (menu, label, choices)
+    return click_control(page, canvas, label, role=role, id=choices[0]["id"])
+
+
+def select_inspector_scope(page, canvas, scope):
+    """Keep original observations, joined inputs and paired outcomes distinct."""
+    assert scope in {"Original observations", "Procedure input", "Joint outcome"}, scope
+    show_inspector(page, canvas)
+    if any(control["label"] == "inspector_observation_scope" and control["role"] == "combobox"
+           for control in ui_controls(page)):
+        inspector_choice(page, canvas, "inspector_observation_scope", scope)
+    else:
+        control = ui_control(page, scope, role="tab")
+        if not control["selected"]:
+            click_control(page, canvas, scope, role="tab")
+        ui_control(page, scope, role="tab", selected=True)
+    expect(page.locator("#analysis-status")).to_contain_text(scope)
 
 def select_inspector_tab(page, canvas, tab: str, y: float | None = None, *, minimum=False):
-    # Compact shared controls, measured in the packaged 1440x1000 WASM app.
-    # Preserve caller-supplied geometry after inspector resizing or dragging.
-    if y is None:
-        selected = inspector_selected_tab(page, canvas, minimum=minimum)
-        y = (selected[1] + selected[3]) / 2
-    positions = MINIMUM_INSPECTOR_TAB_POSITIONS if minimum else INSPECTOR_TAB_POSITIONS
-    canvas.click(position={"x": positions[tab], "y": y})
+    # Older callers pass the previous toolbar y after resizing. Navigation now
+    # follows accepted response geometry; the previous row is never clickable.
+    assert tab in INSPECTOR_GROUPS, tab
+    show_inspector(page, canvas)
+    group = INSPECTOR_GROUPS[tab]
+    if any(control["label"] == "inspection_group" and control["role"] == "combobox"
+           for control in ui_controls(page)):
+        inspector_choice(page, canvas, "inspection_group", group)
+    else:
+        control = ui_control(page, group, role="tab")
+        if not control["selected"]:
+            click_control(page, canvas, group, role="tab")
+        ui_control(page, group, role="tab", selected=True)
+    inspector_choice(page, canvas, "inspector_tab", tab)
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
-
-def inspector_painted_controls(page, canvas):
-    """Measure compact selected tabs and inactive title actions from their actual fills."""
-    page.mouse.move(2, 2)
-    settle_gesture(page)
-    png = canvas.screenshot()
-    return page.evaluate("""async png => {
-        const image = new Image(); image.src = `data:image/png;base64,${png}`;
-        await image.decode();
-        const c = document.createElement('canvas'); c.width=image.width; c.height=image.height;
-        const ctx=c.getContext('2d'); ctx.drawImage(image,0,0);
-        const pixels=ctx.getImageData(0,0,c.width,c.height).data;
-        const visited=new Uint8Array(c.width*c.height), scale=c.width/innerWidth;
-        const result={selected:[],actions:[]};
-        // palette::SELECTED and inactive action RAISED; move the pointer away
-        // before capture so a hovered action cannot be mistaken for a tab.
-        const kind=i=>pixels[i*4]===33 && pixels[i*4+1]===65 && pixels[i*4+2]===75 ? 0 :
-            pixels[i*4]===29 && pixels[i*4+1]===40 && pixels[i*4+2]===56 ? 1 : -1;
-        for (let y=Math.ceil(25*scale);y<c.height;y++) for(let x=0;x<c.width;x++) {
-            const start=y*c.width+x;
-            const group=kind(start);
-            if(visited[start] || group<0)continue;
-            const queue=[start];visited[start]=1;let left=x,right=x,top=y,bottom=y,count=0;
-            for(let at=0;at<queue.length;at++) {
-                const i=queue[at],px=i%c.width,py=Math.floor(i/c.width);count++;
-                left=Math.min(left,px);right=Math.max(right,px);top=Math.min(top,py);bottom=Math.max(bottom,py);
-                for(const next of [px>0?i-1:-1,px+1<c.width?i+1:-1,py>0?i-c.width:-1,py+1<c.height?i+c.width:-1]) {
-                    if(next>=0 && !visited[next] && kind(next)===group){visited[next]=1;queue.push(next);}
-                }
-            }
-            const w=(right-left+1)/scale,h=(bottom-top+1)/scale;
-            if(w>=(group===0?40:30) && w<=100 && h>=14 && h<=20 && count>120*scale*scale)
-                result[group===0?'selected':'actions'].push([left/scale,top/scale,(right+1)/scale,(bottom+1)/scale]);
-        }
-        for(const rectangles of Object.values(result))rectangles.sort((a,b)=>a[1]-b[1]);
-        return result;
-    }""", base64.b64encode(png).decode())
+    return inspector_selected_tab(page, canvas, tab, minimum=minimum)
 
 def inspector_selected_tab(page, canvas, tab: str | None = None, *, minimum=False):
-    """Locate the status-selected tab without assuming the inspector's height."""
-    positions = MINIMUM_INSPECTOR_TAB_POSITIONS if minimum else INSPECTOR_TAB_POSITIONS
-    labels = "|".join(re.escape(label) for label in positions)
+    """Measure the actual content selector; reading it never reopens a hidden pane."""
+    ui_control(page, "Inspect", role="toggle", selected=True)
+    labels = "|".join(re.escape(label) for label in INSPECTOR_GROUPS)
     selected = re.findall(rf"(?:^|; )Inspector: ({labels})(?= ·| %|;|$)",
                           page.locator("#analysis-status").text_content() or "")
     assert len(selected) == 1, f"expected one selected Inspector label, got {selected}"
     if tab is not None:
         assert selected == [tab], f"expected Inspector: {tab}, got {selected}"
-    tab = selected[0]
-    controls = inspector_painted_controls(page, canvas)
-    # The inspector alone has adjacent right-aligned Maximize/Restore and Hide
-    # actions. Match their painted row, not another selected control at the same
-    # x (notably graph Blocks beside the Memory tab's x coordinate).
-    titlebars = [hide for hide in controls["actions"]
-                 if 2 <= page.viewport_size["width"] - hide[2] <= 10
-                 and 30 <= hide[2] - hide[0] <= 45
-                 and any(45 <= action[2] - action[0] <= 85
-                         and 2 <= hide[0] - action[2] <= 9
-                         and abs((hide[1] + hide[3] - action[1] - action[3]) / 2) <= 1
-                         for action in controls["actions"])]
-    assert len(titlebars) == 1, f"expected one Inspector Hide/Maximize titlebar, got {titlebars}"
-    titlebar = titlebars[0]
-    candidates = [rect for rect in controls["selected"]
-                  if abs((rect[0] + rect[2]) / 2 - positions[tab]) <= 8
-                  and abs((rect[1] + rect[3] - titlebar[1] - titlebar[3]) / 2) <= 1
-                  and (tab != "Frame" or (76 <= rect[0] <= 84 and 40 <= rect[2] - rect[0] <= 50))]
-    assert len(candidates) == 1, f"expected one selected {tab} tab, got {candidates}"
-    return candidates[0]
+    return ui_control(page, "inspector_tab", role="combobox")["rect"]
 
 def inspector_frame_tab(page, canvas):
     """Keep Frame-specific assertions for drag, resize and restore callers."""
@@ -105,26 +90,46 @@ def inspector_frame_tab(page, canvas):
     return inspector_selected_tab(page, canvas, "Frame")
 
 def inspector_block_entry_control(page, canvas):
-    """Find the selected Block entry control immediately below the Frame toolbar."""
-    expect(page.locator("#analysis-status")).to_contain_text("Inspector: Frame · Block entry")
-    toolbar = inspector_frame_tab(page, canvas)
-    candidates = [rect for rect in inspector_painted_controls(page, canvas)["selected"]
-                  if 20 <= rect[0] <= 50 and 70 <= rect[2] - rect[0] <= 85
-                  and 0 <= rect[1] - toolbar[3] <= 10]
-    assert len(candidates) == 1, f"expected one selected Block entry control, got {candidates}"
-    return candidates[0]
+    """Measure the actual Native before/after selector at a block entry."""
+    expect(page.locator("#analysis-status")).to_contain_text("Inspector: Frame")
+    expect(page.locator("#analysis-status")).to_contain_text("Block entry")
+    inspector_frame_tab(page, canvas)
+    return ui_control(page, "inspector_boundary", role="combobox")["rect"]
+
+
+def select_inspector_boundary(page, canvas, point, *, historical=False):
+    """Choose a retained Native boundary without upgrading a historical exit."""
+    assert point in {"before", "after"}, point
+    assert type(historical) is bool, historical
+    label = "Before block · entry snapshot" if point == "before" else (
+        "After block · historical exit" if historical else "After block · observed exit")
+    inspector_choice(page, canvas, "inspector_boundary", label)
+    expected = "Block entry" if point == "before" else (
+        "Historical exit" if historical else "Observed exit")
+    expect(page.locator("#analysis-status")).to_contain_text(expected)
+    return ui_control(page, "inspector_boundary", role="combobox")["rect"]
+
+
+def select_inspector_frame(page, canvas, frame, *, active):
+    """Frame indices come from the selected boundary's retained machine only."""
+    assert type(frame) is int and frame >= 0, frame
+    assert type(active) is bool, active
+    label = f"Frame {frame + 1} · {'active' if active else 'suspended caller'}"
+    inspector_choice(page, canvas, "inspector_frame", label)
+    index = str(frame).translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉"))
+    expect(page.locator("#analysis-status")).to_contain_text(f"Frame f{index}")
+    return ui_control(page, "inspector_frame", role="combobox")["rect"]
 
 def inspector_diagnostics_region(page, canvas):
-    """The existing default 210px dock has no observation row on Diagnostics."""
+    """Measure evidence below shared navigation inside the visible dock."""
     title = inspector_selected_tab(page, canvas, "Diagnostics")
-    # Start after the actual titlebar and its 3px item gap. This keeps the same
-    # 176px content window inside the default dock, above the status/Job ID panel.
+    # Receipt links use actual response IDs. This window independently checks
+    # painted evidence, without interpreting a text-band index as a control.
     top = title[3] + 3
-    return (8, top, 1410, top + 176)
+    return (8, top, page.viewport_size["width"] - 30,
+            min(top + 176, page.viewport_size["height"] - 30))
 
 def inspector_title_action(page, canvas, action: str, selected_tab):
-    """Use the real right-aligned titlebar at its painted vertical position."""
-    inset = {"Maximize": 79, "Restore": 73, "Hide": 24}[action]
-    canvas.click(position={"x": page.viewport_size["width"] - inset,
-                           "y": (selected_tab[1] + selected_tab[3]) / 2})
-    settle_gesture(page)
+    """Use the actual panel action after a drag, resize or maximize."""
+    assert action in {"Maximize", "Restore", "Hide"}, action
+    click_control(page, canvas, action, role="action")

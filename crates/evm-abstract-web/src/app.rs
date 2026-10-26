@@ -13,9 +13,10 @@ mod providers;
 mod startup;
 mod terminal_coverage;
 pub(crate) mod timing;
+mod workbench;
 
 use crate::{palette, widgets};
-use directory::{Directory, Pick};
+use directory::Directory;
 use egui::{Key, Modifiers, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{
@@ -30,7 +31,7 @@ pub(crate) use inspector::shortcut::{
 };
 pub use job::{Command, JobOperation, Message};
 use job::{Task, TaskError, TaskPhase};
-use layout::{AnalysisPanes, Pane, PaneLayout};
+use layout::PaneLayout;
 
 /// Browser request failures, distinct from the backend's typed analysis errors.
 #[derive(Debug, thiserror::Error)]
@@ -89,11 +90,22 @@ impl Selection {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum View {
-    #[default]
     Split,
     Disassembly,
+    #[default]
     Graph,
     Ssa,
+}
+
+impl View {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Split => "Compare",
+            Self::Disassembly => "Code",
+            Self::Graph => "CFG",
+            Self::Ssa => "SSA",
+        }
+    }
 }
 
 /// Browser-independent workbench. Reports remain immutable while a new native
@@ -102,8 +114,9 @@ pub struct Workspace {
     report: Option<AnalysisReport>,
     report_view: model::ReportViewState,
     minimum_selection: minimum::Selection,
-    minimum_source: minimum::SourceCache,
-    minimum_native_requested: bool,
+    source_cache: widgets::SourceCache,
+    navigation_error: Option<model::navigation::NavigationError>,
+    original_inspection: Option<workbench::OriginalInspection>,
     // Only a validated report from an accepted server result owns this ID.
     // It remains bound to the visible report across later task generations.
     report_job_id: Option<JobId>,
@@ -112,6 +125,7 @@ pub struct Workspace {
     form: AnalysisForm,
     directory: Directory,
     inspector: Inspector,
+    panels: chrome::PanelLayout,
     previous_report: bool,
     pub(crate) selection: Selection,
     pub(crate) view: View,
@@ -120,7 +134,6 @@ pub struct Workspace {
     previous_state: Option<usize>,
     pub(crate) graph: widgets::Graph,
     layout: PaneLayout,
-    disasm_focus: Selection,
     ssa_focus: Selection,
     ssa_cache: widgets::SsaCache,
     ssa_display: crate::ssa_display::SsaDisplay,
@@ -133,23 +146,24 @@ impl Default for Workspace {
             report: None,
             report_view: model::ReportViewState::default(),
             minimum_selection: minimum::Selection::default(),
-            minimum_source: minimum::SourceCache::default(),
-            minimum_native_requested: false,
+            source_cache: widgets::SourceCache::default(),
+            navigation_error: None,
+            original_inspection: None,
             report_job_id: None,
             task: Task::default(),
             startup: startup::Startup::default(),
             form: AnalysisForm::default(),
             directory: Directory::default(),
             inspector: Inspector::default(),
+            panels: chrome::PanelLayout::default(),
             previous_report: false,
             selection: Selection::default(),
-            view: View::Split,
+            view: View::Graph,
             program: None,
             account: None,
             previous_state: None,
             graph: widgets::Graph::default(),
             layout: PaneLayout::default(),
-            disasm_focus: Selection::default(),
             ssa_focus: Selection::default(),
             ssa_cache: widgets::SsaCache::default(),
             ssa_display: crate::ssa_display::SsaDisplay::default(),
@@ -167,6 +181,9 @@ impl Workspace {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn toggle_inspector(&mut self) {
         self.inspector.expanded = !self.inspector.expanded;
+        if self.inspector.expanded && self.panels.compact() {
+            self.directory.open = false;
+        }
     }
 
     /// End a graph wheel gesture cancelled by Fit before new events are applied.
@@ -199,6 +216,16 @@ impl Workspace {
 
     /// Render the pure UI. The browser adapter executes the returned command.
     pub fn show(&mut self, ui: &mut Ui) -> Option<Command> {
+        let viewport = ui.available_size();
+        if self.report.is_some() {
+            self.panels.prepare(
+                viewport,
+                self.report_view.identity(),
+                self.view == View::Graph,
+                &mut self.directory.open,
+                &mut self.inspector.expanded,
+            );
+        }
         let prepare_started = timing::now();
         let preparing_report = self
             .report_timing
@@ -212,10 +239,16 @@ impl Workspace {
         // before the browser can open its downloads page. Native input uses
         // the same exact chord and focus guards directly in egui.
         #[cfg(not(target_arch = "wasm32"))]
-        self.inspector.handle_shortcut(
-            ui.ctx(),
-            self.report.is_some() && !self.form.open && ui.is_enabled(),
-        );
+        {
+            let expanded = self.inspector.expanded;
+            self.inspector.handle_shortcut(
+                ui.ctx(),
+                self.report.is_some() && !self.form.open && ui.is_enabled(),
+            );
+            if !expanded && self.inspector.expanded && self.panels.compact() {
+                self.directory.open = false;
+            }
+        }
         if !self.form.open && !ui.ctx().text_edit_focused() && !egui::Popup::is_any_open(ui.ctx()) {
             for (key, view) in [
                 (Key::Num0, View::Split),
@@ -231,7 +264,6 @@ impl Workspace {
         if !self.form.open && ui.input_mut(|input| input.consume_key(Modifiers::CTRL, Key::Enter)) {
             self.form.open = true;
         }
-        let viewport = ui.available_size();
         let modal_open = self.form.open;
         ui.add_enabled_ui(!modal_open, |ui| {
             egui::Panel::top("workspace_header")
@@ -248,166 +280,15 @@ impl Workspace {
                 ui.ctx().request_discard("status panel size changed");
             }
             self.sync_selection();
-            // Freeze this frame's presentation: a title action takes effect on
-            // the next frame, keeping the inspector's widget IDs unique.
-            let inspector_maximized = self.report.is_some() && self.inspector.maximized();
-            if self
-                .report
-                .as_ref()
-                .is_some_and(|report| report.hybrid.is_some())
-            {
-                egui::Panel::top("model_scope")
-                    .frame(palette::chrome_frame())
-                    .show(ui, |ui| self.model_selector(ui));
-            }
-            if self
-                .report
-                .as_ref()
-                .is_some_and(|report| self.report_view.minimum(report).is_some())
-            {
-                view_ready = self.show_minimum(ui, viewport);
-                view_shown = !ui.is_sizing_pass();
-                return;
-            }
-            if let Some(report) = &self.report {
-                let report = &self.report_view.shown(report);
-                egui::Panel::top("result_context")
-                    .frame(palette::chrome_frame())
-                    .show(ui, |ui| {
-                        chrome::result_context(
-                            ui,
-                            report,
-                            self.program,
-                            self.previous_report,
-                            &mut self.ssa_display,
-                        );
-                    });
-                if self.inspector.expanded && !inspector_maximized {
-                    let response = self.inspector.docked_panel(ui, viewport.y).show(ui, |ui| {
-                        // Reserve the chosen panel height even for an empty snapshot;
-                        // otherwise egui shrinks it after the graph's initial fit.
-                        ui.set_min_height(ui.available_height());
-                        self.inspector.show(
-                            ui,
-                            report,
-                            &mut self.selection,
-                            self.account.as_deref(),
-                        );
-                    });
-                    self.inspector.remember_resize(ui, response.response.rect);
-                }
-            }
-            let mut pick = None;
-            if self.directory.open
-                && !inspector_maximized
-                && viewport.x >= 1050.0
-                && let Some(report) = &self.report
-            {
-                let report = &self.report_view.shown(report);
-                egui::Panel::left("world_directory")
-                    .resizable(true)
-                    .default_size(196.0)
-                    .min_size(140.0)
-                    .max_size(320.0)
-                    .frame(palette::chrome_frame())
-                    .show(ui, |ui| {
-                        pick =
-                            self.directory
-                                .show(ui, report, self.program, self.account.as_deref());
-                    });
-            }
-            if let Some(pick) = pick {
-                self.pick(pick);
-            }
-            egui::CentralPanel::default()
-                .frame(
-                    egui::Frame::new()
-                        .fill(palette::BACKGROUND)
-                        .inner_margin(4.0),
-                )
-                .show(ui, |ui| {
-                    if let Some(report) = &self.report {
-                        let report = &self.report_view.shown(report);
-                        if inspector_maximized {
-                            self.inspector.show(
-                                ui,
-                                report,
-                                &mut self.selection,
-                                self.account.as_deref(),
-                            );
-                            view_shown = !ui.is_sizing_pass();
-                            return;
-                        }
-                        let mut panes = AnalysisPanes {
-                            report,
-                            selection: &mut self.selection,
-                            program: self.program,
-                            graph: &mut self.graph,
-                            disasm_focus: &mut self.disasm_focus,
-                            ssa_focus: &mut self.ssa_focus,
-                            ssa_cache: &mut self.ssa_cache,
-                            ssa_display: self.ssa_display,
-                            view_shown: &mut view_shown,
-                            view_ready: &mut view_ready,
-                        };
-                        match self.view {
-                            View::Split => self.layout.show(ui, &mut panes),
-                            View::Disassembly => panes.show(ui, Pane::Disassembly),
-                            View::Graph => panes.show(ui, Pane::Graph),
-                            View::Ssa => panes.show(ui, Pane::Ssa),
-                        }
-                    } else {
-                        widgets::empty(
-                            ui,
-                            if self.startup.loading() {
-                                "Loading the initial example…"
-                            } else if self.task.busy() {
-                                "Analysis is running. Progress and cancellation are below."
-                            } else {
-                                "Select New analysis to load bytecode or an RPC account."
-                            },
-                        );
-                    }
-                });
+            let preparation = self.show_workbench(ui, viewport);
+            view_shown = preparation.shown;
+            view_ready = preparation.ready;
         });
-        if self.directory.open
-            && viewport.x < 1050.0
-            && !self.form.open
-            && !self.inspector.maximized()
-            && self
-                .report
-                .as_ref()
-                .is_none_or(|report| self.report_view.minimum(report).is_none())
-        {
-            let mut open = true;
-            let mut pick = None;
-            if let Some(report) = &self.report {
-                let report = &self.report_view.shown(report);
-                egui::Window::new("Programs and accounts")
-                    .id(egui::Id::new("directory_window"))
-                    .open(&mut open)
-                    .default_width((viewport.x - 30.0).min(360.0))
-                    .max_height((viewport.y - 80.0).max(80.0))
-                    .show(ui.ctx(), |ui| {
-                        pick =
-                            self.directory
-                                .show(ui, report, self.program, self.account.as_deref())
-                    });
-            }
-            self.directory.open = open;
-            if let Some(pick) = pick {
-                self.pick(pick);
-                self.directory.open = false;
-            }
-        }
         if self.form.open {
             self.startup = startup::Startup::Finished;
         }
         if let Some(request) = self.form.show(ui.ctx(), self.task.busy()) {
             command = Some(self.start(request));
-        }
-        if std::mem::take(&mut self.minimum_native_requested) {
-            self.activate_view(model::Activation::Namespace(AnalysisNamespace::Native));
         }
         self.sync_selection();
         if preparing_report && let Some(timing) = &mut self.report_timing {
@@ -438,65 +319,6 @@ impl Workspace {
         command
             .or_else(|| self.pending_startup_command())
             .or_else(|| self.task.next_command(ui.input(|input| input.time)))
-    }
-
-    fn pick(&mut self, pick: Pick) {
-        let Some(report) = &self.report else {
-            return;
-        };
-        let report = &self.report_view.shown(report);
-        match pick {
-            Pick::RootInput => {
-                self.account = None;
-                self.inspector.expanded = true;
-                self.inspector.tab = inspector::Tab::Environment;
-            }
-            Pick::Program(program) => {
-                self.program = Some(program);
-                self.account = None;
-                self.selection = Selection {
-                    value: None,
-                    state: report
-                        .cfg
-                        .iter()
-                        .find(|state| state.program == Some(program))
-                        .map(|state| state.id),
-                    pc: None,
-                };
-            }
-            Pick::Account(address) => {
-                self.selection = Selection {
-                    value: None,
-                    state: report
-                        .cfg
-                        .iter()
-                        .find(|state| state.storage_address.as_deref() == Some(address.as_str()))
-                        .map(|state| state.id),
-                    pc: None,
-                };
-                self.program = self
-                    .selection
-                    .state
-                    .and_then(|id| {
-                        report
-                            .cfg
-                            .iter()
-                            .find(|state| state.id == id)
-                            .and_then(|state| state.program)
-                    })
-                    .or_else(|| {
-                        report
-                            .accounts
-                            .iter()
-                            .find(|account| account.address == address)
-                            .and_then(|account| account.program)
-                    });
-                self.account = Some(address);
-                self.inspector.expanded = true;
-                self.inspector.tab = inspector::Tab::Storage;
-            }
-        }
-        self.previous_state = self.selection.state;
     }
 
     fn sync_selection(&mut self) {
@@ -662,6 +484,7 @@ impl Workspace {
         self.activate_view(model::Activation::Report {
             replacement,
             publication: publication.clone(),
+            job_id: report_job_id,
         });
         self.previous_report = false;
         self.report_job_id = report_job_id;
@@ -684,7 +507,34 @@ impl Workspace {
 
     /// Live status for assistive tools and real browser verification.
     pub fn accessible_status(&self) -> String {
-        let status = self.accessible_task_status();
+        let mut status = format!(
+            "{}; Route: {}; Input: {}; Sources: {}; Inspector panel: {}",
+            self.accessible_task_status(),
+            self.view.label(),
+            if self.form.open { "open" } else { "closed" },
+            if self.form.open && self.directory.open {
+                "suspended during input"
+            } else if self.directory.open {
+                "open"
+            } else {
+                "closed"
+            },
+            if self.form.open && self.inspector.expanded {
+                "suspended during input"
+            } else if self.inspector.expanded {
+                "open"
+            } else {
+                "closed"
+            },
+        );
+        if let Some(location) = self.report_view.navigator().current() {
+            use model::navigation::EvidenceFocus;
+            status.push_str(match location.focus.evidence {
+                EvidenceFocus::Source { .. } => "; Evidence: decoded source",
+                EvidenceFocus::Minimum(_) => "; Evidence: MAY control",
+                EvidenceFocus::Graph(_) => "; Evidence: graph state",
+            });
+        }
         let timing = self.accessible_timing();
         if timing.is_empty() {
             status
@@ -745,24 +595,6 @@ impl Workspace {
         status
     }
 
-    fn job_identities(&self) -> impl Iterator<Item = (&'static str, JobId)> {
-        let current = self.task.snapshot.as_ref().map(|snapshot| snapshot.id);
-        let label = if self.report.is_some() && self.report_job_id != current {
-            "Current Job ID"
-        } else {
-            "Job ID"
-        };
-        [
-            (label, current),
-            (
-                "Result Job ID",
-                self.report_job_id.filter(|id| Some(*id) != current),
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(label, id)| id.map(|id| (label, id)))
-    }
-
     fn task_status_summary(&self) -> String {
         if self.startup.loading() {
             return "Loading the initial example…".into();
@@ -779,6 +611,25 @@ impl Workspace {
                 return self.minimum_status(report, minimum);
             }
             let report = &self.report_view.shown(report);
+            let inspection = if self
+                .original_inspection
+                .as_ref()
+                .is_some_and(|subject| subject.view == self.report_view.identity())
+            {
+                format!(
+                    "Inspector: {} · Original observations",
+                    self.inspector.tab.label()
+                )
+            } else if self
+                .report_view
+                .navigator()
+                .current()
+                .is_some_and(|location| location.focus.context.is_none())
+            {
+                format!("Inspector: {} · Source only", self.inspector.tab.label())
+            } else {
+                self.inspector.accessible_summary(report, self.selection)
+            };
             return format!(
                 "{}: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",
                 self.task_label(),
@@ -806,7 +657,7 @@ impl Workspace {
                 self.program
                     .map_or("none".into(), |program| Symbol::Program(program)
                         .to_string()),
-                self.inspector.accessible_summary(report, self.selection),
+                inspection,
                 self.graph.accessible_summary(),
                 self.ssa_display
             );

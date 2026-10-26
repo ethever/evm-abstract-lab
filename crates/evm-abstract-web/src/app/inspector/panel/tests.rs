@@ -146,7 +146,7 @@ fn dragging_inspect_can_use_most_of_the_result_workspace() {
     let status = workbench.rect("workspace_status");
     assert!(inspector.top() >= context.bottom());
     assert!(inspector.bottom() <= status.top());
-    assert!((inspector.top() - context.bottom() - 32.0).abs() < 2.0);
+    assert!((inspector.top() - context.bottom() - super::PANE_REMAINDER).abs() < 2.0);
 }
 
 #[test]
@@ -318,10 +318,27 @@ fn maximizing_and_restoring_keep_the_existing_cfg_camera() {
         .zoom_at(egui::vec2(140.0, 120.0), 0.7);
     let before = workbench.frame(vec![]);
     let camera = workbench.workspace.graph.accessible_summary();
+    let report = workbench.workspace.report.as_ref().unwrap();
+    let state = report
+        .native
+        .as_ref()
+        .unwrap()
+        .cfg
+        .iter()
+        .find(|state| state.id == 1)
+        .unwrap();
+    let source = report.source_block(state.source_block().unwrap()).unwrap();
+    let instruction = &source.instructions[0];
+    let title = format!("0x{:04x} · {}", source.start_pc, instruction.name);
+    let source_row = format!("{:04x}  {}", instruction.pc, instruction.name);
     let (node_title, node) = labels(&before)
         .into_iter()
-        .find(|(text, _)| text.split("  ·").next() == Some("σ1"))
-        .expect("the unselected native node is visible in the CFG");
+        .find(|(text, _)| {
+            text == &title
+                || text.starts_with(&source_row)
+                || text.split("  ·").next() == Some("σ1")
+        })
+        .expect("the unselected node's actual source instruction is visible in the CFG");
     let selection = workbench.workspace.selection;
     workbench.click("Maximize");
     workbench.click("Restore");

@@ -4,7 +4,7 @@ from web_test_hybrid import oracle_graph
 from playwright.sync_api import expect
 import json
 from web_test_example_helpers import example_page
-from web_test_harness import rendered_frame, submit_bytecode, webgpu_evidence
+from web_test_harness import open_input, rendered_frame, submit_bytecode, webgpu_evidence
 
 
 def run_submissions(context):
@@ -12,7 +12,23 @@ def run_submissions(context):
     status = page.locator("#analysis-status")
     page.keyboard.press("0")
     rendered_frame(page)
-    invalid = submit_bytecode(page, canvas, "this is not bytecode", context.output / "invalid-input.png")
+    submissions = []
+    page.on("request", lambda request: submissions.append(request.post_data)
+            if request.method == "POST" and request.url.endswith("/api/tasks") else None)
+    open_input(page)
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text("this is not bytecode")
+    expect(status).to_contain_text("Input validation: Runtime bytecode:")
+    page.keyboard.press("Control+Enter")
+    rendered_frame(page)
+    expect(status).to_contain_text("Input editor: Bytecode")
+    assert submissions == [], "invalid local draft reached the task API"
+    canvas.screenshot(path=str(context.output / "invalid-local-input.png"))
+    page.keyboard.press("Escape")
+    expect(status).not_to_contain_text("Input editor:")
+    # Preserve the typed backend decode-failure oracle using valid hex that
+    # needs actual bytecode admission (EOF), separately from local syntax.
+    invalid = submit_bytecode(page, canvas, "ef00", context.output / "invalid-input.png")
     assert invalid.admission_status == 202
     assert invalid.status in (200, 202), "worker failures belong to typed task status"
     assert invalid.json()["result"]["Err"]["code"] == "InvalidBytecode"
@@ -42,7 +58,8 @@ def run_submissions(context):
     expect(status).to_contain_text("Global coverage closed")
     expect(status).to_contain_text("View: Detailed paths")
     canvas.screenshot(path=str(context.output / "incomplete.png"))
-    result = {"invalid_bytecode": invalid.json()["result"]["Err"]["code"],
+    result = {"invalid_local_draft_submitted": False,
+              "invalid_bytecode": invalid.json()["result"]["Err"]["code"],
               "arithmetic": arithmetic.report["status"],
               "uncovered_creation": incomplete["status"],
               "renderer": webgpu_evidence(page)}

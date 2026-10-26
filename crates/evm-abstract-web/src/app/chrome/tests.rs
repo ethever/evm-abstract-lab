@@ -436,10 +436,12 @@ fn standalone_receive_does_not_inherit_the_previous_server_result_id() {
         result: Ok((report()).into()),
     }));
     assert!(workspace.report_job_id.is_none());
-    assert_copy(&mut workspace, 390.0, "Current Job ID", id, 0);
+    assert!(workspace.task_presentation().job_id.is_none());
+    assert_eq!(workspace.task.snapshot.as_ref().unwrap().id, id);
+
     let status = workspace.accessible_status();
     assert!(status.contains("Result Job ID: unavailable"));
-    assert!(!status.contains(&format!("Result Job ID: {}", id.0)));
+    assert!(!status.contains(&format!("Job ID: {}", id.0)));
     let context = Context::default();
     crate::palette::configure(&context);
     let mut time = 0.0;

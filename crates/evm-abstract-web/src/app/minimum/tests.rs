@@ -294,7 +294,13 @@ fn native_and_rich_arrival_keep_the_canonical_minimum_camera_selection_and_sourc
     let selected = workspace.minimum_selection;
     let identity = workspace.report_view.identity();
     let camera = workspace.graph.camera();
-    let cache = workspace.minimum_source.blocks.as_ptr();
+    workspace.view = View::Disassembly;
+    let before_source = render(&ctx, &mut workspace, size);
+    let cache = crate::tests::painted_text(&before_source)
+        .into_iter()
+        .find(|(text, _)| text == "Block 0x0003")
+        .expect("the selected MAY source row is actually rendered");
+
     let global = rich.global.as_ref().map(|_| 2);
     let native = rich.native.as_ref().map(|_| 2);
     deliver(
@@ -303,11 +309,18 @@ fn native_and_rich_arrival_keep_the_canonical_minimum_camera_selection_and_sourc
         publication(2, 1, global, native),
         rich,
     );
-    render(&ctx, &mut workspace, size);
+    let after_source = render(&ctx, &mut workspace, size);
     assert_eq!(workspace.report_view.identity(), identity);
     assert_eq!(workspace.minimum_selection, selected);
     assert_eq!(workspace.graph.camera(), camera);
-    assert_eq!(workspace.minimum_source.blocks.as_ptr(), cache);
+    assert_eq!(
+        crate::tests::painted_text(&after_source)
+            .into_iter()
+            .find(|(text, _)| text == "Block 0x0003")
+            .expect("the same source row remains visible after richer publication"),
+        cache
+    );
+
     workspace.activate_view(crate::app::model::Activation::Namespace(
         api::AnalysisNamespace::Native,
     ));

@@ -185,6 +185,57 @@ pub(super) fn node_preview_with_display(
     };
     text.with_termination(termination).measured(painter)
 }
+
+pub(super) fn portal_preview(
+    painter: &Painter,
+    report: &ReportView<'_>,
+    index: &ReportIndex,
+    portal: &super::projection::Portal,
+) -> NodeText {
+    let action = super::edge_label(0, portal.kind);
+    let title = format!(
+        "{} · {} destination{}",
+        action,
+        portal.targets.len(),
+        if portal.targets.len() == 1 { "" } else { "s" }
+    );
+    let detail = if portal.targets.len() == 1 {
+        portal
+            .targets
+            .first()
+            .and_then(|state| index.cfg(report, *state))
+            .map_or_else(
+                || "Recorded adjacent context".into(),
+                |state| {
+                    let code = report.code_label(state);
+                    format!(
+                        "{} · {}",
+                        abbreviate(code, 22),
+                        leaf::source_identity(report, state)
+                    )
+                },
+            )
+    } else {
+        "Separate source / invocation contexts".into()
+    };
+    NodeText::new(
+        title.clone(),
+        detail,
+        vec![(
+            if portal.outgoing {
+                "Open continuation →"
+            } else {
+                "← Open predecessor"
+            }
+            .into(),
+            palette::BLUE,
+        )],
+        BlockCoverage::Current,
+        false,
+    )
+    .with_identity(vec![title])
+    .measured(painter)
+}
 pub(super) fn node_tooltip(
     report: &ReportView<'_>,
     index: &ReportIndex,

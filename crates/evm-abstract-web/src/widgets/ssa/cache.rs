@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::report::ReportView;
 
-use super::{Row, scoped_rows, scoped_states};
+use super::{Row, build_rows, scoped_states};
 use crate::{
     app::{Selection, model::ReportViewId},
     ssa_display::SsaDisplay,
@@ -19,10 +19,22 @@ use crate::{
 enum Scope {
     Program(usize),
     NoCode(Option<usize>),
+    State {
+        program: Option<usize>,
+        state: Option<usize>,
+    },
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ScopeMode {
+    #[default]
+    State,
+    Source,
 }
 
 #[derive(Default)]
 pub(crate) struct SsaCache {
+    pub(super) mode: ScopeMode,
     identity: ReportViewId,
     scope: Option<Scope>,
     display: Option<SsaDisplay>,
@@ -33,10 +45,16 @@ pub(crate) struct SsaCache {
 }
 
 impl SsaCache {
+    #[cfg(test)]
+    pub(crate) fn select_source_scope(&mut self) {
+        self.mode = ScopeMode::Source;
+    }
+
     pub(crate) fn activate(&mut self, identity: ReportViewId) {
         if self.identity != identity {
             *self = Self {
                 identity,
+                mode: self.mode,
                 ..Self::default()
             };
         }
@@ -52,12 +70,16 @@ impl SsaCache {
         self.activate(report.identity());
         let mut selection = selection;
         selection.value = None;
-        let scope = match program {
-            Some(program) => Scope::Program(program),
-            None => Scope::NoCode(selection.state),
+        let scope = match (self.mode, program) {
+            (ScopeMode::State, program) => Scope::State {
+                program,
+                state: selection.state,
+            },
+            (ScopeMode::Source, Some(program)) => Scope::Program(program),
+            (ScopeMode::Source, None) => Scope::NoCode(selection.state),
         };
         if self.scope != Some(scope) {
-            let included = scoped_states(report, program, selection);
+            let included = scope.states(report, selection);
             // Index only instructions the compact view actually suppresses.
             // A normal selection then needs a lookup, not a full report scan.
             self.hidden = report
@@ -89,7 +111,10 @@ impl SsaCache {
         if self.scope == Some(scope) && self.display == Some(display) && self.revealed == revealed {
             return;
         }
-        self.rows = scoped_rows(report, program, display, selection);
+        let included = scope.states(report, selection);
+        self.rows = build_rows(report, display, selection, |state| {
+            included.contains(&state)
+        });
         self.columns = self.rows.iter().map(Row::columns).max().unwrap_or_default();
         self.scope = Some(scope);
         self.display = Some(display);
@@ -102,5 +127,34 @@ impl SsaCache {
 
     pub(super) fn columns(&self) -> usize {
         self.columns
+    }
+
+    pub(super) fn full_text(&self, report: &ReportView<'_>, selection: Selection) -> String {
+        let Some(scope) = self.scope else {
+            return String::new();
+        };
+        let included = scope.states(report, selection);
+        build_rows(report, SsaDisplay::Full, selection, |state| {
+            included.contains(&state)
+        })
+        .iter()
+        .map(|row| row.tooltip.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+    }
+}
+
+impl Scope {
+    fn states(self, report: &ReportView<'_>, selection: Selection) -> BTreeSet<usize> {
+        match self {
+            Self::Program(program) => scoped_states(report, Some(program), selection),
+            Self::NoCode(_) => scoped_states(report, None, selection),
+            Self::State { program, state } => report
+                .cfg
+                .iter()
+                .filter(|block| Some(block.id) == state && block.program == program)
+                .map(|block| block.id)
+                .collect(),
+        }
     }
 }

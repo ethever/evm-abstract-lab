@@ -9,7 +9,22 @@ use crate::{framework, palette};
 
 impl AnalysisForm {
     pub(super) fn environment(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new("Transaction environment").show(ui, |ui| {
+        let value = match &self.environment.call_value {
+            WordInput::Unknown => "Unknown",
+            WordInput::Concrete(_) => "Exact",
+        };
+        let calldata = match &self.environment.calldata {
+            CalldataInput::Unknown => "Unknown",
+            CalldataInput::Exact(bytes) if bytes.is_empty() || bytes == "0x" => "Exact empty",
+            CalldataInput::Exact(_) => "Exact",
+        };
+        ui.label(
+            RichText::new(format!("Call value: {value} · Calldata: {calldata}"))
+                .small()
+                .color(palette::MUTED),
+        );
+        framework::section(ui, "Transaction environment", |ui| {
+            ui.label(RichText::new("Unknown leaves the input symbolic. Exact zero and exact empty calldata are explicit choices.").small().color(palette::MUTED));
             address(
                 ui,
                 "Caller",
@@ -17,10 +32,7 @@ impl AnalysisForm {
                 &mut self.environment.caller,
             );
             let mut origin = self.environment.origin.is_some();
-            if ui
-                .checkbox(&mut origin, "Separate transaction origin")
-                .changed()
-            {
+            if framework::checkbox(ui, &mut origin, "Separate transaction origin").changed() {
                 self.environment.origin = origin.then_some(AddressSetting::Unknown);
             }
             if let Some(origin) = &mut self.environment.origin {
@@ -44,7 +56,7 @@ impl AnalysisForm {
                 "environment_gas_price",
                 &mut self.environment.gas_price,
             );
-            ui.horizontal(|ui| {
+            let group = ui.horizontal(|ui| {
                 ui.label("Calldata");
                 let exact = matches!(self.environment.calldata, CalldataInput::Exact(_));
                 if controls::tab(ui, !exact, "Unknown", Density::Compact).clicked() {
@@ -54,6 +66,7 @@ impl AnalysisForm {
                     self.environment.calldata = CalldataInput::Exact(String::new());
                 }
             });
+            controls::observe(ui, &group.response, "environment_calldata", "group", None);
             if let CalldataInput::Exact(bytes) = &mut self.environment.calldata {
                 framework::line_editor(
                     ui,
@@ -70,27 +83,59 @@ impl AnalysisForm {
                 "Unknown initial gas; GAS remains an upper-bound observation",
                 "0x…",
             );
-            ui.checkbox(&mut self.environment.is_static, "Static root call");
+            framework::checkbox(ui, &mut self.environment.is_static, "Static root call");
         });
-        egui::CollapsingHeader::new("Block environment overrides").show(ui, |ui| {
+        framework::section(ui, "Block environment overrides", |ui| {
             ui.label(RichText::new(match self.source {
                 Source::Rpc => "Unchecked fields come from the pinned block when available. The report shows the actual observations used.",
                 Source::Bytecode => "Unchecked fields stay unknown for standalone bytecode.",
             }).small().color(palette::MUTED));
             for (label, id, value) in [
-                ("Block number", "environment_number", &mut self.environment.number),
-                ("Timestamp", "environment_timestamp", &mut self.environment.timestamp),
-                ("Beneficiary", "environment_coinbase", &mut self.environment.coinbase),
-                ("PREVRANDAO", "environment_prevrandao", &mut self.environment.prevrandao),
-                ("Block gas limit", "environment_gas_limit", &mut self.environment.gas_limit),
-                ("Execution chain ID", "environment_chain_id", &mut self.environment.chain_id),
-                ("Base fee", "environment_base_fee", &mut self.environment.base_fee),
-                ("Blob base fee", "environment_blob_fee", &mut self.environment.blob_base_fee),
+                (
+                    "Block number",
+                    "environment_number",
+                    &mut self.environment.number,
+                ),
+                (
+                    "Timestamp",
+                    "environment_timestamp",
+                    &mut self.environment.timestamp,
+                ),
+                (
+                    "Beneficiary",
+                    "environment_coinbase",
+                    &mut self.environment.coinbase,
+                ),
+                (
+                    "PREVRANDAO",
+                    "environment_prevrandao",
+                    &mut self.environment.prevrandao,
+                ),
+                (
+                    "Block gas limit",
+                    "environment_gas_limit",
+                    &mut self.environment.gas_limit,
+                ),
+                (
+                    "Execution chain ID",
+                    "environment_chain_id",
+                    &mut self.environment.chain_id,
+                ),
+                (
+                    "Base fee",
+                    "environment_base_fee",
+                    &mut self.environment.base_fee,
+                ),
+                (
+                    "Blob base fee",
+                    "environment_blob_fee",
+                    &mut self.environment.blob_base_fee,
+                ),
             ] {
                 optional_text(ui, label, id, value, "Use default observation", "0x…");
             }
         });
-        egui::CollapsingHeader::new("Block and blob hash observations").show(ui, |ui| {
+        framework::section(ui, "Block and blob hash observations", |ui| {
             word(
                 ui,
                 "Blob count",
@@ -114,7 +159,7 @@ impl AnalysisForm {
 }
 
 fn address(ui: &mut Ui, label: &str, id: &str, value: &mut AddressSetting) {
-    ui.horizontal(|ui| {
+    let group = ui.horizontal(|ui| {
         ui.label(label);
         let known = matches!(value, AddressSetting::Concrete(_));
         if controls::tab(ui, !known, "Unknown", Density::Compact).clicked() {
@@ -124,13 +169,14 @@ fn address(ui: &mut Ui, label: &str, id: &str, value: &mut AddressSetting) {
             *value = AddressSetting::Concrete(String::new());
         }
     });
+    controls::observe(ui, &group.response, id, "group", None);
     if let AddressSetting::Concrete(address) = value {
         framework::line_editor(ui, id, address, "0x… (20 bytes)");
     }
 }
 
 fn word(ui: &mut Ui, label: &str, id: &str, value: &mut WordInput) {
-    ui.horizontal(|ui| {
+    let group = ui.horizontal(|ui| {
         ui.label(label);
         let known = matches!(value, WordInput::Concrete(_));
         if controls::tab(ui, !known, "Unknown", Density::Compact).clicked() {
@@ -140,6 +186,7 @@ fn word(ui: &mut Ui, label: &str, id: &str, value: &mut WordInput) {
             *value = WordInput::Concrete(String::new());
         }
     });
+    controls::observe(ui, &group.response, id, "group", None);
     if let WordInput::Concrete(word) = value {
         framework::line_editor(ui, id, word, "0x… (256-bit word)");
     }

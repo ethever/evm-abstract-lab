@@ -1,6 +1,6 @@
 use egui::{Context, RawInput};
 
-use super::SsaCache;
+use super::{ScopeMode, SsaCache};
 use crate::{
     app::Selection,
     ssa_display::SsaDisplay,
@@ -21,7 +21,10 @@ fn width_and_table_share_rows_across_frames_and_native_selection_changes() {
     let report = crate::tests::report();
     let context = Context::default();
     crate::notation::initialize_fonts(&context);
-    let mut cache = SsaCache::default();
+    let mut cache = SsaCache {
+        mode: ScopeMode::Source,
+        ..Default::default()
+    };
     let mut selection = Selection {
         value: None,
         state: Some(0),
@@ -83,7 +86,10 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
     let mut report = crate::tests::report();
     report.cfg[1].program = Some(9);
     report.cfg[2].program = None;
-    let mut cache = SsaCache::default();
+    let mut cache = SsaCache {
+        mode: ScopeMode::Source,
+        ..Default::default()
+    };
     cache.prepare(
         &(report).view(),
         Some(0),
@@ -133,7 +139,10 @@ fn scope_changes_rebuild_native_rows_and_no_code_scope_tracks_the_selected_state
 #[test]
 fn accepting_a_new_report_clears_both_rows_and_width_even_with_identical_program_ids() {
     let mut report = crate::tests::report();
-    let mut cache = SsaCache::default();
+    let mut cache = SsaCache {
+        mode: ScopeMode::Source,
+        ..Default::default()
+    };
     cache.prepare(
         &(report).view(),
         Some(0),
@@ -201,7 +210,10 @@ fn display_and_hidden_selection_rebuild_rows_while_ordinary_selection_reuses_sto
             .iter()
             .any(|row| row.target == Some(selection(Some(pc))))
     };
-    let mut cache = SsaCache::default();
+    let mut cache = SsaCache {
+        mode: ScopeMode::Source,
+        ..Default::default()
+    };
     cache.prepare(
         &(report).view(),
         Some(0),
@@ -306,7 +318,10 @@ fn a_replacement_report_clears_the_hidden_instruction_index() {
     instruction.progress = evm_abstract_protocol::InstructionProgress::Completed;
     instruction.fault = false;
     report.ssa.blocks[0].coverage = evm_abstract_protocol::BlockCoverage::Current;
-    let mut cache = SsaCache::default();
+    let mut cache = SsaCache {
+        mode: ScopeMode::Source,
+        ..Default::default()
+    };
     cache.prepare(
         &(report).view(),
         Some(0),
@@ -335,4 +350,56 @@ fn a_replacement_report_clears_the_hidden_instruction_index() {
             .iter()
             .any(|row| row.plain_text().contains("MSTORE"))
     );
+}
+
+#[test]
+fn selected_state_scope_never_borrows_another_states_instruction_receipt() {
+    let report = crate::tests::report();
+    let mut cache = SsaCache::default();
+    let selected = Selection {
+        state: Some(1),
+        ..Default::default()
+    };
+    cache.prepare(&report.view(), Some(0), SsaDisplay::Full, selected);
+    assert_eq!(headers(&cache), [1]);
+    cache.prepare(&report.view(), Some(7), SsaDisplay::Full, selected);
+    assert!(
+        cache.rows().is_empty(),
+        "wrong physical source alias cannot reuse a state"
+    );
+    cache.prepare(
+        &report.view(),
+        Some(0),
+        SsaDisplay::Full,
+        Selection::default(),
+    );
+    assert!(
+        cache.rows().is_empty(),
+        "source selection does not choose a representative Native state"
+    );
+}
+
+#[test]
+fn complete_scope_copy_keeps_hidden_instructions_and_transition_arguments() {
+    let report = crate::widgets::ssa::tests::report();
+    let mut cache = SsaCache::default();
+    let selection = Selection {
+        state: Some(27),
+        ..Default::default()
+    };
+    cache.prepare(&report.view(), Some(0), SsaDisplay::Compact, selection);
+    let exported = cache.full_text(&report.view(), selection);
+    for expected in [
+        "%11 = φ",
+        "edge e₇₇",
+        "%13 = ADD",
+        "μ₂→μ₃",
+        "Arguments: [%13]",
+        "Destination frame stacks: f₀ [%13, %14]",
+    ] {
+        assert!(
+            exported.contains(expected),
+            "missing {expected}: {exported}"
+        );
+    }
 }

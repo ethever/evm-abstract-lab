@@ -4,6 +4,8 @@
 mod environment;
 mod examples;
 mod limits;
+mod shortcut;
+mod validation;
 
 use crate::controls::{self, Density};
 use egui::{Id, RichText, Ui};
@@ -33,6 +35,8 @@ pub(super) struct AnalysisForm {
     environment: EnvironmentInput,
     limits: AnalysisLimits,
     limit_inputs: limits::NumberInputs,
+    block_inputs: limits::NumberInputs,
+    keyboard: shortcut::Keyboard,
     pub(super) error: Option<String>,
 }
 
@@ -58,6 +62,8 @@ impl Default for AnalysisForm {
             environment: defaults.environment,
             limits: defaults.limits,
             limit_inputs: limits::NumberInputs::default(),
+            block_inputs: limits::NumberInputs::default(),
+            keyboard: shortcut::Keyboard::default(),
             error: None,
         }
     }
@@ -99,8 +105,10 @@ impl AnalysisForm {
     fn can_submit(&self, busy: bool) -> bool {
         !busy
             && self.limit_inputs.valid()
+            && self.validation_error().is_none()
             && (self.source == Source::Bytecode
-                || self.providers.valid_selection(&self.rpc.provider_id))
+                || (self.block_inputs.valid()
+                    && self.providers.valid_selection(&self.rpc.provider_id)))
     }
 
     pub(super) fn request(&self) -> AnalyzeRequest {
@@ -118,9 +126,16 @@ impl AnalysisForm {
     pub(super) fn show(&mut self, ctx: &egui::Context, busy: bool) -> Option<AnalyzeRequest> {
         if !self.open {
             self.was_open = false;
+            self.keyboard.reset();
             return None;
         }
+        let keyboard_submit = self.keyboard.submit(ctx);
         let size = ctx.content_rect().size();
+        let action_density = if size.x < 680.0 {
+            Density::Touch
+        } else {
+            Density::Regular
+        };
         let mut submit = false;
         let mut close = false;
         let modal = egui::Modal::new(Id::new("analysis_form"))
@@ -130,7 +145,7 @@ impl AnalysisForm {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("New analysis").strong().size(16.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = controls::action(ui, "Close", Density::Compact).clicked();
+                        close = controls::action(ui, "Close", action_density).clicked();
                     });
                 });
                 let budget = (size.y - 128.0).clamp(40.0, 620.0);
@@ -143,6 +158,9 @@ impl AnalysisForm {
                         self.input(ui);
                         self.environment(ui);
                         self.limits(ui);
+                        if let Some(error) = self.validation_error() {
+                            ui.colored_label(palette::WARNING, error.to_string());
+                        }
                         if let Some(error) = &self.error {
                             ui.label(notation::widget(
                                 ui,
@@ -151,20 +169,24 @@ impl AnalysisForm {
                         }
                     });
                 ui.separator();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     submit = controls::action_enabled(
                         ui,
                         self.can_submit(busy),
                         RichText::new("Analyze").strong(),
-                        Density::Regular,
+                        action_density,
                     )
                     .on_hover_text("Ctrl+Enter")
                     .clicked();
                     ui.label(
                         RichText::new(if busy {
                             "A task is still running"
-                        } else if !self.limit_inputs.valid() {
+                        } else if !self.limit_inputs.valid()
+                            || (self.source == Source::Rpc && !self.block_inputs.valid())
+                        {
                             "Correct invalid numeric settings to analyze"
+                        } else if self.validation_error().is_some() {
+                            "Check the highlighted input"
                         } else if !self.can_submit(false) {
                             "Choose an available RPC provider to analyze"
                         } else {
@@ -183,17 +205,19 @@ impl AnalysisForm {
             ctx.memory_mut(|memory| memory.request_focus(Id::new(id)));
             self.was_open = true;
         }
-        if self.can_submit(busy)
-            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter))
-        {
+        if self.can_submit(busy) && keyboard_submit {
             submit = true;
         }
         if close || modal.should_close() {
             self.open = false;
+            self.was_open = false;
+            self.keyboard.reset();
         }
         if submit {
             self.error = None;
             self.open = false;
+            self.was_open = false;
+            self.keyboard.reset();
             Some(self.request())
         } else {
             None
@@ -201,7 +225,15 @@ impl AnalysisForm {
     }
 
     fn input(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
+        let previous_source = self.source;
+        let source_group = ui.horizontal_wrapped(|ui| {
+            controls::tab_value(
+                ui,
+                &mut self.source,
+                Source::Rpc,
+                "Address",
+                Density::Regular,
+            );
             controls::tab_value(
                 ui,
                 &mut self.source,
@@ -209,14 +241,7 @@ impl AnalysisForm {
                 "Bytecode",
                 Density::Regular,
             );
-            controls::tab_value(
-                ui,
-                &mut self.source,
-                Source::Rpc,
-                "RPC account",
-                Density::Regular,
-            );
-            egui::ComboBox::from_id_salt("form_fork")
+            let observed_form_fork = egui::ComboBox::from_id_salt("form_fork")
                 .width(82.0)
                 .selected_text(format!("{:?}", self.fork))
                 .show_ui(ui, |ui| {
@@ -230,7 +255,30 @@ impl AnalysisForm {
                         );
                     }
                 });
+            controls::observe(
+                ui,
+                &observed_form_fork.response,
+                "form_fork",
+                "combobox",
+                None,
+            );
         });
+        controls::observe(ui, &source_group.response, "input_source", "group", None);
+        if previous_source != self.source {
+            let id = match self.source {
+                Source::Bytecode => "runtime_bytecode",
+                Source::Rpc => "rpc_address",
+            };
+            ui.memory_mut(|memory| memory.request_focus(Id::new(id)));
+        }
+        ui.label(
+            RichText::new(match self.source {
+                Source::Rpc => "Analyze an account at one pinned RPC snapshot.",
+                Source::Bytecode => "Analyze pasted runtime bytecode without RPC acquisition.",
+            })
+            .small()
+            .color(palette::MUTED),
+        );
         match self.source {
             Source::Bytecode => {
                 ui.horizontal(|ui| {
@@ -260,6 +308,7 @@ impl AnalysisForm {
             Source::Rpc => {
                 self.providers.show(ui, &mut self.rpc.provider_id);
                 examples::root_account(ui, &mut self.rpc.address);
+                let old_kind = std::mem::discriminant(&self.rpc.block);
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Snapshot block");
                     let choice = match self.rpc.block {
@@ -267,7 +316,7 @@ impl AnalysisForm {
                         BlockSelector::Number(_) => "Number",
                         BlockSelector::Hash(_) => "Hash",
                     };
-                    egui::ComboBox::from_id_salt("rpc_block_kind")
+                    let observed_rpc_block_kind = egui::ComboBox::from_id_salt("rpc_block_kind")
                         .width(80.0)
                         .selected_text(choice)
                         .show_ui(ui, |ui| {
@@ -278,6 +327,7 @@ impl AnalysisForm {
                                 Density::Regular,
                             )
                             .clicked()
+                                && !matches!(self.rpc.block, BlockSelector::Latest)
                             {
                                 self.rpc.block = BlockSelector::Latest;
                             }
@@ -288,6 +338,7 @@ impl AnalysisForm {
                                 Density::Regular,
                             )
                             .clicked()
+                                && !matches!(self.rpc.block, BlockSelector::Number(_))
                             {
                                 self.rpc.block = BlockSelector::Number(0);
                             }
@@ -298,10 +349,18 @@ impl AnalysisForm {
                                 Density::Regular,
                             )
                             .clicked()
+                                && !matches!(self.rpc.block, BlockSelector::Hash(_))
                             {
                                 self.rpc.block = BlockSelector::Hash(String::new());
                             }
                         });
+                    controls::observe(
+                        ui,
+                        &observed_rpc_block_kind.response,
+                        "rpc_block_kind",
+                        "combobox",
+                        None,
+                    );
                     match &mut self.rpc.block {
                         BlockSelector::Latest => {
                             ui.label(
@@ -310,21 +369,29 @@ impl AnalysisForm {
                                     .color(palette::MUTED),
                             );
                         }
-                        BlockSelector::Number(number) => {
-                            ui.add(egui::DragValue::new(number));
-                        }
+                        BlockSelector::Number(_) => {}
                         BlockSelector::Hash(hash) => {
                             framework::line_editor(ui, "rpc_block_hash", hash, "0x… (32 bytes)");
                         }
                     }
                 });
+                if old_kind != std::mem::discriminant(&self.rpc.block) {
+                    self.block_inputs = limits::NumberInputs::default();
+                }
+                if let BlockSelector::Number(number) = &mut self.rpc.block {
+                    egui::Grid::new("snapshot_number")
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            self.block_inputs.number(ui, "Block number", number);
+                        });
+                }
                 self.seed_accounts(ui);
             }
         }
     }
 
     fn seed_accounts(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new("Initial accounts and storage slots").show(ui, |ui| {
+        framework::section(ui, "Initial accounts and storage slots", |ui| {
             let mut remove = None;
             for (index, account) in self.rpc.accounts.iter_mut().enumerate() {
                 ui.push_id(index, |ui| {
@@ -376,6 +443,38 @@ impl AnalysisForm {
     }
 }
 
+impl super::Workspace {
+    /// Input mode and draft validity for the open canvas editor's live region.
+    pub fn accessible_input_status(&self) -> Option<String> {
+        if !self.form.open {
+            return None;
+        }
+        let mode = match self.form.source {
+            Source::Bytecode => "Bytecode",
+            Source::Rpc => "Address",
+        };
+        let validation = if let Some(error) = self.form.validation_error() {
+            error.to_string()
+        } else if !self.form.limit_inputs.valid()
+            || (self.form.source == Source::Rpc && !self.form.block_inputs.valid())
+        {
+            "Correct invalid numeric settings".into()
+        } else if self.form.source == Source::Rpc
+            && !self
+                .form
+                .providers
+                .valid_selection(&self.form.rpc.provider_id)
+        {
+            "Choose an available RPC provider".into()
+        } else {
+            "Ready".into()
+        };
+        Some(format!(
+            "Input editor: {mode}; Input validation: {validation}"
+        ))
+    }
+}
+
 fn optional_text(
     ui: &mut Ui,
     label: &str,
@@ -385,7 +484,7 @@ fn optional_text(
     hint: &str,
 ) {
     let mut enabled = value.is_some();
-    if ui.checkbox(&mut enabled, label).changed() {
+    if framework::checkbox(ui, &mut enabled, label).changed() {
         *value = enabled.then(String::new);
     }
     if let Some(value) = value {

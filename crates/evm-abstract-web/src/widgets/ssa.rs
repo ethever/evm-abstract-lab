@@ -46,6 +46,11 @@ fn contents(
     previous: &mut Selection,
     cache: &mut SsaCache,
 ) {
+    if report.identity().namespace() != evm_abstract_protocol::AnalysisNamespace::Native {
+        heading(ui, "SSA", "Conservative control");
+        super::empty(ui, "MAY control has no Native instruction or SSA receipt");
+        return;
+    }
     heading(
         ui,
         "SSA",
@@ -60,7 +65,45 @@ fn contents(
             report.ssa.effect_count,
         ),
     );
+    ui.horizontal_wrapped(|ui| {
+        crate::controls::tab_value(
+            ui,
+            &mut cache.mode,
+            cache::ScopeMode::State,
+            "Selected state",
+            crate::controls::Density::Compact,
+        );
+        crate::controls::tab_value(
+            ui,
+            &mut cache.mode,
+            cache::ScopeMode::Source,
+            "All source states",
+            crate::controls::Density::Compact,
+        );
+    });
     cache.prepare(report, program, display, *selection);
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(!cache.rows().is_empty(), egui::Button::new("Copy SSA"))
+            .on_hover_text(
+                "Copy complete SSA for this scope, including values, effects and transitions",
+            )
+            .clicked()
+        {
+            ui.ctx().copy_text(cache.full_text(report, *selection));
+        }
+    });
+    if cache.rows().is_empty() {
+        super::empty(
+            ui,
+            if selection.state.is_none() && cache.mode == cache::ScopeMode::State {
+                "Select a detailed state to inspect its SSA, or choose all source states."
+            } else {
+                "SSA unavailable for this source and context. No instruction receipt is recorded here."
+            },
+        );
+        return;
+    }
     let rows = cache.rows();
     let focus = (!selection.same_native(*previous))
         .then(|| {
@@ -143,6 +186,14 @@ fn contents(
                         }
                     });
                     let response = table_row.response();
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            true,
+                            selected,
+                            row.plain_text(),
+                        )
+                    });
                     if let Some(value) = value_click {
                         *selection = Selection {
                             value: Some(value),
@@ -153,6 +204,32 @@ fn contents(
                     {
                         *selection = target;
                     }
+                    response.context_menu(|ui| {
+                        if ui.button("Copy row").clicked() {
+                            ui.ctx().copy_text(row.plain_text());
+                            ui.close();
+                        }
+                        if ui.button("Copy full details").clicked() {
+                            ui.ctx().copy_text(row.tooltip.clone());
+                            ui.close();
+                        }
+                        if let Some(target) = row.target
+                            && let Some(state) = report
+                                .cfg
+                                .iter()
+                                .find(|state| Some(state.id) == target.state)
+                            && let Some(source) = report
+                                .programs
+                                .iter()
+                                .find(|source| Some(source.id) == state.program)
+                            && ui.button("Copy source / PC reference").clicked()
+                        {
+                            ui.ctx().copy_text(super::disassembly::source_reference(
+                                report, source, target,
+                            ));
+                            ui.close();
+                        }
+                    });
                     response.on_hover_ui(|ui| {
                         ui.label(crate::notation::widget(
                             ui,
@@ -323,6 +400,7 @@ fn scoped_states(
         .collect()
 }
 
+#[cfg(test)]
 fn scoped_rows(
     report: &ReportView<'_>,
     program: Option<usize>,

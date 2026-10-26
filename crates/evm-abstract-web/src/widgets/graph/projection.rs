@@ -2,8 +2,10 @@
 //! folding a source block neither combines its SSA nor proves a composite path.
 use crate::report::ReportView;
 
+mod scope;
 #[cfg(test)]
 mod tests;
+pub(super) use scope::same_context;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -38,6 +40,13 @@ pub(super) struct DisplayGraph {
     pub state_to_node: BTreeMap<usize, usize>,
     pub hidden_states: usize,
     pub boundary_edges: usize,
+    pub portals: BTreeMap<usize, Portal>,
+}
+
+pub(super) struct Portal {
+    pub targets: Vec<usize>,
+    pub outgoing: bool,
+    pub kind: EdgeKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +79,18 @@ impl DisplayGraph {
         center: Option<usize>,
         hops: usize,
     ) -> Self {
+        Self::build_filtered(report, index, mode, program, center, hops, None)
+    }
+
+    fn build_filtered(
+        report: &ReportView<'_>,
+        index: &ReportIndex,
+        mode: GraphMode,
+        program: Option<usize>,
+        center: Option<usize>,
+        hops: usize,
+        allowed: Option<&BTreeSet<usize>>,
+    ) -> Self {
         // Local explicitly crosses program boundaries: filtering it would hide
         // the CALL/RETURN neighbors it is intended to explain.
         let local = (mode == GraphMode::Local).then(|| neighborhood(report, index, center, hops));
@@ -80,7 +101,7 @@ impl DisplayGraph {
                 Some(states) => states.contains(&state.id),
                 None => program.is_none() || state.program == program,
             };
-            if !visible {
+            if !visible || allowed.is_some_and(|allowed| !allowed.contains(&state.id)) {
                 continue;
             }
             let position = *groups

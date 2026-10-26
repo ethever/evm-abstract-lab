@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 from playwright.sync_api import expect
-from web_test_harness import observe_webgpu, open_input, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_harness import click_control, edit_control, observe_webgpu, open_input, rendered_frame, select_report_namespace, settle_gesture, ui_control, webgpu_evidence
 
 
 def process_model(report, require_hub=False):
@@ -111,14 +111,13 @@ def detail_policy_form(page, canvas, reference_request, reference_report, output
     """Edit the real D5 policy with the same source, environment and payer."""
     from web_test_harness import complete_submission
     from web_test_hybrid import assert_detail_policy, assert_root_source, source_instructions, source_program
-    from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_modal
-    from web_test_pixels import text_pixels
+    from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_detail_regions
 
     assert reference_request["limits"] == LAYOUT_DEFAULT_LIMITS
     assert reference_request["limits"]["max_detail_regions"] == 1
     previous = assert_detail_policy(reference_report, 1)
     status = page.locator("#analysis-status")
-    geometry, results = {}, []
+    results = []
     (output / "detail-policy-reference-request.json").write_text(json.dumps(reference_request, indent=2) + "\n")
     (output / "detail-policy-reference-report.json").write_text(json.dumps(reference_report, indent=2) + "\n")
 
@@ -129,51 +128,10 @@ def detail_policy_form(page, canvas, reference_request, reference_report, output
     reference_environment = dict(reference_report["minimum"]["environment"])
     scopes = {reference_environment.pop("input_scope")}
     for requested in [0, 2]:
-        open_input(page)
-        rendered_frame(page)
-        header_offset = 10
-
-        def capture(stage):
-            page.mouse.move(2, 2)
-            settle_gesture(page)
-            page.wait_for_timeout(200)  # Finish the real collapse animation.
-            png = canvas.screenshot(path=str(output / f"detail-policy-{requested}-{stage}.png"))
-            bounds = layout_modal(page, canvas)
-            assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
-                    and 750 <= bounds[2] - bounds[0] <= 780), bounds
-            region = (bounds[0] + 29, bounds[1] + header_offset, bounds[0] + 95, bounds[3] - 40)
-            measured = {"modal": bounds, "region": region, **text_pixels(page, png, region)}
-            geometry[f"{requested}-{stage}"] = measured
-            (output / "detail-policy-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
-            return measured
-
-        before = capture("closed")
-        headers = before["rows"][-6:]
-        assert len(headers) == 6 and all(20 <= b[0] - a[0] <= 26
-                                       for a, b in zip(headers, headers[1:])), before
-        header_offset = headers[0][0] - before["modal"][1] - 2
-        precision = headers[-2]
-        canvas.click(position={"x": before["modal"][0] + 70, "y": sum(precision) / 2})
-        opened = capture("open")
-        # Three environment headers, Execution and Precision precede Numeric
-        # model and the eight existing precision integer editors.
-        assert len(opened["rows"]) >= 15, opened
-        assert all(abs(a[0] - opened["modal"][1] - (b[0] - before["modal"][1])) <= 2
-                   for a, b in zip(opened["rows"][:5], headers[:5])), opened
-        assert all(20 <= b[0] - a[0] <= 26
-                   for a, b in zip(opened["rows"][5:13], opened["rows"][6:14])), opened
-        source_row = opened["rows"][6]
-        canvas.click(position={"x": opened["modal"][0] + 250, "y": sum(source_row) / 2})
-        page.keyboard.press("Control+A")
-        page.keyboard.insert_text(str(requested))
-        rendered_frame(page)
-        edited = capture("edited")
-        # A form draft cannot relabel the report that is still displayed.
+        open_input(page, mode="Bytecode")
+        layout_detail_regions(page, canvas, output, f"detail-policy-{requested}", requested)
+        # The new draft cannot relabel the still-displayed report or its payer.
         expect(status).to_contain_text(previous_text)
-        canvas.click(position={"x": edited["modal"][0] + 70,
-                               "y": sum(edited["rows"][4]) / 2})
-        closed = capture("restored")
-        assert len(closed["rows"]) == 6, closed
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                                   and response.request.method == "POST") as submitted:
             page.keyboard.press("Control+Enter")
@@ -224,7 +182,8 @@ def detail_policy_form(page, canvas, reference_request, reference_report, output
         assert "Selected σ" not in status.text_content(), status.text_content()
         if requested == 0:
             expect(status).to_contain_text("detailed paths disabled")
-            canvas.click(position={"x": 148, "y": 38})
+            ui_control(page, "Detailed paths", role="tab", enabled=False)
+            click_control(page, canvas, "Detailed paths", role="tab", enabled=False)
             expect(status).to_contain_text("View: Global model")
         else:
             assert len(coverage["detail_regions"]) == 1, "one captured source in this unchanged program"
@@ -232,9 +191,9 @@ def detail_policy_form(page, canvas, reference_request, reference_report, output
             for block in report["native"]["cfg"]:
                 if block["executed_pcs"]:
                     assert set(block["executed_pcs"]) <= {instruction["pc"] for instruction in source_instructions(report, block)}
-            canvas.click(position={"x": 148, "y": 38})
+            select_report_namespace(page, report, "Native")
             expect(status).to_contain_text("View: Detailed paths")
-            canvas.click(position={"x": 50, "y": 38})
+            select_report_namespace(page, report, "Baseline")
             expect(status).to_contain_text("View: Global model")
         rendered_frame(page)
         canvas.screenshot(path=str(output / f"detail-policy-{requested}-result.png"))
@@ -341,7 +300,7 @@ def cancellation(context,url,rpc):
     assert len(before) > 1000
     # Use the actual canvas Cancel control and observe its real DELETE request.
     with page.expect_response(lambda response: response.request.method == "DELETE" and response.url == task_url) as cancellation:
-        canvas.click(position={"x": 30, "y": 988})
+        click_control(page, canvas, "Cancel", role="action")
     assert cancellation.value.ok
     expect(status).to_contain_text("Cancelled", timeout=30000)
     assert rpc.disconnected.wait(5),"cancellation did not close the actual optional RPC operation"
@@ -356,24 +315,11 @@ def cancellation(context,url,rpc):
     assert retained["report"]["minimum"] == first["report"]["minimum"], "cancellation changed the retained qualified minimum"
     # A subsequent real form submission replaces the cancelled report; namespace
     # buttons must use the new report even when its numeric state IDs repeat.
-    from web_test_layout_helpers import layout_modal
-    open_input(page)
-    rendered_frame(page)
-    canvas.screenshot(path=str(context.output / "replacement-input-modal.png"))
-    modal=layout_modal(page,canvas)
-    canvas.click(position={"x":modal[0]+50,"y":modal[1]+44})
-    settle_gesture(page)
-    # Reopening applies the form's real source-specific focus request before
-    # paste; a tab button itself retains keyboard focus until then.
-    page.keyboard.press("Escape")
-    rendered_frame(page)
-    open_input(page)
-    page.keyboard.press("Control+A")
-    rendered_frame(page)
-    # A tiny real unknown-jump/loop program exercises the selected D4 route.
+    open_input(page, mode="Bytecode")
+    # The original tiny unknown-jump/loop program exercises the selected D4 route.
     replacement_code = "36565b36565b00"
-    page.keyboard.type(replacement_code)
-    rendered_frame(page)
+    edit_control(page, canvas, "Runtime bytecode", replacement_code)
+    canvas.screenshot(path=str(context.output / "replacement-input-modal.png"))
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as replacement:
         page.keyboard.press("Control+Enter")
     replacement_request=replacement.value.request.post_data_json
@@ -391,10 +337,9 @@ def cancellation(context,url,rpc):
     canvas.screenshot(path=str(context.output / "selected-may-hub-source.png"))
     page.keyboard.press("2")
     rendered_frame(page)
-    # Product model-scope tabs lie immediately below the main header.
-    canvas.click(position={"x": 148, "y": 38})
+    select_report_namespace(page, replacement_result["report"], "Native")
     expect(status).to_contain_text("View: Detailed paths")
-    canvas.click(position={"x": 50, "y": 38})
+    select_report_namespace(page, replacement_result["report"], "Baseline")
     expect(status).to_contain_text("View: Global model")
     policies = detail_policy_form(page, canvas, replacement_request, replacement_result["report"], context.output)
     assert not errors, errors
@@ -409,7 +354,7 @@ def cancellation(context,url,rpc):
 def refusal(context):
     from web_test_harness import analysis_server
     from web_test_hybrid import assert_detail_policy
-    from web_test_inspector_helpers import inspector_painted_controls, inspector_title_action
+    from web_test_inspector_helpers import inspector_selected_tab, inspector_title_action, select_inspector_tab
     def page_for(url,request=None):
         page=context.browser.new_page(viewport={"width":1440,"height":1000})
         observe_webgpu(page)
@@ -460,10 +405,9 @@ def refusal(context):
             assert len(png)>10000
             views[key]=hashlib.sha256(png).hexdigest()
         assert len(set(views.values()))==3
-        controls=inspector_painted_controls(page,canvas)
-        hide=[rect for rect in controls["actions"] if 2<=1440-rect[2]<=10 and 30<=rect[2]-rect[0]<=45]
-        assert len(hide)==1,controls
-        inspector_title_action(page,canvas,"Maximize",hide[0])
+        select_inspector_tab(page, canvas, "Frame", minimum=True)
+        controls = inspector_selected_tab(page, canvas, "Frame", minimum=True)
+        inspector_title_action(page,canvas,"Maximize",controls)
         rendered_frame(page)
         canvas.screenshot(path=str(context.output/"refused-minimum-inputs.png"))
         renderer=webgpu_evidence(page)

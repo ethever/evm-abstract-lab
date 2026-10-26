@@ -3,8 +3,8 @@
 import json
 import re
 from playwright.sync_api import expect
-from web_test_graph_helpers import graph_mode, symbol
-from web_test_harness import settle_gesture, webgpu_evidence
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol
+from web_test_harness import click_control, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_ink, node_snapshot
 from web_test_hybrid import oracle_graph
@@ -46,6 +46,8 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         print(f"real-runtime analysis start: {name}",flush=True)
         report=layout_submission(page,canvas,code,args.output,name,timeout_seconds=1800,entry=entry,
                                  execution_limits=RUNTIME_DETAIL_LIMITS)
+        graph_overview(page,canvas,fit=True)
+        graph_content(page,canvas,"SSA")
         original_report=json.loads((args.output/f"{name}-analysis.json").read_text())
         coverage=layout_runtime_coverage(report,metadata,original_report["timings"])
         (args.output/f"{name}-coverage-comparison.json").write_text(json.dumps(coverage,indent=2)+"\n")
@@ -99,7 +101,7 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         canvas.click(position={"x":80,"y":156});settle_gesture(page)
         expect(page.locator("#analysis-status")).to_contain_text(f"Selected {symbol('σ',chosen['state'])};")
         page.keyboard.press("2");settle_gesture(page)
-        canvas.click(position={"x":225,"y":107});settle_gesture(page)
+        click_control(page,canvas,"Focus selected",role="action")
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         assert _runtime_zoom_percent(page.locator("#analysis-status").text_content()) == 100
         native_focus=node_snapshot(page,canvas,args.output,f"hierarchy-{name}-states-focused")
@@ -114,7 +116,7 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
             if action == "fit":page.keyboard.press("f")
             elif action == "zoom":
                 page.mouse.move(700,500);page.keyboard.down("Control");page.mouse.wheel(0,-80);page.keyboard.up("Control")
-            else:canvas.click(position={"x":225,"y":107})
+            else:click_control(page,canvas,"Focus selected",role="action")
             settle_gesture(page)
             scene_path=args.output/f"hierarchy-{name}-states-{action}-scene.json"
             screenshot_path=args.output/f"hierarchy-{name}-states-{action}.png"
@@ -145,7 +147,7 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         refocus_ink=layout_ink(page,canvas.screenshot(),native_refocus["bounds"])
         assert refocus_ink["preview_pixels"] > 0, "real-runtime refocus did not restore the chosen SSA instructions"
         graph_mode(page,canvas,"Blocks")
-        canvas.click(position={"x":225,"y":107});settle_gesture(page)
+        click_control(page,canvas,"Focus selected",role="action")
         assert scene_counts() == {**scene,"detail":"SSA preview"}
         expect(page.locator("#analysis-status")).to_contain_text(f"Selected {selected};")
         focused=node_snapshot(page,canvas,args.output,f"hierarchy-{name}-source-ssa-focused")
