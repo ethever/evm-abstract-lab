@@ -14,7 +14,7 @@ use evm_abstract::{
         Acceleration, AnalysisEngine, AnalysisInput, BoundedJoin, EnginePolicies, ExecutionConfig,
         FeedbackAcceleration, FirstResumeStatus, FrameCode, MachineError, OutcomeKind,
         PolicyContext, RecentDistinctJumps, RegionalSummaries, RelativeState, SemanticPolicies,
-        Status, StructuralPartition, control::Control, cooperation::NoExtension,
+        Status, StructuralPartition, TransferSemantics, control::Control, cooperation::NoExtension,
     },
     domain::NumericValue,
     resource::WorkBudget,
@@ -102,7 +102,9 @@ fn native_cycle_rollback_and_api_boundary() {
             .unwrap();
         let mut known_to_unknown = 0;
         let mut unknown_to_known = 0;
-        let mut callback_write_visited = false;
+        let mut callback_sstore_visited = false;
+        let mut current_static_callbacks = 0;
+        let mut static_callback_failures = 0;
         let mut records = Vec::new();
         for record in analysis.procedure_summaries() {
             for call in &record.regional_cfg.calls {
@@ -115,12 +117,38 @@ fn native_cycle_rollback_and_api_boundary() {
                     from.mode == FrameCode::Unknown && callee.mode == FrameCode::Runtime,
                 );
             }
+            if op == opcode::STATICCALL && record.closed && record.source_current {
+                for procedure in &record.procedures {
+                    if procedure.frame.mode == FrameCode::Runtime {
+                        assert_eq!(procedure.semantics, TransferSemantics::Native);
+                        assert_eq!(procedure.frame.code_address, address(A));
+                        assert_eq!(procedure.frame.address, address(A));
+                        assert_eq!(
+                            procedure.frame.code_hash,
+                            alloy_primitives::keccak256(&a.bytes)
+                        );
+                        assert!(procedure.frame.is_static);
+                        assert!(!procedure.outputs.is_empty());
+                        for output in &procedure.outputs {
+                            assert_ne!(output.kind, OutcomeKind::Return);
+                            assert_eq!(
+                                serde_json::to_value(&output.store).unwrap(),
+                                serde_json::to_value(&procedure.input).unwrap()
+                            );
+                            only(output.store.storage_bound(address(A), U256::ZERO), &[0]);
+                            static_callback_failures +=
+                                usize::from(output.kind == OutcomeKind::Failure);
+                        }
+                        current_static_callbacks += 1;
+                    }
+                }
+            }
             for node in &record.regional_cfg.nodes {
                 let block = analysis
                     .world()
                     .runtime(address(A))
                     .and_then(|program| program.blocks().get(node.frame.basic_block_index));
-                callback_write_visited |= node.frame.code_address == address(A)
+                callback_sstore_visited |= node.frame.code_address == address(A)
                     && node
                         .transfer
                         .as_ref()
@@ -154,7 +182,9 @@ fn native_cycle_rollback_and_api_boundary() {
                 "outcomes": analysis.outcomes().iter().map(|o| o.kind).collect::<Vec<_>>(),
                 "known_to_unknown_calls_across_snapshots": known_to_unknown,
                 "unknown_to_known_calls_across_snapshots": unknown_to_known,
-                "current_callback_sstore_body": callback_write_visited,
+                "current_callback_sstore_body": callback_sstore_visited,
+                "current_static_callbacks": current_static_callbacks,
+                "static_callback_failures": static_callback_failures,
                 "concrete_callback_sstore": true, "concrete_static": op == opcode::STATICCALL,
                 "concrete_rollback_slot0": 0, "root_terminal_coverage": false,
                 "records": records,
@@ -168,7 +198,7 @@ fn native_cycle_rollback_and_api_boundary() {
         }
         if op == opcode::CALL {
             assert!(known_to_unknown > 0 && unknown_to_known > 0);
-            assert!(callback_write_visited);
+            assert!(callback_sstore_visited);
             // This is an API counterexample, not a new owner abstraction:
             // the same known code under another state owner is a valid frame,
             // but current coarse/relative admission refuses their union.
@@ -197,8 +227,11 @@ fn native_cycle_rollback_and_api_boundary() {
                 "both_coarsened": true, "regional_join": "MachineError::Shape"})
             );
         } else {
-            assert_eq!(unknown_to_known, 0);
-            assert!(!callback_write_visited);
+            // A static callback reaches SSTORE and fails there, as the independent
+            // concrete trace above observes. Visiting that block is not a write.
+            assert!(known_to_unknown > 0 && unknown_to_known > 0);
+            assert!(callback_sstore_visited);
+            assert!(current_static_callbacks > 0 && static_callback_failures > 0);
         }
         statuses.push(analysis.status());
     }
