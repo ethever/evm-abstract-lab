@@ -31,28 +31,21 @@ fn run_unknown(args: &[&str]) -> Output {
 }
 
 fn text(output: &Output, exit: i32) -> String {
-    assert_eq!(
-        output.status.code(),
-        Some(
-            if exit == 2
-                && (String::from_utf8_lossy(&output.stdout).contains("Global coverage: Converged")
-                    || String::from_utf8_lossy(&output.stdout)
-                        .contains("\"status\": \"Converged\""))
-            {
-                0
-            } else {
-                exit
-            }
-        ),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if output.stdout.starts_with(b"{") {
+        let raw: Json = serde_json::from_slice(&output.stdout).unwrap();
+        if raw.get("global").is_some() {
+            super::native::assert_exit(&raw, output);
+        } else {
+            assert_eq!(output.status.code(), Some(exit));
+        }
+    } else {
+        super::native::text_exit(output, exit);
+    }
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
 fn report(output: &Output) -> Json {
     let json: Json = serde_json::from_slice(&output.stdout).unwrap();
-    let json = crate::native::select(&json);
     super::native::assert_exit(&json, output);
     let json = super::native::select(&json);
     assert_eq!(json["analysis"]["status"], "Incomplete");
@@ -370,7 +363,6 @@ fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
     let strict = world.run_unknown("analyze", &["--ssa", "--format", "json"]);
     text(&strict, 2);
     let raw: Json = serde_json::from_slice(&strict.stdout).unwrap();
-    let raw = crate::native::select(&raw);
     super::native::assert_exit(&raw, &strict);
     let strict_json = super::native::select(&raw);
     assert_eq!(strict_json["status"], "Incomplete");
@@ -561,7 +553,10 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     );
     assert_eq!(zero.status.code(), Some(1));
     assert!(zero.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&zero.stderr).contains("positive"));
+    assert_eq!(
+        String::from_utf8_lossy(&zero.stderr).trim(),
+        "error: cooperation protocol failed: analysis stopped: machine transformation work exhausted"
+    );
     let empty_output = world.run(
         "analyze",
         &[
@@ -575,18 +570,24 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
         ],
     );
     let empty: Json = serde_json::from_slice(&empty_output.stdout).unwrap();
-    let empty = crate::native::select(&empty);
     super::native::assert_exit(&empty, &empty_output);
-    assert_eq!(empty["config"]["max_work"], 1);
-    let frontiers = empty["frontiers"].as_array().unwrap();
+    assert_eq!(empty_output.status.code(), Some(2));
+    super::assert_shared_budget(&empty, 1, 1);
+    let global = super::native::global(&empty);
+    assert_eq!(global["config"]["max_work"], 1);
+    assert_eq!(global["status"], "Incomplete");
+    let frontiers = global["frontiers"].as_array().unwrap();
     assert_eq!(frontiers.len(), 1);
     assert_eq!(frontiers[0]["reason"], "Work");
     assert!(frontiers[0]["from"].is_null() && frontiers[0]["pc"].is_null());
-    assert!(empty["states"].as_array().unwrap().is_empty());
-    assert!(empty["hybrid"]["detail"].is_null());
-    assert!(empty.get("partial_ssa").is_none());
+    assert!(global["states"].as_array().unwrap().is_empty());
+    assert_eq!(empty["hybrid"]["coverage"]["detail"], "BaselinePending");
+    assert_eq!(empty["hybrid"]["coverage"]["baseline_current"], false);
+    assert_eq!(empty["hybrid"]["local_detail"], json!([]));
+    assert!(empty["native"].is_null());
+    assert!(empty["global"].get("partial_ssa").is_none());
     let jump = WorldCode::new("6003565b00");
-    let json = report(&jump.run(
+    let jump_output = jump.run(
         "analyze",
         &[
             "--ssa",
@@ -596,7 +597,19 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "--max-transfers",
             "2",
         ],
-    ));
+    );
+    let raw: Json = serde_json::from_slice(&jump_output.stdout).unwrap();
+    super::assert_shared_budget(&raw, 1, 2_000_000_000);
+    assert_eq!(jump_output.status.code(), Some(0));
+    assert_eq!(super::native::global(&raw)["status"], "Converged");
+    assert_eq!(super::native::global(&raw)["transfers"], 2);
+    assert_eq!(raw["native"]["analysis"]["transfers"], 2);
+    assert_eq!(
+        raw["native"]["analysis"]["config"]["analysis"]["max_transfers"],
+        2
+    );
+    assert_eq!(raw["hybrid"]["coverage"]["detail_current"], false);
+    let json = report(&jump_output);
     let unprocessed = json["partial_ssa"]["blocks"]
         .as_array()
         .unwrap()
@@ -628,18 +641,45 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     assert!(partial_body(&rendered).contains("progress=Faulted"));
 }
 
-#[test]
-fn verbose_return_dispatch_distinguishes_root_outcomes_from_child_continuations() {
+fn return_dispatch_world() -> WorldCode {
     let world = WorldCode::new(&format!(
         "5f5f5f5f5f6102006207a120f15033601757{UNCOVERED_CREATE}005b5f5ff3"
     ));
-    let mut input: Json = serde_json::from_slice(&fs::read(&world.0).unwrap()).unwrap();
-    input["accounts"].as_array_mut().unwrap().push(json!({
-        "address": "0x0000000000000000000000000000000000000200",
-        "code": "0x602a5f5260205ff3", "balance": "0x0", "nonce": "0x0",
-        "storage_unknown": false,
-    }));
-    fs::write(&world.0, serde_json::to_vec(&input).unwrap()).unwrap();
+    world.add_callee("602a5f5260205ff3");
+    world
+}
+
+#[test]
+fn verbose_return_dispatch_distinguishes_root_outcomes_from_child_continuations() {
+    let world = return_dispatch_world();
+    let output = world.run_unknown(
+        "analyze",
+        &["--ssa", "--allow-partial-ssa", "--format", "json"],
+    );
+    let raw: Json = serde_json::from_slice(&output.stdout).unwrap();
+    super::assert_shared_budget(&raw, 1, 2_000_000_000);
+    let json = report(&output);
+    let procedure = super::relative_native_call(
+        &json["analysis"],
+        "0x0000000000000000000000000000000000000200",
+        ENTRY,
+        false,
+    );
+    let returned = procedure["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["kind"] == "Return")
+        .unwrap();
+    assert_eq!(
+        returned["data"]["length"]["numeric"]["constants"],
+        json!(["0x20"])
+    );
+    let mut word = vec![0; 32];
+    word[31] = 42;
+    assert_eq!(returned["data"]["content"]["Exact"], json!(word));
+    assert_eq!(raw["hybrid"]["coverage"]["baseline_current"], true);
+    assert_eq!(raw["hybrid"]["coverage"]["detail_current"], false);
     let compact = text(&world.run_unknown("explain", &["--allow-partial-ssa"]), 2);
     assert_partial(&compact, "UnknownInitCode");
     assert_concise(&compact);
@@ -660,48 +700,199 @@ fn verbose_return_dispatch_distinguishes_root_outcomes_from_child_continuations(
     assert!(
         returns
             .iter()
-            .any(|line| line.contains("return dispatch; inspect recorded caller continuations"))
+            .all(|line| !line.contains("inspect recorded caller continuations"))
     );
     assert!(!partial_body(&verbose).contains("results belong only to recorded transitions"));
+}
+
+#[test]
+fn two_private_regions_distinguish_root_return_outcomes_from_child_continuations() {
+    let world = return_dispatch_world();
+    let output = world.run_unknown(
+        "analyze",
+        &[
+            "--ssa",
+            "--allow-partial-ssa",
+            "--format",
+            "json",
+            "--max-detail-regions",
+            "2",
+        ],
+    );
+    let raw: Json = serde_json::from_slice(&output.stdout).unwrap();
+    super::assert_shared_budget(&raw, 2, 2_000_000_000);
+    let json = report(&output);
+    let child = json["analysis"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| {
+            state["key"]["frames"].as_array().unwrap().len() == 2
+                && state["executed_pcs"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(7))
+        })
+        .unwrap();
+    let block = json["partial_ssa"]["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["state"] == child["id"])
+        .unwrap();
+    let returned = block["instructions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|instruction| instruction["pc"] == 7)
+        .unwrap();
+    assert_eq!(returned["opcode"], 0xf3);
+    assert_eq!(returned["progress"], "Dispatched");
+    assert_eq!(returned["results"], json!([]));
+    let compact = text(
+        &world.run_unknown(
+            "explain",
+            &["--allow-partial-ssa", "--max-detail-regions", "2"],
+        ),
+        2,
+    );
+    assert_partial(&compact, "UnknownInitCode");
+    assert_concise(&compact);
+    let verbose = text(
+        &world.run_unknown(
+            "explain",
+            &[
+                "--allow-partial-ssa",
+                "--max-detail-regions",
+                "2",
+                "--verbose",
+            ],
+        ),
+        2,
+    );
+    assert_verbose(&verbose);
+    let returns: Vec<_> = partial_body(&verbose)
+        .lines()
+        .filter(|line| line.contains(": RETURN ") && line.contains("progress=Dispatched"))
+        .collect();
+    for dispatch in [
+        "return dispatch; inspect recorded outcomes",
+        "return dispatch; inspect recorded caller continuations",
+    ] {
+        assert!(returns.iter().any(|line| line.contains(dispatch)));
+    }
+    assert!(!partial_body(&verbose).contains("results belong only to recorded transitions"));
+}
+
+fn assert_exceptional_dispatch(world: &WorldCode, extra: &[&str], diagnostic: &str, opcode: &str) {
+    for verbose in [false, true] {
+        let mut args = vec!["--allow-partial-ssa"];
+        args.extend_from_slice(extra);
+        if verbose {
+            args.push("--verbose");
+        }
+        let rendered = text(&world.run_unknown("explain", &args), 2);
+        assert_partial(&rendered, "UnknownInitCode");
+        let line = partial_body(&rendered)
+            .lines()
+            .find(|line| line.contains(opcode))
+            .unwrap();
+        assert!(line.contains(diagnostic), "{line}");
+        if verbose {
+            assert!(line.contains("progress=Dispatched"));
+            assert!(!line.contains("inspect recorded caller continuations"));
+        } else {
+            assert_concise(&rendered);
+        }
+    }
 }
 
 #[test]
 fn concise_and_verbose_retain_proven_exceptional_dispatch_halts() {
     let static_child = WorldCode::new(&format!("5f5f5f5f6102006207a120fa50{UNCOVERED_CREATE}00"));
     static_child.add_callee("60015f5500");
-    let return_oob = WorldCode::new(&format!("5a600957{UNCOVERED_CREATE}005b60015f5f3e00"));
-    for (world, diagnostic, opcode) in [
-        (
-            &static_child,
-            "exceptional halt: state change in static frame",
-            ": SSTORE ",
-        ),
-        (
-            &return_oob,
-            "exceptional halt: return data out of bounds",
-            ": RETURNDATACOPY ",
-        ),
-    ] {
-        for verbose in [false, true] {
-            let mut args = vec!["--allow-partial-ssa"];
-            if verbose {
-                args.push("--verbose");
-            }
-            let rendered = text(&world.run_unknown("explain", &args), 2);
-            assert_partial(&rendered, "UnknownInitCode");
-            let line = partial_body(&rendered)
-                .lines()
-                .find(|line| line.contains(opcode))
-                .unwrap();
-            assert!(line.contains(diagnostic), "{line}");
-            if verbose {
-                assert!(line.contains("progress=Dispatched"));
-                assert!(!line.contains("inspect recorded caller continuations"));
-            } else {
-                assert_concise(&rendered);
-            }
+    let output = static_child.run_unknown(
+        "analyze",
+        &["--ssa", "--allow-partial-ssa", "--format", "json"],
+    );
+    let raw: Json = serde_json::from_slice(&output.stdout).unwrap();
+    super::assert_shared_budget(&raw, 1, 2_000_000_000);
+    let json = report(&output);
+    let procedure = super::relative_native_call(
+        &json["analysis"],
+        "0x0000000000000000000000000000000000000200",
+        ENTRY,
+        true,
+    );
+    let outputs = procedure["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0]["kind"], "Failure");
+    assert_eq!(
+        outputs[0]["data"]["length"]["numeric"]["constants"],
+        json!(["0x0"])
+    );
+    assert_eq!(outputs[0]["store"]["persistent"]["slots"], json!([]));
+    for verbose in [false, true] {
+        let mut args = vec!["--allow-partial-ssa"];
+        if verbose {
+            args.push("--verbose");
+        }
+        let rendered = text(&static_child.run_unknown("explain", &args), 2);
+        assert_partial(&rendered, "UnknownInitCode");
+        assert!(!partial_body(&rendered).contains(": SSTORE "));
+        if verbose {
+            assert_verbose(&rendered);
+        } else {
+            assert_concise(&rendered);
         }
     }
+    let return_oob = WorldCode::new(&format!("5a600957{UNCOVERED_CREATE}005b60015f5f3e00"));
+    assert_exceptional_dispatch(
+        &return_oob,
+        &[],
+        "exceptional halt: return data out of bounds",
+        ": RETURNDATACOPY ",
+    );
+}
+
+#[test]
+fn two_private_regions_retain_the_proven_static_child_exceptional_halt() {
+    let world = WorldCode::new(&format!("5f5f5f5f6102006207a120fa50{UNCOVERED_CREATE}00"));
+    world.add_callee("60015f5500");
+    let output = world.run_unknown(
+        "analyze",
+        &[
+            "--ssa",
+            "--allow-partial-ssa",
+            "--format",
+            "json",
+            "--max-detail-regions",
+            "2",
+        ],
+    );
+    let raw: Json = serde_json::from_slice(&output.stdout).unwrap();
+    super::assert_shared_budget(&raw, 2, 2_000_000_000);
+    let json = report(&output);
+    assert!(
+        json["analysis"]["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |state| state["key"]["frames"].as_array().unwrap().last().unwrap()["is_static"]
+                    == true
+                    && state["executed_pcs"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!(3))
+            )
+    );
+    assert_exceptional_dispatch(
+        &world,
+        &["--max-detail-regions", "2"],
+        "exceptional halt: state change in static frame",
+        ": SSTORE ",
+    );
 }
 
 #[test]

@@ -80,17 +80,55 @@ fn work_limit_visiting_pc(
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let mut report = crate::native::select(&report);
+        let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        if raw.get("global").is_some() {
+            native::assert_exit(&raw, &output);
+        }
+        if raw.get("global").is_some() && raw["native"].is_null() {
+            let coverage = &raw["hybrid"]["coverage"];
+            assert_eq!(coverage["detail_current"], false);
+            assert_eq!(raw["hybrid"]["local_detail"], serde_json::json!([]));
+            if coverage["baseline_current"] == true {
+                assert_eq!(native::global(&raw)["status"], "Converged");
+                assert_eq!(coverage["detail"], "Work");
+            } else {
+                assert_eq!(coverage["detail"], "BaselinePending");
+                assert_eq!(raw["status"], "Incomplete");
+                let global = native::global(&raw);
+                if global["status"] == "Converged" {
+                    // The bounded currency receipt has its own real quote.
+                    // Refusal keeps the closed engine table but withholds its
+                    // certificate; it does not manufacture a machine frontier.
+                    assert_eq!(global["frontiers"], serde_json::json!([]));
+                    let work = &coverage["work"];
+                    assert_eq!(work["preparation"], 0);
+                    assert_eq!(work["detail"], 0);
+                    assert_eq!(work["baseline"], work["total"]);
+                    assert!(
+                        work["total"].as_u64().unwrap()
+                            <= global["config"]["max_work"].as_u64().unwrap()
+                    );
+                } else {
+                    assert_eq!(global["status"], "Incomplete");
+                    assert!(
+                        global["frontiers"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|frontier| frontier["reason"] == "Work")
+                    );
+                }
+            }
+            return None;
+        }
+        let mut report = crate::native::select(&raw);
         if report.get("machine_analysis").is_some() {
             report = report["machine_analysis"].take();
         }
-        if report.get("hybrid").is_some() {
-            native::assert_exit(&report, &output);
-        } else {
+        if raw.get("global").is_none() {
             assert_eq!(report["status"] == "Converged", exit == Some(0));
         }
-        native::select(&report)
+        Some(native::select(&report))
     };
     let visited = |report: &serde_json::Value| {
         report["states"].as_array().unwrap().iter().any(|state| {
@@ -100,7 +138,7 @@ fn work_limit_visiting_pc(
                 .contains(&serde_json::json!(pc))
         })
     };
-    let complete = native(run(None));
+    let complete = native(run(None)).expect("full run retains Native execution");
     assert_eq!(complete["status"], "Converged");
     assert!(visited(&complete));
     let mut upper = usize::try_from(complete["work"].as_u64().unwrap()).unwrap();
@@ -111,14 +149,14 @@ fn work_limit_visiting_pc(
             break;
         }
         let midpoint = lower + (upper - lower) / 2;
-        if visited(&native(run(Some(midpoint)))) {
+        if native(run(Some(midpoint))).as_ref().is_some_and(visited) {
             upper = midpoint;
         } else {
             lower = midpoint + 1;
         }
     }
     assert_eq!(lower, upper, "Work calibration must be bounded");
-    let boundary = native(run(Some(lower)));
+    let boundary = native(run(Some(lower))).expect("boundary has a Native PC receipt");
     assert_eq!(boundary["status"], "Incomplete");
     assert!(visited(&boundary));
     assert!(
@@ -593,6 +631,148 @@ fn analyze(name: &str, extra: &[&str]) -> std::process::Output {
     run_concrete(&args)
 }
 
+fn assert_shared_budget(report: &serde_json::Value, regions: usize, maximum: u64) {
+    let global = native::global(report);
+    let coverage = &report["hybrid"]["coverage"];
+    let work = &coverage["work"];
+    assert_eq!(coverage["requested_detail_regions"], regions);
+    assert_eq!(coverage["requested_detail_work"], usize::MAX);
+    assert_eq!(global["config"]["max_work"], maximum);
+    assert_eq!(work["prior"], 0);
+    let baseline = work["baseline"].as_u64().unwrap();
+    let preparation = work["preparation"].as_u64().unwrap();
+    let detail = work["detail"].as_u64().unwrap();
+    let total = work["total"].as_u64().unwrap();
+    assert_eq!(total, baseline + preparation + detail);
+    assert_eq!(report["work"], total);
+    assert_eq!(global["work"], baseline);
+    assert!(total <= maximum);
+    if coverage["baseline_current"] == true {
+        assert_eq!(work["detail_allowance"], maximum - baseline);
+    }
+    let transfers = report["transfers"].as_u64().unwrap();
+    assert!(global["transfers"].as_u64().unwrap() <= transfers);
+    assert!(
+        transfers
+            <= global["config"]["analysis"]["max_transfers"]
+                .as_u64()
+                .unwrap()
+    );
+    assert_eq!(global["config"]["root_terminal_coverage"], false);
+    if let Some(graph) = report.get("native").filter(|graph| !graph.is_null()) {
+        for key in [
+            "analysis",
+            "max_work",
+            "max_call_depth",
+            "max_memory_bytes",
+            "use_summaries",
+        ] {
+            assert_eq!(graph["analysis"]["config"][key], global["config"][key]);
+        }
+        assert_eq!(
+            graph["analysis"]["config"]["root_terminal_coverage"],
+            coverage["requested_native_terminal_coverage"]
+        );
+        assert_eq!(graph["analysis"]["work"], total);
+        assert_eq!(graph["analysis"]["transfers"], transfers);
+    }
+}
+
+// Relative block receipts establish Native control and joint output facts,
+// without claiming that a private World frame recorded instruction PCs or SSA.
+fn relative_native_call<'a>(
+    analysis: &'a serde_json::Value,
+    source: &str,
+    caller: &str,
+    is_static: bool,
+) -> &'a serde_json::Value {
+    let record = analysis["procedure_summaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| {
+            let root = record["root_procedure"].as_u64().unwrap() as usize;
+            record["procedures"][root]["frame"]["code_address"] == source
+        })
+        .expect("callee has a retained relative procedure");
+    assert_eq!(record["kind"], "KnownCall");
+    assert_eq!(record["source_current"], true);
+    assert_eq!(record["closed"], true);
+    let root = record["root_procedure"].as_u64().unwrap() as usize;
+    let procedure = &record["procedures"][root];
+    let frame = &procedure["frame"];
+    assert_eq!(procedure["semantics"], "Native");
+    assert!(procedure["process_input"].is_null());
+    assert!(procedure["version"]["entry_revision"].is_u64());
+    assert_eq!(frame["mode"], "Runtime");
+    assert_eq!(frame["address"], source);
+    assert_eq!(frame["address_value"]["Concrete"], source);
+    assert_eq!(frame["caller"]["Concrete"], caller);
+    assert_eq!(frame["is_static"], is_static);
+    let hash = &analysis["world"]["code_hashes"][source];
+    assert!(hash.is_string());
+    assert_eq!(frame["code_hash"], *hash);
+    let source_state = analysis["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["id"] == record["source_state"])
+        .unwrap();
+    assert_eq!(
+        source_state["key"]["frames"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap(),
+        frame
+    );
+    assert_eq!(source_state["executed_pcs"], serde_json::json!([]));
+    let nodes: Vec<_> = record["regional_cfg"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["procedure"] == root)
+        .collect();
+    assert!(!nodes.is_empty());
+    for node in &nodes {
+        for key in [
+            "code_address",
+            "code_hash",
+            "address",
+            "address_value",
+            "caller",
+            "is_static",
+        ] {
+            assert_eq!(node["frame"][key], frame[key]);
+        }
+        assert_eq!(node["excluded"], false);
+        let transfer = &node["transfer"];
+        assert_eq!(transfer["semantics"], "Native");
+        assert!(transfer["process"].is_null());
+        assert_eq!(transfer["current"], true);
+        assert_eq!(transfer["complete"], true);
+        assert_eq!(transfer["visited_block"], true);
+        assert!(node["input_revision"].is_u64());
+        assert!(transfer["input_revision"].is_u64());
+        assert_eq!(transfer["input_revision"], node["input_revision"]);
+        assert!(
+            procedure["covered_blocks"]
+                .as_array()
+                .unwrap()
+                .contains(&node["frame"]["basic_block_index"])
+        );
+    }
+    for output in procedure["outputs"].as_array().unwrap() {
+        assert!(nodes.iter().any(|node| {
+            node["transfer"]["outcomes"]
+                .as_array()
+                .unwrap()
+                .contains(&output["kind"])
+        }));
+    }
+    procedure
+}
+
 #[test]
 fn world_analyze_preserves_default_128_and_explicit_context_depths() {
     for explicit in [
@@ -638,22 +818,12 @@ fn world_analyze_preserves_default_128_and_explicit_context_depths() {
     }
 }
 
-#[test]
-fn primary_analyze_json_has_world_call_frames_returns_and_outcomes() {
-    let output = analyze("call-return-branch", &["--format", "json"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let json = crate::native::select(&json);
+fn assert_call_return_world(json: &serde_json::Value) {
     assert_eq!(json["status"], "Converged");
     assert_eq!(json["world"]["fork"], "osaka");
     assert_eq!(json["world"]["provenance"], "offline:call-return-branch:v1");
     let edges = json["edges"].as_array().unwrap();
     assert!(edges.iter().any(|edge| edge["kind"] == "Call"));
-    assert!(edges.iter().any(|edge| edge["kind"] == "Return"));
     assert!(
         json["states"]
             .as_array()
@@ -673,6 +843,114 @@ fn primary_analyze_json_has_world_call_frames_returns_and_outcomes() {
         }
     }
     assert!(!json["outcomes"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn primary_analyze_json_has_world_call_frames_returns_and_outcomes() {
+    let output = analyze("call-return-branch", &["--format", "json"]);
+    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    native::assert_exit(&raw, &output);
+    assert_eq!(output.status.code(), Some(0));
+    assert_shared_budget(&raw, 1, 2_000_000_000);
+    assert_eq!(native::global(&raw)["status"], "Converged");
+    assert_eq!(raw["hybrid"]["coverage"]["detail_current"], true);
+    assert_eq!(raw["hybrid"]["coverage"]["detail_binding"], "OriginalOwner");
+    let json = native::select(&raw);
+    assert_call_return_world(&json);
+    assert!(
+        json["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["kind"] == serde_json::json!({"Summary": "Return"}))
+    );
+    let child = "0x0000000000000000000000000000000000000200";
+    let procedure = relative_native_call(
+        &json,
+        child,
+        "0x0000000000000000000000000000000000000101",
+        false,
+    );
+    let returned = procedure["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["kind"] == "Return")
+        .unwrap();
+    assert_eq!(
+        returned["data"]["length"]["numeric"]["constants"],
+        serde_json::json!(["0x20"])
+    );
+    let mut word = vec![0; 32];
+    word[31] = 1;
+    assert_eq!(
+        returned["data"]["content"]["Exact"],
+        serde_json::json!(word)
+    );
+    assert!(
+        json["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(
+                |state| state["key"]["frames"].as_array().unwrap().last().unwrap()["code_address"]
+                    == child
+            )
+            .all(|state| state["executed_pcs"] == serde_json::json!([]))
+    );
+    // The covering entry and regional input slot use independent counters.
+    let mut independent = json.clone();
+    let summary = independent["procedure_summaries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|summary| {
+            let root = summary["root_procedure"].as_u64().unwrap() as usize;
+            summary["procedures"][root]["frame"]["code_address"] == child
+        })
+        .unwrap();
+    let root = summary["root_procedure"].as_u64().unwrap() as usize;
+    let revision = summary["regional_cfg"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["procedure"] == root)
+        .unwrap()["input_revision"]
+        .as_u64()
+        .unwrap();
+    summary["procedures"][root]["version"]["entry_revision"] =
+        serde_json::json!(revision.checked_add(1).unwrap());
+    relative_native_call(
+        &independent,
+        child,
+        "0x0000000000000000000000000000000000000101",
+        false,
+    );
+}
+
+#[test]
+fn primary_analyze_two_private_regions_preserve_world_return_edges() {
+    let output = analyze(
+        "call-return-branch",
+        &["--format", "json", "--max-detail-regions", "2"],
+    );
+    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    native::assert_exit(&raw, &output);
+    assert_eq!(output.status.code(), Some(0));
+    assert_shared_budget(&raw, 2, 2_000_000_000);
+    let json = native::select(&raw);
+    assert_call_return_world(&json);
+    assert!(
+        json["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["kind"] == "Return")
+    );
+    assert!(json["states"].as_array().unwrap().iter().any(|state| {
+        state["key"]["frames"].as_array().unwrap().len() == 2
+            && state["executed_pcs"] == serde_json::json!([0, 2, 3, 4, 6, 7])
+    }));
 }
 
 #[test]
@@ -751,6 +1029,7 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
         String::from_utf8_lossy(&bounded.stderr)
     );
     let bounded: serde_json::Value = serde_json::from_slice(&bounded.stdout).unwrap();
+    assert_shared_budget(&bounded, 1, 2_000_000_000);
     let bounded = crate::native::select(&bounded);
     assert_eq!(bounded["config"]["max_memory_bytes"], 1);
     assert_eq!(bounded["status"], "Converged");
@@ -788,32 +1067,123 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
         detail.push("--no-root-terminal-coverage");
         let output = analyze(name, &detail);
         let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let raw = crate::native::select(&raw);
         native::assert_exit(&raw, &output);
-        let json = native::select(&raw);
-        assert_eq!(json["status"], "Incomplete");
-        assert!(
-            json["frontiers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|frontier| frontier["reason"] == reason)
+        assert_shared_budget(
+            &raw,
+            1,
+            if args.contains(&"--max-work") {
+                1
+            } else {
+                2_000_000_000
+            },
         );
-        if args.contains(&"--max-symbolic-nodes") {
-            assert_eq!(json["domain_spec"]["relations"]["max_nodes"], 2);
+        let global = native::global(&raw);
+        let coverage = &raw["hybrid"]["coverage"];
+        assert_eq!(coverage["requested_native_terminal_coverage"], false);
+        if name == "reentry" {
+            // Relative procedures close without unrolling the private stack.
+            // The separate two-region control retains the same depth refusal.
+            assert_eq!(output.status.code(), Some(0));
+            assert_eq!(global["status"], "Converged");
+            assert_eq!(coverage["detail_current"], true);
+            let json = native::select(&raw);
+            assert_eq!(json["config"]["max_call_depth"], 2);
+            assert_eq!(json["status"], "Converged");
+            assert_eq!(json["frontiers"], serde_json::json!([]));
+            let procedure = relative_native_call(
+                &json,
+                "0x0000000000000000000000000000000000000200",
+                "0x0000000000000000000000000000000000000101",
+                false,
+            );
+            assert!(
+                procedure["outputs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|output| output["kind"] == "Return"
+                        && output["data"]["length"]["numeric"]["constants"]
+                            == serde_json::json!(["0x20"]))
+            );
+        } else {
+            let json = if args.contains(&"--max-call-depth") {
+                assert_eq!(output.status.code(), Some(0));
+                assert_eq!(global["status"], "Converged");
+                assert_eq!(coverage["baseline_current"], true);
+                assert_eq!(coverage["detail"], "Incomplete");
+                let json = &raw["native"]["analysis"];
+                assert!(json.is_object());
+                assert_eq!(json["config"]["max_call_depth"], 1);
+                json
+            } else {
+                // These caps refuse Global work before Native admission.
+                assert_eq!(output.status.code(), Some(2));
+                assert_eq!(global["status"], "Incomplete");
+                assert!(raw["native"].is_null());
+                assert_eq!(coverage["baseline_current"], false);
+                assert_eq!(coverage["detail"], "BaselinePending");
+                assert_eq!(raw["hybrid"]["local_detail"], serde_json::json!([]));
+                global
+            };
+            assert_eq!(coverage["detail_current"], false);
+            assert_eq!(json["status"], "Incomplete");
             assert!(
                 json["frontiers"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|frontier| {
-                        frontier["reason"] == reason
-                            && frontier["from"].is_u64()
-                            && frontier["pc"].is_u64()
-                    })
+                    .any(|frontier| frontier["reason"] == reason)
             );
+            if args.contains(&"--max-symbolic-nodes") {
+                assert_eq!(json["domain_spec"]["relations"]["max_nodes"], 2);
+                assert!(
+                    json["frontiers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|frontier| {
+                            frontier["reason"] == reason
+                                && frontier["from"].is_u64()
+                                && frontier["pc"].is_u64()
+                        })
+                );
+            }
         }
     }
+}
+
+#[test]
+fn reentry_two_private_regions_retains_the_original_call_depth_frontier() {
+    let output = analyze(
+        "reentry",
+        &[
+            "--format",
+            "json",
+            "--max-call-depth",
+            "2",
+            "--max-detail-regions",
+            "2",
+            "--no-root-terminal-coverage",
+        ],
+    );
+    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    native::assert_exit(&raw, &output);
+    assert_shared_budget(&raw, 2, 2_000_000_000);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(native::global(&raw)["status"], "Converged");
+    assert_eq!(raw["hybrid"]["coverage"]["detail_current"], false);
+    let json = native::select(&raw);
+    assert_eq!(json["config"]["max_call_depth"], 2);
+    assert_eq!(json["status"], "Incomplete");
+    assert!(
+        json["frontiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|frontier| frontier["reason"] == "CallDepth"
+                && frontier["from"].is_u64()
+                && frontier["pc"] == 13)
+    );
 }
 
 #[test]

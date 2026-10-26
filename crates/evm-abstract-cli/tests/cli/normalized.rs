@@ -396,8 +396,87 @@ fn default_world_analysis_and_explain_share_final_operations_and_facts() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    super::native::assert_exit(&report, &output);
+    assert_eq!(report["hybrid"]["coverage"]["requested_detail_regions"], 1);
+    assert_eq!(report["hybrid"]["coverage"]["detail_current"], true);
     let report = crate::native::select(&report);
-    let ir = &report["ssa"];
+    assert_final_world_ir(&report["ssa"]);
+    let analysis = &report["analysis"];
+    assert_eq!(analysis["config"]["max_work"], 2_000_000_000_u64);
+    assert_eq!(analysis["config"]["analysis"]["max_transfers"], 10_000_000);
+    let summary = &analysis["procedure_summaries"][0];
+    assert_eq!(summary["kind"], "KnownCall");
+    assert_eq!(summary["closed"], true);
+    assert_eq!(summary["source_current"], true);
+    let procedure = &summary["procedures"][0];
+    assert_eq!(procedure["semantics"], "Native");
+    let frame = &procedure["frame"];
+    let callee = "0x0000000000000000000000000000000000000200";
+    let entry = "0x0000000000000000000000000000000000000101";
+    assert_eq!(frame["code_address"], callee);
+    assert_eq!(frame["address"], callee);
+    assert_eq!(frame["caller"], json!({"Concrete": entry}));
+    assert_eq!(frame["is_static"], false);
+    let code = analysis["world"]["accounts"][callee]["code"]["Runtime"]["bytecode"]
+        .as_str()
+        .unwrap();
+    assert_eq!(code, "0x60015f5260205ff3");
+    assert_eq!(
+        frame["code_hash"],
+        format!(
+            "{:#x}",
+            alloy_primitives::keccak256(
+                alloy_primitives::hex::decode(code.trim_start_matches("0x")).unwrap()
+            )
+        )
+    );
+    let source = &analysis["states"][summary["source_state"].as_u64().unwrap() as usize];
+    assert_eq!(
+        source["key"]["frames"].as_array().unwrap().last().unwrap(),
+        frame
+    );
+    assert_eq!(source["executed_pcs"], json!([]));
+    let node = &summary["regional_cfg"]["nodes"][0];
+    assert_eq!(node["frame"], *frame);
+    let transfer = &node["transfer"];
+    assert_eq!(transfer["semantics"], "Native");
+    assert_eq!(
+        transfer["input_revision"],
+        procedure["version"]["entry_revision"]
+    );
+    for field in ["current", "complete", "visited_block"] {
+        assert_eq!(transfer[field], true);
+    }
+    assert!(
+        transfer["outcomes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Return"))
+    );
+    let returned = procedure["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["kind"] == "Return")
+        .unwrap();
+    assert_eq!(
+        returned["data"]["length"]["numeric"]["constants"],
+        json!(["0x20"])
+    );
+    let mut bytes = vec![0; 32];
+    bytes[31] = 1;
+    assert_eq!(returned["data"]["content"], json!({"Exact": bytes}));
+    assert!(
+        report["ssa"]["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|transition| transition["kind"] == json!({"Summary": "Return"}))
+    );
+    assert_world_final_explanation(&[], true);
+}
+
+fn assert_final_world_ir(ir: &Value) {
     assert_eq!(ir["complete"], true);
     assert_eq!(
         ir["mappings"].as_array().unwrap().len(),
@@ -412,11 +491,14 @@ fn default_world_analysis_and_explain_share_final_operations_and_facts() {
             .flat_map(|block| block["instructions"].as_array().unwrap())
             .any(|row| row["operation"]["Constant"].is_object())
     );
+}
+
+fn assert_world_final_explanation(extra: &[&str], relative: bool) {
     let path = format!(
         "{}/../../examples/worlds/call-return-branch.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    for extra in [vec![], vec!["--verbose"]] {
+    for verbose in [false, true] {
         let mut args = vec![
             "explain",
             "--world",
@@ -424,7 +506,10 @@ fn default_world_analysis_and_explain_share_final_operations_and_facts() {
             "--evm.to",
             "0x0000000000000000000000000000000000000101",
         ];
-        args.extend(extra);
+        args.extend_from_slice(extra);
+        if verbose {
+            args.push("--verbose");
+        }
         let output = run_concrete(&args);
         assert!(output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();
@@ -433,8 +518,131 @@ fn default_world_analysis_and_explain_share_final_operations_and_facts() {
             "{text}"
         );
         assert_eq!(text.matches("Verified cross-contract SSA:").count(), 1);
-        assert!(text.contains("CALL result") || text.contains("kind=Return"));
+        if relative && verbose {
+            assert!(text.contains("CALL success boolean") && text.contains("kind=Summary(Return)"));
+        } else if relative {
+            assert!(text.contains("CALL result") && text.contains("Summary(Return)"));
+        } else {
+            assert!(text.contains("CALL result") || text.contains("kind=Return"));
+        }
     }
+}
+
+fn assert_call_return_physical_input(analysis: &Value) {
+    let path = format!(
+        "{}/../../examples/worlds/call-return-branch.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let input: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let world = analysis["world"]
+        .as_object()
+        .expect("captured World exists");
+    assert_eq!(world["fork"], input["fork"]);
+    assert_eq!(world["provenance"], input["provenance"]);
+    let accounts = world["accounts"].as_object().expect("World accounts exist");
+    for account in input["accounts"].as_array().unwrap() {
+        let address = account["address"].as_str().unwrap();
+        assert_eq!(
+            accounts[address]["code"]["Runtime"]["bytecode"],
+            account["code"]
+        );
+    }
+    let address = "0x0000000000000000000000000000000000000101";
+    let entry = analysis["entry"]
+        .as_object()
+        .expect("physical entry exists");
+    assert_eq!(entry["binding"], json!({"Physical": {"address": address}}));
+    assert_eq!(entry["address"], address);
+    let environment = entry["environment"]
+        .as_object()
+        .expect("entry environment exists");
+    assert_eq!(environment["to"], json!({"Concrete": address}));
+    assert_eq!(
+        environment["caller"],
+        json!({"Concrete": "0x0000000000000000000000000000000000001000"})
+    );
+    assert_eq!(environment["is_static"], false);
+    let zero = serde_json::to_value(EvmValue::<NumericValue>::constant(
+        alloy_primitives::U256::ZERO,
+    ))
+    .unwrap();
+    for value in [&environment["value"], &environment["calldata"]["length"]] {
+        assert_eq!(super::native::numeric(value), super::native::numeric(&zero));
+    }
+    assert_eq!(
+        super::native::root(&environment["calldata"]["root"]),
+        &json!({"BytesExact": []})
+    );
+}
+
+#[test]
+fn two_region_world_analysis_and_explain_keep_the_original_private_return_ir() {
+    let output = analyze(
+        "call-return-branch",
+        &["--ssa", "--format", "json", "--max-detail-regions", "2"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    super::native::assert_exit(&report, &output);
+    assert_eq!(report["hybrid"]["coverage"]["requested_detail_regions"], 2);
+    assert_eq!(report["hybrid"]["coverage"]["detail_current"], true);
+    let global = super::native::global(&report);
+    assert_eq!(global["config"]["max_work"], 2_000_000_000_u64);
+    assert_eq!(global["config"]["analysis"]["max_transfers"], 10_000_000);
+    let report = super::native::select(&report);
+    assert_call_return_physical_input(global);
+    assert_call_return_physical_input(&report["analysis"]);
+    assert_eq!(report["analysis"]["world"], global["world"]);
+    assert_eq!(report["analysis"]["entry"], global["entry"]);
+    for field in [
+        "analysis",
+        "max_work",
+        "max_call_depth",
+        "max_memory_bytes",
+        "use_summaries",
+    ] {
+        assert_eq!(report["analysis"]["config"][field], global["config"][field]);
+    }
+    assert_eq!(report["analysis"]["config"]["root_terminal_coverage"], true);
+    assert_eq!(global["config"]["root_terminal_coverage"], false);
+    assert_final_world_ir(&report["ssa"]);
+    assert!(
+        report["ssa"]["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|transition| transition["kind"] == "Return")
+    );
+    let callee = report["analysis"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| {
+            state["key"]["frames"].as_array().unwrap().last().unwrap()["code_address"]
+                == "0x0000000000000000000000000000000000000200"
+        })
+        .unwrap();
+    assert_eq!(callee["executed_pcs"], json!([0, 2, 3, 4, 6, 7]));
+    let block = report["ssa"]["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["state"] == callee["id"])
+        .unwrap();
+    assert_eq!(
+        block["instructions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|instruction| instruction["opcode"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![0x60, 0x5f, 0x52, 0x60, 0x5f, 0xf3]
+    );
+    assert_world_final_explanation(&["--max-detail-regions", "2"], false);
 }
 
 #[test]

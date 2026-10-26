@@ -202,19 +202,19 @@ pub fn binary() -> std::ffi::OsString {
 )]
 pub fn select(report: &Json) -> Json {
     if report.get("global").is_none() {
+        assert!(
+            report.get("hybrid").is_none() || report.get("global_status").is_some(),
+            "Hybrid evidence requires its Global graph"
+        );
         return report.clone();
     }
-    let Some(hybrid) = report.get("hybrid") else {
-        return report.clone();
-    };
-    let graph = if report["native"].is_null() {
-        assert!(hybrid["local_detail"].as_array().unwrap().is_empty());
-        &report["global"]
-    } else {
-        &report["native"]
-    };
+    let hybrid = report.get("hybrid").expect("Hybrid coverage is recorded");
+    let graph = report
+        .get("native")
+        .filter(|graph| graph.is_object())
+        .expect("Native evidence is absent; inspect native::global explicitly");
     let native = &graph["analysis"];
-    assert!(report["global"]["analysis"]["states"].is_array());
+    assert!(global(report)["states"].is_array());
     assert!(native["states"].is_array());
     assert!(matches!(
         report["selected_view"].as_str(),
@@ -269,12 +269,69 @@ pub fn select(report: &Json) -> Json {
     result
 }
 
+/// Global control locations describe a MAY model. Borrow its analysis explicitly
+/// so a missing Native slot can never become executed-PC or SSA evidence.
+pub fn global(report: &Json) -> &Json {
+    assert!(report["hybrid"].is_object(), "Hybrid coverage is recorded");
+    let analysis = &report["global"]["analysis"];
+    assert!(analysis["states"].is_array(), "Global analysis is recorded");
+    analysis
+}
+
+#[test]
+fn hybrid_namespaces_keep_colliding_state_ids_and_ssa_separate() {
+    let report = serde_json::json!({
+        "global": {"analysis": {"states": [{"id": 0, "executed_pcs": []}]}},
+        "native": {
+            "analysis": {"status": "Converged", "states": [{"id": 0, "executed_pcs": [7]}]},
+            "ssa": {"instructions": [{"pc": 7}]}
+        },
+        "hybrid": {"coverage": {"detail_binding": "OriginalOwner"}, "local_detail": []},
+        "selected_view": "Baseline", "status": "Converged"
+    });
+    assert_eq!(
+        global(&report)["states"][0]["executed_pcs"],
+        serde_json::json!([])
+    );
+    let native = select(&report);
+    assert_eq!(
+        native["analysis"]["states"][0]["executed_pcs"],
+        serde_json::json!([7])
+    );
+    assert_eq!(native["ssa"]["instructions"][0]["pc"], 7);
+    assert_eq!(select(&native), native);
+}
+
+#[test]
+#[should_panic(expected = "Native evidence is absent; inspect native::global explicitly")]
+fn absent_native_evidence_cannot_fall_back_to_global_control() {
+    let report = serde_json::json!({
+        "global": {"analysis": {"states": [{"id": 0, "executed_pcs": []}]}},
+        "native": null,
+        "hybrid": {"local_detail": []}, "selected_view": "Baseline"
+    });
+    select(&report);
+}
+
+#[test]
+#[should_panic(expected = "Hybrid evidence requires its Global graph")]
+fn hybrid_evidence_requires_its_graph_envelope() {
+    select(&serde_json::json!({"hybrid": {}, "native": null}));
+}
+
 #[allow(
     dead_code,
     reason = "shared support module is also compiled by native-only integration targets"
 )]
 pub fn assert_exit(report: &Json, output: &std::process::Output) {
-    let status = report.get("global_status").unwrap_or(&report["status"]);
+    let status = report
+        .get("global_status")
+        .or_else(|| {
+            report
+                .get("machine_analysis")
+                .map(|machine| &machine["status"])
+        })
+        .unwrap_or(&report["status"]);
     assert_eq!(
         output.status.code(),
         Some(if status == "Converged" { 0 } else { 2 }),
