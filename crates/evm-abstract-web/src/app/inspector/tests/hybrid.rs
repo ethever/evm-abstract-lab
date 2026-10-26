@@ -100,6 +100,55 @@ fn default_coverage_panel_shows_conditioned_native_paths_without_replacing_globa
 }
 
 #[test]
+fn retained_precision_sources_are_shown_without_relabeling_baseline_closure() {
+    let mut report = report("600160020100");
+    let hybrid = report.model.hybrid.as_mut().unwrap();
+    let mut precision = hybrid.coverage.clone();
+    assert_eq!(precision.detail_regions.len(), 1);
+    assert_eq!(
+        precision.requested_detail_regions,
+        hybrid.coverage.requested_detail_regions
+    );
+    // Display-only counterexample over the existing report fixture. It models
+    // distinct metadata lists, not RPC acquisition, admission or solving.
+    precision.detail_current = false;
+    hybrid.coverage.detail_regions.clear();
+    hybrid.precision = Some(precision);
+    let expected = "Detailed code sources: 1 selected · limit 1";
+    assert_eq!(
+        crate::app::hybrid::source_policy(&report.model).as_deref(),
+        Some(expected)
+    );
+    let summary = crate::app::hybrid::summary(&report.model).unwrap();
+    assert!(summary.contains("Global coverage closed"));
+    assert!(
+        summary.contains("detailed paths pending") && summary.contains("root address condition")
+    );
+    let context = context();
+    let mut time = 0.0;
+    let mut inspector = Inspector {
+        tab: Tab::Coverage,
+        ..Default::default()
+    };
+    let mut selection = Selection::default();
+    let visible = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1600.0, 2000.0),
+        |ui| {
+            inspector.show(ui, &report.view(), &mut selection, None);
+        },
+    );
+    assert!(visible.iter().any(|(text, _)| text.contains(expected)));
+    let hybrid = report.model.hybrid.as_mut().unwrap();
+    assert!(hybrid.native_coverage().baseline_current);
+    hybrid.coverage.baseline_current = false;
+    let summary = crate::app::hybrid::summary(&report.model).unwrap();
+    assert!(summary.contains("Global coverage incomplete") && summary.contains(expected));
+}
+
+#[test]
 fn actual_static_callbacks_and_constructor_outcomes_render_without_process_pcs() {
     for (code, constructor) in [("5f5f5f5f6102015afa5000", false), ("5f5f5ff000", true)] {
         let report = report(code);

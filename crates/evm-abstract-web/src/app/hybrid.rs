@@ -50,10 +50,10 @@ pub(super) fn summary(report: &AnalysisReport) -> Option<String> {
 }
 
 pub(super) fn source_policy(report: &AnalysisReport) -> Option<String> {
-    let coverage = &report.hybrid.as_ref()?.coverage;
+    let hybrid = report.hybrid.as_ref()?;
     Some(format!(
         "Detailed code sources: {} selected · limit {}",
-        coverage.detail_regions.len(),
-        coverage.requested_detail_regions
+        hybrid.native_coverage().detail_regions.len(),
+        hybrid.coverage.requested_detail_regions
     ))
 }
