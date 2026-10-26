@@ -434,6 +434,30 @@ fn a_retained_delivery_needs_its_own_current_input_and_output_generation() {
     let FlowOrigin::Delivery { call, delivery, .. } = via else {
         unreachable!()
     };
+    let callee = report.minimum.as_ref().unwrap().summaries[scope.summary()]
+        .relation
+        .regional_cfg
+        .calls
+        .iter()
+        .find(|row| row.id == call)
+        .unwrap()
+        .callee;
+    let boundary = super::super::Control::scoped(
+        &report,
+        GraphScope::Context {
+            summary: scope.summary(),
+            procedure: callee,
+            anchor: None,
+        },
+    )
+    .unwrap();
+    assert!(boundary.cards.iter().any(|card| card.title == "Precompile"));
+    assert!(
+        boundary
+            .cards
+            .iter()
+            .all(|card| card.title != "Unknown code")
+    );
     let model = std::sync::Arc::make_mut(report.minimum.as_mut().unwrap());
     let cfg = &mut model.summaries[scope.summary()].relation.regional_cfg;
     cfg.calls

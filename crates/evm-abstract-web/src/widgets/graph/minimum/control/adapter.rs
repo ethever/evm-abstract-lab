@@ -8,7 +8,7 @@ use super::{
     TargetSet, TargetSetKind, card, compact_owner,
 };
 use crate::{app::minimum::location_label, palette};
-use evm_abstract_protocol::{AnalysisReport, EdgeKind, ProcessLocation};
+use evm_abstract_protocol::{AnalysisReport, CodeKind, EdgeKind, ProcessLocation};
 
 impl Control {
     pub(crate) fn scoped(
@@ -55,7 +55,13 @@ impl Control {
                             .map_or_else(|| "Uncaptured source block".into(), |block| format!("0x{:04x} · {}", block.start_pc,
                                 block.instructions.last().map_or("end", |instruction| instruction.name.as_str()))),
                         ProcessLocation::JumpTargets => "Unknown jump".into(),
-                        ProcessLocation::Any => "Unknown code".into(),
+                        ProcessLocation::Any => match node.frame.kind {
+                            CodeKind::Precompile => "Precompile",
+                            CodeKind::Empty => "Empty code",
+                            CodeKind::InvalidDelegation => "Invalid delegation",
+                            CodeKind::Initcode => "Unknown constructor",
+                            _ => "Unknown code",
+                        }.into(),
                         ProcessLocation::End => "End of code".into(),
                     };
                     card.caption = if let Some(TargetSet { kind: TargetSetKind::JumpTargets { relation }, .. }) = set {
