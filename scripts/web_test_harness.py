@@ -217,12 +217,13 @@ def settle_control_geometry(page):
     def geometry():
         return [(control["id"], control["role"], control["rect"])
                 for control in ui_controls(page) if control["enabled"]]
-    previous, stable = geometry(), 0
+    previous, stable, step = geometry(), 0, 0
     deadline = time.monotonic() + 5
     while stable < 2:
         assert time.monotonic() < deadline, "native section response geometry did not settle"
         before = page.evaluate("window.__webgpuEvidence.submissions")
-        page.mouse.move(1 + stable % 2, 1)
+        page.mouse.move(1 + step % 2, 1)
+        step += 1
         page.wait_for_function("before => window.__webgpuEvidence.submissions > before",
                                arg=before, polling=25, timeout=5000)
         current = geometry()
