@@ -13,6 +13,98 @@ use evm_abstract::{
 mod rpc;
 
 #[test]
+fn minimum_retention_payment_preserves_cancellation_owners_and_work_refusal() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let model = AnalysisEngine::new(&algebra, &policies, &mut extension)
+        .run_hybrid(
+            AnalysisInput::from_program(Program::from_hex("00").unwrap(), Default::default())
+                .unwrap(),
+            ExecutionConfig::default(),
+            HybridConfig {
+                max_detail_work: 0,
+                ..Default::default()
+            },
+            &Control::default(),
+        )
+        .unwrap();
+    let request = api::AnalyzeRequest::default();
+    let original_input = request.clone();
+    let producer = model.baseline_handle();
+    let input = super::report::ProjectionInput {
+        request: &request,
+        scope: api::AnalysisScope::SingleProgram,
+        numeric_model: api::NumericModel::Product,
+    };
+    let mut measurement = WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK);
+    super::report::minimum::project(
+        &model,
+        &algebra,
+        &Control::default(),
+        &mut measurement,
+        input,
+    )
+    .unwrap();
+    for cancelled_owner in [Some(true), Some(false), None] {
+        let captured = Control::new(Default::default());
+        let current = Control::new(Default::default());
+        let limit = if cancelled_owner.is_some() {
+            crate::analyze::DEFAULT_POSTPROCESS_WORK
+        } else {
+            measurement.used() + 1
+        };
+        let mut budget = captured.scope(|| WorkBudget::new(limit));
+        let mut report = current
+            .scope(|| {
+                super::report::minimum::project(&model, &algebra, &current, &mut budget, input)
+            })
+            .unwrap();
+        let before = report.clone();
+        let minimum = std::sync::Arc::clone(report.minimum.as_ref().unwrap());
+        let paid = budget.used();
+        assert!(paid > 0 && !budget.exhausted());
+        assert_eq!(report.postprocessing_work, paid as u64);
+        assert!(captured.checkpoint().is_ok() && current.checkpoint().is_ok());
+        if let Some(cancel_captured) = cancelled_owner {
+            assert!(limit - paid >= 2);
+            if cancel_captured {
+                captured.cancellation().cancel();
+                assert!(current.checkpoint().is_ok());
+            } else {
+                current.cancellation().cancel();
+                assert!(captured.checkpoint().is_ok());
+            }
+        }
+        let error = current
+            .scope(|| super::retain_minimum(&mut report, &current, &mut budget))
+            .unwrap_err();
+        if cancelled_owner.is_some() {
+            assert_eq!(error, crate::analyze::cancelled());
+        } else {
+            assert_eq!(error.code, api::ApiErrorCode::Export);
+            let api::ErrorDetails::Export(failure) = error.details else {
+                panic!("missing typed retention work refusal")
+            };
+            assert_eq!(failure.kind, api::ExportFailureKind::Work);
+            assert_eq!(failure.required, 2);
+            assert_eq!(failure.usage, minimum.export_usage);
+            assert!(captured.checkpoint().is_ok() && current.checkpoint().is_ok());
+        }
+        assert_eq!(budget.used(), paid);
+        assert_eq!(budget.limit(), limit);
+        assert_eq!(report, before);
+        assert!(std::sync::Arc::ptr_eq(
+            report.minimum.as_ref().unwrap(),
+            &minimum
+        ));
+        assert!(model.baseline_handle().same_model(&producer));
+        assert_eq!(request, original_input);
+        report.validate().unwrap();
+    }
+}
+
+#[test]
 fn required_minimum_refusal_is_latched_even_when_the_payer_accepts_later_small_charges() {
     let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let policies = EnginePolicies::default();

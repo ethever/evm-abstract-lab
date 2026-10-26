@@ -59,6 +59,93 @@ fn fixture_code(
 }
 
 #[test]
+fn retained_minimum_metadata_preserves_cancellation_owners_and_work_refusal() {
+    let (source, request, algebra) = fixture_code("6003565b6007565b00");
+    let original_input = request.clone();
+    let producer = source.baseline_handle();
+    let input = ProjectionInput {
+        request: &request,
+        scope: api::AnalysisScope::SingleProgram,
+        numeric_model: api::NumericModel::Product,
+    };
+    let mut measurement = WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK);
+    let measured = super::super::minimum::project(
+        &source,
+        &algebra,
+        &Control::default(),
+        &mut measurement,
+        input,
+    )
+    .unwrap();
+    let required = source.coverage().detail_regions.len()
+        + measured.programs.len()
+        + measured.process_controls.len()
+        + 2;
+    for cancelled_owner in [Some(true), Some(false), None] {
+        let captured = Control::new(Default::default());
+        let current = Control::new(Default::default());
+        let limit = if cancelled_owner.is_some() {
+            crate::analyze::DEFAULT_POSTPROCESS_WORK
+        } else {
+            measurement.used() + required - 1
+        };
+        let mut budget = captured.scope(|| WorkBudget::new(limit));
+        let early = current
+            .scope(|| {
+                super::super::minimum::project(&source, &algebra, &current, &mut budget, input)
+            })
+            .unwrap();
+        let before = early.clone();
+        let minimum = Arc::clone(early.minimum.as_ref().unwrap());
+        let paid = budget.used();
+        assert!(paid > 0 && !budget.exhausted());
+        assert_eq!(early.postprocessing_work, paid as u64);
+        assert!(captured.checkpoint().is_ok() && current.checkpoint().is_ok());
+        if let Some(cancel_captured) = cancelled_owner {
+            assert!(limit - paid >= required);
+            if cancel_captured {
+                captured.cancellation().cancel();
+                assert!(current.checkpoint().is_ok());
+            } else {
+                current.cancellation().cancel();
+                assert!(captured.checkpoint().is_ok());
+            }
+        }
+        let error = current
+            .scope(|| {
+                project_with_retained_global(
+                    &source,
+                    &algebra,
+                    &current,
+                    &mut budget,
+                    input,
+                    Some(&early),
+                )
+            })
+            .unwrap_err();
+        if cancelled_owner.is_some() {
+            assert_eq!(error, crate::analyze::cancelled());
+        } else {
+            assert_eq!(error.code, api::ApiErrorCode::Export);
+            let api::ErrorDetails::Export(failure) = error.details else {
+                panic!("missing typed metadata work refusal")
+            };
+            assert_eq!(failure.kind, api::ExportFailureKind::Work);
+            assert_eq!(failure.required, required as u64);
+            assert_eq!(failure.usage, minimum.export_usage);
+            assert!(captured.checkpoint().is_ok() && current.checkpoint().is_ok());
+        }
+        assert_eq!(budget.used(), paid);
+        assert_eq!(budget.limit(), limit);
+        assert_eq!(early, before);
+        assert!(Arc::ptr_eq(early.minimum.as_ref().unwrap(), &minimum));
+        assert!(source.baseline_handle().same_model(&producer));
+        assert_eq!(request, original_input);
+        early.validate().unwrap();
+    }
+}
+
+#[test]
 fn actual_minimum_control_directory_is_retained_on_rich_attachment_and_paid_refusal() {
     let (source, request, algebra) = fixture_code("6003565b6007565b00");
     let control = Control::default();
