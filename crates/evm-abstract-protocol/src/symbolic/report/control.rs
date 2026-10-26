@@ -158,19 +158,44 @@ impl AnalysisReport {
                 .process_program(&key.source)
                 .map(|program| program.blocks.len())
                 .or_else(|| {
+                    // Only the conditional constructor DTO may carry source
+                    // geometry without instruction bytes. Its exact epoch and
+                    // source still have to provide the location's bounds.
+                    if !matches!(key.source, ProcessSource::InitCode(_)) {
+                        return None;
+                    }
                     self.process_controls
                         .iter()
                         .find(|relation| {
                             relation.epoch == key.epoch && relation.source == key.source
                         })
                         .map(|relation| relation.blocks.len())
-                });
-            if blocks.is_some_and(|blocks| !location(key.location, blocks)) {
+                })
+                .ok_or_else(|| self.missing_control_source(&key.source))?;
+            if !location(key.location, blocks) {
                 return Err(invalid());
             }
         } else if key.location != Location::Any {
             return Err(invalid());
         }
         Ok(())
+    }
+
+    fn missing_control_source(&self, source: &ProcessSource) -> ReportValidationFailure {
+        // Preserve the precise fork diagnostic when the same captured identity
+        // exists only under another fork. No such program is admitted here.
+        let mut candidate = source.clone();
+        for program in &self.programs {
+            match &mut candidate {
+                ProcessSource::InputProgram(source) => source.fork = program.fork,
+                ProcessSource::Runtime(source) => source.fork = program.fork,
+                ProcessSource::InitCode(source) => source.fork = program.fork,
+                _ => return invalid(),
+            }
+            if candidate.matches_program(program) {
+                return ReportValidationFailure::Source(crate::SourceValidationKind::Fork);
+            }
+        }
+        invalid()
     }
 }

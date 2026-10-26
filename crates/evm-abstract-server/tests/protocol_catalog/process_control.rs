@@ -2,6 +2,327 @@
 use super::*;
 use std::sync::Arc;
 
+#[derive(Clone)]
+struct PrimitivePublicationGate(Arc<std::sync::Barrier>);
+
+impl evm_abstract_server::jobs::Executor for PrimitivePublicationGate {
+    fn execute(
+        &self,
+        request: api::AnalyzeRequest,
+        control: &Control,
+    ) -> Result<api::AnalysisReport, api::ApiError> {
+        evm_abstract_server::analyze::analyze_with_control(request, control)
+    }
+
+    fn execute_with_publisher(
+        &self,
+        request: api::AnalyzeRequest,
+        control: &Control,
+        publisher: &evm_abstract_server::jobs::Publisher,
+    ) -> Result<api::AnalysisReport, api::ApiError> {
+        let report = evm_abstract_server::analyze::analyze_with_publisher(
+            request,
+            control,
+            &Default::default(),
+            publisher,
+        );
+        // Hold only final installation; read the genuine first minimum from
+        // the production publisher without altering inputs or either budget.
+        self.0.wait();
+        self.0.wait();
+        report
+    }
+}
+
+fn primitive_minimum(namespace: bool) -> api::AnalysisReport {
+    let mut request = bytecode("00");
+    request.limits.root_terminal_coverage = false;
+    if namespace {
+        let api::AnalysisInput::Bytecode(source) = &mut request.input else {
+            unreachable!()
+        };
+        source.address = None;
+    }
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let pool = evm_abstract_server::jobs::Pool::with_executor(
+        Default::default(),
+        PrimitivePublicationGate(Arc::clone(&gate)),
+    )
+    .unwrap();
+    let job = pool.submit(request).unwrap();
+    gate.wait();
+    let report = pool.result(job.id);
+    gate.wait();
+    pool.shutdown().unwrap();
+    let report = report.unwrap();
+    assert!(report.global.is_none() && report.native.is_none());
+    assert_eq!(report.rich_export, api::RichExportOutcome::NotRequested);
+    assert!(report.process_controls.is_empty());
+    let minimum = report.minimum.as_ref().unwrap();
+    assert!(minimum.current);
+    assert!(!minimum.summaries.is_empty());
+    assert!(
+        minimum
+            .summaries
+            .iter()
+            .flat_map(|summary| &summary.relation.regional_cfg.nodes)
+            .all(|node| {
+                node.transfer
+                    .as_ref()
+                    .and_then(|transfer| transfer.process.as_ref())
+                    .is_none_or(|process| process.control.is_none())
+            })
+    );
+    report.validate().unwrap();
+    (*report).clone()
+}
+
+#[test]
+fn primitive_minimum_rejects_missing_known_source_and_unbounded_body_location() {
+    for namespace in [true, false] {
+        let report = primitive_minimum(namespace);
+        let mut corrupted = report.clone();
+        let minimum = Arc::make_mut(corrupted.minimum.as_mut().unwrap());
+        let mut changed = 0;
+        for summary in &mut minimum.summaries {
+            for key in summary
+                .relation
+                .procedures
+                .iter_mut()
+                .filter_map(|procedure| procedure.process.as_mut())
+                .chain(
+                    summary
+                        .relation
+                        .regional_cfg
+                        .nodes
+                        .iter_mut()
+                        .filter_map(|node| node.frame.process.as_mut()),
+                )
+            {
+                match &mut key.source {
+                    api::ProcessSource::InputProgram(source) => {
+                        source.hash = api::ProcessDigest([0xa5; 32])
+                    }
+                    api::ProcessSource::Runtime(source) => {
+                        source.hash = api::ProcessDigest([0xa5; 32])
+                    }
+                    source => panic!("STOP has captured runtime source: {source:?}"),
+                }
+                key.location = api::ProcessLocation::Block(usize::MAX);
+                changed += 1;
+            }
+        }
+        assert!(changed >= 2, "change both procedure and Body keys");
+        let original = report.minimum.as_ref().unwrap();
+        assert_eq!(minimum.declared_root_source, original.declared_root_source);
+        assert_eq!(minimum.accounts, original.accounts);
+        assert_eq!(corrupted.programs, report.programs);
+        for (mutated, original) in minimum.summaries.iter().zip(&original.summaries) {
+            assert!(Arc::ptr_eq(&mutated.bounds, &original.bounds));
+        }
+        assert_eq!(
+            corrupted.validate(),
+            Err(api::ReportValidationFailure::Process(
+                api::ProcessValidationKind::Control
+            )),
+            "absent captured source cannot qualify Block(usize::MAX); namespace={namespace}"
+        );
+    }
+}
+
+#[test]
+fn boundary_only_minimum_binds_captured_role_fork_epoch_and_block_bounds() {
+    for namespace in [true, false] {
+        let report = primitive_minimum(namespace);
+        let original = report.minimum.as_ref().unwrap();
+        let key = original.summaries[0].relation.procedures[0]
+            .process
+            .as_ref()
+            .unwrap();
+        let program = report.process_program(&key.source).unwrap();
+        assert_eq!(key.location, api::ProcessLocation::Block(0));
+        assert_eq!(program.blocks.len(), 1);
+        assert_eq!(program.code_address.is_none(), namespace);
+        assert!(
+            matches!(&key.source, api::ProcessSource::InputProgram(_) if namespace)
+                || matches!(&key.source, api::ProcessSource::Runtime(source) if !namespace && Some(&source.source) == program.code_address.as_ref())
+        );
+        for case in 0..5 {
+            let mut corrupted = report.clone();
+            for summary in &mut Arc::make_mut(corrupted.minimum.as_mut().unwrap()).summaries {
+                for key in summary
+                    .relation
+                    .procedures
+                    .iter_mut()
+                    .filter_map(|procedure| procedure.process.as_mut())
+                    .chain(
+                        summary
+                            .relation
+                            .regional_cfg
+                            .nodes
+                            .iter_mut()
+                            .filter_map(|node| node.frame.process.as_mut()),
+                    )
+                {
+                    match case {
+                        0 => match &mut key.source {
+                            api::ProcessSource::InputProgram(source) => {
+                                source.hash = api::ProcessDigest([0xa5; 32])
+                            }
+                            api::ProcessSource::Runtime(source) => {
+                                source.hash = api::ProcessDigest([0xa5; 32])
+                            }
+                            _ => unreachable!(),
+                        },
+                        1 => key.location = api::ProcessLocation::Block(usize::MAX),
+                        2 => {
+                            key.source = match &key.source {
+                                api::ProcessSource::InputProgram(source) => {
+                                    api::ProcessSource::Runtime(api::ProcessCapturedSource {
+                                        source: original.entry_address.clone(),
+                                        hash: source.hash,
+                                        fork: source.fork,
+                                    })
+                                }
+                                api::ProcessSource::Runtime(source) => {
+                                    api::ProcessSource::InputProgram(
+                                        api::ProcessInputProgramSource {
+                                            hash: source.hash,
+                                            fork: source.fork,
+                                        },
+                                    )
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        3 => match &mut key.source {
+                            api::ProcessSource::InputProgram(source) => {
+                                source.fork = api::Fork::Cancun
+                            }
+                            api::ProcessSource::Runtime(source) => source.fork = api::Fork::Cancun,
+                            _ => unreachable!(),
+                        },
+                        4 => key.epoch = api::ProcessDigest([0xa5; 32]),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            assert!(
+                corrupted.validate().is_err(),
+                "invalid primitive source qualification: namespace={namespace}, case={case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn conditional_unavailable_initcode_requires_qualified_bounded_geometry() {
+    let mut profile = primitive_minimum(true);
+    // Synthetic, uncertified DTO compatibility only. The producer still
+    // refuses captured InitCode; this does not assert a new execution model.
+    profile.status = api::AnalysisStatus::Incomplete;
+    let coverage = &mut profile.hybrid.as_mut().unwrap().coverage;
+    coverage.baseline_current = false;
+    coverage.detail = api::HybridDetailState::BaselinePending;
+    let minimum = Arc::make_mut(profile.minimum.as_mut().unwrap());
+    minimum.current = false;
+    minimum.status = api::AnalysisStatus::Incomplete;
+    let original = minimum.summaries[0].relation.procedures[0]
+        .process
+        .as_ref()
+        .unwrap();
+    let epoch = original.epoch;
+    let api::ProcessSource::InputProgram(source) = &original.source else {
+        unreachable!()
+    };
+    let source = api::ProcessSource::InitCode(api::ProcessInitCodeSource {
+        hash: source.hash,
+        fork: source.fork,
+    });
+    for summary in &mut minimum.summaries {
+        summary.relation.closed = false;
+        summary.relation.source_current = false;
+        for procedure in &mut summary.relation.procedures {
+            procedure.process.as_mut().unwrap().source = source.clone();
+            procedure.kind = api::CodeKind::Initcode;
+            procedure.semantics = api::TransferSemantics::ConstructorProcess;
+        }
+        for node in &mut summary.relation.regional_cfg.nodes {
+            node.frame.process.as_mut().unwrap().source = source.clone();
+            node.frame.kind = api::CodeKind::Initcode;
+            if let Some(transfer) = &mut node.transfer {
+                transfer.semantics = api::TransferSemantics::ConstructorProcess;
+            }
+        }
+    }
+    assert!(
+        profile.process_program(&source).is_none(),
+        "same-hash Runtime bytes cannot substitute for constructor role"
+    );
+    profile
+        .process_controls
+        .push(Arc::new(api::ProcessControlRelation {
+            id: 0,
+            epoch,
+            source,
+            program: None,
+            blocks: vec![api::ProcessControlBlock {
+                successors: [None, None],
+                continuation: None,
+                boundary: true,
+            }],
+            jump_targets: vec![],
+        }));
+    profile.validate().unwrap();
+    for case in 0..5 {
+        let mut invalid = profile.clone();
+        match case {
+            0 => invalid.process_controls.clear(),
+            1 => {
+                Arc::make_mut(&mut invalid.process_controls[0]).epoch =
+                    api::ProcessDigest([0xa5; 32])
+            }
+            2 => {
+                let api::ProcessSource::InitCode(source) =
+                    &mut Arc::make_mut(&mut invalid.process_controls[0]).source
+                else {
+                    unreachable!()
+                };
+                source.hash = api::ProcessDigest([0xa5; 32]);
+            }
+            3 => {
+                for summary in &mut Arc::make_mut(invalid.minimum.as_mut().unwrap()).summaries {
+                    for key in summary
+                        .relation
+                        .procedures
+                        .iter_mut()
+                        .filter_map(|procedure| procedure.process.as_mut())
+                        .chain(
+                            summary
+                                .relation
+                                .regional_cfg
+                                .nodes
+                                .iter_mut()
+                                .filter_map(|node| node.frame.process.as_mut()),
+                        )
+                    {
+                        key.location = api::ProcessLocation::Block(usize::MAX);
+                    }
+                }
+            }
+            4 => {
+                Arc::make_mut(&mut invalid.process_controls[0]).program =
+                    Some(invalid.programs[0].id)
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            invalid.validate().is_err(),
+            "invalid conditional constructor qualification: {case}"
+        );
+    }
+}
+
 fn model(code: &str) -> api::AnalysisReport {
     let mut request = bytecode(code);
     let api::AnalysisInput::Bytecode(source) = &mut request.input else {
