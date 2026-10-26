@@ -506,6 +506,64 @@ fn original_namespace_template_is_distinct_from_physical_store_code_bounds() {
             }
         }
     }
+
+    let original_program = original.program.unwrap();
+    let coordinate = root.coordinate.clone();
+    for foreign_address in [None, Some(Address::repeat_byte(0x77).to_string())] {
+        let mut invalid = report.clone();
+        let program = if let Some(address) = foreign_address {
+            let mut other = (*invalid.programs[original_program]).clone();
+            other.id = invalid.programs.len();
+            other.code_address = Some(address);
+            let id = other.id;
+            invalid.programs.push(Arc::new(other));
+            id
+        } else {
+            original_program
+        };
+        let projected = Arc::make_mut(invalid.minimum.as_mut().unwrap());
+        let summary = projected
+            .summaries
+            .iter_mut()
+            .find(|summary| summary.relation.closed)
+            .unwrap();
+        let store = &mut Arc::make_mut(&mut summary.bounds)[0].input;
+        store.codes.retain(|code| code.owner != coordinate);
+        store.codes.push(api::MinimumCode {
+            owner: coordinate.clone(),
+            kind: api::CodeKind::Runtime,
+            program: Some(program),
+            delegation_target: None,
+        });
+        assert_eq!(
+            invalid.validate(),
+            Err(api::ReportValidationFailure::Minimum(
+                api::MinimumValidationKind::Source
+            )),
+            "physical Store code cannot borrow a namespace template or an unrelated same-bytecode source"
+        );
+    }
+
+    let mut invalid = report.clone();
+    let mut physical = (*invalid.programs[original_program]).clone();
+    physical.id = invalid.programs.len();
+    physical.code_address = Some(coordinate);
+    let program = physical.id;
+    invalid.programs.push(Arc::new(physical));
+    let projected = Arc::make_mut(invalid.minimum.as_mut().unwrap());
+    projected
+        .accounts
+        .iter_mut()
+        .find(|row| row.root_template)
+        .unwrap()
+        .program = Some(program);
+    assert_eq!(
+        invalid.validate(),
+        Err(api::ReportValidationFailure::Minimum(
+            api::MinimumValidationKind::Source
+        )),
+        "original namespace input cannot become a physical source merely because address bits and bytecode agree"
+    );
 }
 
 #[test]
