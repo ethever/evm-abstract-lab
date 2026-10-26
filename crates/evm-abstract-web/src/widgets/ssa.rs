@@ -83,13 +83,13 @@ fn contents(
     });
     cache.prepare(report, program, display, *selection);
     ui.horizontal(|ui| {
-        if ui
+        let response = ui
             .add_enabled(!cache.rows().is_empty(), egui::Button::new("Copy SSA"))
             .on_hover_text(
                 "Copy complete SSA for this scope, including values, effects and transitions",
-            )
-            .clicked()
-        {
+            );
+        crate::controls::observe(ui, &response, "Copy SSA", "action", None);
+        if response.clicked() {
             ui.ctx().copy_text(cache.full_text(report, *selection));
         }
     });
@@ -126,6 +126,7 @@ fn contents(
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.set_min_width(width);
             let height = ui.available_height();
+            let observation_clip = ui.clip_rect();
             let mut table = TableBuilder::new(ui)
                 .id_salt("ssa_rows")
                 .column(Column::remainder().at_least(width))
@@ -186,6 +187,13 @@ fn contents(
                         }
                     });
                     let response = table_row.response();
+                    crate::controls::observe_response(
+                        &response,
+                        observation_clip,
+                        &row.plain_text(),
+                        "ssa-row",
+                        Some(selected),
+                    );
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(
                             egui::WidgetType::SelectableLabel,

@@ -86,8 +86,16 @@ fn body_and_interior_selection_navigate_exact_may_source_without_native_ids() {
     );
     assert_eq!(workspace.selection, crate::app::Selection::default());
     assert_eq!(
-        workspace.minimum_source.focus.unwrap().2,
-        api::ProcessLocation::Block(1)
+        workspace
+            .report_view
+            .navigator()
+            .current()
+            .unwrap()
+            .focus
+            .minimum_selection()
+            .unwrap()
+            .control,
+        Some(api::ProcessLocation::Block(1))
     );
     workspace.inspector.tab = super::super::inspector::Tab::Coverage;
     click(&ctx, &mut workspace, size, "Maximize");

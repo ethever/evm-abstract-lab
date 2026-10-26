@@ -524,7 +524,7 @@ fn all_three_custom_views_paint_structural_content() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
-    workspace.ssa_cache.select_source_scope();
+    workspace.select_source_ssa();
     // Panels stabilize their sizes during the first pass.
     frame(&ctx, &mut workspace, vec![]);
     let output = frame(&ctx, &mut workspace, vec![]);

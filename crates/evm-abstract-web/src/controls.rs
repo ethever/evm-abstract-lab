@@ -29,9 +29,28 @@ pub(crate) fn observe(
     selected: Option<bool>,
 ) {
     #[cfg(any(target_arch = "wasm32", test))]
-    observations::record(ui, response, label, role, selected);
+    {
+        if ui.is_rect_visible(response.rect) {
+            observations::record(ui.ctx(), ui.clip_rect(), response, label, role, selected);
+        }
+    }
     #[cfg(not(any(target_arch = "wasm32", test)))]
     let _ = (ui, response, label, role, selected);
+}
+
+/// TableBuilder owns its Ui borrow while returning real row responses. Use
+/// the enclosing viewport clip without borrowing that Ui a second time.
+pub(crate) fn observe_response(
+    response: &Response,
+    clip: egui::Rect,
+    label: &str,
+    role: &'static str,
+    selected: Option<bool>,
+) {
+    #[cfg(any(target_arch = "wasm32", test))]
+    observations::record(&response.ctx, clip, response, label, role, selected);
+    #[cfg(not(any(target_arch = "wasm32", test)))]
+    let _ = (response, clip, label, role, selected);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

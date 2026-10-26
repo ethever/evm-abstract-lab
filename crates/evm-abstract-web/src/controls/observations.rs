@@ -1,7 +1,7 @@
 //! Opt-in evidence from actual egui responses, never a second activation path.
 //! Browser checks still send pointer/keyboard input and verify painted output.
 
-use egui::{Context, Id, Response, Ui};
+use egui::{Context, Id, Rect, Response};
 
 #[derive(Clone, Default)]
 struct Observation {
@@ -24,17 +24,18 @@ pub(crate) fn begin_observation(context: &Context, enabled: bool) {
 }
 
 pub(super) fn record(
-    ui: &Ui,
+    context: &Context,
+    clip: Rect,
     response: &Response,
     label: &str,
     role: &'static str,
     selected: Option<bool>,
 ) {
-    let rect = response.rect.intersect(ui.clip_rect());
-    if !rect.is_positive() || !ui.is_rect_visible(rect) {
+    let rect = response.rect.intersect(clip);
+    if !rect.is_positive() {
         return;
     }
-    ui.ctx().data_mut(|data| {
+    context.data_mut(|data| {
         let observation = data.get_temp_mut_or_default::<Observation>(key());
         if observation.enabled {
             observation.controls.push(serde_json::json!({

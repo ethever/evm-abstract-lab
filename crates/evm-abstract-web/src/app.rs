@@ -186,6 +186,11 @@ impl Workspace {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn select_source_ssa(&mut self) {
+        self.ssa_cache.select_source_scope();
+    }
+
     /// End a graph wheel gesture cancelled by Fit before new events are applied.
     pub fn prepare_input(&mut self, input: &mut egui::RawInput) {
         if !self.form.open {
