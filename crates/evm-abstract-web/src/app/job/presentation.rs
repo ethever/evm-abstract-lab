@@ -139,7 +139,8 @@ impl Task {
                             },
                         );
                     };
-                    match hybrid.coverage.detail {
+                    // Retained RPC detail keeps its own input revision and binding.
+                    match hybrid.native_coverage().detail {
                         HybridDetailState::Disabled | HybridDetailState::ProcessPolicy => {
                             DetailPresentation::Disabled
                         }
