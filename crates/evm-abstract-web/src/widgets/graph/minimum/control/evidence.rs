@@ -28,7 +28,7 @@ impl FlowOrigin {
                 })
         };
         match self {
-            Self::Admission { .. } | Self::DecodedJump { .. } => false,
+            Self::Admission { .. } | Self::DecodedJump { .. } | Self::Topology { .. } => false,
             Self::Source { node, .. } | Self::Jump { node, .. } => current_node(node),
             Self::Regional { from, to } => {
                 current_node(from)
@@ -41,24 +41,22 @@ impl FlowOrigin {
                             transfer.successors.iter().any(|edge| edge.to == to)
                         })
             }
-            Self::CallSite { call } | Self::Call { call, .. } => {
-                cfg.calls
-                    .iter()
-                    .find(|row| row.id == call)
-                    .is_some_and(|call| {
-                        current_node(call.from)
-                            && cfg
-                                .nodes
-                                .iter()
-                                .find(|node| node.id == call.from)
-                                .is_some_and(|node| {
-                                    node.input_revision == call.input_revision
-                                        && node.transfer.as_ref().is_some_and(|transfer| {
-                                            transfer.calls.contains(&call.id)
-                                        })
-                                })
-                    })
-            }
+            Self::CallSite { call } | Self::Call { call, .. } => cfg
+                .calls
+                .iter()
+                .find(|row| row.id == call)
+                .is_some_and(|call| {
+                    current_node(call.from)
+                        && cfg
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == call.from)
+                            .is_some_and(|node| {
+                                node.transfer
+                                    .as_ref()
+                                    .is_some_and(|transfer| transfer.calls.contains(&call.id))
+                            })
+                }),
             Self::Delivery { call, delivery, .. } => cfg
                 .calls
                 .iter()
@@ -72,7 +70,8 @@ impl FlowOrigin {
                                     .nodes
                                     .iter()
                                     .find(|node| node.id == call.from)
-                                    .is_some_and(|node| node.input_revision == call.input_revision)
+                                    .and_then(|node| node.transfer.as_ref())
+                                    .is_some_and(|transfer| transfer.calls.contains(&call.id))
                                 && observation.bounds.get(call.callee).is_some_and(|bounds| {
                                     bounds.outputs.iter().any(|output| {
                                         output.kind == receipt.kind
@@ -97,7 +96,7 @@ impl FlowOrigin {
         let receipt = match self {
             Self::Delivery { call, delivery, successor } => cfg.calls.iter().find(|row| row.id == call)
                 .and_then(|call| call.deliveries.get(delivery).map(|receipt| format!(
-                    "{:?} delivery · call {} · successor r{}\nCaller input {} · delivered input {} · output generation {}\nWithin-observation current {} · {} creation alternatives",
+                    "{:?} delivery · call {} · successor r{}\nSubscriber input {} · delivered input {} · output generation {}\nWithin-observation current {} · {} creation alternatives",
                     receipt.kind, call.id, successor, call.input_revision, receipt.input_revision, receipt.output_generation, receipt.current, receipt.creation.len()
                 ))),
             Self::CallSite { call } | Self::Call { call, .. } => cfg.calls.iter().find(|row| row.id == call).map(|call| format!(
@@ -105,9 +104,15 @@ impl FlowOrigin {
                 call.action, call.scope, call.target, call.id, call.from, call.callee, call.input_revision
             )),
             Self::Admission { node } => Some(format!("Admitted regional r{node}; admission alone supplies no transfer")),
+            Self::Topology { from, to } => Some(format!("Untyped retained topology r{from} → r{to}; no normal-edge category is inferred")),
             Self::DecodedJump { relation, target } => Some(format!("Decoded legal JUMPDEST index {target} · directory {relation}\nUnknown-jump receipt is unexpanded; source candidate has no regional or instruction evidence")),
             Self::Source { node, relation, from, to } => Some(format!("MAY source {from:?} → {to:?} · regional r{node} · directory {relation}")),
-            Self::Regional { from, to } => Some(format!("Retained regional topology r{from} → r{to}")),
+            Self::Regional { from, to } => {
+                let kinds = cfg.nodes.iter().find(|node| node.id == from).and_then(|node| node.transfer.as_ref())
+                    .map(|transfer| transfer.successors.iter().filter(|edge| edge.to == to).map(|edge| format!("{:?}", edge.kind)).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_else(|| "No retained transfer".into());
+                Some(format!("Typed regional transfer r{from} → r{to} · {kinds}\nMacro composition is separate from source adjacency"))
+            },
             Self::Jump { node, relation, target } => Some(format!("MAY legal JUMPDEST index {target} · hub receipt r{node} · directory {relation}\nTarget-set membership does not supply the destination's effects")),
         };
         format!(

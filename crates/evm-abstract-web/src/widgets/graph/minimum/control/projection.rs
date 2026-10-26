@@ -5,7 +5,8 @@ mod build;
 mod window;
 
 use super::scope::{
-    DEFAULT_POINT_LIMIT, FlowOrigin, GraphProjection, GraphScope, ProjectionEdge, ProjectionError,
+    DEFAULT_POINT_LIMIT, EdgeLevel, FlowOrigin, GraphProjection, GraphScope, ProjectionEdge,
+    ProjectionError,
 };
 use evm_abstract_protocol::AnalysisReport;
 
@@ -36,11 +37,12 @@ fn edge(
     from: usize,
     to: usize,
     kind: evm_abstract_protocol::EdgeKind,
+    level: EdgeLevel,
     origin: FlowOrigin,
 ) {
     if let Some(edge) = edges
         .iter_mut()
-        .find(|edge| edge.from == from && edge.to == to && edge.kind == kind)
+        .find(|edge| edge.from == from && edge.to == to && edge.kind == kind && edge.level == level)
     {
         if !edge.origins.contains(&origin) {
             edge.origins.push(origin);
@@ -50,6 +52,7 @@ fn edge(
             from,
             to,
             kind,
+            level,
             origins: vec![origin],
         });
     }

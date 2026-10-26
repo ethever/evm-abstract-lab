@@ -44,6 +44,16 @@ pub(super) fn project(
         }
         selected.insert(id);
         if !source(id) {
+            // Only actual caller-delivery edges leave call portals; callee
+            // target sets and model macro relations are not BFS adjacency.
+            queue.extend(
+                outgoing
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&id| source(id)),
+            );
             continue;
         }
         queue.extend(outgoing.get(&id).into_iter().flatten().copied());
@@ -83,6 +93,7 @@ pub(super) fn project(
         .collect();
     let mut result = GraphProjection {
         scope: full.scope,
+        level: full.level,
         source_status: full.source_status,
         cards: selected.iter().map(|&id| full.cards[id].clone()).collect(),
         edges: Vec::new(),
@@ -90,6 +101,8 @@ pub(super) fn project(
         counts: full.counts,
         anchor: center.and_then(|id| remap.get(&id).copied()),
         hidden_set: None,
+        model_relations: full.model_relations.clone(),
+        model_set: None,
     };
     let mut retained_sets = BTreeMap::new();
     for card in &mut result.cards {
@@ -101,6 +114,14 @@ pub(super) fn project(
             });
             card.target_set = Some(index);
         }
+    }
+    if let Some(old) = full.model_set {
+        let index = *retained_sets.entry(old).or_insert_with(|| {
+            let index = result.target_sets.len();
+            result.target_sets.push(full.target_sets[old].clone());
+            index
+        });
+        result.model_set = Some(index);
     }
     let mut folded: BTreeMap<(usize, bool), usize> = BTreeMap::new();
     let calls: BTreeMap<_, _> = report.minimum.as_ref().unwrap().summaries[full.scope.summary()]
@@ -114,7 +135,7 @@ pub(super) fn project(
         match (remap.get(&flow.from).copied(), remap.get(&flow.to).copied()) {
             (Some(from), Some(to)) => {
                 for &origin in &flow.origins {
-                    edge(&mut result.edges, from, to, flow.kind, origin);
+                    edge(&mut result.edges, from, to, flow.kind, flow.level, origin);
                 }
             }
             (None, None) => result.counts.hidden_flows += flow.origins.len(),
@@ -145,7 +166,9 @@ pub(super) fn project(
                         FlowOrigin::Source { node, .. } | FlowOrigin::Jump { node, .. } => {
                             Some(node)
                         }
-                        FlowOrigin::Regional { from, to } => Some(if reverse { from } else { to }),
+                        FlowOrigin::Regional { from, to } | FlowOrigin::Topology { from, to } => {
+                            Some(if reverse { from } else { to })
+                        }
                         FlowOrigin::CallSite { call } | FlowOrigin::Call { call, .. } => {
                             calls.get(&call).map(|call| call.from)
                         }
@@ -179,7 +202,7 @@ pub(super) fn project(
                     (visible, portal)
                 };
                 for &origin in &flow.origins {
-                    edge(&mut result.edges, from, to, flow.kind, origin);
+                    edge(&mut result.edges, from, to, flow.kind, flow.level, origin);
                 }
             }
         }
@@ -210,6 +233,15 @@ pub(super) fn project(
             _ => None,
         })
         .sum();
+    result.counts.summarized_model_relations = result
+        .model_relations
+        .iter()
+        .filter(|relation| {
+            !result.edges.iter().any(|edge| {
+                relation.kind == Some(edge.kind) && edge.origins.contains(&relation.origin)
+            })
+        })
+        .count();
     let hidden_entries: Vec<_> = full
         .cards
         .iter()

@@ -1,5 +1,5 @@
 use super::{
-    Builder, CardKind, ControlOrigin, Destination, FlowOrigin, PointKey, ProjectionCard,
+    Builder, CardKind, ControlOrigin, Destination, EdgeLevel, FlowOrigin, PointKey, ProjectionCard,
     ProjectionError, TargetEntry, TargetSet, TargetSetKind, edge,
 };
 use evm_abstract_protocol::{ProcessControlRelation, ProcessLocation, RegionalNode};
@@ -169,6 +169,7 @@ impl<'a> Builder<'a> {
                                         from,
                                         to,
                                         successor.kind,
+                                        EdgeLevel::Source,
                                         FlowOrigin::Source {
                                             node: node.id,
                                             relation: relation.id,

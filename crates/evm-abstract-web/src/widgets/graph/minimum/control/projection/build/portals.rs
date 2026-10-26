@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    Builder, CardKind, Destination, FlowOrigin, TargetEntry, TargetSet, TargetSetKind, edge,
+    Builder, CardKind, Destination, FlowOrigin, GraphLevel, TargetEntry, TargetSet, TargetSetKind,
+    edge,
 };
 use evm_abstract_protocol::{EdgeKind, ProcessAction};
 
@@ -20,26 +21,35 @@ impl Builder<'_> {
                 continue;
             };
             let mut outside = Vec::new();
-            for &successor in &node.successors {
-                let Some(target) = nodes.get(&successor) else {
+            for successor in node
+                .transfer
+                .iter()
+                .flat_map(|transfer| &transfer.successors)
+            {
+                let Some(target) = nodes.get(&successor.to) else {
                     continue;
                 };
-                let kind = node
-                    .transfer
-                    .as_ref()
-                    .and_then(|transfer| {
-                        transfer.successors.iter().find(|edge| edge.to == successor)
-                    })
-                    .map_or(EdgeKind::Fallthrough, |edge| edge.kind);
                 let origin = FlowOrigin::Regional {
                     from: node.id,
-                    to: successor,
+                    to: successor.to,
                 };
-                if let Some(to) = self.body(successor) {
-                    edge(&mut self.projection.edges, from, to, kind, origin);
+                self.retain_relation(node, target, Some(successor.kind), origin);
+                let Some(level) = self.transfer_level(node, target, successor.kind) else {
+                    continue;
+                };
+                if let Some(to) = self.body(successor.to) {
+                    edge(
+                        &mut self.projection.edges,
+                        from,
+                        to,
+                        successor.kind,
+                        level,
+                        origin,
+                    );
                 } else {
                     outside.push((
-                        kind,
+                        successor.kind,
+                        level,
                         TargetEntry {
                             destination: Destination::Control(self.target(target, None)),
                             via: origin,
@@ -53,11 +63,38 @@ impl Builder<'_> {
                     vec![self.evidence(node, None, false, false)],
                     TargetSet {
                         kind: TargetSetKind::ContextBoundary,
-                        entries: outside.iter().map(|(_, entry)| *entry).collect(),
+                        entries: outside.iter().map(|(_, _, entry)| *entry).collect(),
                     },
                 );
-                for (kind, entry) in outside {
-                    edge(&mut self.projection.edges, from, portal, kind, entry.via);
+                for (kind, level, entry) in outside {
+                    edge(
+                        &mut self.projection.edges,
+                        from,
+                        portal,
+                        kind,
+                        level,
+                        entry.via,
+                    );
+                }
+            }
+            // Membership is not a category. Delivered continuations and older
+            // admissions remain accessible without inventing Fallthrough.
+            for &target in &node.successors {
+                if node.transfer.as_ref().is_some_and(|transfer| {
+                    transfer.successors.iter().any(|edge| edge.to == target)
+                }) {
+                    continue;
+                }
+                if let Some(target) = nodes.get(&target) {
+                    self.retain_relation(
+                        node,
+                        target,
+                        None,
+                        FlowOrigin::Topology {
+                            from: node.id,
+                            to: target.id,
+                        },
+                    );
                 }
             }
         }
@@ -76,6 +113,38 @@ impl Builder<'_> {
             };
             self.projection.counts.calls += 1;
             self.projection.counts.deliveries += call.deliveries.len();
+            for &entry in &call.entries {
+                if let Some(target) = nodes.get(&entry) {
+                    self.retain_relation(
+                        caller,
+                        target,
+                        Some(EdgeKind::Call),
+                        FlowOrigin::Call {
+                            call: call.id,
+                            entry,
+                        },
+                    );
+                }
+            }
+            for (delivery, receipt) in call.deliveries.iter().enumerate() {
+                for successor in &receipt.successors {
+                    if let Some(target) = nodes.get(&successor.to) {
+                        self.retain_relation(
+                            caller,
+                            target,
+                            Some(successor.kind),
+                            FlowOrigin::Delivery {
+                                call: call.id,
+                                delivery,
+                                successor: successor.to,
+                            },
+                        );
+                    }
+                }
+            }
+            let Some(level) = self.call_level(caller, call.action) else {
+                continue;
+            };
             let portal = *portals
                 .entry((from, action_key(call.action)))
                 .or_insert_with(|| {
@@ -104,6 +173,7 @@ impl Builder<'_> {
                 from,
                 portal,
                 EdgeKind::Call,
+                level,
                 FlowOrigin::CallSite { call: call.id },
             );
             for &entry in &call.entries {
@@ -118,6 +188,21 @@ impl Builder<'_> {
                                 entry,
                             },
                         });
+                    if self.projection.level == GraphLevel::Model
+                        && let Some(to) = self.body(entry)
+                    {
+                        edge(
+                            &mut self.projection.edges,
+                            portal,
+                            to,
+                            EdgeKind::Call,
+                            level,
+                            FlowOrigin::Call {
+                                call: call.id,
+                                entry,
+                            },
+                        );
+                    }
                 }
             }
             for (delivery, receipt) in call.deliveries.iter().enumerate() {
@@ -127,12 +212,16 @@ impl Builder<'_> {
                         delivery,
                         successor: successor.to,
                     };
-                    if let Some(to) = self.body(successor.to) {
+                    if let Some(to) = self.body(successor.to)
+                        && let Some(target) = nodes.get(&successor.to)
+                        && let Some(level) = self.continuation_level(caller, target, call.action)
+                    {
                         edge(
                             &mut self.projection.edges,
                             portal,
                             to,
                             successor.kind,
+                            level,
                             origin,
                         );
                     }

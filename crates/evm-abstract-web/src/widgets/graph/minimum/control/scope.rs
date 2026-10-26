@@ -7,6 +7,23 @@ use evm_abstract_protocol::{
 
 pub(crate) const DEFAULT_POINT_LIMIT: usize = 12;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GraphLevel {
+    #[default]
+    Source,
+    AbstractBoundary,
+    Model,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EdgeLevel {
+    Source,
+    CallBoundary,
+    ExceptionBoundary,
+    AbstractBoundary,
+    Model,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ControlOrigin {
     /// Actual regional table ID, not its position or a Native state ID.
@@ -100,6 +117,11 @@ pub(crate) struct OriginEvidence {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FlowOrigin {
+    /// Accumulated admission membership without a retained transfer category.
+    Topology {
+        from: usize,
+        to: usize,
+    },
     /// Target-list membership only; this variant never authorizes a graph edge.
     Admission {
         node: usize,
@@ -160,6 +182,17 @@ pub(crate) enum TargetSetKind {
     JumpTargets { relation: usize },
     Folded,
     ContextBoundary,
+    ModelRelations,
+}
+
+/// Regional relations remain inspectable independently of source adjacency.
+/// An absent category is untyped topology, never an inferred fallthrough edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModelRelation {
+    pub from: ProjectionTarget,
+    pub to: ProjectionTarget,
+    pub kind: Option<EdgeKind>,
+    pub origin: FlowOrigin,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,6 +214,7 @@ pub(crate) struct ProjectionEdge {
     pub from: usize,
     pub to: usize,
     pub kind: EdgeKind,
+    pub level: EdgeLevel,
     pub origins: Vec<FlowOrigin>,
 }
 
@@ -200,11 +234,14 @@ pub(crate) struct ScopeCounts {
     pub calls: usize,
     pub displayed_calls: usize,
     pub deliveries: usize,
+    pub summarized_model_relations: usize,
+    pub retained_topology: usize,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct GraphProjection {
     pub scope: GraphScope,
+    pub level: GraphLevel,
     pub source_status: SummarySourceStatus,
     pub cards: Vec<ProjectionCard>,
     pub edges: Vec<ProjectionEdge>,
@@ -214,6 +251,8 @@ pub(crate) struct GraphProjection {
     pub anchor: Option<usize>,
     /// Complete omitted-source membership, including disconnected observations.
     pub hidden_set: Option<usize>,
+    pub model_relations: Vec<ModelRelation>,
+    pub model_set: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

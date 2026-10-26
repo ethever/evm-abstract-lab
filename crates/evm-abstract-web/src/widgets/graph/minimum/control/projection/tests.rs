@@ -4,6 +4,8 @@ use super::super::scope::{
 };
 use evm_abstract_protocol as api;
 
+mod levels;
+
 fn report(code: &str) -> api::AnalysisReport {
     // Keep the real UI defaults, including the original work/region policy.
     let request = api::AnalyzeRequest {
