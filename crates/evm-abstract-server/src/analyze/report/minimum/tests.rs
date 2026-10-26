@@ -646,13 +646,22 @@ fn finite_set_minimum_keeps_the_actual_carrier_and_original_scalar_bound() {
     assert!(report.global.is_none() && report.native.is_none());
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 struct Counted {
     value: NumericValue,
     quote: usize,
     opaque: bool,
+    #[serde(skip)]
+    observations: std::rc::Rc<std::cell::Cell<usize>>,
 }
-thread_local! { static OBSERVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+impl PartialEq for Counted {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.quote == other.quote && self.opaque == other.opaque
+    }
+}
+impl Eq for Counted {}
+
 impl std::fmt::Display for Counted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("counted")
@@ -664,6 +673,7 @@ impl WordElement for Counted {
             value: NumericValue::top(),
             quote: 1,
             opaque: true,
+            observations: Default::default(),
         }
     }
     fn constant(value: U256) -> Self {
@@ -679,7 +689,7 @@ impl WordElement for Counted {
         }
     }
     fn observation(&self) -> WordObservation {
-        OBSERVATIONS.with(|calls| calls.set(calls.get() + 1));
+        self.observations.set(self.observations.get() + 1);
         self.value.observation()
     }
     fn requires_retained_binding(&self) -> bool {
@@ -702,6 +712,7 @@ fn mandatory_numeric_refusals_never_query_an_unpaid_or_opaque_carrier() {
                 value: NumericValue::top(),
                 quote: usize::MAX,
                 opaque: false,
+                ..Counted::top()
             },
             api::ExportFailureKind::Work,
         ),
@@ -710,20 +721,34 @@ fn mandatory_numeric_refusals_never_query_an_unpaid_or_opaque_carrier() {
                 value: NumericValue::top(),
                 quote: 1,
                 opaque: true,
+                ..Counted::top()
             },
             api::ExportFailureKind::Numeric,
         ),
     ] {
-        OBSERVATIONS.with(|calls| calls.set(0));
+        let observations = std::rc::Rc::clone(&value.observations);
         let mut budget = WorkBudget::new(10_000);
         let mut pool = symbolic::Pool::minimum(&control, &mut budget);
         let error = pool.value(&EvmValue::from_numeric(value)).unwrap_err();
         assert!(
             matches!(error.details, api::ErrorDetails::Export(ref failure) if failure.kind == expected)
         );
-        OBSERVATIONS.with(|calls| assert_eq!(calls.get(), 0));
+        assert_eq!(observations.get(), 0);
         assert!(pool.graph.nodes.is_empty());
     }
+
+    // Observe the same constructor-owned counter on the funded path too.
+    let value = Counted {
+        opaque: false,
+        ..Counted::constant(U256::from(42))
+    };
+    let observations = std::rc::Rc::clone(&value.observations);
+    let mut budget = WorkBudget::new(10_000);
+    let mut pool = symbolic::Pool::minimum(&control, &mut budget);
+    let projected = pool.value(&EvmValue::from_numeric(value)).unwrap();
+    assert_eq!(projected.constants, Some(vec!["0x2a".into()]));
+    assert!(observations.get() > 0);
+    assert!(pool.graph.nodes.is_empty());
 }
 
 #[test]

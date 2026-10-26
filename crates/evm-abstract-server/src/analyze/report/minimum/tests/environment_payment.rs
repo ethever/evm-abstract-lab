@@ -13,20 +13,26 @@ use evm_abstract::{
     world::{EvmByteArray, EvmEnvironmentValues},
 };
 use evm_abstract_protocol as api;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 const LENGTH: usize = 17;
 const COPY_WORK: usize = 8192;
 const PREFIX: usize = 37;
 
-thread_local! {
-    static LENGTH_CLONE_WORK: Cell<usize> = const { Cell::new(COPY_WORK) };
-    static HOOKS: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
-    static CANCEL_PROJECT: RefCell<Option<CancelToken>> = const { RefCell::new(None) };
+// The static literal constructor owns this probe. The fixture and algebra
+// borrow its handle from the actual length; clones/intermediates retain it.
+// Mutable observations and cancellation controls are not carrier metadata.
+#[derive(Debug, Default)]
+struct Hooks {
+    calls: Cell<(usize, usize, usize)>,
+    cancel_project: RefCell<Option<CancelToken>>,
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
-struct PrivateWord {
+#[derive(Debug, serde::Serialize)]
+struct PrivateWord<const LENGTH_CLONE_WORK: usize> {
     value: NumericValue,
     #[serde(skip)]
     private: Vec<u8>,
@@ -34,43 +40,56 @@ struct PrivateWord {
     clone_work: usize,
     #[serde(skip)]
     canonical_work: usize,
+    #[serde(skip)]
+    hooks: Option<Rc<Hooks>>,
 }
 
-impl PrivateWord {
+impl<const LENGTH_CLONE_WORK: usize> PartialEq for PrivateWord<LENGTH_CLONE_WORK> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+            && self.private == other.private
+            && self.clone_work == other.clone_work
+            && self.canonical_work == other.canonical_work
+    }
+}
+impl<const LENGTH_CLONE_WORK: usize> Eq for PrivateWord<LENGTH_CLONE_WORK> {}
+
+impl<const LENGTH_CLONE_WORK: usize> PrivateWord<LENGTH_CLONE_WORK> {
     fn plain(value: NumericValue) -> Self {
         Self {
             clone_work: value.clone_work().saturating_add(64),
             canonical_work: value.clone_work().saturating_add(64),
             value,
             private: Vec::new(),
+            hooks: None,
         }
     }
 }
 
-impl Clone for PrivateWord {
+impl<const LENGTH_CLONE_WORK: usize> Clone for PrivateWord<LENGTH_CLONE_WORK> {
     fn clone(&self) -> Self {
         if !self.private.is_empty() {
-            HOOKS.with(|hooks| {
-                let (copies, projects, canonical) = hooks.get();
-                hooks.set((copies + 1, projects, canonical));
-            });
+            let hooks = self.hooks.as_ref().expect("private literal owns hooks");
+            let (copies, projects, canonical) = hooks.calls.get();
+            hooks.calls.set((copies + 1, projects, canonical));
         }
         Self {
             value: self.value.clone(),
             private: self.private.clone(),
             clone_work: self.clone_work,
             canonical_work: self.canonical_work,
+            hooks: self.hooks.as_ref().map(Rc::clone),
         }
     }
 }
 
-impl std::fmt::Display for PrivateWord {
+impl<const LENGTH_CLONE_WORK: usize> std::fmt::Display for PrivateWord<LENGTH_CLONE_WORK> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.value.fmt(formatter)
     }
 }
 
-impl WordElement for PrivateWord {
+impl<const LENGTH_CLONE_WORK: usize> WordElement for PrivateWord<LENGTH_CLONE_WORK> {
     fn top() -> Self {
         Self::plain(NumericValue::top())
     }
@@ -80,8 +99,9 @@ impl WordElement for PrivateWord {
             // Redundant private representation: observation stays cheap and
             // complete, while copying is an independent native operation.
             word.private = vec![0x17; 4096];
-            word.clone_work = LENGTH_CLONE_WORK.with(Cell::get);
+            word.clone_work = LENGTH_CLONE_WORK;
             word.canonical_work = word.clone_work;
+            word.hooks = Some(Rc::new(Hooks::default()));
         }
         word
     }
@@ -105,101 +125,113 @@ impl WordElement for PrivateWord {
     }
     fn canonical_for_summary(&self) -> Self {
         if !self.private.is_empty() {
-            HOOKS.with(|hooks| {
-                let (copies, projects, canonical) = hooks.get();
-                hooks.set((copies, projects, canonical + 1));
-            });
+            let hooks = self.hooks.as_ref().expect("private literal owns hooks");
+            let (copies, projects, canonical) = hooks.calls.get();
+            hooks.calls.set((copies, projects, canonical + 1));
         }
         self.clone()
     }
 }
 
 #[derive(Debug)]
-struct Words {
+struct Words<const LENGTH_CLONE_WORK: usize> {
     projected_canonical_work: usize,
+    hooks: Rc<Hooks>,
 }
 
-impl EvmNumericAlgebra for Words {
-    type Element = PrivateWord;
+impl<const LENGTH_CLONE_WORK: usize> EvmNumericAlgebra for Words<LENGTH_CLONE_WORK> {
+    type Element = PrivateWord<LENGTH_CLONE_WORK>;
 
     fn spec(&self) -> DomainSpec {
         ProductAlgebra::default().spec()
     }
-    fn project_numeric(&self, value: &PrivateWord) -> PrivateWord {
+    fn project_numeric(&self, value: &Self::Element) -> Self::Element {
         let mut projected = value.clone();
         if !value.private.is_empty() {
-            HOOKS.with(|hooks| {
-                let (copies, projects, canonical) = hooks.get();
-                hooks.set((copies, projects + 1, canonical));
-            });
+            assert!(Rc::ptr_eq(
+                value.hooks.as_ref().expect("private literal owns hooks"),
+                &self.hooks,
+            ));
+            let (copies, projects, canonical) = self.hooks.calls.get();
+            self.hooks.calls.set((copies, projects + 1, canonical));
             projected.canonical_work = self.projected_canonical_work;
-            CANCEL_PROJECT.with(|token| {
-                if let Some(token) = token.borrow_mut().take() {
-                    token.cancel();
-                }
-            });
+            if let Some(token) = self.hooks.cancel_project.borrow_mut().take() {
+                token.cancel();
+            }
         }
         projected
     }
-    fn join_numeric(&self, _left: &PrivateWord, _right: &PrivateWord) -> PrivateWord {
+    fn join_numeric(&self, _left: &Self::Element, _right: &Self::Element) -> Self::Element {
         PrivateWord::top()
     }
-    fn widen_numeric(&self, old: &PrivateWord, next: &PrivateWord) -> PrivateWord {
+    fn widen_numeric(&self, old: &Self::Element, next: &Self::Element) -> Self::Element {
         self.join_numeric(old, next)
     }
-    fn widen_procedure_numeric(&self, old: &PrivateWord, next: &PrivateWord) -> PrivateWord {
+    fn widen_procedure_numeric(&self, old: &Self::Element, next: &Self::Element) -> Self::Element {
         self.join_numeric(old, next)
     }
-    fn reduce_numeric(&self, value: &PrivateWord) -> NumericReduction<PrivateWord> {
+    fn reduce_numeric(&self, value: &Self::Element) -> NumericReduction<Self::Element> {
         NumericReduction::stable(value.clone())
     }
     fn apply_numeric<'a>(
         &self,
         _op: u8,
-        _args: impl ExactSizeIterator<Item = &'a PrivateWord>,
-    ) -> NumericReduction<PrivateWord> {
+        _args: impl ExactSizeIterator<Item = &'a Self::Element>,
+    ) -> NumericReduction<Self::Element> {
         NumericReduction::stable(PrivateWord::top())
     }
-    fn operation_work<'a>(&self, _op: u8, _args: impl Iterator<Item = &'a PrivateWord>) -> usize {
+    fn operation_work<'a>(&self, _op: u8, _args: impl Iterator<Item = &'a Self::Element>) -> usize {
         usize::MAX
     }
-    fn projection_work(&self, _value: &PrivateWord) -> usize {
+    fn projection_work(&self, _value: &Self::Element) -> usize {
         1024
     }
-    fn refinement_work(&self, _value: &PrivateWord, _facts: usize) -> usize {
+    fn refinement_work(&self, _value: &Self::Element, _facts: usize) -> usize {
         usize::MAX
     }
-    fn summary_canonical_work(&self, value: &PrivateWord) -> usize {
+    fn summary_canonical_work(&self, value: &Self::Element) -> usize {
         value.canonical_work
     }
 }
 
-fn source(clone_work: usize) -> EvmEnvironmentValues<PrivateWord> {
-    LENGTH_CLONE_WORK.with(|work| work.set(clone_work));
-    EvmEnvironmentValues {
+fn source<const LENGTH_CLONE_WORK: usize>() -> (
+    EvmEnvironmentValues<PrivateWord<LENGTH_CLONE_WORK>>,
+    Rc<Hooks>,
+) {
+    let source: EvmEnvironmentValues<PrivateWord<LENGTH_CLONE_WORK>> = EvmEnvironmentValues {
         calldata: EvmByteArray::exact(&[0; LENGTH]),
         ..Default::default()
-    }
+    };
+    let hooks = Rc::clone(
+        source
+            .calldata
+            .len()
+            .numeric()
+            .hooks
+            .as_ref()
+            .expect("static length constructor owns hooks"),
+    );
+    (source, hooks)
 }
 
 #[test]
 fn actual_environment_refuses_before_unfunded_length_and_intermediate_hooks() {
-    for (clone_work, canonical_work, limit, expected_hooks) in [
-        (usize::MAX, COPY_WORK, 1_000_000, (0, 0, 0)),
-        (COPY_WORK, COPY_WORK, 4096, (0, 0, 0)),
-        (COPY_WORK, usize::MAX, 1_000_000, (1, 1, 0)),
-        (COPY_WORK, 1_000_000, 50_000, (1, 1, 0)),
-    ] {
-        let source = source(clone_work);
+    fn refuses<const LENGTH_CLONE_WORK: usize>(
+        canonical_work: usize,
+        limit: usize,
+        expected_hooks: (usize, usize, usize),
+    ) {
+        let (source, hooks) = source::<LENGTH_CLONE_WORK>();
         let before = source.clone();
         let algebra = ValueAlgebra::new(Words {
             projected_canonical_work: canonical_work,
+            hooks: Rc::clone(&hooks),
         });
         // The original scalar remains cheap to observe. The independently
         // expensive/MAX canonical quote belongs to the projected result.
         assert!(source.calldata.len().numeric().work_size() < COPY_WORK);
         assert!(algebra.borrowed().projection_work(source.calldata.len()) < COPY_WORK);
-        HOOKS.with(|hooks| hooks.set((0, 0, 0)));
+        hooks.calls.set((0, 0, 0));
         let control = Control::default();
         let mut budget = WorkBudget::new(limit);
         assert!(budget.charge(PREFIX));
@@ -217,19 +249,24 @@ fn actual_environment_refuses_before_unfunded_length_and_intermediate_hooks() {
         drop(pools);
         assert_eq!(budget.used(), PREFIX + paid as usize);
         assert_eq!(budget.limit(), limit);
-        HOOKS.with(|hooks| assert_eq!(hooks.get(), expected_hooks));
+        assert_eq!(hooks.calls.get(), expected_hooks);
         assert_eq!(source, before);
     }
+    refuses::<{ usize::MAX }>(COPY_WORK, 1_000_000, (0, 0, 0));
+    refuses::<COPY_WORK>(COPY_WORK, 4096, (0, 0, 0));
+    refuses::<COPY_WORK>(usize::MAX, 1_000_000, (1, 1, 0));
+    refuses::<COPY_WORK>(1_000_000, 50_000, (1, 1, 0));
 }
 
 #[test]
 fn actual_environment_funds_private_length_and_preserves_original_input() {
-    let source = source(COPY_WORK);
+    let (source, hooks) = source::<COPY_WORK>();
     let before = source.clone();
     let algebra = ValueAlgebra::new(Words {
         projected_canonical_work: COPY_WORK,
+        hooks: Rc::clone(&hooks),
     });
-    HOOKS.with(|hooks| hooks.set((0, 0, 0)));
+    hooks.calls.set((0, 0, 0));
     let control = Control::default();
     let mut budget = WorkBudget::new(1_000_000);
     assert!(budget.charge(PREFIX));
@@ -252,22 +289,23 @@ fn actual_environment_funds_private_length_and_preserves_original_input() {
     assert!(pools.symbolic.graph.nodes.is_empty());
     drop(pools);
     assert_eq!(budget.used(), PREFIX + paid as usize);
-    HOOKS.with(|hooks| assert_eq!(hooks.get(), (2, 1, 1)));
+    assert_eq!(hooks.calls.get(), (2, 1, 1));
     assert_eq!(source, before);
 }
 
 #[test]
 fn actual_environment_checks_both_cancellation_owners_after_native_projection() {
     for captured in [false, true] {
-        let source = source(COPY_WORK);
+        let (source, hooks) = source::<COPY_WORK>();
         let algebra = ValueAlgebra::new(Words {
             projected_canonical_work: COPY_WORK,
+            hooks: Rc::clone(&hooks),
         });
         let original = Control::new(Default::default());
         let current = Control::new(Default::default());
         let token = if captured { &original } else { &current };
-        CANCEL_PROJECT.with(|slot| *slot.borrow_mut() = Some(token.cancellation().clone()));
-        HOOKS.with(|hooks| hooks.set((0, 0, 0)));
+        *hooks.cancel_project.borrow_mut() = Some(token.cancellation().clone());
+        hooks.calls.set((0, 0, 0));
         let mut budget = original.scope(|| WorkBudget::new(1_000_000));
         assert!(budget.charge(PREFIX));
         let mut pools = Pools::new(&current);
@@ -281,6 +319,6 @@ fn actual_environment_checks_both_cancellation_owners_after_native_projection() 
         assert_eq!(failure.usage.work, paid);
         drop(pools);
         assert_eq!(budget.used(), PREFIX + paid as usize);
-        HOOKS.with(|hooks| assert_eq!(hooks.get(), (1, 1, 0)));
+        assert_eq!(hooks.calls.get(), (1, 1, 0));
     }
 }
