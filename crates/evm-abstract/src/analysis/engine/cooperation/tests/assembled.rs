@@ -1,4 +1,4 @@
-//! Live G2 + G5 regression on the experimental per-block Process control route.
+//! Live G2 + G5 regression on the selected Process control route.
 //! Caller contributions come from actual Native CALL transfer; growth uses the
 //! existing paid admission seam, not a mutable patch to an executable machine.
 use crate::{
@@ -622,6 +622,17 @@ fn assembled_foreign_retirement_invalidates_currency_without_changing_numeric_ro
         .unwrap()
         .clone();
     let native_version = source_version(&mut engine);
+    let updates = engine.updates.clone();
+    let outcomes = engine.result.outcomes.len();
+    let successors = engine.result.states[0]
+        .execution_evidence()
+        .unwrap()
+        .successors()
+        .to_vec();
+    assert!(
+        !successors.is_empty(),
+        "real CALL result reaches its caller"
+    );
     let next = engine
         .runtime
         .kernel()
@@ -687,6 +698,22 @@ fn assembled_foreign_retirement_invalidates_currency_without_changing_numeric_ro
             .any(|n| n.frame.process.as_deref() == Some(&witness.control)
                 && n.transfer.as_ref().is_some_and(|t| !t.current))
     );
+    assert_eq!(
+        engine.updates, updates,
+        "reproof does not readmit caller inputs"
+    );
+    assert_eq!(
+        engine.result.outcomes.len(),
+        outcomes,
+        "reproof does not redeliver terminal effects"
+    );
+    assert_eq!(
+        engine.result.states[0]
+            .execution_evidence()
+            .unwrap()
+            .successors(),
+        successors
+    );
     assert!(old.closed && old.source_current);
     assert_eq!(slot(&old).singleton(), Some(U256::from(7)));
     assert!(
@@ -720,6 +747,22 @@ fn assembled_foreign_retirement_invalidates_currency_without_changing_numeric_ro
         engine.result.frontiers()
     );
     assert_eq!(slot(renewed).singleton(), Some(U256::from(7)));
+    assert_eq!(
+        engine.updates, updates,
+        "same-value reproof preserves caller inputs"
+    );
+    assert_eq!(
+        engine.result.outcomes.len(),
+        outcomes,
+        "same-value reproof preserves terminal delivery"
+    );
+    assert_eq!(
+        engine.result.states[0]
+            .execution_evidence()
+            .unwrap()
+            .successors(),
+        successors
+    );
     assert!(renewed.version.generation > old.version.generation);
     assert!(
         trace

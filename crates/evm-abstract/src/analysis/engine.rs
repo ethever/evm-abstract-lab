@@ -631,6 +631,9 @@ struct WorldWork<N: WordElement> {
     payload: EvmMachinePayload<N>,
     /// Exact immutable foreign universe consumed before any nested execution.
     consumed: Option<super::cooperation::Subject>,
+    /// Previously delivered numerical rows for this exact World input scope.
+    /// This permits skipping duplicate admission, never source certification.
+    previous_record: Option<usize>,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -834,6 +837,23 @@ impl<
             // A dependency wake may leave the input slot's version unchanged.
             // Even a failed read/preparation is a new evaluation, so neither an
             // older region record nor an older execution receipt can certify it.
+            let previous = if X::ENABLED {
+                self.source_records[id].and_then(|record| {
+                    self.result.states[id]
+                        .execution_evidence()
+                        .filter(|evidence| evidence.is_current())?;
+                    self.cooperation
+                        .as_ref()?
+                        .subject(Point {
+                            namespace: 0,
+                            kind: PointKind::World,
+                            index: id,
+                        })
+                        .map(|subject| (record, subject))
+                })
+            } else {
+                None
+            };
             self.source_records[id] = None;
             self.result.states[id].invalidate_execution();
             if X::ENABLED {
@@ -890,6 +910,7 @@ impl<
                     id,
                     payload: input,
                     consumed: None,
+                    previous_record: None,
                 }));
             }
             let view = cooperation
@@ -935,14 +956,18 @@ impl<
                             kind: super::DiagnosticKind::FactExchangeLimited(status),
                         });
                     }
+                    let consumed = cooperation.subject(Point {
+                        namespace: 0,
+                        kind: PointKind::World,
+                        index: id,
+                    });
                     return Ok(Some(WorldWork {
                         id,
                         payload: *payload,
-                        consumed: cooperation.subject(Point {
-                            namespace: 0,
-                            kind: PointKind::World,
-                            index: id,
-                        }),
+                        consumed,
+                        previous_record: previous
+                            .filter(|(_, subject)| Some(*subject) == consumed)
+                            .map(|(record, _)| record),
                     }));
                 }
                 LocalInput::Unreachable => {
@@ -985,6 +1010,7 @@ impl<
                 id,
                 payload: input,
                 consumed,
+                previous_record,
             } = match self.next_input() {
                 Ok(Some(work)) => work,
                 Ok(None) => break,
@@ -1051,6 +1077,7 @@ impl<
             }
             let reused = matches!(attempt, SummaryAttempt::Hit);
             let mut reported_work = false;
+            let mut delivered = false;
             if !reused {
                 let execution = if relative_procedure {
                     let (execution, evidence) = self.procedures.execute_with(
@@ -1071,6 +1098,25 @@ impl<
                             .expect("composition is owned by this run"),
                     );
                     self.result.transfers = self.counters.transfers;
+                    // Reproof still executes and retains fresh foreign/regional
+                    // guards. Identical native output versions need no second
+                    // admission under the same immutable World input receipt.
+                    if let Some(previous) = previous_record
+                        && execution.frontiers.is_empty()
+                        && self.budget.can_afford(16)
+                        && self.budget.charge(16)
+                    {
+                        let old = &self.result.procedure_summaries()[previous];
+                        delivered = evidence.root_procedure.is_some_and(|root| {
+                            old.root_procedure == Some(root)
+                                && old.procedures.get(root).is_some_and(|prior| {
+                                    evidence
+                                        .procedures
+                                        .get(root)
+                                        .is_some_and(|next| prior.version == next.version)
+                                })
+                        });
+                    }
                     source_record = Some(self.result.procedure_summaries.len());
                     self.result.procedure_summaries.push(evidence);
                     execution
@@ -1095,7 +1141,7 @@ impl<
                         }
                     }
                 };
-                self.execution(id, execution, cache.as_mut());
+                self.execution(id, execution, cache.as_mut(), delivered);
             }
             // 本轮传播后再检查候选子图是否闭合。候选 callee 入口若与登记时不同，
             // 或子图还有待处理节点/前沿，就不能发表完整可复用证书。
@@ -1400,6 +1446,8 @@ impl<
 
     /// 把一次块转换的结果接入图：更新本节点出口，收集诊断、前沿和终结结果，
     /// 再把每个可继续传播的后继交给 `successor` 汇合与调度。
+    /// A same-input, same-output reproof retains the already admitted delivery
+    /// edges while still installing new transfer metadata and diagnostics.
     ///
     /// `exit`、`executed_pcs` 和 `completed_calls[id]` 是本次转换的证据，重访会
     /// 替换它们；edges 和 diagnostics 则累计保留。CALL 后继还要登记为摘要入口。
@@ -1408,6 +1456,7 @@ impl<
         id: usize,
         mut execution: transfer::EvmExecution<D::Element>,
         mut cache: Option<&mut EvmCache<D::Element, P::Class>>,
+        delivered: bool,
     ) {
         self.terminal_boundary.retention(id, &execution);
         execution.payload.normalize();
@@ -1416,10 +1465,18 @@ impl<
         }
         self.result.states[id].exit_stack = execution.payload.active().stack.clone();
         self.result.states[id].executed_pcs = execution.executed_pcs;
-        self.result.states[id].execution_evidence = Some(EvmExecutionEvidence::new(
-            execution.instruction_progress,
-            execution.instruction_values,
-        ));
+        let mut receipt =
+            EvmExecutionEvidence::new(execution.instruction_progress, execution.instruction_values);
+        if delivered {
+            receipt.successors = std::mem::take(
+                &mut self.result.states[id]
+                    .execution_evidence
+                    .as_mut()
+                    .expect("previous complete World delivery")
+                    .successors,
+            );
+        }
+        self.result.states[id].execution_evidence = Some(receipt);
         self.result.states[id].exit = Some(execution.payload);
         self.completed_calls[id] = execution.completed_calls;
         for (pc, kind) in execution.diagnostics {
@@ -1447,6 +1504,9 @@ impl<
                 payload,
                 range,
             });
+        }
+        if delivered {
+            return;
         }
         for outcome in execution.outcomes {
             self.result.outcomes.push(EvmMachineOutcome {
