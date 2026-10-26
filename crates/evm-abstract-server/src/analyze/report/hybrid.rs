@@ -22,6 +22,7 @@ struct RetainedPublication {
 fn retained_publication<N: WordElement>(
     source: &analysis::EvmWorldAnalysis<N>,
     input: ProjectionInput<'_>,
+    control: &Control,
     retained: Option<&api::AnalysisReport>,
     budget: &mut WorkBudget,
     metadata_work: usize,
@@ -33,6 +34,7 @@ fn retained_publication<N: WordElement>(
         });
     };
     let minimum = retained.minimum.as_ref().expect("minimum seed selected");
+    checkpoint(control)?;
     if retained.schema_version != api::SCHEMA_VERSION
         || minimum.source_snapshot != snapshot(source.snapshot())?
         || minimum.revision != api::DecimalU64(source.revision().value())
@@ -42,6 +44,9 @@ fn retained_publication<N: WordElement>(
         || minimum.scope != input.scope
         || minimum.numeric_model != input.numeric_model
         || minimum.environment.is_static != source.entry().environment.is_static
+        || minimum.environment.input_scope.map(|scope| scope.0)
+            != source.entry().environment.input_scope_id()
+        || minimum.postprocessing_max_work != budget.limit() as u64
     {
         return Err(invalid(api::HybridValidationKind::Source));
     }
@@ -146,8 +151,14 @@ pub(in crate::analyze) fn project_with_retained_global<
     retained: Option<&api::AnalysisReport>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     let metadata_work = source.coverage().detail_regions.len().saturating_add(1);
-    let RetainedPublication { minimum, programs } =
-        retained_publication(source.baseline(), input, retained, budget, metadata_work)?;
+    let RetainedPublication { minimum, programs } = retained_publication(
+        source.baseline(),
+        input,
+        control,
+        retained,
+        budget,
+        metadata_work,
+    )?;
     let mut report = api::AnalysisReport {
         schema_version: api::SCHEMA_VERSION,
         selected_view: api::AnalysisNamespace::Baseline,

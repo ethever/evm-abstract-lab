@@ -40,6 +40,7 @@ pub(in crate::analyze) fn project_with_retained_global<
     let RetainedPublication { minimum, programs } = retained_publication(
         source.baseline().baseline(),
         input,
+        control,
         retained,
         budget,
         metadata_work,

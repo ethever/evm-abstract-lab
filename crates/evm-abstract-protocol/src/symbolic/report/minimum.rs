@@ -22,6 +22,17 @@ impl AnalysisReport {
             return Ok(());
         };
         minimum.validate()?;
+        if self.postprocessing_work > minimum.postprocessing_max_work {
+            return Err(ReportValidationFailure::Postprocessing(
+                crate::PostprocessingWorkFailure {
+                    max_work: minimum.postprocessing_max_work,
+                    work: self.postprocessing_work,
+                },
+            ));
+        }
+        if self.postprocessing_work < minimum.export_usage.work {
+            return Err(invalid(Kind::Export));
+        }
         let hybrid = self
             .hybrid
             .as_ref()
@@ -70,6 +81,29 @@ impl AnalysisReport {
                 || minimum.environment.caller != metadata.environment.caller
                 || minimum.environment.origin != metadata.environment.origin
                 || minimum.environment.is_static != metadata.environment.is_static
+                || minimum.postprocessing_max_work != metadata.postprocessing_max_work
+            {
+                return Err(invalid(Kind::Source));
+            }
+        }
+        for account in &minimum.accounts {
+            let Some(id) = account.program else { continue };
+            let program = self
+                .programs
+                .iter()
+                .find(|program| program.id == id)
+                .ok_or_else(|| invalid(Kind::Source))?;
+            if program.kind != CodeKind::Runtime
+                || program.fork != minimum.fork
+                || (account.root_template && program.code_address.is_some())
+                || (!account.root_template
+                    && program.code_address.as_deref() != Some(account.address.as_str()))
+            {
+                return Err(invalid(Kind::Source));
+            }
+            if account.root_template
+                && !matches!(&minimum.declared_root_source,
+                ProcessSource::InputProgram(source) if program.code_hash == source.hash.to_string())
             {
                 return Err(invalid(Kind::Source));
             }
@@ -97,12 +131,9 @@ impl AnalysisReport {
                 .iter()
                 .find(|program| program.id == id)
                 .ok_or_else(|| invalid(Kind::Source))?;
-            let supplied = program.code_address.is_none()
-                && matches!(&minimum.declared_root_source,
-                    ProcessSource::InputProgram(source) if program.code_hash == source.hash.to_string());
             if program.kind != CodeKind::Runtime
                 || program.fork != minimum.fork
-                || (program.code_address.as_deref() != Some(code.owner.as_str()) && !supplied)
+                || program.code_address.as_deref() != Some(code.owner.as_str())
             {
                 return Err(invalid(Kind::Source));
             }

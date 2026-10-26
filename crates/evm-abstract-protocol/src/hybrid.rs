@@ -41,7 +41,7 @@ variant! {
 choice! {
     /// Qualification of optional native precision.
     pub enum HybridDetailState {
-        /// A closed global model is available before optional Native work starts.
+        /// The Global model is closed; optional Native preparation has not started.
         Pending,
         /// No optional precision was requested.
         Disabled,

@@ -430,7 +430,7 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             environment,
             limits: request.limits.clone(),
             work: native.work() as u64,
-            postprocessing_max_work: super::DEFAULT_POSTPROCESS_WORK as u64,
+            postprocessing_max_work: postprocessing.limit() as u64,
             postprocessing_work: postprocessing.used().saturating_sub(initial_work) as u64,
             export_limits: pools.symbolic.limits,
             export_usage: pools.symbolic.usage,
