@@ -6,6 +6,9 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 pub use browser::start;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod contact;
+
 /// Preserve the native disclosure while exposing its actual header response.
 pub(crate) fn section<R>(
     ui: &mut egui::Ui,
