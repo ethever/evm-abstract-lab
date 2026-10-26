@@ -107,6 +107,143 @@ def select_may_source(page, canvas, output):
     return cards
 
 
+def detail_policy_form(page, canvas, reference_request, reference_report, output):
+    """Edit the real D5 policy with the same source, environment and payer."""
+    from web_test_harness import complete_submission
+    from web_test_hybrid import assert_detail_policy, assert_root_source, source_instructions, source_program
+    from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_modal
+    from web_test_pixels import text_pixels
+
+    assert reference_request["limits"] == LAYOUT_DEFAULT_LIMITS
+    assert reference_request["limits"]["max_detail_regions"] == 1
+    previous = assert_detail_policy(reference_report, 1)
+    status = page.locator("#analysis-status")
+    geometry, results = {}, []
+    (output / "detail-policy-reference-request.json").write_text(json.dumps(reference_request, indent=2) + "\n")
+    (output / "detail-policy-reference-report.json").write_text(json.dumps(reference_report, indent=2) + "\n")
+
+    def policy_text(coverage, requested):
+        return f"Detailed code sources: {len(coverage['detail_regions'])} selected · limit {requested}"
+
+    previous_text = policy_text(previous, 1)
+    reference_environment = dict(reference_report["minimum"]["environment"])
+    scopes = {reference_environment.pop("input_scope")}
+    for requested in [0, 2]:
+        open_input(page)
+        rendered_frame(page)
+        header_offset = 10
+
+        def capture(stage):
+            page.mouse.move(2, 2)
+            settle_gesture(page)
+            page.wait_for_timeout(200)  # Finish the real collapse animation.
+            png = canvas.screenshot(path=str(output / f"detail-policy-{requested}-{stage}.png"))
+            bounds = layout_modal(page, canvas)
+            assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
+                    and 750 <= bounds[2] - bounds[0] <= 780), bounds
+            region = (bounds[0] + 29, bounds[1] + header_offset, bounds[0] + 95, bounds[3] - 40)
+            measured = {"modal": bounds, "region": region, **text_pixels(page, png, region)}
+            geometry[f"{requested}-{stage}"] = measured
+            (output / "detail-policy-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
+            return measured
+
+        before = capture("closed")
+        headers = before["rows"][-6:]
+        assert len(headers) == 6 and all(20 <= b[0] - a[0] <= 26
+                                       for a, b in zip(headers, headers[1:])), before
+        header_offset = headers[0][0] - before["modal"][1] - 2
+        precision = headers[-2]
+        canvas.click(position={"x": before["modal"][0] + 70, "y": sum(precision) / 2})
+        opened = capture("open")
+        # Three environment headers, Execution and Precision precede Numeric
+        # model and the eight existing precision integer editors.
+        assert len(opened["rows"]) >= 15, opened
+        assert all(abs(a[0] - opened["modal"][1] - (b[0] - before["modal"][1])) <= 2
+                   for a, b in zip(opened["rows"][:5], headers[:5])), opened
+        assert all(20 <= b[0] - a[0] <= 26
+                   for a, b in zip(opened["rows"][5:13], opened["rows"][6:14])), opened
+        source_row = opened["rows"][6]
+        canvas.click(position={"x": opened["modal"][0] + 250, "y": sum(source_row) / 2})
+        page.keyboard.press("Control+A")
+        page.keyboard.insert_text(str(requested))
+        rendered_frame(page)
+        edited = capture("edited")
+        # A form draft cannot relabel the report that is still displayed.
+        expect(status).to_contain_text(previous_text)
+        canvas.click(position={"x": edited["modal"][0] + 70,
+                               "y": sum(edited["rows"][4]) / 2})
+        closed = capture("restored")
+        assert len(closed["rows"]) == 6, closed
+        with page.expect_response(lambda response: response.url.endswith("/api/tasks")
+                                  and response.request.method == "POST") as submitted:
+            page.keyboard.press("Control+Enter")
+        reply = complete_submission(page, submitted.value, expected_detail_regions=requested)
+        (output / f"detail-policy-{requested}-request.json").write_text(reply.request.post_data + "\n")
+        (output / f"detail-policy-{requested}-result.json").write_text(json.dumps(reply.json(), indent=2) + "\n")
+        assert reply.admission_status == 202 and reply.status == 200, reply.json()
+        expected = {**reference_request,
+                    "limits": {**reference_request["limits"], "max_detail_regions": requested}}
+        assert reply.request.post_data_json == expected, reply.request.post_data_json
+        report = reply.report
+        coverage = assert_detail_policy(report, requested)
+        minimum = report["minimum"]
+        assert minimum["current"] and minimum["status"] == "Converged"
+        assert minimum["fork"] == reference_request["fork"]
+        assert minimum["numeric_model"] == reference_request["limits"]["numeric_model"]
+        environment = dict(minimum["environment"])
+        scope = environment.pop("input_scope")
+        # Each actual job owns a fresh symbolic-input namespace. Its physical
+        # input bounds still agree exactly; this identity must never be reused.
+        assert type(scope) is str and scope.isdecimal() and scope not in scopes
+        scopes.add(scope)
+        assert environment == reference_environment
+        assert coverage["work"]["total"] <= reference_request["limits"]["max_work"]
+        roots = []
+        for graph in [report["global"], report["native"]]:
+            if graph is None:
+                continue
+            metadata = graph["metadata"]
+            assert metadata["limits"] == expected["limits"]
+            assert_root_source(report, metadata)
+            program = source_program(report, metadata["root_program"])
+            assert program["bytecode"].removeprefix("0x") == reference_request["input"]["Bytecode"]["bytecode"]
+            assert program["fork"] == reference_request["fork"]
+            roots.append((metadata["declared_root_source"], program["id"]))
+        if len(roots) == 2 and roots[0][0] != roots[1][0]:
+            assert roots[0][1] != roots[1][1], "different qualified source aliases share a program ID"
+        if report["global"] is not None:
+            assert all(not block["executed_pcs"] for block in report["global"]["cfg"])
+        controls = process_model(report, require_hub=True)
+        previous_text = policy_text(coverage, requested)
+        expect(status).to_contain_text(previous_text)
+        expect(status).to_contain_text("View: Global model")
+        (output / f"detail-policy-{requested}-status.txt").write_text(status.text_content() + "\n")
+        # New reports select this program's actual entry source, rather than
+        # carrying the previously clicked virtual hub or a Native state ID.
+        expect(status).to_contain_text("Selected MAY source: block index 0")
+        assert "Selected σ" not in status.text_content(), status.text_content()
+        if requested == 0:
+            expect(status).to_contain_text("detailed paths disabled")
+            canvas.click(position={"x": 148, "y": 38})
+            expect(status).to_contain_text("View: Global model")
+        else:
+            assert len(coverage["detail_regions"]) == 1, "one captured source in this unchanged program"
+            assert any(block["executed_pcs"] for block in report["native"]["cfg"])
+            for block in report["native"]["cfg"]:
+                if block["executed_pcs"]:
+                    assert set(block["executed_pcs"]) <= {instruction["pc"] for instruction in source_instructions(report, block)}
+            canvas.click(position={"x": 148, "y": 38})
+            expect(status).to_contain_text("View: Detailed paths")
+            canvas.click(position={"x": 50, "y": 38})
+            expect(status).to_contain_text("View: Global model")
+        rendered_frame(page)
+        canvas.screenshot(path=str(output / f"detail-policy-{requested}-result.png"))
+        results.append({"requested": requested, "selected": len(coverage["detail_regions"]),
+                        "job": str(reply.job["id"]), "controls": controls,
+                        "input_scope": scope, "work": coverage["work"], "status": status.text_content()})
+    return results
+
+
 def run(context, mode="cancel"):
     if mode=="refusal": return refusal(context)
     from tempfile import TemporaryDirectory
@@ -127,6 +264,7 @@ def run(context, mode="cancel"):
 
 
 def cancellation(context,url,rpc):
+    from web_test_hybrid import assert_detail_policy
     page = context.browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)
     results, submissions = [], []
@@ -171,6 +309,8 @@ def cancellation(context,url,rpc):
     assert first["publication"]["native_version"] is None
     (context.output / "first-publication.json").write_text(json.dumps(first,indent=2)+"\n")
     report = first["report"]
+    assert submissions[0]["limits"]["max_detail_regions"] == 1
+    assert_detail_policy(report, 1)
     first_controls = process_model(report)
     assert report["selected_view"] == "Baseline" and report["minimum"] is not None and report["global"] is None and report["native"] is None
     assert report["hybrid"]["coverage"]["baseline_current"] is True
@@ -244,6 +384,7 @@ def cancellation(context,url,rpc):
     expect(status).to_contain_text(re.compile(rf"(?:^|; )Job ID: {replacement_id}(?=;|$)"))
     assert "Publication: 2" in status.text_content()
     replacement_result = page.request.get(url + "/api/tasks/" + str(replacement_id) + "/result").json()["result"]["Ok"]
+    assert_detail_policy(replacement_result["report"], 1)
     replacement_controls = process_model(replacement_result["report"], require_hub=True)
     expect(status).to_contain_text("1 expanded unknown-jump hubs")
     cards = select_may_source(page, canvas, context.output)
@@ -255,17 +396,19 @@ def cancellation(context,url,rpc):
     expect(status).to_contain_text("View: Detailed paths")
     canvas.click(position={"x": 50, "y": 38})
     expect(status).to_contain_text("View: Global model")
+    policies = detail_policy_form(page, canvas, replacement_request, replacement_result["report"], context.output)
     assert not errors, errors
     renderer = webgpu_evidence(page)
     (context.output / "request.json").write_text(json.dumps(submissions[0], indent=2) + "\n")
     (context.output / "publications.json").write_text(json.dumps(results, indent=2) + "\n")
-    result = {"pending_optional_rpc_closed":rpc.disconnected.is_set(),"requests":rpc.requests,"first_job": str(job_id), "replacement_job": str(replacement_id), "first_publication": first["publication"], "renderer": renderer, "running_views": views, "camera_sha256": hashlib.sha256(before).hexdigest(), "first_controls": first_controls, "replacement_controls": replacement_controls, "painted_cards": cards, "status": status.text_content()}
+    result = {"pending_optional_rpc_closed":rpc.disconnected.is_set(),"requests":rpc.requests,"first_job": str(job_id), "replacement_job": str(replacement_id), "first_publication": first["publication"], "renderer": renderer, "running_views": views, "camera_sha256": hashlib.sha256(before).hexdigest(), "first_controls": first_controls, "replacement_controls": replacement_controls, "painted_cards": cards, "detail_policies": policies, "status": status.text_content()}
     page.close()
     return result
 
 
 def refusal(context):
     from web_test_harness import analysis_server
+    from web_test_hybrid import assert_detail_policy
     from web_test_inspector_helpers import inspector_painted_controls, inspector_title_action
     def page_for(url,request=None):
         page=context.browser.new_page(viewport={"width":1440,"height":1000})
@@ -286,6 +429,8 @@ def refusal(context):
         assert results and len(requests)==1
         return page,requests[0],results[-1]
     baseline,request,complete=page_for(context.url)
+    assert request["limits"]["max_detail_regions"] == 1
+    assert_detail_policy(complete["report"], 1)
     assert complete["report"]["rich_export"]=="Complete"
     minimum_work=complete["report"]["minimum"]["export_usage"]["work"]
     full_work=complete["report"]["postprocessing_work"]
@@ -296,6 +441,7 @@ def refusal(context):
         page,replayed,actual=page_for(url,request)
         assert replayed==request,"the refusal control changed execution input/policy"
         report=actual["report"];minimum=report["minimum"]
+        assert_detail_policy(report, 1)
         controls = process_model(report)
         assert actual["publication"]["model_closed"] and minimum["current"] and minimum["status"]=="Converged"
         assert actual["publication"]["minimum_version"] is not None
