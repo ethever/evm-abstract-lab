@@ -47,20 +47,34 @@ def touch_scroll_storage(page, region, *, swipes=3):
     assert start - end > 100, region
     assert type(swipes) is int and swipes > 0, swipes
     session = page.context.new_cdp_session(page)
+    paints = []
+
+    def dispatch_painted(phase, points, step):
+        # Move events do not update the shared key/down/up marker. Bind each
+        # real touch dispatch to two NEW native submissions: eframe may first
+        # present an already prepared frame before consuming this input.
+        before = page.evaluate("window.__webgpuEvidence.submissions")
+        session.send("Input.dispatchTouchEvent", {"type": phase, "touchPoints": points})
+        page.wait_for_function("before => window.__webgpuEvidence.submissions >= before + 2",
+                               arg=before, polling=25, timeout=5000)
+        rendered_frame(page)
+        after = page.evaluate("window.__webgpuEvidence.submissions")
+        paints.append({"phase": phase, "step": step, "points": points,
+                       "gpu_submissions_before": before, "gpu_submissions_after": after})
+
     try:
         for _ in range(swipes):
-            session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [
-                {"id": 1, "x": x, "y": start, "radiusX": 3, "radiusY": 3}]})
-            rendered_frame(page)
+            dispatch_painted("touchStart", [
+                {"id": 1, "x": x, "y": start, "radiusX": 3, "radiusY": 3}], 0)
             for step in range(1, 17):
-                session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [
+                dispatch_painted("touchMove", [
                     {"id": 1, "x": x, "y": start + (end - start) * step / 16,
-                     "radiusX": 3, "radiusY": 3}]})
-                rendered_frame(page)
-            session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+                     "radiusX": 3, "radiusY": 3}], step)
+            dispatch_painted("touchEnd", [], 17)
             settle_gesture(page)
     finally:
         session.detach()
+    return paints
 
 
 def storage_table_pixels(page, screenshot: bytes, region):
