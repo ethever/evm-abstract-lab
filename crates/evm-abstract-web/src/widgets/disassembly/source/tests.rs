@@ -175,3 +175,89 @@ fn native_pc_links_require_the_selected_states_current_receipt() {
         EvidenceFocus::Source { .. }
     ));
 }
+
+#[test]
+fn canonical_hover_uses_only_the_selected_contexts_current_instruction_receipt() {
+    use evm_abstract_protocol::BlockCoverage;
+    for (state, coverage, observed) in [
+        (Some(0), BlockCoverage::Current, true),
+        (Some(1), BlockCoverage::Current, false),
+        (None, BlockCoverage::Current, false),
+        (Some(0), BlockCoverage::Stale, false),
+    ] {
+        let mut report = crate::tests::report();
+        report.ssa.blocks[0].coverage = coverage;
+        let view = ReportViewId::fixture(1, AnalysisNamespace::Native);
+        let mut index = ReportIndex::default();
+        index.update(&report.model, view, None, None);
+        let presentation = Presentation::new(&report.model, &index, view, None);
+        let focus = state.map_or_else(
+            || Focus::source(view, presentation.source(0).unwrap()),
+            |state| {
+                presentation
+                    .focus_context(crate::app::model::presentation::ContextTarget {
+                        view,
+                        context: crate::app::model::navigation::ContextFocus::Graph { state },
+                    })
+                    .unwrap()
+            },
+        );
+        let context = Context::default();
+        crate::palette::configure(&context);
+        context.style_mut_of(egui::Theme::Dark, |style| {
+            style.interaction.tooltip_delay = 0.0
+        });
+        let mut cache = SourceCache::default();
+        let mut frame = |time, events| {
+            let mut output = context.run_ui(
+                RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 480.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    cache.show(ui, presentation, &focus);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(0.0, vec![]);
+        let output = frame(0.1, vec![]);
+        let label =
+            super::super::copy::instruction(&report.model.programs[0].blocks[0].instructions[0]);
+        let pos = crate::tests::painted_text(&output)
+            .iter()
+            .find(|(text, _)| text == &label)
+            .unwrap()
+            .1
+            + egui::vec2(8.0, 6.0);
+        frame(0.2, vec![egui::Event::PointerMoved(pos)]);
+        frame(1.0, vec![]);
+        let output = frame(1.1, vec![]);
+        let text = crate::tests::painted_text(&output)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if observed {
+            assert!(
+                text.contains("Observed in current execution evidence"),
+                "{text}"
+            );
+        } else {
+            assert!(
+                text.contains("Decoded source; no current execution receipt"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("Observed in current execution evidence"),
+                "{text}"
+            );
+        }
+    }
+}

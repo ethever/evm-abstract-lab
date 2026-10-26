@@ -2,7 +2,7 @@
 //! The shell owns selection; this cache retains only the last scroll target.
 
 use egui::{RichText, Ui};
-use evm_abstract_protocol::{AnalysisNamespace, BlockCoverage, ProcessLocation};
+use evm_abstract_protocol::{AnalysisNamespace, BlockCoverage, CfgBlock, ProcessLocation};
 
 use crate::{
     app::model::{
@@ -35,27 +35,10 @@ impl SourcePick {
 
     fn context_focus(self, presentation: Presentation<'_>, current: &Focus) -> Focus {
         let source = self.focus(current);
-        let Some(context) = current.context else {
+        let Some(state) = current_native_context(presentation, current) else {
             return source;
         };
-        let Ok(ResolvedContext::Graph {
-            state,
-            coverage,
-            at_current_revision,
-            ..
-        }) = presentation.context(ContextTarget {
-            view: current.view,
-            context,
-        })
-        else {
-            return source;
-        };
-        if current.view.namespace() != AnalysisNamespace::Native
-            || state.process.is_some()
-            || state.basic_block != Some(self.block)
-            || coverage != Some(BlockCoverage::Current)
-            || !at_current_revision
-        {
+        if state.basic_block != Some(self.block) {
             return source;
         }
         let native = Focus {
@@ -112,6 +95,7 @@ impl SourceCache {
             return None;
         };
         let rows = presentation.index().source_rows(source.id)?;
+        let native = current_native_context(presentation, focus);
         crate::widgets::heading(
             ui,
             "CODE",
@@ -253,11 +237,39 @@ impl SourceCache {
                     }
                 });
                 if let Some(instruction) = instruction {
-                    response.on_hover_text(super::tooltip::instruction(instruction, false));
+                    let executed = native.is_some_and(|state| {
+                        state.basic_block == Some(source_block.id)
+                            && state.executed_pcs.contains(&instruction.pc)
+                    });
+                    response.on_hover_text(super::tooltip::instruction(instruction, executed));
                 }
             }
         });
         picked
+    }
+}
+
+fn current_native_context<'a>(
+    presentation: Presentation<'a>,
+    focus: &Focus,
+) -> Option<&'a CfgBlock> {
+    if focus.view.namespace() != AnalysisNamespace::Native {
+        return None;
+    }
+    match presentation
+        .context(ContextTarget {
+            view: focus.view,
+            context: focus.context?,
+        })
+        .ok()?
+    {
+        ResolvedContext::Graph {
+            state,
+            coverage: Some(BlockCoverage::Current),
+            at_current_revision: true,
+            ..
+        } if state.process.is_none() => Some(state),
+        _ => None,
     }
 }
 
