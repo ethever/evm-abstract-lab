@@ -141,8 +141,9 @@ fn clipboard_code_and_reference_preserve_full_operands_and_source_namespace() {
 }
 
 #[test]
-fn native_pc_links_require_the_selected_states_current_receipt() {
+fn native_pc_links_require_the_selected_states_retained_receipt() {
     let mut report = crate::tests::report();
+    report.ssa.complete = false;
     let view = ReportViewId::fixture(1, AnalysisNamespace::Native);
     let mut index = ReportIndex::default();
     index.update(&report.model, view, None, None);
@@ -170,10 +171,13 @@ fn native_pc_links_require_the_selected_states_current_receipt() {
     let mut stale_index = ReportIndex::default();
     stale_index.update(&report.model, view, None, None);
     let stale = Presentation::new(&report.model, &stale_index, view, None);
-    assert!(matches!(
-        pick.context_focus(stale, &focus).evidence,
-        EvidenceFocus::Source { .. }
-    ));
+    assert_eq!(
+        pick.context_focus(stale, &focus)
+            .graph_selection()
+            .unwrap()
+            .pc,
+        Some(0)
+    );
 }
 
 #[test]
@@ -186,6 +190,7 @@ fn canonical_hover_uses_only_the_selected_contexts_current_instruction_receipt()
         (Some(0), BlockCoverage::Stale, false),
     ] {
         let mut report = crate::tests::report();
+        report.ssa.complete = false;
         report.ssa.blocks[0].coverage = coverage;
         let view = ReportViewId::fixture(1, AnalysisNamespace::Native);
         let mut index = ReportIndex::default();
@@ -244,6 +249,12 @@ fn canonical_hover_uses_only_the_selected_contexts_current_instruction_receipt()
             .map(|(text, _)| text)
             .collect::<Vec<_>>()
             .join("\n");
+        if state.is_some() {
+            assert!(text.contains("Partial Native SSA publication"), "{text}");
+        }
+        if coverage == BlockCoverage::Stale {
+            assert!(text.contains("Historical Native receipt"), "{text}");
+        }
         if observed {
             assert!(
                 text.contains("Observed in current execution evidence"),

@@ -2,7 +2,7 @@
 //! Source grouping never combines the underlying context or state identities.
 
 use egui::{RichText, Ui};
-use evm_abstract_protocol::{BlockCoverage, ProcessOwner, SummarySourceStatus};
+use evm_abstract_protocol::{AnalysisNamespace, BlockCoverage, ProcessOwner, SummarySourceStatus};
 
 use super::{Directory, Kind, short};
 use crate::{
@@ -24,7 +24,12 @@ pub(crate) enum Action {
 
 #[derive(Default)]
 pub(super) struct Rows {
-    key: Option<(PublicationIdentity, ReportViewId, Option<usize>)>,
+    key: Option<(
+        PublicationIdentity,
+        ReportViewId,
+        Option<usize>,
+        Option<AnalysisNamespace>,
+    )>,
     sources: Vec<Source>,
     contexts: Vec<Context>,
     entries: Vec<Entry>,
@@ -68,8 +73,14 @@ impl Directory {
             ui.label(error.to_string());
             return None;
         }
-        self.scoped.prepare(presentation, focus);
-        let call_action = self.calls.show(ui, presentation, focus);
+        let call_action = if self
+            .context_namespace
+            .is_none_or(|namespace| namespace == focus.view.namespace())
+        {
+            self.calls.show(ui, presentation, focus)
+        } else {
+            None
+        };
         ui.horizontal(|ui| {
             controls::tab_value(
                 ui,
@@ -86,6 +97,26 @@ impl Directory {
                 Density::Compact,
             );
         });
+        if let Some(namespace) = self.context_namespace {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(match namespace {
+                        AnalysisNamespace::Native => "Choose a Native context",
+                        AnalysisNamespace::Baseline => "Choose a Global context",
+                    })
+                    .small()
+                    .color(palette::MUTED),
+                );
+                if controls::action(ui, "Active model", Density::Compact)
+                    .on_hover_text("Show contexts in the currently selected model")
+                    .clicked()
+                {
+                    self.context_namespace = None;
+                }
+            });
+        }
+        self.scoped
+            .prepare(presentation, focus, self.context_namespace);
         framework::line_editor(
             ui,
             "source_context_filter",
@@ -223,9 +254,14 @@ impl Rows {
         action
     }
 
-    fn prepare(&mut self, presentation: Presentation<'_>, focus: &Focus) {
+    fn prepare(
+        &mut self,
+        presentation: Presentation<'_>,
+        focus: &Focus,
+        namespace: Option<AnalysisNamespace>,
+    ) {
         let program = focus.source.as_ref().and_then(|source| source.program());
-        let key = (presentation.identity(), focus.view, program);
+        let key = (presentation.identity(), focus.view, program, namespace);
         if self.key == Some(key) {
             return;
         }
@@ -269,9 +305,18 @@ impl Rows {
             |program| presentation.index().contexts_for_program(program),
         );
         for &target in contexts {
-            if target.view.is_minimum() != focus.view.is_minimum()
-                || target.view.namespace() != focus.view.namespace()
-            {
+            let included = namespace.map_or_else(
+                || {
+                    target.view.is_minimum() == focus.view.is_minimum()
+                        && target.view.namespace() == focus.view.namespace()
+                },
+                |namespace| {
+                    target.view.namespace() == namespace
+                        && (namespace == AnalysisNamespace::Native
+                            || target.view.is_minimum() == presentation.report().minimum.is_some())
+                },
+            );
+            if !included {
                 continue;
             }
             let Ok(target_focus) = presentation.focus_context(target) else {

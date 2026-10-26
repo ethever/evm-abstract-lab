@@ -24,7 +24,7 @@ fn semantic_alias_groups_keep_physical_sources_and_exact_contexts() {
     let presentation = Presentation::new(&report.model, &index, view, None);
     let focus = Focus::source(view, presentation.source(7).unwrap());
     let mut rows = Rows::default();
-    rows.prepare(presentation, &focus);
+    rows.prepare(presentation, &focus, None);
     rows.filter("");
     assert_eq!(rows.sources.len(), 2);
     assert_eq!(rows.sources[0].group, rows.sources[1].group);
@@ -60,5 +60,51 @@ fn semantic_alias_groups_keep_physical_sources_and_exact_contexts() {
     assert_eq!(
         selected.source.as_ref().and_then(|source| source.program()),
         Some(7)
+    );
+}
+
+#[test]
+fn namespace_context_picker_keeps_global_focus_until_an_exact_native_choice() {
+    let mut report = crate::tests::report();
+    // Repeated IDs deliberately exercise namespace qualification; this clone
+    // supplies display records, not a claim of equivalent solver semantics.
+    report.model.global = report.model.native.clone();
+    let view = ReportViewId::fixture(1, AnalysisNamespace::Baseline);
+    let mut index = ReportIndex::default();
+    index.update(&report.model, view, None, None);
+    let presentation = Presentation::new(&report.model, &index, view, None);
+    let focus = Focus::source(view, presentation.source(0).unwrap());
+    let original = focus.clone();
+    let mut directory = super::Directory::default();
+    directory.choose_context(AnalysisNamespace::Native);
+    let context = egui::Context::default();
+    crate::notation::initialize_fonts(&context);
+    let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+        assert!(
+            directory
+                .show_scoped(ui, presentation, &focus, None)
+                .is_none()
+        );
+    });
+    output.textures_delta.clear();
+    assert_eq!(focus, original);
+    assert_eq!(focus.context, None);
+    assert_eq!(focus.view.namespace(), AnalysisNamespace::Baseline);
+    assert_eq!(directory.scoped.contexts.len(), report.cfg.len());
+    for row in &directory.scoped.contexts {
+        assert_eq!(row.focus.view.namespace(), AnalysisNamespace::Native);
+        assert!(row.focus.graph_selection().unwrap().state.is_some());
+        assert!(presentation.validate(&row.focus).is_ok());
+    }
+    directory.choose_context(AnalysisNamespace::Baseline);
+    directory
+        .scoped
+        .prepare(presentation, &focus, directory.context_namespace);
+    assert!(
+        directory
+            .scoped
+            .contexts
+            .iter()
+            .all(|row| row.focus.view.namespace() == AnalysisNamespace::Baseline)
     );
 }

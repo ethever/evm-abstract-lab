@@ -35,9 +35,10 @@ impl SourcePick {
 
     fn context_focus(self, presentation: Presentation<'_>, current: &Focus) -> Focus {
         let source = self.focus(current);
-        let Some(state) = current_native_context(presentation, current) else {
+        let Some(native) = native_context(presentation, current) else {
             return source;
         };
+        let state = native.state;
         if state.basic_block != Some(self.block) {
             return source;
         }
@@ -63,7 +64,7 @@ pub(crate) struct SourceCache {
 }
 
 impl SourceCache {
-    /// Native links require this exact state's current instruction receipt.
+    /// Native links require this exact state's retained instruction receipt.
     /// Other source rows remain decoded coordinates, with no chosen occurrence.
     pub(crate) fn show_context(
         &mut self,
@@ -95,7 +96,7 @@ impl SourceCache {
             return None;
         };
         let rows = presentation.index().source_rows(source.id)?;
-        let native = current_native_context(presentation, focus);
+        let native = native_context(presentation, focus);
         crate::widgets::heading(
             ui,
             "CODE",
@@ -119,6 +120,35 @@ impl SourceCache {
                     .color(palette::MUTED),
             );
         });
+        if let Some(native) = native.filter(|native| {
+            native.coverage == Some(BlockCoverage::Stale)
+                || !native.at_current_revision
+                || !native.ssa_complete
+        }) {
+            ui.horizontal_wrapped(|ui| {
+                if native.coverage == Some(BlockCoverage::Stale) {
+                    ui.label(
+                        RichText::new("Historical Native receipt")
+                            .small()
+                            .color(palette::WARNING),
+                    );
+                }
+                if !native.at_current_revision {
+                    ui.label(
+                        RichText::new("Earlier Native input conditions")
+                            .small()
+                            .color(palette::WARNING),
+                    );
+                }
+                if !native.ssa_complete {
+                    ui.label(
+                        RichText::new("Partial Native SSA publication")
+                            .small()
+                            .color(palette::MUTED),
+                    );
+                }
+            });
+        }
         let location = focus.minimum_selection().and_then(|selection| {
             selection
                 .source(presentation.report().minimum.as_deref()?)
@@ -237,9 +267,11 @@ impl SourceCache {
                     }
                 });
                 if let Some(instruction) = instruction {
-                    let executed = native.is_some_and(|state| {
-                        state.basic_block == Some(source_block.id)
-                            && state.executed_pcs.contains(&instruction.pc)
+                    let executed = native.is_some_and(|native| {
+                        native.coverage == Some(BlockCoverage::Current)
+                            && native.at_current_revision
+                            && native.state.basic_block == Some(source_block.id)
+                            && native.state.executed_pcs.contains(&instruction.pc)
                     });
                     response.on_hover_text(super::tooltip::instruction(instruction, executed));
                 }
@@ -249,10 +281,15 @@ impl SourceCache {
     }
 }
 
-fn current_native_context<'a>(
-    presentation: Presentation<'a>,
-    focus: &Focus,
-) -> Option<&'a CfgBlock> {
+#[derive(Clone, Copy)]
+struct NativeContext<'a> {
+    state: &'a CfgBlock,
+    coverage: Option<BlockCoverage>,
+    at_current_revision: bool,
+    ssa_complete: bool,
+}
+
+fn native_context<'a>(presentation: Presentation<'a>, focus: &Focus) -> Option<NativeContext<'a>> {
     if focus.view.namespace() != AnalysisNamespace::Native {
         return None;
     }
@@ -264,11 +301,17 @@ fn current_native_context<'a>(
         .ok()?
     {
         ResolvedContext::Graph {
+            graph,
             state,
-            coverage: Some(BlockCoverage::Current),
-            at_current_revision: true,
+            coverage,
+            at_current_revision,
             ..
-        } if state.process.is_none() => Some(state),
+        } if state.process.is_none() => Some(NativeContext {
+            state,
+            coverage,
+            at_current_revision,
+            ssa_complete: graph.ssa.complete,
+        }),
         _ => None,
     }
 }
