@@ -19,7 +19,7 @@ import sys
 
 from benchmark_known_recursion.identity import source, cpus
 from benchmark_known_recursion.process import ProtectedProcess, available_memory, sha256, utc, write_json
-from benchmark_known_recursion.report import metrics
+from benchmark_known_recursion.report import metrics, strict_json, NATIVE_VERSION, WIRE_VERSION
 from benchmark_known_recursion import workbench
 from benchmark_known_recursion import probe
 
@@ -55,7 +55,7 @@ def load_case(base, name, raw, modes):
         if raw.get("original_request_sha256") and digest != raw["original_request_sha256"]:
             raise ValueError(f"{name}: RPC request digest mismatch")
         body = request.read_bytes()
-        value = json.loads(body)
+        value = strict_json(body)
         if "Hash" not in value["input"]["Rpc"]["block"]:
             raise ValueError(f"{name}: a fixed block hash is required")
         record.update(request=request, request_bytes=body, request_sha256=digest,
@@ -80,11 +80,11 @@ def offline(binary, directory, root, guard, case, environment):
     record.update(stdout_bytes=output.stat().st_size, stdout_sha256=sha256(output),
                   stderr_bytes=error.stat().st_size, stderr_sha256=sha256(error),
                   termination=record["process"]["termination"])
-    if record["process"]["exit_code"] == 0:
+    if record["process"]["exit_code"] in (0, 2) and record["termination"] in ("normal_exit", "process_error"):
         try:
-            report = json.loads(output.read_bytes())
+            report = strict_json(output.read_bytes())
             record.update(metrics=metrics(report, "offline"), report_delivered=True, termination="cli_report_delivered")
-        except (ValueError, KeyError, TypeError) as failure:
+        except (AssertionError, ValueError, KeyError, TypeError) as failure:
             record.update(termination="cli_invalid_report", report_error_type=type(failure).__name__)
     elif record["termination"] == "process_error":
         message = error.read_text(errors="replace")
@@ -110,9 +110,20 @@ def aggregates(samples):
                 continue
             group[prefix + "_process_medians"] = {key: statistics.median(s["process"][key] for s in selected)
                 for key in ("wall_seconds", "user_seconds", "system_seconds", "peak_rss_kib")}
-        if mode == "rpc" and delivered:
-            group["delivered_submit_to_body_received_median_seconds"] = statistics.median(
-                s["submit_to_body_received_seconds"] for s in delivered)
+        if mode == "rpc":
+            closed = [s["first_closed_model"] for s in records if s.get("first_closed_model") is not None]
+            group["closed_model_observations"] = len(closed)
+            if closed:
+                group["first_closed_model_median_seconds"] = statistics.median(
+                    item["submit_to_usable_model_seconds"] for item in closed)
+            group["task_state_counts"] = dict(Counter(s.get("task_state") for s in records))
+            values = [s["terminal_observed_seconds"] for s in records if "terminal_observed_seconds" in s]
+            if values:
+                group["terminal_median_seconds"] = statistics.median(values)
+            for field in ("final_result", "cached-result", "cached-result-gzip"):
+                values = [s[field]["http"]["elapsed_seconds"] for s in records if s.get(field) is not None]
+                if values:
+                    group[field + "_get_median_seconds"] = statistics.median(values)
         output.append(group)
     return output
 
@@ -121,10 +132,11 @@ def policy_comparisons(samples):
     output = []
     for name, mode in sorted({(s["case"], s["mode"]) for s in samples}):
         delivered = [s for s in samples if (s["case"], s["mode"]) == (name, mode) and s["report_delivered"]]
-        policies = [s["metrics"].get("config" if mode == "offline" else "policy") for s in delivered]
+        policies = ([s["metrics"]["graphs"][s["metrics"]["selected_view"]]["config"] for s in delivered]
+                    if mode == "offline" else [s["request_identity"]["policy"] for s in delivered])
         output.append({"case": name, "mode": mode, "delivered_reports": len(delivered),
-                       "returned_policy_consistent": all(p == policies[0] for p in policies) if policies else None,
-                       "scope": "Equality of returned policy across available reports; not proof of semantic coverage equality"})
+                       "observed_policy_consistent": all(p == policies[0] for p in policies) if policies else None,
+                       "scope": "Native returned config or HTTP exact submitted policy with per-publication admission; minimum has no transport-policy echo"})
     return output
 
 
@@ -229,7 +241,9 @@ def main():
         (output / "probe-verification.json").write_bytes(arguments.probe_verification.read_bytes())
     environment = os.environ.copy()
     removed = {key: environment.pop(key) for key in ("LD_PRELOAD", "LD_AUDIT") if key in environment}
-    evidence = {"schema": "known-recursion-benchmark-v1", "started_utc": utc(), "source_before": initial,
+    evidence = {"schema": "known-recursion-benchmark-v2", "started_utc": utc(), "source_before": initial,
+                "consumer_formats": {"offline": {"format": "native-hybrid-report", "schema_version": NATIVE_VERSION},
+                                     "rpc": {"format": "web-job-result-reply", "schema_version": WIRE_VERSION}},
                 "frozen_source_required": not arguments.allow_dirty, "preliminary": arguments.allow_dirty,
                 "platform": platform.platform(), "allowed_cpus": sorted(os.sched_getaffinity(0)), "guard": guard,
                 "environment_note": arguments.environment_note, "binaries": binaries, "input_sha256_before": inputs,
@@ -294,7 +308,7 @@ def main():
             for side in binaries.values() for key, item in side.items() if key in ("cli", "server"))
         evidence["valid_frozen_batch"] = bool(success and not arguments.allow_dirty and evidence["source_unchanged"]
                                                and evidence["input_unchanged"] and evidence["binary_unchanged"])
-        if any(item["returned_policy_consistent"] is False for item in evidence.get("policy_comparisons", [])):
+        if any(item["observed_policy_consistent"] is False for item in evidence.get("policy_comparisons", [])):
             success = False
             evidence.update(valid_frozen_batch=False, policy_mismatch=True)
         write_json(output / "measurements.json", evidence)

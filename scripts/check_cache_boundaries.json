@@ -354,6 +354,37 @@
       ]
     },
     {
+      "name": "benchmark-http-consumer-isolation",
+      "description": "The fake HTTP consumer and its controls reach only the independent Python check, preserving engine and browser derivations.",
+      "mutations": [
+        {
+          "path": "scripts/benchmark_known_recursion/workbench.py",
+          "append": "\n# Cache boundary probe.\n"
+        },
+        {
+          "path": "scripts/test_benchmark_known_recursion.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "benchmark-consumer-contracts"
+      ]
+    },
+    {
+      "name": "benchmark-shared-report-adapter-isolation",
+      "description": "Shared report admission reaches both explicit Python consumers without rebuilding engine or browser checks.",
+      "mutations": [
+        {
+          "path": "scripts/benchmark_known_recursion/report.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "benchmark-consumer-contracts",
+        "no-smt-scale-contracts"
+      ]
+    },
+    {
       "name": "no-smt-scale-script-isolation",
       "description": "A scale script input changes only the independent scripts/JSON contract check, never an engine build or browser check.",
       "mutations": [

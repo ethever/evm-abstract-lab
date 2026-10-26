@@ -19,7 +19,7 @@ import re
 
 from benchmark_known_recursion.identity import cpus, source
 from benchmark_known_recursion.process import ProtectedProcess, available_memory, sha256, utc, write_json
-from benchmark_known_recursion.report import metrics
+from benchmark_known_recursion.report import graph_metrics as metrics
 
 
 def digest(value):
