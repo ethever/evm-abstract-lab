@@ -153,6 +153,12 @@ pub(in crate::app::inspector) fn node_details(
     if let Some(transfer) = &node.transfer {
         ui.label(process::interpretation(transfer.semantics));
         if let Some(receipt) = &transfer.process {
+            if let Some(control) = &receipt.control {
+                ui.label(format!(
+                    "MAY control directory {} · entry {:?} · {} pure locations · {} boundary obligations",
+                    control.relation, control.entry, control.through.len(), control.boundaries.len()
+                ));
+            }
             for allocation in &receipt.creations {
                 ui.label(format!(
                     "Allocation action: {} · creator: {}",

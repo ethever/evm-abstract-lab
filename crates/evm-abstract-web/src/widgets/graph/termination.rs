@@ -170,6 +170,7 @@ impl Terminations {
                 | EdgeKind::BranchTrue
                 | EdgeKind::BranchFalse
                 | EdgeKind::Call
+                | EdgeKind::ProcessControl
                 | EdgeKind::Process(_) => None,
             };
             if let Some(kind) =

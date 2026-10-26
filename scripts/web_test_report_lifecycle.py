@@ -1,11 +1,91 @@
 """Real staged HTTP results, GPU interaction and retained Global after cancellation."""
 
 import hashlib
+import base64
 import json
 from pathlib import Path
 import re
 from playwright.sync_api import expect
 from web_test_harness import observe_webgpu, open_input, rendered_frame, settle_gesture, webgpu_evidence
+
+
+def process_model(report, require_hub=False):
+    """Qualify actual wire receipts; the directory alone proves no admission."""
+    directory = {row["id"]: row for row in report["process_controls"]}
+    hubs = []
+    regions = 0
+    for summary in report["minimum"]["summaries"]:
+        for node in summary["relation"]["regional_cfg"]["nodes"]:
+            frame = node["frame"]["process"]
+            transfer = node["transfer"]
+            if frame is None:
+                continue
+            assert node["frame"]["basic_block"] is None
+            assert frame["location"] in ("Any", "End", "JumpTargets") or set(frame["location"]) == {"Block"}
+            if transfer is None:
+                continue
+            assert transfer["visited_block"] is False
+            process = transfer["process"]
+            if process is None or process["control"] is None:
+                continue  # Real CALL/STOP boundaries can have no pure region.
+            region = process["control"]
+            source = directory[region["relation"]]
+            assert source["source"] == frame["source"] and source["epoch"] == frame["epoch"]
+            assert region["entry"] == frame["location"]
+            regions += 1
+            if "JumpTargets" in region["through"]:
+                assert source["jump_targets"]
+                hubs.append((node["id"], source["id"], source["jump_targets"]))
+    if require_hub:
+        assert hubs, "the actual selected Process model lacks its unknown-jump hub"
+    return {"directory_rows": len(directory), "regions": regions, "hubs": hubs}
+
+
+def select_may_source(page, canvas):
+    """Click a real painted card, then check source-only navigation."""
+    page.keyboard.press("2")
+    page.keyboard.press("f")
+    page.mouse.move(2, 2)
+    settle_gesture(page)
+    png = canvas.screenshot()
+    cards = page.evaluate("""async png => {
+        const image=new Image(); image.src=`data:image/png;base64,${png}`;
+        await image.decode();
+        const c=document.createElement('canvas'); c.width=image.width;c.height=image.height;
+        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const p=ctx.getImageData(0,0,c.width,c.height).data;
+        const seen=new Uint8Array(c.width*c.height), scale=c.width/innerWidth, cards=[];
+        const fill=i=>(p[i*4]===29&&p[i*4+1]===40&&p[i*4+2]===56)||
+            (p[i*4]===33&&p[i*4+1]===65&&p[i*4+2]===75);
+        for(let y=Math.ceil(160*scale);y<c.height-200*scale;y++)for(let x=0;x<c.width;x++){
+            const start=y*c.width+x;if(seen[start]||!fill(start))continue;
+            const q=[start];seen[start]=1;let l=x,r=x,t=y,b=y;
+            for(let a=0;a<q.length;a++){
+                const i=q[a],px=i%c.width,py=Math.floor(i/c.width);
+                l=Math.min(l,px);r=Math.max(r,px);t=Math.min(t,py);b=Math.max(b,py);
+                for(const n of [px?i-1:-1,px+1<c.width?i+1:-1,py?i-c.width:-1,py+1<c.height?i+c.width:-1]){
+                    if(n>=0&&!seen[n]&&fill(n)){seen[n]=1;q.push(n);}
+                }
+            }
+            const w=(r-l+1)/scale,h=(b-t+1)/scale;
+            if(w/h>3.4&&w/h<4.3&&w>80&&h>20)cards.push({x:(l+r)/2/scale,y:(t+b)/2/scale});
+        }
+        return cards;
+    }""", base64.b64encode(png).decode())
+    assert cards, "the real Global MAY scene did not paint selectable cards"
+    status = page.locator("#analysis-status")
+    for card in cards:
+        canvas.click(position=card)
+        rendered_frame(page)
+        if "Selected MAY source: unknown-jump hub" in status.text_content():
+            break
+    expect(status).to_contain_text("Selected MAY source: unknown-jump hub")
+    page.keyboard.press("3")
+    rendered_frame(page)
+    # The virtual hub keeps its qualifier; Code navigation must not turn it
+    # into block zero or a Native instruction selection.
+    expect(status).to_contain_text("Selected MAY source: unknown-jump hub")
+    return cards
 
 
 def run(context, mode="cancel"):
@@ -72,6 +152,7 @@ def cancellation(context,url,rpc):
     assert first["publication"]["native_version"] is None
     (context.output / "first-publication.json").write_text(json.dumps(first,indent=2)+"\n")
     report = first["report"]
+    first_controls = process_model(report)
     assert report["selected_view"] == "Baseline" and report["minimum"] is not None and report["global"] is None and report["native"] is None
     assert report["hybrid"]["coverage"]["baseline_current"] is True
     assert report["minimum"]["environment"]["caller"].get("Symbolic")
@@ -128,17 +209,24 @@ def cancellation(context,url,rpc):
     open_input(page)
     page.keyboard.press("Control+A")
     rendered_frame(page)
-    page.keyboard.type("600160020100")
+    # A tiny real unknown-jump/loop program exercises the selected D4 route.
+    replacement_code = "36565b36565b00"
+    page.keyboard.type(replacement_code)
     rendered_frame(page)
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as replacement:
         page.keyboard.press("Control+Enter")
     replacement_request=replacement.value.request.post_data_json
-    assert replacement_request["input"]=={"Bytecode":{"bytecode":"600160020100","address":None}},replacement_request
+    assert replacement_request["input"]=={"Bytecode":{"bytecode":replacement_code,"address":None}},replacement_request
     replacement_id = json.loads(replacement.value.text())["result"]["Ok"]["id"]
     assert str(replacement_id) != str(job_id)
     expect(status).to_contain_text("Ready:", timeout=60000)
     expect(status).to_contain_text(re.compile(rf"(?:^|; )Job ID: {replacement_id}(?=;|$)"))
     assert "Publication: 2" in status.text_content()
+    replacement_result = page.request.get(url + "/api/tasks/" + str(replacement_id) + "/result").json()["result"]["Ok"]
+    replacement_controls = process_model(replacement_result["report"], require_hub=True)
+    expect(status).to_contain_text("1 expanded unknown-jump hubs")
+    cards = select_may_source(page, canvas)
+    canvas.screenshot(path=str(context.output / "selected-may-hub-source.png"))
     page.keyboard.press("2")
     rendered_frame(page)
     # Product model-scope tabs lie immediately below the main header.
@@ -150,7 +238,7 @@ def cancellation(context,url,rpc):
     renderer = webgpu_evidence(page)
     (context.output / "request.json").write_text(json.dumps(submissions[0], indent=2) + "\n")
     (context.output / "publications.json").write_text(json.dumps(results, indent=2) + "\n")
-    result = {"pending_optional_rpc_closed":rpc.disconnected.is_set(),"requests":rpc.requests,"first_job": str(job_id), "replacement_job": str(replacement_id), "first_publication": first["publication"], "renderer": renderer, "running_views": views, "camera_sha256": hashlib.sha256(before).hexdigest(), "status": status.text_content()}
+    result = {"pending_optional_rpc_closed":rpc.disconnected.is_set(),"requests":rpc.requests,"first_job": str(job_id), "replacement_job": str(replacement_id), "first_publication": first["publication"], "renderer": renderer, "running_views": views, "camera_sha256": hashlib.sha256(before).hexdigest(), "first_controls": first_controls, "replacement_controls": replacement_controls, "painted_cards": cards, "status": status.text_content()}
     page.close()
     return result
 
@@ -187,6 +275,7 @@ def refusal(context):
         page,replayed,actual=page_for(url,request)
         assert replayed==request,"the refusal control changed execution input/policy"
         report=actual["report"];minimum=report["minimum"]
+        controls = process_model(report)
         assert actual["publication"]["model_closed"] and minimum["current"] and minimum["status"]=="Converged"
         assert actual["publication"]["minimum_version"] is not None
         assert actual["publication"]["global_version"] is None and actual["publication"]["native_version"] is None
@@ -213,5 +302,5 @@ def refusal(context):
         renderer=webgpu_evidence(page)
         (context.output/"refusal-request.json").write_text(json.dumps(request,indent=2)+"\n")
         (context.output/"refusal-result.json").write_text(json.dumps(actual,indent=2)+"\n")
-        value={"minimum_work":minimum_work,"cap":cap,"full_work":full_work,"spent":report["postprocessing_work"],"publication":actual["publication"],"renderer":renderer,"views":views,"status":status.text_content()}
+        value={"minimum_work":minimum_work,"cap":cap,"full_work":full_work,"spent":report["postprocessing_work"],"publication":actual["publication"],"renderer":renderer,"views":views,"controls":controls,"status":status.text_content()}
         page.close();return value

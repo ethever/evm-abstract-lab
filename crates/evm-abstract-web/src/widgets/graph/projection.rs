@@ -187,6 +187,7 @@ fn edge_kind_key(kind: EdgeKind) -> u8 {
         EdgeKind::SummaryReturn => 8,
         EdgeKind::SummaryRevert => 9,
         EdgeKind::SummaryFailure => 10,
+        EdgeKind::ProcessControl => 17,
         EdgeKind::Process(action) => match action {
             evm_abstract_protocol::ProcessAction::Call => 11,
             evm_abstract_protocol::ProcessAction::StaticCall => 12,

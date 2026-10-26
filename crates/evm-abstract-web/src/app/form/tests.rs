@@ -257,7 +257,7 @@ fn root_terminal_checkbox_submits_the_default_and_explicit_opt_out_for_both_sour
             );
             #[cfg(not(target_arch = "wasm32"))]
             if source == Source::Bytecode {
-                let report = evm_abstract_server::analyze::analyze(submitted).unwrap();
+                let report = evm_abstract_server::analyze::analyze(submitted.clone()).unwrap();
                 report.validate().unwrap();
                 assert_eq!(
                     report.selected_graph().unwrap().metadata.limits,
@@ -265,7 +265,21 @@ fn root_terminal_checkbox_submits_the_default_and_explicit_opt_out_for_both_sour
                 );
                 let hybrid = report.hybrid.as_ref().unwrap();
                 assert!(!hybrid.coverage.baseline_config.root_terminal_coverage);
-                let native = report.graph(api::AnalysisNamespace::Native).unwrap();
+                // One transfer does not close the selected source-control
+                // Global. Preserve the original request/cap and observe that
+                // optional Native has not been admitted.
+                assert_eq!(report.status, api::AnalysisStatus::Incomplete);
+                assert!(!hybrid.coverage.baseline_current);
+                assert!(report.native.is_none());
+                // Keep the original Native certificate/configuration oracle on
+                // the exact same submitted input and transfer allowance.
+                let native_report = evm_abstract_server::analyze::captured::native_bytecode(
+                    &submitted,
+                    &Default::default(),
+                )
+                .unwrap();
+                native_report.validate().unwrap();
+                let native = native_report.graph(api::AnalysisNamespace::Native).unwrap();
                 if enabled {
                     let config = &native.root_terminal_coverage.as_ref().unwrap().input.config;
                     assert!(config.root_terminal_coverage);

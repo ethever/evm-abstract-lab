@@ -3,9 +3,13 @@ use crate::app::{Command, JobOperation, Message, View, Workspace};
 use evm_abstract_protocol as api;
 
 fn reports() -> (AnalysisReport, AnalysisReport) {
+    reports_for("600160020100")
+}
+
+fn reports_for(code: &str) -> (AnalysisReport, AnalysisReport) {
     let complete = evm_abstract_server::analyze::analyze(api::AnalyzeRequest {
         input: api::AnalysisInput::Bytecode(api::BytecodeInput {
-            bytecode: "600160020100".into(),
+            bytecode: code.into(),
             address: Some(format!("0x{}0101", "00".repeat(18))),
         }),
         ..Default::default()
@@ -25,6 +29,106 @@ fn reports() -> (AnalysisReport, AnalysisReport) {
     minimal.hybrid.as_mut().unwrap().local_prefixes.clear();
     minimal.validate().unwrap();
     (minimal, complete)
+}
+
+#[test]
+fn body_and_interior_selection_navigate_exact_may_source_without_native_ids() {
+    let (report, _) = reports_for("6003565b6007565b00");
+    let model = report.minimum.as_ref().unwrap();
+    let summary = initial_summary(model);
+    let cfg = &model.summaries[summary].relation.regional_cfg;
+    let boundary = cfg
+        .nodes
+        .iter()
+        .find(|node| {
+            node.frame
+                .process
+                .as_ref()
+                .is_some_and(|frame| frame.location == api::ProcessLocation::Block(2))
+        })
+        .unwrap()
+        .id;
+    let interior = cfg
+        .nodes
+        .iter()
+        .find(|node| {
+            node.transfer
+                .as_ref()
+                .and_then(|t| t.process.as_ref())
+                .is_some_and(|p| p.control.is_some())
+        })
+        .unwrap()
+        .id;
+    let mut workspace = Workspace::default();
+    workspace.initial_command();
+    workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    workspace.minimum_selection.select_node(
+        workspace.report.as_ref().unwrap().minimum.as_ref().unwrap(),
+        boundary,
+    );
+    workspace.view = View::Disassembly;
+    let ctx = context();
+    let size = egui::vec2(1440.0, 1000.0);
+    let output = render(&ctx, &mut workspace, size);
+    assert!(
+        crate::tests::painted_text(&output)
+            .iter()
+            .any(|(text, _)| text == "MAY source: block index 2")
+    );
+    let model = workspace.report.as_ref().unwrap().minimum.as_ref().unwrap();
+    workspace.minimum_selection.select_node(model, interior);
+    workspace.minimum_selection.control = Some(api::ProcessLocation::Block(1));
+    let output = render(&ctx, &mut workspace, size);
+    assert!(
+        crate::tests::painted_text(&output)
+            .iter()
+            .any(|(text, _)| text == "MAY source: block index 1")
+    );
+    assert_eq!(workspace.selection, crate::app::Selection::default());
+    assert_eq!(
+        workspace.minimum_source.focus.unwrap().2,
+        api::ProcessLocation::Block(1)
+    );
+    workspace.inspector.tab = super::super::inspector::Tab::Coverage;
+    click(&ctx, &mut workspace, size, "Maximize");
+    let output = render(&ctx, &mut workspace, size);
+    let text: Vec<_> = crate::tests::painted_text(&output)
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
+    assert!(
+        text.iter()
+            .any(|text| text.contains("Selected MAY source: block index 1")),
+        "{text:?}"
+    );
+    assert!(text.iter().any(|text| text.contains("Owner class:")));
+    assert!(text.iter().any(|text| text.contains("MAY source edge:")));
+}
+
+#[test]
+fn clicking_an_interior_after_an_original_account_keeps_its_actual_source() {
+    let (report, _) = reports_for("6003565b6007565b00");
+    let ctx = context();
+    let size = egui::vec2(1440.0, 1000.0);
+    let mut workspace = Workspace::default();
+    workspace.initial_command();
+    workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    let program = workspace.program.unwrap();
+    workspace.minimum_selection.account = Some(0);
+    workspace.view = View::Graph;
+    click(
+        &ctx,
+        &mut workspace,
+        size,
+        &format!("MAY B1 · program {program} · source 0x0003"),
+    );
+    assert_eq!(
+        workspace.minimum_selection.control,
+        Some(api::ProcessLocation::Block(1))
+    );
+    assert_eq!(workspace.minimum_selection.account, None);
+    assert_eq!(workspace.program, Some(program));
+    assert_eq!(workspace.selection, crate::app::Selection::default());
 }
 
 fn frame(
@@ -172,7 +276,7 @@ fn minimum_only_renders_all_views_and_mobile_directory_without_private_state_or_
 
 #[test]
 fn native_and_rich_arrival_keep_the_canonical_minimum_camera_selection_and_source_cache() {
-    let (first, rich) = reports();
+    let (first, rich) = reports_for("6003565b6007565b00");
     let ctx = context();
     let size = egui::vec2(1440.0, 1000.0);
     let mut workspace = Workspace::default();
@@ -183,6 +287,8 @@ fn native_and_rich_arrival_keep_the_canonical_minimum_camera_selection_and_sourc
         publication(1, 1, None, None),
         first,
     );
+    render(&ctx, &mut workspace, size);
+    workspace.minimum_selection.control = Some(api::ProcessLocation::Block(1));
     render(&ctx, &mut workspace, size);
     workspace.graph.zoom_at(egui::vec2(80.0, 100.0), 0.7);
     let selected = workspace.minimum_selection;

@@ -2,13 +2,16 @@
 //! export. Its selection never contains a Native state, instruction or SSA ID.
 
 use evm_abstract_protocol::{
-    AnalysisReport, MinimumModel, MinimumSummary, ProcessSource, SummarySourceStatus,
+    AnalysisReport, MinimumModel, MinimumSummary, ProcessFrameKey, ProcessLocation, ProcessSource,
+    SummarySourceStatus,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Selection {
     pub(crate) summary: usize,
     pub(crate) node: Option<usize>,
+    /// A MAY source coordinate inside this regional receipt, never a Native PC.
+    pub(crate) control: Option<ProcessLocation>,
     pub(crate) procedure: usize,
     pub(crate) output: Option<usize>,
     pub(crate) account: Option<usize>,
@@ -35,6 +38,7 @@ impl Selection {
             })
             .map(|node| node.id);
         self.output = None;
+        self.control = None;
     }
 
     pub(crate) fn select_node(&mut self, model: &MinimumModel, id: usize) {
@@ -49,11 +53,40 @@ impl Selection {
             self.node = Some(node.id);
             self.procedure = node.procedure;
             self.output = None;
+            self.control = None;
+            self.account = None;
         }
     }
 
     pub(crate) fn summary<'a>(&self, model: &'a MinimumModel) -> Option<&'a MinimumSummary> {
         model.summaries.get(self.summary)
+    }
+
+    pub(crate) fn source<'a>(
+        &self,
+        model: &'a MinimumModel,
+    ) -> Option<(&'a ProcessFrameKey, ProcessLocation)> {
+        let summary = self.summary(model)?;
+        let frame = self
+            .node
+            .and_then(|id| {
+                summary
+                    .relation
+                    .regional_cfg
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == id)
+            })
+            .and_then(|node| node.frame.process.as_ref())
+            .or_else(|| {
+                summary
+                    .relation
+                    .procedures
+                    .get(self.procedure)?
+                    .process
+                    .as_ref()
+            })?;
+        Some((frame, self.control.unwrap_or(frame.location)))
     }
 }
 
@@ -89,35 +122,16 @@ pub(crate) fn source_status(model: &MinimumModel, index: usize) -> SummarySource
 }
 
 pub(super) fn source_program(report: &AnalysisReport, source: &ProcessSource) -> Option<usize> {
-    report
-        .programs
-        .iter()
-        .find(|program| {
-            program.fork == source.fork()
-                && program.kind == source.kind()
-                && match source {
-                    ProcessSource::Runtime(source) => {
-                        program.code_address.as_ref() == Some(&source.source)
-                            && program.code_hash == source.hash.to_string()
-                    }
-                    ProcessSource::InputProgram(source) => {
-                        program.code_address.is_none()
-                            && program.code_hash == source.hash.to_string()
-                    }
-                    ProcessSource::InitCode(source) => {
-                        program.code_address.is_none()
-                            && program.code_hash == source.hash.to_string()
-                    }
-                    _ => false,
-                }
-        })
-        .map(|program| program.id)
+    report.process_program(source).map(|program| program.id)
 }
 
 #[derive(Default)]
 pub(super) struct SourceCache {
     key: Option<(super::model::ReportViewId, usize)>,
     blocks: Vec<usize>,
+    catalog: Option<(super::model::ReportViewId, usize)>,
+    programs: std::collections::BTreeMap<usize, usize>,
+    focus: Option<(super::model::ReportViewId, usize, ProcessLocation)>,
 }
 
 impl SourceCache {
@@ -127,9 +141,24 @@ impl SourceCache {
         report: &AnalysisReport,
         identity: super::model::ReportViewId,
         program: Option<usize>,
+        point: Option<(&ProcessFrameKey, ProcessLocation)>,
     ) {
-        let Some(program) =
-            program.and_then(|id| report.programs.iter().find(|program| program.id == id))
+        // Rich publication can append catalog rows while the canonical minimum
+        // identity stays unchanged. Extend lookup ownership without touching the
+        // selected program's row offsets or the user's scroll position.
+        let catalog = (identity, report.programs.len());
+        if self.catalog != Some(catalog) {
+            self.programs = report
+                .programs
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (row.id, index))
+                .collect();
+            self.catalog = Some(catalog);
+        }
+        let Some(program) = program
+            .and_then(|id| self.programs.get(&id))
+            .map(|&index| &report.programs[index])
         else {
             crate::widgets::empty(ui, "No captured source for this selection");
             return;
@@ -139,6 +168,12 @@ impl SourceCache {
             "DISASSEMBLY",
             &format!("Program {} · source provenance", program.id),
         );
+        let location = point
+            .filter(|(frame, _)| frame.source.matches_program(program))
+            .map(|(_, location)| location);
+        if let Some(location) = location {
+            ui.label(format!("MAY source: {}", location_label(location)));
+        }
         if self.key != Some((identity, program.id)) {
             self.blocks.clear();
             self.blocks.push(0);
@@ -149,38 +184,68 @@ impl SourceCache {
             self.key = Some((identity, program.id));
         }
         let rows = self.blocks.last().copied().unwrap_or(0);
-        egui::ScrollArea::both()
+        let focus = location.map(|location| (identity, program.id, location));
+        let mut area = egui::ScrollArea::both()
             .id_salt("minimum_source_rows")
-            .auto_shrink([false, false])
-            .show_rows(ui, 22.0, rows, |ui, range| {
-                for row in range {
-                    let block = self
-                        .blocks
-                        .partition_point(|start| *start <= row)
-                        .saturating_sub(1)
-                        .min(program.blocks.len() - 1);
-                    let source = &program.blocks[block];
-                    let local = row - self.blocks[block];
-                    if local == 0 {
-                        ui.monospace(format!("B{} · 0x{:04x}", source.id, source.start_pc));
-                    } else {
-                        let instruction = &source.instructions[local - 1];
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{:04x}  {}{}",
-                                instruction.pc,
-                                instruction.name,
-                                instruction
-                                    .immediate
-                                    .as_ref()
-                                    .map_or(String::new(), |value| format!(" {value}"))
-                            ))
-                            .monospace()
-                            .color(crate::palette::MUTED),
-                        );
-                    }
+            .auto_shrink([false, false]);
+        if self.focus != focus
+            && let Some(ProcessLocation::Block(index)) = location
+            && let Some(row) = self.blocks.get(index)
+        {
+            area = area.vertical_scroll_offset(*row as f32 * (22.0 + ui.spacing().item_spacing.y));
+        }
+        self.focus = focus;
+        area.show_rows(ui, 22.0, rows, |ui, range| {
+            for row in range {
+                let block = self
+                    .blocks
+                    .partition_point(|start| *start <= row)
+                    .saturating_sub(1)
+                    .min(program.blocks.len() - 1);
+                let source = &program.blocks[block];
+                let local = row - self.blocks[block];
+                if local == 0 {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "B{} · source 0x{:04x}",
+                            source.id, source.start_pc
+                        ))
+                        .monospace()
+                        .color(
+                            if location == Some(ProcessLocation::Block(block)) {
+                                crate::palette::ACCENT
+                            } else {
+                                crate::palette::TEXT
+                            },
+                        ),
+                    );
+                } else {
+                    let instruction = &source.instructions[local - 1];
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{:04x}  {}{}",
+                            instruction.pc,
+                            instruction.name,
+                            instruction
+                                .immediate
+                                .as_ref()
+                                .map_or(String::new(), |value| format!(" {value}"))
+                        ))
+                        .monospace()
+                        .color(crate::palette::MUTED),
+                    );
                 }
-            });
+            }
+        });
+    }
+}
+
+pub(crate) fn location_label(location: ProcessLocation) -> String {
+    match location {
+        ProcessLocation::Block(index) => format!("block index {index}"),
+        ProcessLocation::JumpTargets => "unknown-jump hub · all legal JUMPDEST targets".into(),
+        ProcessLocation::End => "end of source · no instruction".into(),
+        ProcessLocation::Any => "unobserved code · arbitrary actions".into(),
     }
 }
 
@@ -315,7 +380,13 @@ impl super::Workspace {
                     return;
                 }
                 if self.view == super::View::Disassembly {
-                    self.minimum_source.show(ui, report, identity, self.program);
+                    self.minimum_source.show(
+                        ui,
+                        report,
+                        identity,
+                        self.program,
+                        self.minimum_selection.source(model),
+                    );
                     return;
                 }
                 if self.view == super::View::Split && ui.available_width() >= 900.0 {
@@ -323,7 +394,13 @@ impl super::Workspace {
                         .resizable(true)
                         .default_size(260.0)
                         .show(ui, |ui| {
-                            self.minimum_source.show(ui, report, identity, self.program)
+                            self.minimum_source.show(
+                                ui,
+                                report,
+                                identity,
+                                self.program,
+                                self.minimum_selection.source(model),
+                            )
                         });
                 }
                 if self.view == super::View::Ssa {
@@ -341,34 +418,29 @@ impl super::Workspace {
                     });
                 }
                 self.graph
-                    .show_minimum(ui, model, identity, &mut self.minimum_selection);
+                    .show_minimum(ui, report, identity, &mut self.minimum_selection);
                 ready = self.graph.prepared();
             });
-        if before.account != self.minimum_selection.account {
-            self.program = self
-                .minimum_selection
-                .account
-                .and_then(|index| model.accounts.get(index))
-                .and_then(|account| account.program);
-        } else if (before.summary, before.procedure, before.node)
-            != (
-                self.minimum_selection.summary,
-                self.minimum_selection.procedure,
-                self.minimum_selection.node,
-            )
-            && let Some(source) = self
-                .minimum_selection
-                .summary(model)
-                .and_then(|summary| {
-                    summary
-                        .relation
-                        .procedures
-                        .get(self.minimum_selection.procedure)
-                })
-                .and_then(|procedure| procedure.process.as_ref())
-                .map(|frame| &frame.source)
+        if before.account != self.minimum_selection.account
+            && let Some(index) = self.minimum_selection.account
         {
-            self.program = source_program(report, source);
+            self.program = model
+                .accounts
+                .get(index)
+                .and_then(|account| account.program);
+        } else if (
+            before.summary,
+            before.procedure,
+            before.node,
+            before.control,
+        ) != (
+            self.minimum_selection.summary,
+            self.minimum_selection.procedure,
+            self.minimum_selection.node,
+            self.minimum_selection.control,
+        ) && let Some((frame, _)) = self.minimum_selection.source(model)
+        {
+            self.program = source_program(report, &frame.source);
         }
         if before != self.minimum_selection {
             ui.ctx().request_repaint();
@@ -378,7 +450,7 @@ impl super::Workspace {
 
     pub(super) fn minimum_status(&self, report: &AnalysisReport, model: &MinimumModel) -> String {
         format!(
-            "{}: Global model {:?}; {} qualified relations; {} original accounts; {} programs; {}; {}; {}",
+            "{}: Global model {:?}; {} qualified relations; {} original accounts; {} programs; {}; {}; {}; Selected MAY source: {}",
             self.task_label(),
             model.status,
             model.summaries.len(),
@@ -386,7 +458,10 @@ impl super::Workspace {
             report.programs.len(),
             rich_status(report),
             self.graph.accessible_summary(),
-            self.inspector.minimum_summary(&self.minimum_selection)
+            self.inspector.minimum_summary(&self.minimum_selection),
+            self.minimum_selection
+                .source(model)
+                .map_or_else(|| "none".into(), |(_, location)| location_label(location))
         )
     }
 }

@@ -130,6 +130,7 @@ fn conservative_process_shows_possible_static_control_exits_and_residual_obligat
                 owner: api::ProcessOwner::Residual,
                 source,
                 is_static: procedure.is_static,
+                location: api::ProcessLocation::Block(0),
             });
             procedure.process_input = Some(api::ProcessOperands {
                 address: top.clone(),
@@ -159,6 +160,7 @@ fn conservative_process_shows_possible_static_control_exits_and_residual_obligat
             transfer.visited_block = false;
             transfer.complete = false;
             transfer.process = Some(api::ProcessTransfer {
+                control: None,
                 creations: vec![],
                 repeat: true,
                 actions: vec![api::ProcessAction::StaticCall],
