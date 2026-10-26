@@ -3,8 +3,9 @@
 from pathlib import Path
 from playwright.sync_api import expect
 import re
-from web_test_harness import click_control, edit_control, rendered_frame, resize_view, set_control, settle_gesture, ui_control, ui_controls
-from web_test_pixels import assert_same_scene, assert_translation, node_snapshot, screenshot_metrics
+from web_test_harness import click_control, edit_control, rendered_frame, resize_view, select_report_context, set_control, settle_gesture, ui_control, ui_controls
+from web_test_hybrid import process_control_relation, source_program
+from web_test_pixels import assert_same_scene, assert_translation, layout_ink, node_snapshot, screenshot_metrics
 
 
 def frozen_camera(page, canvas, output: Path, prefix: str, inspect_scene: bool):
@@ -121,8 +122,8 @@ def graph_content(page, canvas, content: str):
     expect(page.locator("#analysis-status")).to_contain_text(f"CFG nodes: {content}")
 
 
-def compare_tab(page, canvas, label: str):
-    """Pick a real tile tab in the responsive Compare source tab strip."""
+def compare_tab_control(page, label: str, *, selected=None):
+    """Observe the Compare tile preference without selecting it again."""
     assert label in {"Disassembly", "Control flow", "SSA"}, label
     expect(page.locator("#analysis-status")).to_contain_text("Route: Compare")
     reference = ui_control(page, "Disassembly", role="tab")
@@ -138,8 +139,163 @@ def compare_tab(page, canvas, label: str):
                               for left, top, right, bottom in graph_groups)]
     assert len(candidates) == 1, (label, reference, candidates)
     chosen, = candidates
+    if selected is not None:
+        assert chosen["selected"] is selected, chosen
+    return chosen
+
+
+def compare_tab(page, canvas, label: str):
+    """Pick a real tile tab in the responsive Compare source tab strip."""
+    chosen = compare_tab_control(page, label)
     click_control(page, canvas, label, role="tab", id=chosen["id"])
     return ui_control(page, label, role="tab", selected=True, id=chosen["id"])
+
+
+def assert_availability(page, message: str):
+    """Require the actual painted scope reason, rather than an empty SSA route."""
+    reason = ui_control(page, message, role="availability")
+    controls = ui_controls(page)
+    assert not any(control["enabled"] and control["role"] in {"graph-canvas", "ssa-row"}
+                   for control in controls), (message, controls)
+    return reason
+
+
+def default_entry_cfg(page, canvas, report, output: Path, name: str):
+    """Observe the honest initial MAY entry before any namespace/panel action."""
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Route: CFG")
+    expect(status).to_contain_text("View: Global model")
+    minimum = report["minimum"]
+    assert minimum is not None and len(minimum["summaries"]) == 1, "choose an explicit entry relation"
+    root = minimum["summaries"][0]["relation"]["root_procedure"]
+    expect(status).to_contain_text(re.compile(
+        rf"Scoped control: (?:Entry \{{ summary: 0 \}}|Context \{{ summary: 0, procedure: {root}, anchor: [^;]+\}});"))
+    expect(status).to_contain_text("; Source level;")
+    ui_control(page, "Model overview", role="checkbox", selected=False)
+    viewport = page.viewport_size
+    if viewport["width"] < 680 or viewport["height"] < 560:
+        ui_control(page, "Sources", role="toggle", selected=False)
+        ui_control(page, "Inspect", role="toggle", selected=False)
+    plot = ui_control(page, "CFG canvas", role="graph-canvas")
+    cards = [control for control in ui_controls(page)
+             if control["role"] == "graph-node" and control["enabled"]
+             and re.match(r"^Block 0x0000(?:–|$)", control["label"])]
+    assert len(cards) == 1 and cards[0]["selected"] is True, cards
+    card, = cards
+    left, top, right, bottom = card["rect"]
+    pl, pt, pr, pb = plot["rect"]
+    # Observed card hits are clipped to the painter. An entry touching a clip
+    # edge cannot establish a complete readable initial body.
+    assert pl < left < right < pr and pt < top < bottom < pb, (card, plot)
+    assert right-left >= 240 and bottom-top >= 40, (card, plot)
+    text = status.text_content()
+    zoom = re.search(r"; Global zoom: ([0-9.]+)%", text)
+    points = re.search(r"; (\d+) / (\d+) MAY source points;", text)
+    assert zoom and float(zoom[1]) >= 90, text
+    assert points and 0 < int(points[1]) <= int(points[2]), text
+    # These are source-scope counts. They are deliberately never compared to
+    # the number of Native states or regional receipts in the retained report.
+    page.mouse.move(2, 2)
+    rendered_frame(page)
+    png = canvas.screenshot(path=str(output / f"{name}.png"))
+    ink = layout_ink(page, png, (left+4, top+4, right-4, bottom-4))
+    assert ink["preview_pixels"] > 0, (card, ink)
+    return {"plot": plot, "entry": card, "zoom_percent": float(zoom[1]), "ink": ink,
+            "shown_source_points": int(points[1]), "total_source_points": int(points[2])}
+
+
+def source_content_snapshot(page, canvas, program, output: Path, name: str, *, ssa=None):
+    """Check actual Code/SSA rows and stable pixels in their observed clip."""
+    role = "code-row" if ssa is None else "ssa-row"
+    if ssa is None:
+        first = program["blocks"][0]
+        header = f"Block 0x{first['start_pc']:04x}"
+        instruction = first["instructions"][0]
+        prefix = f"0x{instruction['pc']:04x}  {instruction['name']}"
+        ui_control(page, "Copy bytecode", role="action")
+    else:
+        assert ssa["coverage"] in {"Current", "Stale"}, ssa
+        header = (f"{symbol('σ', ssa['state'])}  {ssa['coverage']} · "
+                  f"{'complete' if ssa['incoming_complete'] else 'open'} incoming")
+        prefix = f"{ssa['instructions'][0]['pc']:04x}  "
+        ui_control(page, "Selected state", role="tab", selected=True)
+    previous = None
+    page.mouse.move(2, 2)
+    for _ in range(12):
+        rendered_frame(page)
+        ui_control(page, header, role=role, selected=True)
+        rows = [control for control in ui_controls(page) if control["role"] == role and control["enabled"]]
+        assert any(row["label"].startswith(prefix) for row in rows), (prefix, rows)
+        region = (min(row["rect"][0] for row in rows), min(row["rect"][1] for row in rows),
+                  max(row["rect"][2] for row in rows), max(row["rect"][3] for row in rows))
+        png = canvas.screenshot()
+        metrics = screenshot_metrics(page, png, region)
+        assert metrics["selected_pixels"] > 100, (name, rows, metrics)
+        signature = (region, metrics["hash"])
+        if signature == previous:
+            (output / f"{name}.png").write_bytes(png)
+            return {**metrics, "role": role, "rows": rows}
+        previous = signature
+    raise AssertionError(f"{name}: source rows and painted content did not settle")
+
+
+def pick_may_point(page, canvas, report, *, summary: int, procedure: int, region: int, location):
+    """Pick a visible retained MAY point, with its original regional receipt.
+
+    Source-window and virtual-list reachability remain real UI prerequisites;
+    an absent/ambiguous target fails instead of choosing another receipt.
+    """
+    model = report["minimum"]
+    assert model is not None, "MAY selection requires an actual Minimum publication"
+    assert type(summary) is int and 0 <= summary < len(model["summaries"]), summary
+    relation = model["summaries"][summary]["relation"]
+    assert type(procedure) is int and 0 <= procedure < len(relation["procedures"]), procedure
+    assert type(region) is int and region >= 0, region
+    regional = relation["regional_cfg"]["nodes"]
+    assert all(type(node["id"]) is int and node["id"] >= 0 for node in regional), regional
+    nodes = [node for node in regional if node["id"] == region]
+    assert (len(nodes) == 1 and type(nodes[0]["procedure"]) is int
+            and nodes[0]["procedure"] == procedure), (summary, procedure, region, nodes)
+    node, = nodes
+    key = node["frame"]["process"]
+    assert key is not None and node["transfer"] is not None, node
+    process = node["transfer"]["process"]
+    assert process is not None and process["control"] is not None, node
+    control = process["control"]
+    certificate = process_control_relation(report, key, control)
+    if type(location) is dict:
+        assert set(location) == {"Block"} and type(location["Block"]) is int, location
+        assert 0 <= location["Block"] < len(certificate["blocks"]), location
+        assert certificate["program"] is not None, "uncaptured source has no decoded block title"
+        block = source_program(report, certificate["program"])["blocks"][location["Block"]]
+        last = block["instructions"][-1]
+        end = last["pc"] + max(last["size"] - 1, 0)
+        title = f"Block 0x{block['start_pc']:04x}" + (f"–0x{end:04x}" if end != block["start_pc"] else "")
+        point_label = f"block index {location['Block']}"
+    else:
+        assert type(location) is str and location in {"JumpTargets", "End"}, location
+        title, point_label = {"JumpTargets": ("Unknown jump", "unknown-jump hub · all legal JUMPDEST targets"),
+                              "End": ("End of code", "end of source · no instruction")}[location]
+    assert location in [control["entry"], *control["through"], *control["boundaries"]], (location, control)
+    select_report_context(page, report, "Baseline", summary=summary, procedure=procedure)
+    workspace_route(page, "CFG")
+    set_control(page, canvas, "Model overview", False, role="checkbox")
+    click_control(page, canvas, title, role="graph-node")
+    origins = [item for item in ui_controls(page) if item["role"] == "graph-origin" and item["enabled"]]
+    if origins:
+        # The producer represents the source entry by its Body origin. Other
+        # through-points keep their independent Some(ProcessLocation) receipt.
+        kind = "Body" if location == key["location"] else "MAY point"
+        prefix = f"r{region} {kind} · "
+        matches = [item for item in origins if item["label"].startswith(prefix)]
+        assert len(matches) == 1, (prefix, origins)
+        chosen, = matches
+        click_control(page, canvas, chosen["label"], role="graph-origin", id=chosen["id"])
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("View: Global model")
+    expect(status).to_contain_text(re.compile(rf"; Selected regional r{region}(?=;|$)"))
+    expect(status).to_contain_text(f"Selected MAY source: {point_label}")
+    return ui_control(page, title, role="graph-node", selected=True)
 
 
 def graph_scope(page, mode: str, nodes: int, shown: int, total: int):
@@ -161,10 +317,10 @@ def pick_graph_instance(page, canvas, state: int, query: str | None = None, *, p
     expect(page.locator("#analysis-status")).to_contain_text("View: Detailed paths")
     edit_control(page, canvas, "cfg_instance_search", query if query is not None else symbol("σ", state))
     rows = [control for control in ui_controls(page)
-            if control["role"] == "instance" and control["enabled"]
+            if control["role"] == "graph-instance" and control["enabled"]
             and control["label"].startswith(symbol("σ", state) + " · ")]
     assert len(rows) == 1, (state, rows)
     row, = rows
-    click_control(page, canvas, row["label"], role="instance", id=row["id"])
+    click_control(page, canvas, row["label"], role="graph-instance", id=row["id"])
     expect(page.locator("#analysis-status")).to_contain_text(f"Selected {symbol('σ', state)}; source {symbol('P', program)}")
     settle_gesture(page)
