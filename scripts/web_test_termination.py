@@ -4,7 +4,7 @@ from web_test_hybrid import oracle_graph, source_instructions, source_program
 from playwright.sync_api import expect
 import json
 from web_test_ending_helpers import selected_ending, warning_pixels
-from web_test_graph_helpers import graph_mode, symbol
+from web_test_graph_helpers import graph_mode, graph_overview, symbol
 from web_test_harness import settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import node_snapshot
@@ -198,6 +198,7 @@ def termination_interactions(browser, url, args):
         expect(page.locator('#analysis-status')).to_contain_text('Additional condition: root ADDRESS =')
         entry,target=_termination_oracle(report,code,kind)
         color={'Return':'normal','Revert':'ordinary','Failure':'failure'}[kind]
+        graph_overview(page,canvas,all_programs=True)
         graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
         before=node_snapshot(page,canvas,output,f'termination-{name}-unselected',measure_nodes=True)
         candidate=_select_native(page,canvas,before,target['id'],target['program'],color)
@@ -237,6 +238,7 @@ def termination_interactions(browser, url, args):
 
     mixed_report=layout_submission(page,canvas,'346007576009565b5f5b5000',output,'termination-mixed-block')
     members=_mixed_termination_oracle(mixed_report)
+    graph_overview(page,canvas,all_programs=True)
     graph_mode(page,canvas,'Blocks');page.keyboard.press('f');settle_gesture(page)
     scene=node_snapshot(page,canvas,output,'termination-mixed-block-before',measure_nodes=True)
     box=max(scene['nodes'],key=lambda rect:(rect[1]+rect[3])/2)
@@ -254,6 +256,7 @@ def termination_interactions(browser, url, args):
     partial=layout_submission(page,canvas,'5a5f5ff0',output,'termination-frontier')
     assert partial['status']=='Incomplete' and partial['frontiers']
     assert any(frontier['kind']=='Creation' and 'UnknownInitCode' in frontier['detail'] for frontier in partial['frontiers'])
+    graph_overview(page,canvas,all_programs=True)
     graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
     frontier=node_snapshot(page,canvas,output,'termination-frontier-selected',measure_nodes=True)
     summary=selected_ending(page)

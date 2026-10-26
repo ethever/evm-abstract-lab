@@ -5,9 +5,9 @@ from pathlib import Path
 from playwright.sync_api import expect
 import hashlib
 import json
-from web_test_graph_helpers import graph_mode, graph_scope, symbol
-from web_test_harness import complete_submission, observe_webgpu, rendered_frame, settle_gesture, webgpu_evidence
-from web_test_inspector_helpers import hide_inspector, inspector_block_entry_control, select_inspector_tab
+from web_test_graph_helpers import graph_mode, graph_overview, graph_program_scope, graph_scope, symbol
+from web_test_harness import click_control, complete_submission, hide_world_directory, observe_webgpu, rendered_frame, select_report_context, settle_gesture, webgpu_evidence
+from web_test_inspector_helpers import hide_inspector, inspector_block_entry_control, select_inspector_boundary, select_inspector_frame, select_inspector_tab
 from web_test_layout_helpers import layout_detail_regions
 from web_test_pixels import node_snapshot
 from web_test_rpc_helpers import RPC_PROVIDERS, RPC_TEST_TOKEN, automatic_rpc_entry, configured_rpc_server, native_call_summary, submit_rpc
@@ -330,20 +330,19 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path, r
     submitted = []
     page.on("request", lambda request: submitted.append(request.url)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
-    canvas.click(position={"x": page.viewport_size["width"] - 180, "y": 12})  # World directory
+    hide_world_directory(page, canvas)
     hide_inspector(page, canvas)
     page.keyboard.press("2")
     settle_gesture(page)
+    # These are the original full-graph oracles. The default scoped entry
+    # viewport has different card counts and must never satisfy them implicitly.
+    graph_overview(page, canvas, all_programs=True)
     graph_mode(page, canvas, "States")
-    page.keyboard.press("f")
-    settle_gesture(page)
+    click_control(page, canvas, "Fit graph", role="action")
     full = graph_scope(page, "States", 4, 4, 4)
     assert full["scope"] == "All programs" and full["edges"] == full["native_edges"] == len(edges)
-    canvas.click(position={"x": 205, "y": 133})  # native program ComboBox
-    rendered_frame(page)
-    canvas.screenshot(path=str(output / "world-graph-program-menu.png"))
-    canvas.click(position={"x": 205, "y": 205})  # P1 · Runtime (native menu geometry)
-    settle_gesture(page)
+    graph_program_scope(page, canvas, child)
+    canvas.screenshot(path=str(output / "world-graph-child-scope.png"))
     filtered = graph_scope(page, "States", 1, 1, 4)
     assert filtered["scope"] == symbol("P", child["id"])
     assert filtered["edges"] == filtered["native_edges"] == 0
@@ -418,11 +417,13 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     child_accounts = [account for store in report["stores"] for account in store["accounts"] if account["address"] == rpc.child_address]
     assert any(any(int(entry["slot"], 16) == 3 and contains(entry["value"], 99) for entry in account["storage"]) for account in child_accounts)
     assert any(any(int(entry["slot"], 16) == 2 and contains(entry["value"], 7) for entry in account["transient"]) for account in child_accounts)
-    # Select the actual child program from the native directory. It must
-    # update code, SSA, graph selection and the active frame together.
+    # Select this exact retained child invocation, including cap-one relative
+    # evidence. A source-only row cannot silently become a Native state.
     settle_gesture(page)
     canvas.screenshot(path=str(output / "world-overview.png"))
-    canvas.click(position={"x": 80, "y": 159})
+    select_report_context(page, global_report, "Native", state=child_state["id"])
+    select_inspector_tab(page, canvas, "Frame")
+    select_inspector_frame(page, canvas, child_frame["index"], active=True)
     expect(status).to_contain_text(f"source {symbol('P', child['id'])}")
     expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}")
     expect(status).to_contain_text("Frame f₁")
@@ -441,9 +442,8 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
         png = canvas.screenshot(path=str(output / f"world-{tab.lower()}.png"))
         screenshots[tab] = hashlib.sha256(png).hexdigest()
     assert len(set(screenshots.values())) == len(tabs), "inspector controls did not expose distinct views"
-    entry = inspector_block_entry_control(page, canvas)
-    # inspector.rs places Observed exit directly after Block entry in this row.
-    canvas.click(position={"x": entry[2] + 50, "y": (entry[1] + entry[3]) / 2})
+    inspector_block_entry_control(page, canvas)
+    select_inspector_boundary(page, canvas, "after")
     expect(status).to_contain_text("Observed exit")
     select_inspector_tab(page, canvas, "Memory")
     expect(status).to_contain_text("Memory")
