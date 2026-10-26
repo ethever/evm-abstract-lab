@@ -1,4 +1,5 @@
 //! Every graph and pool reference is checked before a consumer follows it.
+mod control;
 mod hybrid;
 mod minimum;
 mod process;
@@ -369,6 +370,7 @@ impl AnalysisReport {
             ));
         }
         self.validate_catalog()?;
+        self.validate_process_controls()?;
         self.validate_minimum()?;
         for graph in [&self.global, &self.native].into_iter().flatten() {
             graph.validate(&self.programs)?;

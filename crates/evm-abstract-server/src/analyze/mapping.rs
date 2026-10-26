@@ -54,6 +54,7 @@ pub(super) fn instruction(source: &bytecode::Instruction) -> DisasmInstruction {
 
 pub(super) fn edge(source: analysis::MachineEdgeKind) -> EdgeKind {
     match source {
+        analysis::MachineEdgeKind::ProcessControl => EdgeKind::ProcessControl,
         analysis::MachineEdgeKind::Process(action) => {
             EdgeKind::Process(super::process::action(action))
         }

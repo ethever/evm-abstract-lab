@@ -62,6 +62,7 @@ fn process_source(node: &mut RegionalNode) {
         _ => crate::ProcessSource::AnyRuntime(fork),
     };
     node.frame.process = Some(crate::ProcessFrameKey {
+        location: crate::ProcessLocation::Any,
         epoch: crate::ProcessDigest([1; 32]),
         owner: crate::ProcessOwner::Residual,
         source,
@@ -166,6 +167,7 @@ fn process_rules_cannot_be_native_or_complete_with_unresolved_obligations() {
     let transfer = node.transfer.as_mut().unwrap();
     transfer.semantics = TransferSemantics::KnownProcess;
     transfer.process = Some(crate::ProcessTransfer {
+        control: None,
         creations: vec![],
         repeat: true,
         actions: vec![crate::ProcessAction::StaticCall],

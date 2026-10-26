@@ -110,6 +110,8 @@ variant! {
     /// Typed control-transfer category, including native call dispatch.
     #[derive(Copy)]
     pub enum EdgeKind {
+        /// Actual pure Process macro boundary, never a Native branch receipt.
+        ProcessControl,
         /// Local primitive process recurrence, without an executed instruction claim.
         Process(crate::ProcessAction),
         /// Adjacent block entry.
@@ -364,6 +366,8 @@ record! {
         pub acquisition: Option<crate::AcquisitionReport>,
         /// Complete immutable source directory shared by both graph namespaces.
         pub programs: Vec<std::sync::Arc<crate::ProgramInfo>>,
+        /// Source/epoch MAY relations shared by minimum and both rich namespaces.
+        pub process_controls: Vec<std::sync::Arc<crate::ProcessControlRelation>>,
         /// Conservative global graph, when global analysis was requested.
         /// Shared fixed slots retain the exact projected graph across publications.
         pub global: Option<std::sync::Arc<AnalysisGraph>>,

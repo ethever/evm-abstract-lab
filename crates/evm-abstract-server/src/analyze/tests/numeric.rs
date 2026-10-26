@@ -125,9 +125,18 @@ fn typed_terminal<D: EvmNumericAlgebra>(
     );
     assert!(!report.selected_graph().unwrap().ssa.complete);
 
-    // The public request dispatcher reaches the same semantic boundary for
-    // either selected model, with its actual numeric policy in the binding.
-    let dispatched = super::native_detail(analyze(request).unwrap());
+    // The default dispatcher honestly stops at the unclosed Global cap; the
+    // explicit Native control preserves terminal-policy checks at that cap.
+    let global = analyze(request.clone()).unwrap();
+    global.validate().unwrap();
+    assert_eq!(global.status, api::AnalysisStatus::Incomplete);
+    assert!(!global.hybrid.as_ref().unwrap().coverage.baseline_current);
+    assert!(global.native.is_none());
+    assert_eq!(
+        global.global.as_ref().unwrap().metadata.limits,
+        request.limits
+    );
+    let dispatched = super::captured::native_bytecode(&request, &Control::default()).unwrap();
     dispatched.validate().unwrap();
     assert_eq!(
         dispatched

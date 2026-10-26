@@ -15,6 +15,7 @@ use std::sync::Arc;
 struct RetainedPublication {
     minimum: Option<Arc<api::MinimumModel>>,
     programs: Vec<Arc<api::ProgramInfo>>,
+    process_controls: Vec<Arc<api::ProcessControlRelation>>,
 }
 
 /// Fund the final qualification and fallback directory before optional rich
@@ -31,6 +32,7 @@ fn retained_publication<N: WordElement>(
         return Ok(RetainedPublication {
             minimum: None,
             programs: Vec::new(),
+            process_controls: Vec::new(),
         });
     };
     let minimum = retained.minimum.as_ref().expect("minimum seed selected");
@@ -52,6 +54,7 @@ fn retained_publication<N: WordElement>(
     }
     let required = metadata_work
         .saturating_add(retained.programs.len())
+        .saturating_add(retained.process_controls.len())
         .saturating_add(1);
     if (budget.used() as u64) < retained.postprocessing_work || !budget.charge(required) {
         return Err(api::ApiError {
@@ -70,6 +73,7 @@ fn retained_publication<N: WordElement>(
     Ok(RetainedPublication {
         minimum: Some(Arc::clone(minimum)),
         programs: retained.programs.iter().map(Arc::clone).collect(),
+        process_controls: retained.process_controls.iter().map(Arc::clone).collect(),
     })
 }
 
@@ -151,7 +155,11 @@ pub(in crate::analyze) fn project_with_retained_global<
     retained: Option<&api::AnalysisReport>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     let metadata_work = source.coverage().detail_regions.len().saturating_add(1);
-    let RetainedPublication { minimum, programs } = retained_publication(
+    let RetainedPublication {
+        minimum,
+        programs,
+        process_controls,
+    } = retained_publication(
         source.baseline(),
         input,
         control,
@@ -181,6 +189,7 @@ pub(in crate::analyze) fn project_with_retained_global<
             .rpc_acquisition()
             .map(crate::analyze::rpc::acquisition),
         programs,
+        process_controls,
         global: None,
         native: None,
         hybrid: Some(api::HybridReport {
@@ -194,21 +203,30 @@ pub(in crate::analyze) fn project_with_retained_global<
         // Commit rich references only after both namespace projections succeed.
         // A failed Native export cannot leave receipts pointing into absent pools.
         let local_prefixes = prefixes(source, control, budget)?;
-        let (global, mut programs) =
-            super::project_global(source.baseline(), algebra, control, budget, input, retained)?;
+        let super::GraphProjection {
+            graph: global,
+            mut programs,
+            mut process_controls,
+        } = super::project_global(source.baseline(), algebra, control, budget, input, retained)?;
         let native = source
             .detail()
             .map(|detail| {
-                let (graph, catalog) = super::project_graph(
+                let super::GraphProjection {
+                    graph,
+                    programs: catalog,
+                    process_controls: controls,
+                } = super::project_graph(
                     detail,
                     algebra,
                     control,
                     budget,
                     input,
                     std::mem::take(&mut programs),
+                    std::mem::take(&mut process_controls),
                 )?;
                 programs = catalog;
-                Ok::<_, api::ApiError>(Arc::new(graph))
+                process_controls = controls;
+                Ok::<_, api::ApiError>(graph)
             })
             .transpose()?;
         let selected_view = match source.coverage().chosen {
@@ -224,6 +242,7 @@ pub(in crate::analyze) fn project_with_retained_global<
         report.global = Some(global);
         report.native = native;
         report.programs = programs;
+        report.process_controls = process_controls;
         report
             .hybrid
             .as_mut()

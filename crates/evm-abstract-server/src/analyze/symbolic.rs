@@ -1,5 +1,6 @@
 //! Report-local interning of immutable state and path graphs. Native keys stay
 //! alive during projection; only typed local references cross the wire.
+mod control;
 mod minimum;
 mod nodes;
 mod paths;
@@ -76,6 +77,8 @@ pub(super) struct Pool<'a> {
     // Minimum projection borrows the job's existing application allowance.
     // Rich export retains its established enclosing-operation accounting.
     minimum_budget: Option<&'a mut evm_abstract::resource::WorkBudget>,
+    control_budget: Option<&'a mut evm_abstract::resource::WorkBudget>,
+    control_directory: control::Directory,
     memo: BTreeMap<Key, usize>,
     // Paths use Arc pointer identities; keeping them alive prevents pointer reuse.
     paths: Vec<RelationPath>,
@@ -90,6 +93,8 @@ impl<'a> Pool<'a> {
         Self {
             control,
             minimum_budget: None,
+            control_budget: None,
+            control_directory: control::Directory::default(),
             memo: BTreeMap::new(),
             paths: Vec::new(),
             graph: api::SymbolicGraph { nodes: vec![] },

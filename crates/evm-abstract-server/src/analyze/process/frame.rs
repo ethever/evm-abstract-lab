@@ -17,6 +17,7 @@ pub(in crate::analyze) fn key(native: &analysis::ProcessFrameKey) -> api::Proces
         owner: physical_owner,
         source: execution_source,
         is_static,
+        location: point,
     } = native;
     let source = source(*execution_source);
     api::ProcessFrameKey {
@@ -24,6 +25,16 @@ pub(in crate::analyze) fn key(native: &analysis::ProcessFrameKey) -> api::Proces
         owner: owner(*physical_owner),
         source,
         is_static: *is_static,
+        location: location(*point),
+    }
+}
+
+pub(in crate::analyze) fn location(native: analysis::ProcessLocation) -> api::ProcessLocation {
+    match native {
+        analysis::ProcessLocation::Any => api::ProcessLocation::Any,
+        analysis::ProcessLocation::Block(index) => api::ProcessLocation::Block(index),
+        analysis::ProcessLocation::JumpTargets => api::ProcessLocation::JumpTargets,
+        analysis::ProcessLocation::End => api::ProcessLocation::End,
     }
 }
 

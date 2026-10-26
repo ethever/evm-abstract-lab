@@ -113,7 +113,11 @@ impl AbstractSummary {
             }
             procedure_ref(node.procedure)?;
             let procedure = &summary.procedures[node.procedure];
-            if procedure.process != node.frame.process {
+            if match (&procedure.process, &node.frame.process) {
+                (Some(procedure), Some(body)) => !procedure.same_context(body),
+                (None, None) => false,
+                _ => true,
+            } {
                 return Err(failure(node.id, false, Kind::Semantics));
             }
             for target in &node.successors {

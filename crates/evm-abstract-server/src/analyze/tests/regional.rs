@@ -121,6 +121,7 @@ fn process_machine_projection_uses_bound_operands_and_never_native_anchors() {
         let mut payload = original.clone();
         let mut root = payload.call_stack.root().clone();
         root.state.key.process = Some(Box::new(analysis::ProcessFrameKey {
+            location: analysis::ProcessLocation::Any,
             epoch: alloy_primitives::B256::repeat_byte(0xa1),
             owner: analysis::ProcessOwner::Residual,
             source,
@@ -251,10 +252,71 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
                 if let Some(receipt) = &node.transfer {
                     let actual = actual.transfer.as_ref().unwrap();
                     assert_eq!(actual.semantics, process::semantics(receipt.semantics));
-                    assert_eq!(
-                        serde_json::to_value(&actual.process).unwrap(),
-                        serde_json::to_value(&receipt.process).unwrap()
-                    );
+                    match (&actual.process, &receipt.process) {
+                        (Some(actual), Some(native)) => {
+                            assert_eq!(actual.repeat, native.repeat);
+                            assert_eq!(
+                                actual.actions,
+                                native
+                                    .actions
+                                    .iter()
+                                    .copied()
+                                    .map(process::action)
+                                    .collect::<Vec<_>>()
+                            );
+                            assert_eq!(
+                                actual.unresolved,
+                                native
+                                    .unresolved
+                                    .iter()
+                                    .copied()
+                                    .map(process::boundary)
+                                    .collect::<Vec<_>>()
+                            );
+                            match (&actual.control, &native.control) {
+                                (Some(actual), Some(native)) => {
+                                    let relation = &report.process_controls[actual.relation];
+                                    assert_eq!(
+                                        relation.epoch,
+                                        api::ProcessDigest(native.relation.epoch.0)
+                                    );
+                                    assert_eq!(
+                                        relation.source,
+                                        process::source(native.relation.source)
+                                    );
+                                    assert_eq!(actual.entry, process::location(native.entry));
+                                    assert_eq!(
+                                        actual.through,
+                                        native
+                                            .through
+                                            .iter()
+                                            .copied()
+                                            .map(process::location)
+                                            .collect::<Vec<_>>()
+                                    );
+                                    assert_eq!(
+                                        actual.boundaries,
+                                        native
+                                            .boundaries
+                                            .iter()
+                                            .copied()
+                                            .map(process::location)
+                                            .collect::<Vec<_>>()
+                                    );
+                                    assert_eq!(relation.blocks.len(), native.relation.blocks.len());
+                                    assert_eq!(relation.jump_targets, native.relation.jump_targets);
+                                }
+                                (None, None) => {}
+                                _ => panic!("actual control receipt was lost"),
+                            }
+                            assert_eq!(
+                                serde_json::to_value(&actual.creations).unwrap(),
+                                serde_json::to_value(&native.creations).unwrap()
+                            );
+                        }
+                        (None, None) => {}
+                        _ => panic!("actual process receipt was lost"),
+                    }
                     assert_eq!(actual.visited_block, receipt.visited_block);
                     assert!(!actual.visited_block);
                     assert_eq!(

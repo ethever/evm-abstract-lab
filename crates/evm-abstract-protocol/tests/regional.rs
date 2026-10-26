@@ -146,6 +146,7 @@ fn regional_records_are_strict_including_nullable_and_empty_evidence() {
 #[test]
 fn regional_revisions_are_canonical_decimal_strings_and_edge_kinds_are_lossless() {
     for kind in [
+        EdgeKind::ProcessControl,
         EdgeKind::Fallthrough,
         EdgeKind::Jump,
         EdgeKind::BranchTrue,
@@ -185,6 +186,63 @@ fn regional_revisions_are_canonical_decimal_strings_and_edge_kinds_are_lossless(
 }
 
 #[test]
+fn process_locations_and_shared_control_records_have_one_required_typed_shape() {
+    for point in [
+        ProcessLocation::Any,
+        ProcessLocation::Block(7),
+        ProcessLocation::JumpTargets,
+        ProcessLocation::End,
+    ] {
+        let wire = serde_json::to_vec(&point).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ProcessLocation>(&wire).unwrap(),
+            point
+        );
+    }
+    for invalid in [
+        r#"{"Block":-1}"#,
+        r#"{"Block":"7"}"#,
+        r#""NativePC""#,
+        r#"{"Block":7,"End":null}"#,
+    ] {
+        assert!(serde_json::from_str::<ProcessLocation>(invalid).is_err());
+    }
+    strict(ProcessControlEdge {
+        to: ProcessLocation::JumpTargets,
+        kind: EdgeKind::Jump,
+    });
+    let block = ProcessControlBlock {
+        successors: [
+            Some(ProcessControlEdge {
+                to: ProcessLocation::Block(1),
+                kind: EdgeKind::BranchTrue,
+            }),
+            None,
+        ],
+        continuation: Some(ProcessLocation::End),
+        boundary: false,
+    };
+    strict(block.clone());
+    strict(ProcessControlRelation {
+        id: 0,
+        epoch: ProcessDigest([1; 32]),
+        source: ProcessSource::InputProgram(ProcessInputProgramSource {
+            hash: ProcessDigest([2; 32]),
+            fork: Fork::Osaka,
+        }),
+        program: Some(3),
+        blocks: vec![block],
+        jump_targets: vec![0],
+    });
+    strict(ProcessControlRegion {
+        relation: 0,
+        entry: ProcessLocation::Block(0),
+        through: vec![ProcessLocation::Block(0)],
+        boundaries: vec![ProcessLocation::JumpTargets],
+    });
+}
+
+#[test]
 fn process_rules_and_targets_keep_strict_typed_boundaries() {
     let actions = vec![
         ProcessAction::Call,
@@ -204,6 +262,7 @@ fn process_rules_and_targets_keep_strict_typed_boundaries() {
         unresolved.push(ProcessBoundary::Creation(*action));
     }
     let process = ProcessTransfer {
+        control: None,
         creations: vec![],
         repeat: true,
         actions,
@@ -277,6 +336,7 @@ fn process_frames_preserve_full_epoch_and_source_without_native_anchors() {
     ];
     for source in sources {
         let key = ProcessFrameKey {
+            location: ProcessLocation::Any,
             epoch: ProcessDigest([0xfe; 32]),
             owner: ProcessOwner::Residual,
             source,

@@ -1,6 +1,8 @@
 //! Conservative process evidence preserves captured code identity and control obligations.
+mod control;
 mod creation;
 mod frame;
+pub use control::*;
 pub use creation::*;
 pub use frame::*;
 
@@ -71,6 +73,8 @@ variant! {
 record! {
     /// Actual conservative rules and remaining obligations, without instruction evidence.
     pub struct ProcessTransfer {
+        /// Actual pure MAY composition; the source relation is shared once.
+        pub control: Option<ProcessControlRegion>,
         /// Actions may repeat before a represented exit.
         pub repeat: bool,
         /// Primitive rules selected by the native capability scan.

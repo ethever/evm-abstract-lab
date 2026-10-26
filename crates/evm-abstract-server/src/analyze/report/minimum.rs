@@ -87,6 +87,7 @@ pub(in crate::analyze) fn project<N: WordElement, D: EvmNumericAlgebra<Element =
             bounds,
         });
     }
+    let process_controls = pools.symbolic.finish_controls(&pools.programs)?;
     // Structural admission and Arc publication use this same persistent payer.
     // No scalar is queried during validation; its bound covers sparse-key sets.
     pools
@@ -136,6 +137,7 @@ pub(in crate::analyze) fn project<N: WordElement, D: EvmNumericAlgebra<Element =
         timings: api::AnalysisTimings::default(),
         acquisition: None,
         programs,
+        process_controls,
         minimum,
         rich_export: api::RichExportOutcome::NotRequested,
         global: None,

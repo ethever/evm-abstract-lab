@@ -1,4 +1,7 @@
 //! Real native/projector coverage for the shared source directory and graph envelope.
+#[path = "protocol_catalog/process_control.rs"]
+mod process_control;
+
 use alloy_primitives::Address;
 use evm_abstract::{
     Fork,

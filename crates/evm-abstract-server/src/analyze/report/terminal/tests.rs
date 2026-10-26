@@ -592,9 +592,13 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
     }
     let request: api::AnalyzeRequest = serde_json::from_str(&encoded).unwrap();
     assert_eq!(request.limits, limits);
-    let report = crate::analyze::analyze(request).unwrap();
+    let report = crate::analyze::analyze(request.clone()).unwrap();
     report.validate().unwrap();
-    assert!(report.hybrid.as_ref().unwrap().coverage.baseline_current);
+    // One actual transfer does not finish both the pure macro and its RETURN
+    // boundary. Preserve this original cap and inspect the honest Global result.
+    assert!(!report.hybrid.as_ref().unwrap().coverage.baseline_current);
+    assert!(report.native.is_none());
+    assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert_eq!(
         report.selected_graph().unwrap().metadata.environment.to,
         api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))
@@ -609,7 +613,10 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
         matches!(&report.hybrid.as_ref().unwrap().coverage.detail_binding,
         api::HybridNativeBinding::SymbolicOwnerNamespace(binding) if binding.namespace == namespace)
     );
-    let report = crate::analyze::tests::native_detail(report);
+    // The explicit Native control keeps the same original symbolic input and
+    // transfer cap. It does not depend on closing the optional phase's baseline.
+    let report = crate::analyze::captured::native_bytecode(&request, &Control::default()).unwrap();
+    report.validate().unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.selected_graph().unwrap().ssa.complete);
     assert!(
@@ -635,7 +642,11 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
         input.config.root_terminal_coverage,
         limits.root_terminal_coverage
     );
-    assert_eq!(input.environment.to, api::AddressValue::Concrete(namespace));
+    assert_eq!(
+        input.environment.to,
+        api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))
+    );
+    assert_eq!(input.entry_address, namespace);
     assert_eq!(input.frame.address_value, input.environment.to);
     assert_eq!(input.frame.address, input.entry_address);
     let program = report

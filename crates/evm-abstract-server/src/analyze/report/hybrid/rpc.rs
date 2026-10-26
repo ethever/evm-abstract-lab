@@ -37,7 +37,11 @@ pub(in crate::analyze) fn project_with_retained_global<
         .saturating_add(acquisition.failures.len())
         .saturating_mul(2)
         .saturating_add(1);
-    let RetainedPublication { minimum, programs } = retained_publication(
+    let RetainedPublication {
+        minimum,
+        programs,
+        process_controls,
+    } = retained_publication(
         source.baseline().baseline(),
         input,
         control,
@@ -129,6 +133,7 @@ pub(in crate::analyze) fn project_with_retained_global<
         timings: api::AnalysisTimings::default(),
         acquisition: Some(rpc.acquisition.clone()),
         programs,
+        process_controls,
         global: None,
         native: None,
         hybrid: Some(api::HybridReport {
@@ -143,7 +148,11 @@ pub(in crate::analyze) fn project_with_retained_global<
             .map(|detail| prefixes(detail, control, budget))
             .transpose()?
             .unwrap_or_default();
-        let (global, mut programs) = super::super::project_global(
+        let super::super::GraphProjection {
+            graph: global,
+            mut programs,
+            mut process_controls,
+        } = super::super::project_global(
             baseline.baseline(),
             algebra,
             control,
@@ -154,22 +163,29 @@ pub(in crate::analyze) fn project_with_retained_global<
         let native = native_report
             .and_then(|report| report.detail())
             .map(|native| {
-                let (graph, catalog) = super::super::project_graph(
+                let super::super::GraphProjection {
+                    graph,
+                    programs: catalog,
+                    process_controls: controls,
+                } = super::super::project_graph(
                     native,
                     algebra,
                     control,
                     budget,
                     input,
                     std::mem::take(&mut programs),
+                    std::mem::take(&mut process_controls),
                 )?;
                 programs = catalog;
-                Ok::<_, api::ApiError>(std::sync::Arc::new(graph))
+                process_controls = controls;
+                Ok::<_, api::ApiError>(graph)
             })
             .transpose()?;
         checkpoint(control)?;
         report.global = Some(global);
         report.native = native;
         report.programs = programs;
+        report.process_controls = process_controls;
         report
             .hybrid
             .as_mut()

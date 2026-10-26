@@ -24,6 +24,12 @@ pub(in crate::analyze) struct ProjectionInput<'a> {
     pub numeric_model: api::NumericModel,
 }
 
+struct GraphProjection {
+    graph: Arc<api::AnalysisGraph>,
+    programs: Vec<Arc<api::ProgramInfo>>,
+    process_controls: Vec<Arc<api::ProcessControlRelation>>,
+}
+
 /// Reuse is admitted by the publisher's exact ModelHandle identity. These
 /// structural guards additionally reject a seed from another input or policy.
 /// Cloning catalog handles preserves all assigned IDs without copying instructions.
@@ -34,11 +40,18 @@ fn project_global<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     budget: &mut WorkBudget,
     input: ProjectionInput<'_>,
     retained: Option<&api::AnalysisReport>,
-) -> Result<(Arc<api::AnalysisGraph>, Vec<Arc<api::ProgramInfo>>), api::ApiError> {
+) -> Result<GraphProjection, api::ApiError> {
     checkpoint(control)?;
     let Some(retained) = retained else {
-        let (graph, programs) = project_graph(native, algebra, control, budget, input, Vec::new())?;
-        return Ok((Arc::new(graph), programs));
+        return project_graph(
+            native,
+            algebra,
+            control,
+            budget,
+            input,
+            Vec::new(),
+            Vec::new(),
+        );
     };
     let invalid = || api::ApiError {
         code: api::ApiErrorCode::Internal,
@@ -58,12 +71,18 @@ fn project_global<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         {
             return Err(invalid());
         }
-        if !budget.charge(retained.programs.len().saturating_add(1)) {
+        if !budget.charge(
+            retained
+                .programs
+                .len()
+                .saturating_add(retained.process_controls.len())
+                .saturating_add(1),
+        ) {
             return Err(ssa::errors::convert(evm_abstract::ssa::SsaError::Work));
         }
         let programs = retained.programs.iter().map(Arc::clone).collect();
-        let (graph, programs) = project_graph(native, algebra, control, budget, input, programs)?;
-        return Ok((Arc::new(graph), programs));
+        let controls = retained.process_controls.iter().map(Arc::clone).collect();
+        return project_graph(native, algebra, control, budget, input, programs, controls);
     };
     if retained.schema_version != api::SCHEMA_VERSION
         || graph.metadata.source_snapshot != hybrid::snapshot(native.snapshot())?
@@ -75,12 +94,22 @@ fn project_global<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     {
         return Err(invalid());
     }
-    if !budget.charge(retained.programs.len().saturating_add(1)) {
+    if !budget.charge(
+        retained
+            .programs
+            .len()
+            .saturating_add(retained.process_controls.len())
+            .saturating_add(1),
+    ) {
         return Err(ssa::errors::convert(evm_abstract::ssa::SsaError::Work));
     }
     let programs = retained.programs.iter().map(Arc::clone).collect();
     checkpoint(control)?;
-    Ok((Arc::clone(graph), programs))
+    Ok(GraphProjection {
+        graph: Arc::clone(graph),
+        programs,
+        process_controls: retained.process_controls.iter().map(Arc::clone).collect(),
+    })
 }
 
 #[cfg(any(test, feature = "capture-replay"))]
@@ -114,7 +143,11 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
     control: &Control,
     postprocessing: &mut WorkBudget,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    let (graph, programs) = project_graph(
+    let GraphProjection {
+        graph,
+        programs,
+        process_controls,
+    } = project_graph(
         native,
         algebra,
         control,
@@ -124,6 +157,7 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
             scope,
             numeric_model,
         },
+        Vec::new(),
         Vec::new(),
     )?;
     Ok(api::AnalysisReport {
@@ -138,8 +172,9 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
         timings: api::AnalysisTimings::default(),
         acquisition: native.rpc_acquisition().map(super::rpc::acquisition),
         programs,
+        process_controls,
         global: None,
-        native: Some(Arc::new(graph)),
+        native: Some(graph),
         hybrid: None,
     })
 }
@@ -153,7 +188,8 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     postprocessing: &mut WorkBudget,
     input: ProjectionInput<'_>,
     programs: Vec<std::sync::Arc<api::ProgramInfo>>,
-) -> Result<(api::AnalysisGraph, Vec<std::sync::Arc<api::ProgramInfo>>), api::ApiError> {
+    process_controls: Vec<Arc<api::ProcessControlRelation>>,
+) -> Result<GraphProjection, api::ApiError> {
     let ProjectionInput {
         request,
         scope,
@@ -164,6 +200,7 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     // The request's Control.scope covers this ledger and every native output
     // computation. There is no local execution projection on the server path.
     let mut pools = Pools::<N>::with_programs(control, programs);
+    pools.symbolic.seed_controls(process_controls);
     let root_binding = mapping::root_binding(native.root_binding());
     pools.root_namespace = match native.root_binding() {
         evm_abstract::world::RootInputBinding::Namespace { coordinate } => Some(coordinate),
@@ -348,6 +385,7 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     };
     let environment = environment::project(&native.entry().environment, &mut pools)?;
     checkpoint(control)?;
+    pools.symbolic.attach_control_budget(postprocessing);
     let abstract_summaries =
         summaries::project(native.procedure_summaries(), control, &mut pools.symbolic)?;
     let root_terminal_coverage = native
@@ -355,6 +393,11 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         .map(|source| terminal::project(source, numeric_model, &mut pools))
         .transpose()?;
     checkpoint(control)?;
+    let process_controls = pools.symbolic.finish_controls(&pools.programs)?;
+    let postprocessing = pools
+        .symbolic
+        .release_control_budget()
+        .expect("rich projection owns control payer");
     let report = api::AnalysisGraph {
         scope,
         fork: request.fork,
@@ -447,5 +490,9 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         abstract_summaries,
     };
     checkpoint(control)?;
-    Ok((report, pools.programs))
+    Ok(GraphProjection {
+        graph: Arc::new(report),
+        programs: pools.programs,
+        process_controls,
+    })
 }

@@ -36,3 +36,21 @@ Native。正常返回时再输出 `lifecycle: "Final"` 的结果。每行都有�
 2,000,000,000。先支付必需最小模型，再支付可选丰富导出；它独立于请求的 EVM 执行
 预算。执行及 RPC 重启继续共享原始累计执行预算，各阶段都不会通过新建预算补救
 拒绝。最小模型本身无法付费时仍返回明确失败。
+
+Global 的 Process 控制坐标保留实际的已知代码关系。`ProcessFrameKey.location`
+区分解码块 `Block(i)`、未知跳转的共享合法目标节点 `JumpTargets`、代码末尾 `End`
+和未观测代码的 `Any`。这些都是源代码的 MAY 坐标；不会生成 Native 的
+`executed_pcs`、栈或 SSA。`Block(i)` 的索引按该来源 `Program.blocks` 的顺序解释，
+导航时从同一 `programs` 目录读取源指令。
+
+`AnalysisReport.process_controls` 按完整 `(epoch, source)` 保存一份不可变控制关系，
+其中的 `program` 绑定来源角色、账户、fork 和 hash。每个实际 Body transfer 的
+`process.control` 只引用目录 ID，并保留自己的 `entry`、`through` 和 `boundaries`。
+`through` 表示在同一 Store/调用输入下组合的纯控制位置，`boundaries` 表示仍需要
+真实 Body transfer 的效果、调用、创建或终止义务。普通未知跳转先到共享目标节点；
+该节点自身的实际 receipt 才覆盖合法目标集合。目录中的潜在返回位置不构成调用返回
+证据，调用及恢复仍由 regional call/delivery 的实际身份、版本和 current 字段表示。
+
+边界 transfer 可以没有 `process.control`。调用者应读取它的真实 location 和
+successors，不能为了补齐图而重放控制分析。可选丰富导出复用已发布的最小模型与
+控制目录句柄；完整目录的存在、历史 transfer 或数值界限本身都不重新证明 current。

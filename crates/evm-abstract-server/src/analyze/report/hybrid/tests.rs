@@ -12,8 +12,22 @@ fn fixture() -> (
     api::AnalyzeRequest,
     ValueAlgebra<ProductAlgebra>,
 ) {
+    fixture_code("00")
+}
+
+fn fixture_code(
+    code: &str,
+) -> (
+    analysis::HybridAnalysis<NumericValue>,
+    api::AnalyzeRequest,
+    ValueAlgebra<ProductAlgebra>,
+) {
     let mut request = api::AnalyzeRequest::default();
     request.limits.root_terminal_coverage = false;
+    let api::AnalysisInput::Bytecode(bytes) = &mut request.input else {
+        unreachable!()
+    };
+    bytes.bytecode = code.into();
     let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(
         input::spec(&request.limits).unwrap(),
     ));
@@ -42,6 +56,79 @@ fn fixture() -> (
     assert!(report.coverage().baseline_current);
     assert!(report.detail().is_none());
     (report, request, algebra)
+}
+
+#[test]
+fn actual_minimum_control_directory_is_retained_on_rich_attachment_and_paid_refusal() {
+    let (source, request, algebra) = fixture_code("6003565b6007565b00");
+    let control = Control::default();
+    let input = ProjectionInput {
+        request: &request,
+        scope: api::AnalysisScope::SingleProgram,
+        numeric_model: api::NumericModel::Product,
+    };
+    let mut measurement = WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK);
+    let early =
+        super::super::minimum::project(&source, &algebra, &control, &mut measurement, input)
+            .unwrap();
+    let minimum_work = measurement.used();
+    assert_eq!(early.process_controls.len(), 1);
+    let complete = project_with_retained_global(
+        &source,
+        &algebra,
+        &control,
+        &mut measurement,
+        input,
+        Some(&early),
+    )
+    .unwrap();
+    let full_work = measurement.used();
+    assert_eq!(complete.rich_export, api::RichExportOutcome::Complete);
+    assert!(Arc::ptr_eq(
+        early.minimum.as_ref().unwrap(),
+        complete.minimum.as_ref().unwrap()
+    ));
+    for (old, new) in early
+        .process_controls
+        .iter()
+        .zip(&complete.process_controls)
+    {
+        assert!(Arc::ptr_eq(old, new));
+        assert_eq!(old.id, new.id);
+    }
+    complete.validate().unwrap();
+    let cap = minimum_work + (full_work - minimum_work) / 2;
+    assert!(minimum_work + early.programs.len() + early.process_controls.len() + 2 < cap);
+    assert!(cap < full_work);
+    let mut budget = WorkBudget::new(cap);
+    let early =
+        super::super::minimum::project(&source, &algebra, &control, &mut budget, input).unwrap();
+    let refused = project_with_retained_global(
+        &source,
+        &algebra,
+        &control,
+        &mut budget,
+        input,
+        Some(&early),
+    )
+    .unwrap();
+    assert!(matches!(
+        refused.rich_export,
+        api::RichExportOutcome::Refused(_)
+    ));
+    assert!(refused.global.is_none() && refused.native.is_none());
+    assert!(Arc::ptr_eq(
+        early.minimum.as_ref().unwrap(),
+        refused.minimum.as_ref().unwrap()
+    ));
+    assert_eq!(early.process_controls.len(), refused.process_controls.len());
+    for (old, new) in early.process_controls.iter().zip(&refused.process_controls) {
+        assert!(Arc::ptr_eq(old, new));
+    }
+    assert_eq!(refused.postprocessing_work, budget.used() as u64);
+    assert!(budget.exhausted());
+    early.validate().unwrap();
+    refused.validate().unwrap();
 }
 
 #[test]
