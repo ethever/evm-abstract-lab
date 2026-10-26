@@ -4,26 +4,30 @@ from web_test_hybrid import source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import json
-from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol
-from web_test_harness import rendered_frame, resize_view, settle_gesture, webgpu_evidence
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol, workspace_route
+from web_test_harness import click_control, rendered_frame, resize_view, settle_control_geometry, settle_gesture, ui_controls, webgpu_evidence
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import assert_translation, graph_screenshot_metrics, screenshot_metrics, text_pixels, workspace_content_bottom
 from web_test_ssa_helpers import SSA_DETAILS_CODE, ssa_details_toggle
 
 
 def ssa_text_snapshot(page, canvas, output, name):
-    page.mouse.move(2,2);page.wait_for_timeout(800);rendered_frame(page)
+    page.mouse.move(2,2);settle_control_geometry(page)
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     size=page.viewport_size
     bottom=workspace_content_bottom(page,png,above_inspector=True)
-    # The right-aligned SSA details control can wrap below y75 on narrow views.
-    # The left half still intersects the actual selected SSA block header only.
-    selected=screenshot_metrics(page,png,(4,75,size["width"]/2,bottom))
+    rows=[row for row in ui_controls(page) if row["role"]=="ssa-row" and row["enabled"]]
+    headers=[row for row in rows if row["label"].startswith("σ") and row["selected"]]
+    assert len(headers)==1,(name,headers)
+    header,=headers
+    # Scope tabs and Copy SSA are independent controls above the virtual table.
+    # Preserve the original rendered row counts within the actual header clip.
+    selected=screenshot_metrics(page,png,(4,header["rect"][1],size["width"]/2,bottom))
     assert selected["bounds"], f"missing selected native SSA header: {name}"
     # The selected state header supplies the actual start of the virtual table,
     # independently of the global metadata bar's height or responsive layout.
     region=(4,selected["bounds"][1],size["width"]-4,bottom)
-    return {**text_pixels(page,png,region),"selected":selected,"region":region}
+    return {**text_pixels(page,png,region),"selected":selected,"region":region,"header":header,"row_controls":rows}
 
 def details_graph_snapshot(page, canvas, output, name):
     page.mouse.move(2,2);settle_gesture(page)
@@ -82,16 +86,21 @@ def ssa_details_interactions(browser, url: str, output: Path):
     assert restored_graph["body"]["hash"]==compact_graph["body"]["hash"]
     assert_translation(compact_graph["node"],restored_graph["node"],0,0,tolerance=1.0)
 
-    # Click the real DUP2 PC in the independent disassembly table. Its selected
-    # block row and native 22pt row stride locate the control from PNG evidence.
+    # Click the actual DUP2 source row, preserving its independent PC and pixels.
     page.keyboard.press("1");settle_gesture(page);page.mouse.move(2,2)
     source_png=canvas.screenshot(path=str(output/"ssa-details-disassembly-before.png"))
     source=screenshot_metrics(page,source_png,(4,75,1436,970))
     assert source["bounds"],source
     source_order=source_program(report,report["metadata"]["root_program"])["blocks"][0]["instructions"]
     index=next(index for index,item in enumerate(source_order) if item["pc"]==4)
-    clicked_y=source["bounds"][3]+22*(index+0.5)
-    canvas.click(position={"x":80,"y":clicked_y});page.mouse.move(2,2);settle_gesture(page)
+    prefix=f"0x{source_order[index]['pc']:04x}  {source_order[index]['name']}"
+    rows=[row for row in ui_controls(page) if row["role"]=="code-row" and row["enabled"]
+          and row["label"].startswith(prefix)]
+    assert len(rows)==1,rows
+    row,=rows
+    clicked_y=(row["rect"][1]+row["rect"][3])/2
+    click_control(page,canvas,row["label"],role="code-row",id=row["id"])
+    page.mouse.move(2,2);settle_gesture(page)
     selected_source=screenshot_metrics(page,canvas.screenshot(path=str(output/"ssa-details-disassembly-pc4.png")),(4,75,1436,970))
     assert selected_source["selected_pixels"]>source["selected_pixels"]*1.8
     assert abs(selected_source["bounds"][3]-(clicked_y+11))<=2, (source,selected_source,clicked_y)
@@ -108,7 +117,7 @@ def ssa_details_interactions(browser, url: str, output: Path):
     page.keyboard.press("3");settle_gesture(page)
     # The SSA header clears only the selected PC. The temporary DUP2 row must
     # disappear from both views while the global mode remains Compact.
-    canvas.click(position={"x":30,"y":revealed["selected"]["bounds"][1]+11})
+    click_control(page,canvas,revealed["header"]["label"],role="ssa-row",id=revealed["header"]["id"])
     page.mouse.move(2,2);settle_gesture(page)
     cleared=ssa_text_snapshot(page,canvas,output,"ssa-details-pane-pc-cleared")
     assert len(cleared["rows"])==9 and cleared["hash"]==compact["hash"],cleared
@@ -133,6 +142,7 @@ def ssa_details_interactions(browser, url: str, output: Path):
     repeated=layout_submission(page,canvas,SSA_DETAILS_CODE,output,"ssa-details-reanalysis")
     assert repeated["ssa"]["blocks"][0]["instructions"]==instructions
     expect(status).to_contain_text("SSA details: Full")
+    workspace_route(page,"SSA")
     after_reanalysis=ssa_text_snapshot(page,canvas,output,"ssa-details-full-after-reanalysis")
     assert len(after_reanalysis["rows"])==13,after_reanalysis
 
@@ -142,12 +152,14 @@ def ssa_details_interactions(browser, url: str, output: Path):
     jumpdest=layout_submission(page,canvas,"5b600160020100",output,"ssa-details-jumpdest")
     jump_ops=jumpdest["ssa"]["blocks"][0]["instructions"]
     assert jump_ops[0]["name"]=="JUMPDEST" and jump_ops[0]["progress"]=="Completed"
+    workspace_route(page,"SSA")
     jump_pixels=ssa_text_snapshot(page,canvas,output,"ssa-details-jumpdest-compact")
     assert len(jump_pixels["rows"])==len(jump_ops)+3,jump_pixels
     fault=layout_submission(page,canvas,"80",output,"ssa-details-faulted-dup")
     fault_ops=fault["ssa"]["blocks"][0]["instructions"]
     assert len(fault_ops)==1 and fault_ops[0]["name"]=="DUP1" and fault_ops[0]["fault"]
     assert fault_ops[0]["progress"]=="Faulted"
+    workspace_route(page,"SSA")
     fault_compact=ssa_text_snapshot(page,canvas,output,"ssa-details-fault-pane-compact")
     assert len(fault_compact["rows"])==4 and fault_compact["error_pixels"]>20,fault_compact
     page.keyboard.press("2");settle_gesture(page);page.keyboard.press("f");settle_gesture(page)

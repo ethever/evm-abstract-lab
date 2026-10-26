@@ -2,10 +2,11 @@
 
 from pathlib import Path
 from playwright.sync_api import expect
+import base64
 import re
-from web_test_harness import click_control, edit_control, rendered_frame, resize_view, select_report_context, set_control, settle_gesture, ui_control, ui_controls
+from web_test_harness import click_control, edit_control, rendered_frame, resize_view, select_report_context, set_control, settle_control_geometry, settle_gesture, ui_control, ui_controls
 from web_test_hybrid import process_control_relation, source_program
-from web_test_pixels import assert_same_scene, assert_translation, layout_ink, node_snapshot, screenshot_metrics
+from web_test_pixels import assert_same_scene, assert_translation, layout_ink, node_snapshot, screenshot_metrics, text_pixels
 
 
 def frozen_camera(page, canvas, output: Path, prefix: str, inspect_scene: bool):
@@ -160,8 +161,71 @@ def assert_availability(page, message: str):
     return reason
 
 
+def graph_window(page, canvas, label: str):
+    """Choose the actual MAY Graph menu policy, separately from navigation Entry."""
+    assert label in {"Entry view", "Nearby", "Full source CFG"}, label
+    click_control(page, canvas, "Graph", role="menu")
+    click_control(page, canvas, label, role="graph-window")
+    settle_control_geometry(page)
+
+
+def may_source_graph(page, canvas):
+    click_control(page, canvas, "Graph", role="menu")
+    overview = ui_control(page, "Model overview", role="checkbox")
+    if overview["selected"]:
+        set_control(page, canvas, "Model overview", False, role="checkbox")
+    else:
+        page.keyboard.press("Escape")
+        rendered_frame(page)
+
+
+def entry_core_pixels(page, png, cards, controls, plot):
+    """Measure complete painted outlines, including separate receipt/target feet.
+
+    Hit responses alone are clipped. Four continuous PNG borders and interior
+    margins reject a clipped body/footer; absent immediate cards fail upstream.
+    """
+    records = []
+    pl, pt, pr, pb = plot["rect"]
+    for card in cards:
+        left, top, right, bottom = card["rect"]
+        feet = [item["rect"] for item in controls
+                if item["role"] in {"graph-receipts", "graph-targets"} and item["enabled"]
+                and abs(item["rect"][1] - bottom) < 0.5
+                and left - 0.5 <= item["rect"][0] < item["rect"][2] <= right + 0.5]
+        bottom = max([bottom, *(rect[3] for rect in feet)])
+        rect = (left, top, right, bottom)
+        assert pl + 1 < left < right < pr - 1 and pt + 1 < top < bottom < pb - 1, (card, rect, plot)
+        sides = page.evaluate("""async ({png,rect}) => {
+            const image=new Image(); image.src=`data:image/png;base64,${png}`; await image.decode();
+            const c=document.createElement('canvas'); c.width=image.width;c.height=image.height;
+            const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+            const data=ctx.getImageData(0,0,c.width,c.height).data,s=c.width/innerWidth;
+            const [l,t,r,b]=rect.map(v=>Math.round(v*s));
+            const colors=[[99,214,202],[127,177,255],[245,193,117],[145,164,186]];
+            const border=(x,y)=>colors.some(color=>color.every((v,i)=>Math.abs(data[(y*c.width+x)*4+i]-v)<=7));
+            const side=(start,end,fixed,horizontal)=>{
+                let best=0;
+                for(let d=-Math.ceil(s);d<=Math.ceil(s);d++) {
+                    let count=0;
+                    for(let at=start;at<end;at++) count+=horizontal?border(at,fixed+d):border(fixed+d,at);
+                    best=Math.max(best,count/(end-start));
+                }
+                return best;
+            };
+            const inset=Math.ceil(5*s);
+            return {top:side(l+inset,r-inset,t,true),bottom:side(l+inset,r-inset,b-1,true),
+                    left:side(t+inset,b-inset,l,false),right:side(t+inset,b-inset,r-1,false)};
+        }""", {"png": base64.b64encode(png).decode(), "rect": rect})
+        assert all(ratio >= 0.8 for ratio in sides.values()), (card, rect, sides)
+        title = text_pixels(page, png, (left+4, top+3, right-4, min(top+18, card["rect"][3]-2)))
+        assert title["white_pixels"] > 20 and any(end-start >= 7 for start, end in title["rows"]), (card, title)
+        records.append({"label": card["label"], "rect": rect, "outline": sides, "title": title})
+    return records
+
+
 def default_entry_cfg(page, canvas, report, output: Path, name: str):
-    """Observe the honest initial MAY entry before any namespace/panel action."""
+    """Prove the initial entry and source successors are wholly painted/readable."""
     status = page.locator("#analysis-status")
     expect(status).to_contain_text("Route: CFG")
     expect(status).to_contain_text("View: Global model")
@@ -171,36 +235,64 @@ def default_entry_cfg(page, canvas, report, output: Path, name: str):
     expect(status).to_contain_text(re.compile(
         rf"Scoped control: (?:Entry \{{ summary: 0 \}}|Context \{{ summary: 0, procedure: {root}, anchor: [^;]+\}});"))
     expect(status).to_contain_text("; Source level;")
-    ui_control(page, "Model overview", role="checkbox", selected=False)
     viewport = page.viewport_size
     if viewport["width"] < 680 or viewport["height"] < 560:
         ui_control(page, "Sources", role="toggle", selected=False)
         ui_control(page, "Inspect", role="toggle", selected=False)
     plot = ui_control(page, "CFG canvas", role="graph-canvas")
-    cards = [control for control in ui_controls(page)
-             if control["role"] == "graph-node" and control["enabled"]
-             and re.match(r"^Block 0x0000(?:–|$)", control["label"])]
-    assert len(cards) == 1 and cards[0]["selected"] is True, cards
-    card, = cards
+    relation = minimum["summaries"][0]["relation"]
+    process = relation["procedures"][root]["process"]
+    nodes = [node for node in relation["regional_cfg"]["nodes"]
+             if node["procedure"] == root and node["frame"]["process"] == process]
+    assert nodes and type(process["location"]) is dict, (process, nodes)
+    certificates = [process_control_relation(report, process, node["transfer"]["process"]["control"])
+                    for node in nodes if node["transfer"] and node["transfer"]["process"]
+                    and node["transfer"]["process"]["control"]]
+    assert certificates and all(item == certificates[0] for item in certificates), certificates
+    certificate = certificates[0]
+    anchor = process["location"]["Block"]
+    immediate = [edge["to"] for edge in certificate["blocks"][anchor]["successors"] if edge]
+    assert all(type(point) is dict and set(point) == {"Block"} for point in immediate), immediate
+    core = {anchor, *(point["Block"] for point in immediate)}
+    program = source_program(report, certificate["program"])
+    titles = set()
+    for index in core:
+        block = program["blocks"][index]
+        last = block["instructions"][-1]
+        end = last["pc"] + max(last["size"]-1, 0)
+        titles.add(f"Block 0x{block['start_pc']:04x}" + (f"–0x{end:04x}" if end != block["start_pc"] else ""))
+    settle_control_geometry(page)
+    controls = ui_controls(page)
+    cards = [control for control in controls if control["role"] == "graph-node" and control["enabled"]]
+    assert {card["label"] for card in cards} == titles and len(cards) == len(core), (titles, cards)
+    selected = [card for card in cards if card["selected"]]
+    assert len(selected) == 1 and selected[0]["label"].startswith(f"Block 0x{program['blocks'][anchor]['start_pc']:04x}"), selected
+    card, = selected
     left, top, right, bottom = card["rect"]
     pl, pt, pr, pb = plot["rect"]
-    # Observed card hits are clipped to the painter. An entry touching a clip
-    # edge cannot establish a complete readable initial body.
     assert pl < left < right < pr and pt < top < bottom < pb, (card, plot)
-    assert right-left >= 240 and bottom-top >= 40, (card, plot)
     text = status.text_content()
     zoom = re.search(r"; Global zoom: ([0-9.]+)%", text)
     points = re.search(r"; (\d+) / (\d+) MAY source points;", text)
-    assert zoom and float(zoom[1]) >= 90, text
-    assert points and 0 < int(points[1]) <= int(points[2]), text
+    assert zoom, text
+    assert points and len(core) == int(points[1]) <= int(points[2]), text
     # These are source-scope counts. They are deliberately never compared to
     # the number of Native states or regional receipts in the retained report.
     page.mouse.move(2, 2)
     rendered_frame(page)
     png = canvas.screenshot(path=str(output / f"{name}.png"))
+    painted_core = entry_core_pixels(page, png, cards, controls, plot)
     ink = layout_ink(page, png, (left+4, top+4, right-4, bottom-4))
     assert ink["preview_pixels"] > 0, (card, ink)
+    # Observe the actual policy only after the honest initial PNG, without
+    # choosing Entry or hiding panels to repair its initial camera.
+    click_control(page, canvas, "Graph", role="menu")
+    ui_control(page, "Model overview", role="checkbox", selected=False)
+    ui_control(page, "Entry view", role="graph-window", selected=True)
+    page.keyboard.press("Escape")
+    rendered_frame(page)
     return {"plot": plot, "entry": card, "zoom_percent": float(zoom[1]), "ink": ink,
+            "unclipped_readable_core": painted_core,
             "shown_source_points": int(points[1]), "total_source_points": int(points[2])}
 
 
@@ -217,7 +309,10 @@ def source_content_snapshot(page, canvas, program, output: Path, name: str, *, s
         assert ssa["coverage"] in {"Current", "Stale"}, ssa
         header = (f"{symbol('σ', ssa['state'])}  {ssa['coverage']} · "
                   f"{'complete' if ssa['incoming_complete'] else 'open'} incoming")
-        prefix = f"{ssa['instructions'][0]['pc']:04x}  "
+        # A retained Current/Stale boundary can have real SSA effects without
+        # decoded source or an executed opcode. Its effect row is still data.
+        prefix = (f"{ssa['instructions'][0]['pc']:04x}  " if ssa["instructions"]
+                  else symbol("μ", ssa["effect"]) + " = effect φ(")
         ui_control(page, "Selected state", role="tab", selected=True)
     previous = None
     page.mouse.move(2, 2)
@@ -279,7 +374,15 @@ def pick_may_point(page, canvas, report, *, summary: int, procedure: int, region
     assert location in [control["entry"], *control["through"], *control["boundaries"]], (location, control)
     select_report_context(page, report, "Baseline", summary=summary, procedure=procedure)
     workspace_route(page, "CFG")
-    set_control(page, canvas, "Model overview", False, role="checkbox")
+    may_source_graph(page, canvas)
+    if not any(item["role"] == "graph-node" and item["label"] == title and item["enabled"]
+               for item in ui_controls(page)):
+        # Entry is deliberately forward-only. Retained off-window receipts
+        # remain reachable through the explicit source view, not model macros.
+        graph_window(page, canvas, "Full source CFG")
+        click_control(page, canvas, "Graph", role="menu")
+        click_control(page, canvas, "Fit graph", role="action")
+        settle_control_geometry(page)
     click_control(page, canvas, title, role="graph-node")
     origins = [item for item in ui_controls(page) if item["role"] == "graph-origin" and item["enabled"]]
     if origins:
@@ -315,6 +418,9 @@ def pick_graph_instance(page, canvas, state: int, query: str | None = None, *, p
     # Preserve its accepted sigma aliases and original namespace-local state ID.
     assert type(state) is int and state >= 0, state
     expect(page.locator("#analysis-status")).to_contain_text("View: Detailed paths")
+    if not any(control["label"] == "cfg_instance_search" and control["role"] == "text"
+               and control["enabled"] for control in ui_controls(page)):
+        click_control(page, canvas, "Instances", role="action")
     edit_control(page, canvas, "cfg_instance_search", query if query is not None else symbol("σ", state))
     rows = [control for control in ui_controls(page)
             if control["role"] == "graph-instance" and control["enabled"]

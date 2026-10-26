@@ -6,11 +6,11 @@ from tempfile import TemporaryDirectory
 import json
 import re
 from playwright.sync_api import expect
-from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol, workspace_route
+from web_test_graph_helpers import assert_availability, graph_content, graph_mode, graph_overview, symbol, workspace_route
 from web_test_harness import analysis_server, click_control, complete_submission, edit_control, hide_world_directory, observe_webgpu, rendered_frame, select_report_context, set_control, settle_gesture, ui_control, ui_controls, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_layout_helpers import LAYOUT_FIXTURES, layout_counts, layout_detail_regions
-from web_test_pixels import assert_same_scene, assert_translation, node_snapshot
+from web_test_pixels import assert_layout_same_geometry, assert_translation, node_snapshot
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, native_call_summary, submit_rpc
 
 
@@ -88,8 +88,14 @@ def _selected_native_context(page, canvas, report, node):
 
 def _call_navigation(page, canvas, full_report, report, rpc, output):
     """A real recorded CALL portal opens its callee; typed Back restores Compare."""
-    caller=native_entry_context(full_report)
-    call,=[edge for edge in report["edges"] if edge["kind"]=="Call" and edge["from"]==caller["id"]]
+    entry=native_entry_context(full_report)
+    nodes={node["id"]:node for node in report["cfg"]}
+    call,=[edge for edge in report["edges"] if edge["kind"]=="Call"
+           and nodes[edge["from"]]["program"]==entry["program"]
+           and nodes[edge["from"]]["frame_depth"]==entry["frame_depth"]]
+    caller=nodes[call["from"]]
+    entry_edge,=[edge for edge in report["edges"] if edge["from"]==entry["id"] and edge["to"]==caller["id"]]
+    assert entry_edge["kind"]=="Fallthrough",entry_edge
     callee,=[node for node in report["cfg"] if node["id"]==call["to"]]
     snapshots={snapshot["state"]:snapshot for snapshot in report["states"]}
     parent=snapshots[caller["id"]]["entry"]["frames"][-1]
@@ -110,21 +116,44 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     posts=[]
     page.on("request",lambda request:posts.append(request.url)
             if request.method=="POST" and request.url.endswith("/api/tasks") else None)
-    select_report_context(page,full_report,"Native",state=caller["id"])
+    select_report_context(page,full_report,"Native",state=entry["id"])
+    program=source_program(report,entry["program"])
+    set_control(page,canvas,"Sources",True)
+    edit_control(page,canvas,"source_context_filter",program["code_hash"])
+    address=program["code_address"]
+    caption=address if len(address)<=22 else address[:10]+"…"+address[-8:]
+    click_control(page,canvas,caption,role="source")
+    hide_world_directory(page,canvas)
+    expect(page.locator("#analysis-status")).to_contain_text("Route: Code")
+    ui_control(page,"Copy bytecode",role="action")
+    workspace_route(page,"SSA")
+    source_only=assert_availability(page,"Select an execution context to inspect its evidence")
+    canvas.screenshot(path=str(output/"call-source-only-ssa.png"))
+    select_report_context(page,full_report,"Native",state=entry["id"])
     workspace_route(page,"Compare")
     set_control(page,canvas,"Overview",False,role="checkbox")
     graph_mode(page,canvas,"Blocks")
     graph_content(page,canvas,"Disasm")
+    source=source_instructions(report,caller)
+    end=source[-1]["pc"]+source[-1]["size"]-1
+    title=f"Block 0x{caller['start_pc']:04x}–0x{end:04x}"
+    click_control(page,canvas,title,role="graph-node")
+    expect(page.locator("#analysis-status")).to_contain_text(
+        f"Selected {symbol('σ',caller['id'])}; source {symbol('P',caller['program'])}")
     click_control(page,canvas,"Fit graph",role="action")
     page.mouse.move(2,2);rendered_frame(page)
     plot=ui_control(page,"CFG canvas",role="graph-canvas")
     fitted=node_snapshot(page,canvas,output,"call-parent-fit",plot["rect"],True)
+    cards=[item for item in ui_controls(page) if item["role"]=="graph-node" and item["enabled"]]
+    dx=min(17,(plot["rect"][2]-max(item["rect"][2] for item in cards))/2)
+    dy=min(11,(plot["rect"][3]-max(item["rect"][3] for item in cards))/2)
+    assert dx>=2 and dy>=2,(plot,cards)
     page.mouse.move(plot["rect"][0]+8,plot["rect"][3]-12)
-    page.mouse.wheel(-17,-11)
-    page.mouse.move(2,2);settle_gesture(page)
+    page.mouse.wheel(-dx,-dy)
+    settle_gesture(page);page.mouse.move(2,2);rendered_frame(page)
     before=node_snapshot(page,canvas,output,"call-parent-before-open",plot["rect"],True)
-    assert_translation(fitted,before,17,11,tolerance=1.0)
-    assert_same_scene(fitted,before)
+    assert_translation(fitted,before,dx,dy,tolerance=1.0)
+    assert abs(assert_layout_same_geometry(fitted,before)["camera_scale"]-1)<0.01
     status=page.locator("#analysis-status")
     zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])
     portal=ui_control(page,"call · 1 destination",role="graph-node",within=plot)
@@ -143,11 +172,11 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     assert all(abs(a-b)<=0.5 for a,b in zip(plot["rect"],restored_plot["rect"],strict=True)),(plot,restored_plot)
     restored=node_snapshot(page,canvas,output,"call-parent-back-restored",restored_plot["rect"],True)
     assert_translation(before,restored,0,0,tolerance=1.0)
-    assert_same_scene(before,restored)
+    assert abs(assert_layout_same_geometry(before,restored)["camera_scale"]-1)<0.01
     assert float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])==zoom
     assert not posts,"call navigation, source qualification or Back reran analysis"
-    return {"call":call,"call_pc":instructions[0]["pc"],"caller":caller["id"],"callee":callee["id"],
-            "context":context,"child_frame":child,"before":before,"restored":restored,"zoom_percent":zoom}
+    return {"entry":entry["id"],"entry_edge":entry_edge,"call":call,"call_pc":instructions[0]["pc"],"caller":caller["id"],"callee":callee["id"],
+            "context":context,"source_only_availability":source_only,"child_frame":child,"before":before,"restored":restored,"pan_delta":[dx,dy],"zoom_percent":zoom}
 
 
 def _hierarchy_page(browser,url,args,rpc,providers,regions):
