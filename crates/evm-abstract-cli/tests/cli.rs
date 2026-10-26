@@ -703,6 +703,7 @@ fn relative_native_call<'a>(
     let frame = &procedure["frame"];
     assert_eq!(procedure["semantics"], "Native");
     assert!(procedure["process_input"].is_null());
+    assert!(procedure["version"]["entry_revision"].is_u64());
     assert_eq!(frame["mode"], "Runtime");
     assert_eq!(frame["address"], source);
     assert_eq!(frame["address_value"]["Concrete"], source);
@@ -751,11 +752,9 @@ fn relative_native_call<'a>(
         assert_eq!(transfer["current"], true);
         assert_eq!(transfer["complete"], true);
         assert_eq!(transfer["visited_block"], true);
+        assert!(node["input_revision"].is_u64());
+        assert!(transfer["input_revision"].is_u64());
         assert_eq!(transfer["input_revision"], node["input_revision"]);
-        assert_eq!(
-            node["input_revision"],
-            procedure["version"]["entry_revision"]
-        );
         assert!(
             procedure["covered_blocks"]
                 .as_array()
@@ -898,6 +897,34 @@ fn primary_analyze_json_has_world_call_frames_returns_and_outcomes() {
                     == child
             )
             .all(|state| state["executed_pcs"] == serde_json::json!([]))
+    );
+    // The covering entry and regional input slot use independent counters.
+    let mut independent = json.clone();
+    let summary = independent["procedure_summaries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|summary| {
+            let root = summary["root_procedure"].as_u64().unwrap() as usize;
+            summary["procedures"][root]["frame"]["code_address"] == child
+        })
+        .unwrap();
+    let root = summary["root_procedure"].as_u64().unwrap() as usize;
+    let revision = summary["regional_cfg"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["procedure"] == root)
+        .unwrap()["input_revision"]
+        .as_u64()
+        .unwrap();
+    summary["procedures"][root]["version"]["entry_revision"] =
+        serde_json::json!(revision.checked_add(1).unwrap());
+    relative_native_call(
+        &independent,
+        child,
+        "0x0000000000000000000000000000000000000101",
+        false,
     );
 }
 

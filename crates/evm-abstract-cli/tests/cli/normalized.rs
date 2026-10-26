@@ -528,6 +528,53 @@ fn assert_world_final_explanation(extra: &[&str], relative: bool) {
     }
 }
 
+fn assert_call_return_physical_input(analysis: &Value) {
+    let path = format!(
+        "{}/../../examples/worlds/call-return-branch.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let input: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let world = analysis["world"]
+        .as_object()
+        .expect("captured World exists");
+    assert_eq!(world["fork"], input["fork"]);
+    assert_eq!(world["provenance"], input["provenance"]);
+    let accounts = world["accounts"].as_object().expect("World accounts exist");
+    for account in input["accounts"].as_array().unwrap() {
+        let address = account["address"].as_str().unwrap();
+        assert_eq!(
+            accounts[address]["code"]["Runtime"]["bytecode"],
+            account["code"]
+        );
+    }
+    let address = "0x0000000000000000000000000000000000000101";
+    let entry = analysis["entry"]
+        .as_object()
+        .expect("physical entry exists");
+    assert_eq!(entry["binding"], json!({"Physical": {"address": address}}));
+    assert_eq!(entry["address"], address);
+    let environment = entry["environment"]
+        .as_object()
+        .expect("entry environment exists");
+    assert_eq!(environment["to"], json!({"Concrete": address}));
+    assert_eq!(
+        environment["caller"],
+        json!({"Concrete": "0x0000000000000000000000000000000000001000"})
+    );
+    assert_eq!(environment["is_static"], false);
+    let zero = serde_json::to_value(EvmValue::<NumericValue>::constant(
+        alloy_primitives::U256::ZERO,
+    ))
+    .unwrap();
+    for value in [&environment["value"], &environment["calldata"]["length"]] {
+        assert_eq!(super::native::numeric(value), super::native::numeric(&zero));
+    }
+    assert_eq!(
+        super::native::root(&environment["calldata"]["root"]),
+        &json!({"BytesExact": []})
+    );
+}
+
 #[test]
 fn two_region_world_analysis_and_explain_keep_the_original_private_return_ir() {
     let output = analyze(
@@ -547,6 +594,8 @@ fn two_region_world_analysis_and_explain_keep_the_original_private_return_ir() {
     assert_eq!(global["config"]["max_work"], 2_000_000_000_u64);
     assert_eq!(global["config"]["analysis"]["max_transfers"], 10_000_000);
     let report = super::native::select(&report);
+    assert_call_return_physical_input(global);
+    assert_call_return_physical_input(&report["analysis"]);
     assert_eq!(report["analysis"]["world"], global["world"]);
     assert_eq!(report["analysis"]["entry"], global["entry"]);
     for field in [
