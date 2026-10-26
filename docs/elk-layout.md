@@ -1,6 +1,6 @@
 # Rust ELK 选型与 CFG 几何边界
 
-CFG 使用锁定的 `elkrs = "=0.1.1"` 生成分层布局。布局输入是显式范围内已测量的卡片、边标签和有类型的拓扑；输出是叶节点矩形、完整边折线、标签矩形和空间分组。ELK 接口不接收窗口、平移或缩放；前端在首次选择范围与卡片尺寸时可以考虑可用空间。实际接口见 [`evm-abstract-layout`](../crates/evm-abstract-layout/src/lib.rs) 与[几何数据类型](../crates/evm-abstract-layout/src/model.rs)。
+CFG 使用锁定的 `elkrs = "=0.1.1"` 生成分层布局。布局输入是显式范围内已测量的卡片、边标签和有类型的拓扑；输出是叶节点矩形、完整边折线、标签矩形和空间分组。ELK 接口不接收窗口、平移或缩放；前端首次测量卡片时按实际图区选择尺寸与预览密度。实际接口见 [`evm-abstract-layout`](../crates/evm-abstract-layout/src/lib.rs) 与[几何数据类型](../crates/evm-abstract-layout/src/model.rs)。
 
 这里分开记录三类证据：两套上游移植的选型探针、本仓库当前实现，以及尚未解决的限制。选型探针中的小图是用于隔离几何行为的合成输入，不是链上合约分析结果；原生运行和 Node Wasm 运行也不能替代真实浏览器验收。
 
@@ -37,7 +37,7 @@ elkrs 是一个 crate，可通过 `ElkGraph`、`NodeId`、`EdgeId`、`ShapeId`�
 - **Cycle**：在程序相同的普通控制流边上计算强连通分量，含自环的单节点也可成组。CALL、RETURN、Failure、Revert 不作为内部普通连接。
 - **Chain**：每个内部连接的源只有一条出边、目标只有一条入边；平行边按实际数量计数。还要求普通控制流、相同程序、已知且相同的帧深度、两端无前沿或隐藏关联边，并排除 Cycle 成员。
 
-这些条件作用于提交给布局的显示图。默认来源 CFG 使用[来源级投影](../crates/evm-abstract-web/src/widgets/graph/minimum/control/projection.rs)：源码直接邻接、调用／异常边界与区域宏关系分别保留，宏关系可在 Advanced 或 Model overview 检查；没有捕获代码的上下文使用抽象边界。Detailed paths 的 States 保留范围内原生状态及边，Blocks 先按[Native 显示投影](../crates/evm-abstract-web/src/widgets/graph/projection.rs)聚合，并提供 Instances、Local 和可选 Overview。布局只保持所提交投影的身份；来源点不等于 Native 已执行状态，聚合后的 A→B→C 也不能证明来自一条可接续的执行路径。空间 Cycle 同样不是新的分析结论。
+这些条件作用于提交给布局的显示图。默认来源 CFG 使用[来源级投影](../crates/evm-abstract-web/src/widgets/graph/minimum/control/projection.rs)：源码直接邻接、调用／异常边界与区域宏关系分别保留，宏关系可在 Graph → Model relations 或 Model overview 检查；没有捕获代码的保守上下文使用抽象边界。Detailed paths 的 States 保留范围内原生状态及边，Blocks 先按[Native 显示投影](../crates/evm-abstract-web/src/widgets/graph/projection.rs)聚合，并提供 Instances、Local 和可选 Overview。布局只保持所提交投影的身份；来源点不等于 Native 已执行状态，聚合后的 A→B→C 也不能证明来自一条可接续的执行路径。空间 Cycle 同样不是新的分析结论。
 
 ### 固定世界坐标与联合边布局
 
@@ -45,7 +45,9 @@ elkrs 是一个 crate，可通过 `ElkGraph`、`NodeId`、`EdgeId`、`ShapeId`�
 
 ELK 节点坐标相对于父节点，边 sections 与边标签坐标相对于边的 `containing_node`。适配器累加祖先偏移转换为世界坐标，保留每个 section 的起点、折点和终点，并按原 source→target 拼接全部 sections。导出前核对原端点、标签身份、测量尺寸、容器包含关系、有限坐标、正交性和完整性；失败以 `LayoutError` 返回。Web 的[转换层](../crates/evm-abstract-web/src/widgets/graph/layout.rs)另检查坐标能否安全转换为 Painter 使用的 `f32`。
 
-布局输入不含 viewport，但前端先选择显示投影及卡片尺寸。来源范围首次进入时，图区窄于 600 逻辑点采用最多 3 个来源点与紧凑子卡，其他情况默认最多 12 个；调用与折叠边界另行保留。[范围缓存](../crates/evm-abstract-web/src/widgets/graph/minimum/scene.rs)记住该显式范围的布局偏好，普通窗口或分栏 resize、Back 保留几何与镜头。首次宽、窄窗口可能使用不同投影和尺寸，同一字节码不保证初始几何相同。Fit 只适配当前几何；默认入口以可读比例定位，全模型总览按需开启。主动改变内容或投影才更新相应场景。
+布局输入不含 viewport。默认 Entry 窗口取实际锚点及全部真实前向一跳备选，含调用边界和实际交付的调用者续点，不沿入边扩展，也没有固定点数上限。Graph 菜单的 Nearby 选择有限邻域，Full source CFG 选择当前上下文全部已准入保留的来源点，含断开、待展开和历史部分；Model overview 另行展示区域关系。这里的来源总数不等于全部静态字节码块或 Native 已执行状态数。
+
+仅因窗口范围省略的入边／出边保存在不参与节点布局的有类型边界元数据中，保留原边种类、层级、来源与精确限定端点，仍可通过目标入口和菜单检查。首次布局先取得实际图区，再选择卡片宽度和预览行数，按入口及其直接备选的完整矩形框定镜头。[范围缓存](../crates/evm-abstract-web/src/widgets/graph/minimum/scene.rs)保留所选窗口与布局偏好；普通 resize、分栏变化和 Back 保留几何与镜头，显式切换窗口可重新布局。Fit 只适配当前几何。
 
 ### 语义缩放只改变绘制内容
 
@@ -69,7 +71,7 @@ Multicall3 的同一 calldata 已通过同一 canonical block 上的只读 `eth_
 
 ### 浏览器中的 fixture 阅读
 
-完整报告中的状态数不等于默认来源窗口的卡片数。阅读以上 fixture 时先从入口的限定范围开始，再按需打开 Detailed paths、Overview 或 Local，并选择实际实例；全图 Fit 可能把长链文字缩小，Entry 可恢复可读定位。首次宽窄范围可以不同，resize／Back 的稳定性只适用于同一显式范围及其已保留的布局偏好。当前操作说明见[Web 工作台](web-workbench.md#阅读结果)。
+完整报告中的状态数不等于默认来源窗口的卡片数。阅读以上 fixture 时先从入口的限定范围开始，再按需打开 Detailed paths、Overview 或 Local，并选择实际实例；全图 Fit 可能把长链文字缩小，Entry 可恢复可读定位。首次卡片尺寸与预览密度按实际图区选择，resize／Back 的稳定性适用于同一显式范围及其已保留的布局偏好。当前操作说明见[Web 工作台](web-workbench.md#阅读结果)。
 
 [浏览器检查脚本](../scripts/test-web-browser.py)使用保存的 runtime、calldata、root address 和环境字段提交任务；完整检查要求匹配当前源码的服务与 Wasm，按[完整本地门禁](local-ci.md)执行。fixture 的既有报告计数、合成布局探针或图上可见卡片数均不能替代当前提交的检查结果。
 

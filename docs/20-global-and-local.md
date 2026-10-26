@@ -6,7 +6,7 @@ CLI 的 `analyze`、world/RPC `explain` 与 Web 默认先运行全局保守过�
 
 选择 Native 还要求它保持原始根绑定、`detail_current`，并通过付费的完整已知控制资格检查。如果记录或其中的过程使用 `Environment`（包括 `KnownCall` 内部的嵌套过程），组合解释继续选择 `Process` 或 `ProcessWithDetail`；未知账户借已捕获代码执行时需要的 owner／来源控制仍由 Global 关系覆盖。Native 图、frontiers 和局部前缀继续保留自己的实际资格。替换检查沿用原执行账本；无法支付这项可选检查时，已经成立的 `detail_current` 不因此失效。
 
-Web 默认打开可读的入口来源 CFG，**Model overview** 按需显示区域关系。**Global model / Detailed paths** 打开相应上下文选择器，按来源、owner、static 和证据资格选择确切上下文；本地状态、程序或 SSA 的数字 ID 相同，不会自动跨图沿用。**Sources → All contexts** 还可列出没有已捕获代码的上下文，切换列表范围本身不改选证据。渐进任务先安装可读的全局发布，后续 Native 到达时保留有效选择、视图偏好与镜头；沿调用导航后，**Back** 恢复先前的来源、上下文、视图和镜头。只有来源也可查看解码 **Code**；SSA 需要相容 Native 上下文中保留的指令证据，部分或较早条件下的证据继续带限定展示。符号根的详细视图会明确列出额外的 `root ADDRESS = …` 条件，全局模型仍覆盖其他允许的根地址。具体控件见[Web 工作台](web-workbench.md#阅读结果)。
+Web 默认打开入口及其真实前向一跳的来源 CFG；邻域与完整来源范围可显式选择，**Model overview** 另行显示区域关系。**Global model / Detailed paths**（紧凑布局位于 **More**）打开相应上下文选择器，按来源、owner、static 和证据资格选择确切上下文；本地状态、程序或 SSA 的数字 ID 相同，不会自动跨图沿用。**Sources → All contexts** 还可列出没有已捕获代码的上下文，切换列表范围本身不改选证据。渐进任务先安装可读的全局发布，后续 Native 到达时保留有效选择、视图偏好与镜头；沿调用导航后，**Back** 恢复先前的来源、上下文、视图和镜头。只有来源也可查看解码 **Code**；SSA 查看相容 Native 上下文中保留的记录，包含仅有边界效果、没有 opcode PC 的记录，部分或较早条件下的证据继续带限定展示。Code 未捕获不等于 SSA 不可用。符号根的详细视图会明确列出额外的 `root ADDRESS = …` 条件，全局模型仍覆盖其他允许的根地址。具体控件见[Web 工作台](web-workbench.md#阅读结果)。
 
 ## 控制关系怎样闭合
 

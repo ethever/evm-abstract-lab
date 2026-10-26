@@ -184,11 +184,11 @@ CLI 与 Web 默认使用 `max_work = 2_000_000_000`，先建立保守的全局�
 nix run .#web
 ```
 
-打开命令打印的本地地址，通过 **New analysis**（窄屏为 **Input**）选择 **Address** 或 **Bytecode**。结果默认打开可读的入口来源 CFG，沿调用进入被调用代码，**Back** 恢复先前的来源、上下文、视图和镜头；全模型总览与全图 Fit 可按需开启。**Sources** 按代码来源和 owner／static 等限定选择上下文；只有解码代码时仍可读 **Code**，**SSA** 则需要相容 Native 上下文中实际保留的指令证据，并保留部分覆盖或较早输入条件的说明。窄屏首次打开结果时 **Sources / Inspect** 关闭，打开后共用一个锚定面板，输入表单优先占用交互空间。
+打开命令打印的本地地址，通过 **New analysis**（窄屏为 **Input**）选择 **Address** 或 **Bytecode**。结果默认打开入口及其真实前向一跳的来源 CFG，沿调用进入被调用代码，**Back** 恢复先前的来源、上下文、视图和镜头；邻域、完整来源 CFG、区域模型总览与 Fit 可按需选择。**Sources** 按代码来源和 owner／static 等限定选择上下文；只有解码代码时仍可读 **Code**，**SSA** 则查看相容 Native 上下文中实际保留的 SSA 记录，包含仅有边界效果的记录，并保留部分覆盖或较早输入条件的说明。窄屏首次打开结果时 **Sources / Inspect** 关闭，打开后共用一个锚定面板，输入表单优先占用交互空间。
 
-浏览器通过共享 Rust 类型向原生分析服务发送请求；抽象执行与局部关系推理在后端运行。控件操作、检查器、开发构建和数据接口见[Web 前端说明](docs/web-workbench.md)。CFG 在浏览器主线程使用纯 Rust ELK：同一显式范围与布局偏好在 resize／Back 时保留几何，首次窄屏范围较小，不能据同一字节码推断宽窄初始投影相同。几何边界和当前限制见[Rust ELK 布局说明](docs/elk-layout.md)。
+浏览器通过共享 Rust 类型向原生分析服务发送请求；抽象执行与局部关系推理在后端运行。控件操作、检查器、开发构建和数据接口见[Web 前端说明](docs/web-workbench.md)。CFG 在浏览器主线程使用纯 Rust ELK：首次卡片尺寸与预览密度按实际图区选择，镜头围绕入口及其直接备选定位；普通 resize／Back 保留当前范围的布局偏好与几何。几何边界和当前限制见[Rust ELK 布局说明](docs/elk-layout.md)。
 
-状态栏显示运行中的已用时间，完成后保留用户总等待、后端处理及阶段分解。RPC 补读和抽象执行的多轮耗时累计，前端获取报告、解析与首次视图准备也单独记录；显示范围见[分析耗时](docs/web-workbench.md#分析耗时)。
+非紧凑布局的状态栏显示运行中的已用时间，紧凑布局通过 **More → Timing** 查看；完成后保留用户总等待、后端处理及阶段分解。RPC 补读和抽象执行的多轮耗时累计，前端获取报告、解析与首次视图准备也单独记录；显示范围见[分析耗时](docs/web-workbench.md#分析耗时)。
 
 分析链上账户时，使用 `nix run .#web -- --rpc-config http://127.0.0.1:8545` 直接传入 RPC HTTP(S) URL；后端自动创建 **Default RPC** 提供者，无需 JSON 文件。需要多个提供者或自定义名称时，`--rpc-config` 也接受 JSON 配置文件路径。浏览器同时显示提供者的名称和 RPC URL，分析请求只提交其 ID。首次打开时，有提供者则使用第一项自动分析 Ethereum 主网 USDC；未配置提供者则运行分支字节码示例，RPC 提交不可用。RPC 表单还可选择 WETH、USDT、Multicall3、Uniswap V2 Router02、V2 Pair（USDC/WETH）、V2 Factory、V4 PoolManager 或自定义入口地址，切换示例不会自动提交。配置格式见 [Web 工作台启动说明](docs/web-workbench.md#启动)，预置地址与来源见[入口示例](docs/web-workbench.md#使用控件)。
 
