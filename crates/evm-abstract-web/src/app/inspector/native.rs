@@ -105,7 +105,7 @@ impl Inspector {
         if boundary {
             Density::Compact.scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                egui::ComboBox::from_id_salt("inspector_boundary")
+                let boundary_picker = egui::ComboBox::from_id_salt("inspector_boundary")
                     .width(144.0)
                     .selected_text(match self.point {
                             Point::Entry if report.identity().namespace() == evm_abstract_protocol::AnalysisNamespace::Baseline => "Global · entry observation",
@@ -124,9 +124,10 @@ impl Inspector {
                             ui.label("No after-block snapshot is attached.");
                         }
                     });
+                controls::observe(ui, &boundary_picker.response, "inspector_boundary", "combobox", None);
                 if let Some(machine) = self.machine(report, *selection) {
                     let selected = selected_frame(machine, self.frame).map_or(0, |frame| frame.index);
-                    egui::ComboBox::from_id_salt("inspector_frame")
+                    let frame_picker = egui::ComboBox::from_id_salt("inspector_frame")
                         .width(98.0)
                         .selected_text(if machine.frames.len() == 1 { "Active frame".into() } else { format!("Frame {}{}", selected + 1, if machine.frames.last().is_some_and(|frame| frame.index == selected) { " · active" } else { " · caller" }) })
                         .show_ui(ui, |ui| {
@@ -134,6 +135,7 @@ impl Inspector {
                                 controls::tab_value(ui, &mut self.frame, Some(frame.index), format!("Frame {} · {}", frame.index + 1, if machine.frames.last().is_some_and(|active| active.index == frame.index) { "active" } else { "suspended caller" }), Density::Compact);
                             }
                         });
+                    controls::observe(ui, &frame_picker.response, "inspector_frame", "combobox", None);
                 }
                 if let Some(pc) = selection.pc {
                     ui.label(RichText::new(format!("PC 0x{pc:x}")).small().color(palette::MUTED))

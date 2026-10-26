@@ -37,7 +37,7 @@ impl Inspector {
         }
         self.outcome = self.outcome.min(report.outcomes.len() - 1);
         let selected = &report.outcomes[self.outcome];
-        egui::ComboBox::from_id_salt("outcome_selection")
+        let outcome_picker = egui::ComboBox::from_id_salt("outcome_selection")
             .width(ui.available_width().min(340.0))
             .selected_text(notation::widget(
                 ui,
@@ -73,13 +73,20 @@ impl Inspector {
                     }
                 }
             });
+        controls::observe(
+            ui,
+            &outcome_picker.response,
+            "outcome_selection",
+            "combobox",
+            None,
+        );
         let outcome = &report.outcomes[self.outcome];
         if let Some(data) = report.byte_arrays.get(outcome.data) {
             ui.horizontal(|ui| {
                 ui.label("Return/revert length");
                 value::cell(ui, &data.length);
             });
-            ui.collapsing("Return/revert bytes", |ui| {
+            crate::framework::section(ui, "Return/revert bytes", |ui| {
                 ui.allocate_ui(egui::vec2(ui.available_width(), 120.0), |ui| {
                     buffers::show(ui, report, outcome.data, "Outcome bytes")
                 });

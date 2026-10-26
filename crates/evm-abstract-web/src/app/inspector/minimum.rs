@@ -177,7 +177,7 @@ impl Inspector {
                     }),
             );
             let mut procedure = selected.procedure;
-            egui::ComboBox::from_id_salt("minimum_procedure")
+            let procedure_picker = egui::ComboBox::from_id_salt("minimum_procedure")
                 .width(ui.available_width().min(440.0))
                 .selected_text(
                     summary
@@ -189,21 +189,27 @@ impl Inspector {
                 )
                 .show_ui(ui, |ui| {
                     for (id, relation) in summary.relation.procedures.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut procedure,
-                            id,
-                            format!(
-                                "{}{}",
-                                context_label(relation),
-                                if Some(id) == summary.relation.root_procedure {
-                                    " · entry"
-                                } else {
-                                    ""
-                                }
-                            ),
+                        let label = format!(
+                            "{}{}",
+                            context_label(relation),
+                            if Some(id) == summary.relation.root_procedure {
+                                " · entry"
+                            } else {
+                                ""
+                            }
                         );
+                        let was_selected = procedure == id;
+                        let option = ui.selectable_value(&mut procedure, id, label.as_str());
+                        controls::observe(ui, &option, &label, "option", Some(was_selected));
                     }
                 });
+            controls::observe(
+                ui,
+                &procedure_picker.response,
+                "minimum_procedure",
+                "combobox",
+                None,
+            );
             if procedure != selected.procedure {
                 selected.procedure = procedure;
                 selected.output = None;
@@ -347,7 +353,7 @@ impl Inspector {
                 ui.label("This outcome is unavailable in the selected context. Select a current outcome from the graph.");
                 return;
             }
-            egui::ComboBox::from_id_salt("minimum_joint_output")
+            let output_picker = egui::ComboBox::from_id_salt("minimum_joint_output")
                 .selected_text(format!(
                     "{:?} · alternative {} / {}",
                     bounds.outputs[output].kind,
@@ -356,18 +362,22 @@ impl Inspector {
                 ))
                 .show_ui(ui, |ui| {
                     for (id, item) in bounds.outputs.iter().enumerate() {
-                        if ui
-                            .selectable_value(
-                                &mut output,
-                                id,
-                                format!("{:?} · alternative {}", item.kind, id + 1),
-                            )
-                            .clicked()
-                        {
+                        let label = format!("{:?} · alternative {}", item.kind, id + 1);
+                        let was_selected = output == id;
+                        let option = ui.selectable_value(&mut output, id, label.as_str());
+                        controls::observe(ui, &option, &label, "option", Some(was_selected));
+                        if option.clicked() {
                             selected.output = Some(id);
                         }
                     }
                 });
+            controls::observe(
+                ui,
+                &output_picker.response,
+                "minimum_joint_output",
+                "combobox",
+                None,
+            );
             let output = &bounds.outputs[output];
             ui.label("Data and Store below belong to this same relative outcome. The caller applies rollback.");
             ui.collapsing("Advanced outcome producer", |ui| {

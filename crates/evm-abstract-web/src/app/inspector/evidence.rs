@@ -104,10 +104,15 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &ReportView<'_>, selection: &mut 
         let presentation = diagnostic_presentation(diagnostic);
         // State identity and receipt index keep repeated PCs independently clickable.
         ui.push_id(("diagnostic", index, diagnostic.state), |ui| {
-            if ui
-                .selectable_label(false, notation::widget(ui, &presentation.label))
-                .clicked()
-            {
+            let response = ui.selectable_label(false, notation::widget(ui, &presentation.label));
+            crate::controls::observe(
+                ui,
+                &response,
+                &presentation.label,
+                "diagnostic",
+                Some(false),
+            );
+            if response.clicked() {
                 *selection = Selection {
                     value: None,
                     state: Some(diagnostic.state),
@@ -142,17 +147,13 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &ReportView<'_>, selection: &mut 
             (None, Some(pc)) => format!("0x{pc:x}"),
             (None, None) => "Pending entry".into(),
         };
-        if ui
-            .selectable_label(
-                false,
-                notation::widget(
-                    ui,
-                    RichText::new(format!("{location} · {:?}", frontier.kind))
-                        .color(palette::WARNING),
-                ),
-            )
-            .clicked()
-        {
+        let label = format!("{location} · {:?}", frontier.kind);
+        let response = ui.selectable_label(
+            false,
+            notation::widget(ui, RichText::new(&label).color(palette::WARNING)),
+        );
+        crate::controls::observe(ui, &response, &label, "frontier", Some(false));
+        if response.clicked() {
             *selection = Selection {
                 value: None,
                 state: frontier.from,
