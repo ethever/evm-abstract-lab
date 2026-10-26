@@ -3,7 +3,7 @@
 from pathlib import Path
 from playwright.sync_api import expect
 import re
-from web_test_harness import rendered_frame, resize_view, settle_gesture
+from web_test_harness import click_control, rendered_frame, resize_view, settle_gesture, ui_control
 from web_test_pixels import assert_same_scene, assert_translation, node_snapshot, screenshot_metrics
 
 
@@ -60,12 +60,20 @@ def pinch_wheel(page, cdp, pointer, delta_y: float) -> None:
     settle_gesture(page)
 
 def graph_mode(page, canvas, mode: str):
-    # Product toolbar labels, exercised through real pointer events. Its first
-    # content/navigation row stays unchanged; scopes occupy the second row.
-    x = {"Blocks": 29, "States": 84, "Local": 133}[mode]
-    canvas.click(position={"x": x, "y": 133})
+    assert mode in {"Blocks", "States", "Local"}, mode
+    click_control(page, canvas, mode, role="tab")
+    ui_control(page, mode, role="tab", selected=True)
     expect(page.locator("#analysis-status")).to_contain_text(f"CFG view: {mode}")
     settle_gesture(page)
+
+
+def workspace_route(page, route: str):
+    """Use the declared product shortcuts and verify the actual workspace route."""
+    key = {"Compare": "0", "Code": "1", "CFG": "2", "SSA": "3"}[route]
+    page.keyboard.press(key)
+    settle_gesture(page)
+    expect(page.locator("#analysis-status")).to_contain_text(
+        re.compile(rf"(?:^|; )Route: {re.escape(route)}(?=;|$)"))
 
 def graph_scope(page, mode: str, nodes: int, shown: int, total: int):
     status = page.locator("#analysis-status")
