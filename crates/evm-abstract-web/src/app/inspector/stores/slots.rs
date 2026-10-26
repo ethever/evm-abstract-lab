@@ -17,7 +17,7 @@ struct WidthPreference {
     explicit: bool,
 }
 
-pub(super) fn default_width(ui: &Ui) -> f32 {
+pub(in crate::app::inspector) fn default_width(ui: &Ui) -> f32 {
     let font = TextStyle::Monospace.resolve(ui.style());
     ui.fonts_mut(|fonts| {
         // StorageEntry keys are compact hex U256s. Reserve all 64 digits even
@@ -42,7 +42,7 @@ pub(super) fn default_width(ui: &Ui) -> f32 {
 
 /// Only font sizing changes can invalidate an untouched default. Native table
 /// state remains the authority for any explicitly dragged width.
-pub(super) fn refresh_default(ui: &mut Ui, table: Id, default: f32) -> bool {
+pub(in crate::app::inspector) fn refresh_default(ui: &mut Ui, table: Id, default: f32) -> bool {
     ui.data_mut(|data| {
         let previous = data.get_temp::<WidthPreference>(table.with("slot_width_preference"));
         let explicit = previous.is_some_and(|previous| previous.explicit);
@@ -54,7 +54,7 @@ pub(super) fn refresh_default(ui: &mut Ui, table: Id, default: f32) -> bool {
     })
 }
 
-pub(super) fn remember_resize(ui: &mut Ui, table: Id) {
+pub(in crate::app::inspector) fn remember_resize(ui: &mut Ui, table: Id) {
     if ui
         .ctx()
         .read_response(table.with("resize_column").with(0_usize))
@@ -71,7 +71,7 @@ pub(super) fn remember_resize(ui: &mut Ui, table: Id) {
     }
 }
 
-pub(super) fn cell(ui: &mut Ui, slot: &str) {
+pub(in crate::app::inspector) fn cell(ui: &mut Ui, slot: &str) {
     let cell = ui.max_rect();
     // Table clipping includes half the inter-column spacing. Keep even a
     // sub-ellipsis viewport strictly within the slot cell instead.

@@ -652,6 +652,44 @@
         "scripts/web_test_rpc.py",
         "scripts/web_test_rpc_helpers.py"
       ]
+    },
+    {
+      "id": "report-lifecycle",
+      "group": "transport",
+      "module": "web_test_report_lifecycle",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_report_lifecycle.py",
+        "scripts/web_test_rpc.py"
+      ]
+    },
+    {
+      "id": "report-lifecycle-refusal",
+      "group": "transport",
+      "module": "web_test_report_lifecycle",
+      "parameters": {
+        "mode": "refusal"
+      },
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_graph_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_inspector_helpers.py",
+        "scripts/web_test_layout_helpers.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_report_lifecycle.py",
+        "scripts/web_test_rpc.py"
+      ]
     }
   ],
   "legacy_flags": {

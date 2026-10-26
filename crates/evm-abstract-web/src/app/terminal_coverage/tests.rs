@@ -800,7 +800,7 @@ fn inspecting_coverage_keeps_the_job_lifecycle_and_selection_unchanged() {
     workspace.receive_message(Message::Status {
         generation,
         operation: JobOperation::Submit,
-        result: Ok(api::JobReply {
+        result: Box::new(Ok(api::JobReply {
             result: Ok(api::JobSnapshot {
                 publication: Some(crate::tests::native_publication()),
                 id: api::JobId(u64::MAX),
@@ -808,7 +808,7 @@ fn inspecting_coverage_keeps_the_job_lifecycle_and_selection_unchanged() {
                 progress: api::AnalysisProgress::default(),
                 timings: api::AnalysisTimings::default(),
             }),
-        }),
+        })),
     });
     let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {

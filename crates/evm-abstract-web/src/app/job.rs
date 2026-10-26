@@ -72,7 +72,7 @@ pub enum Message {
         /// Operation used for retry and cancellation handling.
         operation: JobOperation,
         /// Typed backend envelope or transport failure.
-        result: Result<JobReply, TransportError>,
+        result: Box<Result<JobReply, TransportError>>,
     },
     /// Version-qualified immutable analysis publication.
     Result {
@@ -308,10 +308,13 @@ impl Task {
         };
         if let Some(current) = &self.snapshot {
             if current.id != snapshot.id {
-                self.fail(TaskError::Identity {
-                    expected: current.id,
-                    received: snapshot.id,
-                });
+                self.request_failed(
+                    operation,
+                    TaskError::Identity {
+                        expected: current.id,
+                        received: snapshot.id,
+                    },
+                );
                 return;
             }
             if snapshot.publication.as_ref().is_none_or(|next| {

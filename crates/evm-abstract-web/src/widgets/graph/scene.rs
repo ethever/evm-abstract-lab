@@ -176,6 +176,9 @@ impl Graph {
     }
 
     pub(crate) fn accessible_summary(&self) -> String {
+        if self.scene.identity.is_minimum() {
+            return self.minimum_summary();
+        }
         if self.scene.index.is_none() || self.scene.display_dirty {
             return format!("CFG view: {:?}; awaiting display", self.mode);
         }

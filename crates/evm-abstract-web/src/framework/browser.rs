@@ -182,17 +182,17 @@ async fn execute(command: Command) -> Message {
         } => Message::Status {
             generation,
             operation: JobOperation::Submit,
-            result: status("POST", API_PATH, Some(*request)).await,
+            result: Box::new(status("POST", API_PATH, Some(*request)).await),
         },
         Command::Poll { generation, id } => Message::Status {
             generation,
             operation: JobOperation::Poll,
-            result: status("GET", &format!("{API_PATH}/{id}"), None).await,
+            result: Box::new(status("GET", &format!("{API_PATH}/{id}"), None).await),
         },
         Command::Cancel { generation, id } => Message::Status {
             generation,
             operation: JobOperation::Cancel,
-            result: status("DELETE", &format!("{API_PATH}/{id}"), None).await,
+            result: Box::new(status("DELETE", &format!("{API_PATH}/{id}"), None).await),
         },
         Command::Result { generation, id } => {
             let (result, transfer_ns, parsing_ns) =

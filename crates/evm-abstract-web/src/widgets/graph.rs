@@ -7,6 +7,7 @@ mod edges;
 mod groups;
 mod index;
 mod layout;
+mod minimum;
 mod navigation;
 mod paint;
 mod projection;
@@ -53,6 +54,7 @@ pub(crate) struct Graph {
 
 struct Scene {
     identity: ReportViewId,
+    minimum: Option<minimum::Scene>,
     ssa_selection: Selection,
     preview_dirty: BTreeSet<usize>,
     program_scope: Option<usize>,
@@ -86,6 +88,7 @@ impl Default for Scene {
     fn default() -> Self {
         Self {
             identity: ReportViewId::default(),
+            minimum: None,
             ssa_selection: Selection::default(),
             preview_dirty: BTreeSet::new(),
             program_scope: None,
@@ -145,7 +148,8 @@ impl Graph {
     /// The visible scene has actually been measured and laid out. Hidden graph
     /// tabs are never built merely to finish the result's timing measurement.
     pub(crate) fn prepared(&self) -> bool {
-        self.scene.index.is_some() && !self.scene.layout_pending && self.viewport.is_some()
+        (self.scene.minimum.is_some() || (self.scene.index.is_some() && !self.scene.layout_pending))
+            && self.viewport.is_some()
     }
 
     pub(crate) fn show(&mut self, ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selection) {
@@ -392,6 +396,7 @@ impl Graph {
             return;
         }
         let replacement = !self.scene.identity.same_report(identity);
+        self.focus_pending = false;
         self.scene = Scene {
             identity,
             ..Scene::default()
@@ -580,8 +585,11 @@ impl Graph {
     }
 
     fn fit(&mut self, size: Vec2) {
-        if self.scene.placement.bounds.is_finite() {
-            let bounds = self.scene.placement.bounds;
+        self.fit_bounds(size, self.scene.placement.bounds);
+    }
+
+    fn fit_bounds(&mut self, size: Vec2, bounds: Rect) {
+        if bounds.is_finite() {
             self.zoom = layout::fit_scale(bounds.size(), size).min(1.0);
             self.pan = size * 0.5 - bounds.center().to_vec2() * self.zoom;
         }

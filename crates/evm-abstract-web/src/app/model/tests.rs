@@ -45,7 +45,7 @@ fn replacement_changes_cached_text_with_the_same_input_fingerprint_shape_and_ids
 
 #[test]
 fn namespace_activation_never_carries_repeated_numeric_ids_or_ssa_focus_between_graphs() {
-    let report = evm_abstract_server::analyze::analyze(AnalyzeRequest {
+    let mut report = evm_abstract_server::analyze::analyze(AnalyzeRequest {
         input: AnalysisInput::Bytecode(BytecodeInput {
             bytecode: "600160020100".into(),
             address: None,
@@ -53,6 +53,9 @@ fn namespace_activation_never_carries_repeated_numeric_ids_or_ssa_focus_between_
         ..Default::default()
     })
     .unwrap();
+    // This control selects the explicit rich graph namespaces. Canonical
+    // minimum/Native switching has separate minimum-view regressions.
+    report.minimum = None;
     report.validate().unwrap();
     let global = report.graph(AnalysisNamespace::Baseline).unwrap();
     let native = report.graph(AnalysisNamespace::Native).unwrap();
@@ -120,6 +123,7 @@ fn publication(
     let sequence = |value| PublicationVersion(DecimalU64(value));
     JobPublication {
         version: sequence(version),
+        minimum_version: None,
         global_version: global.map(sequence),
         native_version: native.map(sequence),
         model_closed: true,
@@ -135,7 +139,7 @@ fn status(
     workspace.receive_message(super::super::Message::Status {
         generation: workspace.task.generation(),
         operation: super::super::JobOperation::Poll,
-        result: Ok(JobReply {
+        result: Box::new(Ok(JobReply {
             result: Ok(JobSnapshot {
                 id: JobId(17),
                 state,
@@ -143,7 +147,7 @@ fn status(
                 progress: AnalysisProgress::default(),
                 timings: AnalysisTimings::default(),
             }),
-        }),
+        })),
     });
 }
 
@@ -202,7 +206,8 @@ fn global_without_detail(mut report: AnalysisReport) -> AnalysisReport {
 
 #[test]
 fn native_arrival_retains_the_unchanged_global_selection_scene_camera_and_preferences() {
-    let complete = evm_abstract_server::analyze::analyze(AnalyzeRequest::default()).unwrap();
+    let mut complete = evm_abstract_server::analyze::analyze(AnalyzeRequest::default()).unwrap();
+    complete.minimum = None;
     let first = global_without_detail(complete.clone());
     let mut workspace = Workspace::default();
     workspace.initial_command();

@@ -739,7 +739,7 @@ fn accepted_server_result_keeps_first_fit_after_fast_completion_and_rerun() {
         workspace.receive_message(Message::Status {
             generation,
             operation,
-            result: Ok(JobReply {
+            result: Box::new(Ok(JobReply {
                 result: Ok(JobSnapshot {
                     publication: (state == evm_abstract_protocol::JobState::Completed)
                         .then(crate::tests::native_publication),
@@ -748,7 +748,7 @@ fn accepted_server_result_keeps_first_fit_after_fast_completion_and_rerun() {
                     progress: AnalysisProgress::default(),
                     timings: AnalysisTimings::default(),
                 }),
-            }),
+            })),
         });
     }
     fn begin(workspace: &mut Workspace, id: JobId) -> u64 {

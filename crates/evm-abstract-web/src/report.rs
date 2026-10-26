@@ -25,6 +25,9 @@ impl<'a> ReportView<'a> {
         identity: ReportViewId,
         publication: Option<&'a JobPublication>,
     ) -> Option<Self> {
+        if identity.is_minimum() {
+            return None;
+        }
         let namespace = identity.namespace();
         Some(Self {
             model,
@@ -66,5 +69,44 @@ impl std::ops::Deref for ReportView<'_> {
     type Target = AnalysisGraph;
     fn deref(&self) -> &Self::Target {
         self.graph
+    }
+}
+
+pub(crate) fn regional_status(
+    node: &evm_abstract_protocol::RegionalNode,
+    source: evm_abstract_protocol::SummarySourceStatus,
+) -> &'static str {
+    match source {
+        evm_abstract_protocol::SummarySourceStatus::Historical => return "Historical observation",
+        evm_abstract_protocol::SummarySourceStatus::Uncertified => {
+            return "Final source uncertified";
+        }
+        evm_abstract_protocol::SummarySourceStatus::Current => {}
+    }
+    if node.excluded {
+        return "Excluded input";
+    }
+    match &node.transfer {
+        None => "Admitted; transfer pending",
+        Some(transfer) if !transfer.current || transfer.input_revision != node.input_revision => {
+            "Historical transfer"
+        }
+        Some(transfer)
+            if !transfer.complete
+                && transfer.semantics == evm_abstract_protocol::TransferSemantics::KnownProcess =>
+        {
+            "Current partial conservative process"
+        }
+        Some(transfer) if !transfer.complete => "Current partial transfer",
+        Some(transfer)
+            if transfer.semantics == evm_abstract_protocol::TransferSemantics::KnownProcess =>
+        {
+            "Current conservative process · possible control"
+        }
+        Some(transfer) if transfer.visited_block => "Current block transfer",
+        Some(_) if node.frame.kind == evm_abstract_protocol::CodeKind::AbstractEnvironment => {
+            "Current effect/environment abstraction"
+        }
+        Some(_) => "Current transfer; no captured block visit",
     }
 }

@@ -8,6 +8,12 @@ use evm_abstract_protocol::{AnalysisNamespace, AnalysisReport, HybridNativeBindi
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ReportGeneration(u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Representation {
+    RichGraph,
+    Minimum,
+}
+
 /// Numeric state/program/value IDs belong to one graph in one report lineage.
 /// A detail-only publication retains the identity of its unchanged global graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +21,7 @@ pub(crate) struct ReportViewId {
     generation: ReportGeneration,
     namespace: AnalysisNamespace,
     version: Option<evm_abstract_protocol::PublicationVersion>,
+    representation: Representation,
 }
 
 impl ReportViewId {
@@ -24,7 +31,24 @@ impl ReportViewId {
             generation: ReportGeneration(generation),
             namespace,
             version: None,
+            representation: Representation::RichGraph,
         }
+    }
+
+    pub(crate) fn minimum(
+        self,
+        version: Option<evm_abstract_protocol::PublicationVersion>,
+    ) -> Self {
+        Self {
+            namespace: AnalysisNamespace::Baseline,
+            representation: Representation::Minimum,
+            version,
+            ..self
+        }
+    }
+
+    pub(crate) fn is_minimum(self) -> bool {
+        self.representation == Representation::Minimum
     }
 
     pub(crate) fn namespace(self) -> AnalysisNamespace {
@@ -42,6 +66,7 @@ impl ReportViewId {
     ) -> Self {
         Self {
             namespace,
+            representation: Representation::RichGraph,
             version: publication.and_then(|publication| match namespace {
                 AnalysisNamespace::Baseline => publication.global_version,
                 AnalysisNamespace::Native => publication.native_version,
@@ -57,6 +82,7 @@ impl Default for ReportViewId {
             generation: ReportGeneration::default(),
             namespace: AnalysisNamespace::Native,
             version: None,
+            representation: Representation::RichGraph,
         }
     }
 }
@@ -70,6 +96,19 @@ pub(super) struct ReportViewState {
 impl ReportViewState {
     pub(super) fn publication(&self) -> Option<&evm_abstract_protocol::JobPublication> {
         self.publication.as_ref()
+    }
+
+    pub(super) fn identity(&self) -> ReportViewId {
+        self.identity
+    }
+
+    pub(super) fn minimum<'a>(
+        &self,
+        report: &'a AnalysisReport,
+    ) -> Option<&'a evm_abstract_protocol::MinimumModel> {
+        (self.identity.is_minimum())
+            .then_some(report.minimum.as_deref())
+            .flatten()
     }
 
     pub(super) fn namespace(&self) -> AnalysisNamespace {
@@ -130,7 +169,7 @@ impl Workspace {
             } => {
                 self.report_view.publication = publication;
                 (
-                    if replacement || report.graph(self.report_view.namespace()).is_none() {
+                    if replacement || !available(report, self.report_view.namespace()) {
                         report.selected_view
                     } else {
                         self.report_view.namespace()
@@ -140,6 +179,50 @@ impl Workspace {
             }
             Activation::Namespace(namespace) => (namespace, false),
         };
+        if namespace == AnalysisNamespace::Baseline
+            && let Some(minimum) = report.minimum.as_deref()
+        {
+            let mut identity = self.report_view.identity;
+            if replacement {
+                identity.generation = ReportGeneration(
+                    identity
+                        .generation
+                        .0
+                        .checked_add(1)
+                        .expect("report generation exhausted"),
+                );
+            }
+            identity = identity.minimum(
+                self.report_view
+                    .publication
+                    .as_ref()
+                    .and_then(|publication| publication.minimum_version),
+            );
+            if identity == self.report_view.identity {
+                return;
+            }
+            self.report_view.identity = identity;
+            self.graph.activate(identity);
+            self.ssa_cache.activate(identity);
+            self.selection = Selection::default();
+            self.previous_state = None;
+            self.minimum_selection = super::minimum::Selection::default();
+            self.minimum_selection
+                .select_summary(minimum, super::minimum::initial_summary(minimum));
+            self.program = super::minimum::source_program(report, &minimum.declared_root_source);
+            self.account = None;
+            self.disasm_focus = Selection::default();
+            self.ssa_focus = Selection::default();
+            self.inspector.reset_report();
+            if replacement {
+                self.directory.open = matches!(
+                    minimum.source_snapshot,
+                    evm_abstract_protocol::RootTerminalSnapshot::Chain(_)
+                ) || minimum.accounts.len() > 1
+                    || report.programs.len() > 1;
+            }
+            return;
+        }
         let Some(visible) = report.graph(namespace) else {
             return;
         };
@@ -177,6 +260,11 @@ impl Workspace {
             self.directory.open = visible.metadata.snapshot.is_some() || report.programs.len() > 1;
         }
     }
+}
+
+fn available(report: &AnalysisReport, namespace: AnalysisNamespace) -> bool {
+    report.graph(namespace).is_some()
+        || (namespace == AnalysisNamespace::Baseline && report.minimum.is_some())
 }
 
 #[cfg(test)]

@@ -130,7 +130,12 @@ fn superseded_and_wrong_identity_callbacks_never_replace_the_current_task() {
             received: JobId(19)
         })
     ));
-    assert_eq!(task.snapshot.unwrap().id, JobId(18));
+    assert_eq!(task.snapshot.as_ref().unwrap().id, JobId(18));
+    assert!(
+        task.cancellable(),
+        "an unrelated response cannot end known running work"
+    );
+    assert!(task.needs_refresh());
 }
 
 fn queue_full() -> ApiError {
