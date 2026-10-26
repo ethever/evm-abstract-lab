@@ -26,6 +26,7 @@ use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod caller;
+mod coverage;
 mod layout;
 mod metered;
 mod payment;

@@ -270,3 +270,111 @@ fn unchanged_output_proof_checks_both_cancellation_owners() {
         assert_eq!((old.generation, old.updates), (7, 5));
     }
 }
+
+#[test]
+fn covered_non_equal_process_output_keeps_private_predicate_and_required_publication() {
+    let _scope = RECEIPT.scope();
+    let (algebra, entry, old) = fixture(1_000_000);
+    let mut setup = WorkBudget::new(100_000_000);
+    let mut store = old
+        .summary
+        .store()
+        .instantiate_with_payment(algebra.borrowed(), &mut setup)
+        .unwrap();
+    store.write_balance(
+        crate::Address::repeat_byte(99),
+        EvmValue::constant(U256::ZERO),
+    );
+    let incoming = ProcedureOutput::project(
+        &EvmByteArray::empty(),
+        &store,
+        &mut PolicyContext::new(algebra.borrowed(), &entry, &mut setup),
+    )
+    .unwrap();
+    assert_ne!(old.summary, incoming);
+    assert!(
+        old.summary
+            .store()
+            .covers_with_payment(incoming.store(), algebra.borrowed(), &mut setup)
+            .unwrap()
+    );
+    reset();
+    let mut budget = WorkBudget::new(500_000);
+    assert!(
+        prepare_output(
+            &KnownProcessSummaries,
+            Some(&old),
+            &incoming,
+            Acceleration::Join,
+            false,
+            &mut PolicyContext::new(algebra.borrowed(), &entry, &mut budget)
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (0, 0));
+    assert_eq!((old.generation, old.updates), (7, 5));
+    reset();
+    assert!(matches!(
+        prepare_output(
+            &KnownProcessSummaries,
+            Some(&old),
+            &incoming,
+            Acceleration::Join,
+            true,
+            &mut PolicyContext::new(algebra.borrowed(), &entry, &mut WorkBudget::new(500_000))
+        ),
+        Err(MachineError::Work)
+    ));
+    assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (1, 0));
+    let calls = Cell::new(0);
+    reset();
+    assert!(matches!(
+        prepare_output(
+            &Materializing(&calls),
+            Some(&old),
+            &incoming,
+            Acceleration::Join,
+            false,
+            &mut PolicyContext::new(algebra.borrowed(), &entry, &mut WorkBudget::new(500_000))
+        ),
+        Err(MachineError::Work)
+    ));
+    assert_eq!(calls.get(), 1);
+    assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (1, 0));
+    let mut budget = WorkBudget::new(100_000_000);
+    let retained = prepare_output(
+        &KnownProcessSummaries,
+        Some(&old),
+        &incoming,
+        Acceleration::Join,
+        true,
+        &mut PolicyContext::new(algebra.borrowed(), &entry, &mut budget),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((retained.generation, retained.updates), (8, 5));
+    let store = retained
+        .summary
+        .store()
+        .instantiate_with_payment(algebra.borrowed(), &mut budget)
+        .unwrap();
+    assert!(!store.read_balance(entry.address).contains(U256::from(7)));
+    assert!(store.read_balance(entry.address).contains(U256::from(8)));
+    assert!(
+        KnownProcessSummaries
+            .admit_output_change(
+                Some(&old.summary),
+                &incoming,
+                Acceleration::Widen,
+                &mut PolicyContext::new(
+                    algebra.borrowed(),
+                    &entry,
+                    &mut WorkBudget::new(100_000_000)
+                )
+            )
+            .unwrap()
+            .is_some(),
+        "non-equal widening must retain its selected hook"
+    );
+}

@@ -808,6 +808,19 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         {
             return Ok(None);
         }
+        // A sufficient proof can retain this admitted Process bound without
+        // executing numerical joins. Selected widening still uses its hook.
+        if let Some(current) = current
+            && acceleration == Acceleration::Join
+            && current
+                .data()
+                .covers_with_payment(incoming.data(), cx.domain, cx.budget)?
+            && current
+                .store()
+                .covers_with_payment(incoming.store(), cx.domain, cx.budget)?
+        {
+            return Ok(None);
+        }
         // The Process operators already bound coordinates by their frozen
         // owner/source catalogue and initial input. Effects use arbitrary
         // defaults, and erased return data introduces no private byte keys.

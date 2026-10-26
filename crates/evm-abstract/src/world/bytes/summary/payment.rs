@@ -10,6 +10,7 @@ use crate::{
 };
 
 mod content;
+mod coverage;
 mod equality;
 mod join;
 

@@ -11,6 +11,9 @@ use crate::resource::{
 };
 use alloy_primitives::U256;
 
+mod coverage;
+pub(crate) use coverage::{covers_scalar, equal_scalar, try_proof_work};
+
 #[cfg(test)]
 mod tests;
 
