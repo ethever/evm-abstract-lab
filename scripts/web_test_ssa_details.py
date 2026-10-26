@@ -4,7 +4,7 @@ from web_test_hybrid import source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import json
-from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol, workspace_route
 from web_test_harness import click_control, rendered_frame, resize_view, settle_control_geometry, settle_gesture, ui_controls, webgpu_evidence
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import assert_translation, graph_screenshot_metrics, screenshot_metrics, text_pixels, workspace_content_bottom
@@ -142,6 +142,7 @@ def ssa_details_interactions(browser, url: str, output: Path):
     repeated=layout_submission(page,canvas,SSA_DETAILS_CODE,output,"ssa-details-reanalysis")
     assert repeated["ssa"]["blocks"][0]["instructions"]==instructions
     expect(status).to_contain_text("SSA details: Full")
+    workspace_route(page,"SSA")
     after_reanalysis=ssa_text_snapshot(page,canvas,output,"ssa-details-full-after-reanalysis")
     assert len(after_reanalysis["rows"])==13,after_reanalysis
 
@@ -151,12 +152,14 @@ def ssa_details_interactions(browser, url: str, output: Path):
     jumpdest=layout_submission(page,canvas,"5b600160020100",output,"ssa-details-jumpdest")
     jump_ops=jumpdest["ssa"]["blocks"][0]["instructions"]
     assert jump_ops[0]["name"]=="JUMPDEST" and jump_ops[0]["progress"]=="Completed"
+    workspace_route(page,"SSA")
     jump_pixels=ssa_text_snapshot(page,canvas,output,"ssa-details-jumpdest-compact")
     assert len(jump_pixels["rows"])==len(jump_ops)+3,jump_pixels
     fault=layout_submission(page,canvas,"80",output,"ssa-details-faulted-dup")
     fault_ops=fault["ssa"]["blocks"][0]["instructions"]
     assert len(fault_ops)==1 and fault_ops[0]["name"]=="DUP1" and fault_ops[0]["fault"]
     assert fault_ops[0]["progress"]=="Faulted"
+    workspace_route(page,"SSA")
     fault_compact=ssa_text_snapshot(page,canvas,output,"ssa-details-fault-pane-compact")
     assert len(fault_compact["rows"])==4 and fault_compact["error_pixels"]>20,fault_compact
     page.keyboard.press("2");settle_gesture(page);page.keyboard.press("f");settle_gesture(page)
