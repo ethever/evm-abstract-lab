@@ -41,7 +41,7 @@ def process_model(report, require_hub=False):
     return {"directory_rows": len(directory), "regions": regions, "hubs": hubs}
 
 
-def select_may_source(page, canvas):
+def select_may_source(page, canvas, output):
     """Click a real painted card, then check source-only navigation."""
     page.keyboard.press("2")
     page.keyboard.press("f")
@@ -80,8 +80,27 @@ def select_may_source(page, canvas):
         if "Selected MAY source: unknown-jump hub" in status.text_content():
             break
     expect(status).to_contain_text("Selected MAY source: unknown-jump hub")
-    page.keyboard.press("3")
+    page.keyboard.press("1")
     rendered_frame(page)
+    source_png = canvas.screenshot(path=str(output / "may-source-navigation.png"))
+    selected_tab = page.evaluate("""async png => {
+        const image=new Image();image.src=`data:image/png;base64,${png}`;
+        await image.decode();const c=document.createElement('canvas');
+        c.width=image.width;c.height=image.height;
+        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+        const p=ctx.getImageData(0,0,c.width,c.height).data,scale=c.width/innerWidth;
+        let left=c.width,right=-1,count=0;
+        for(let y=0;y<25*scale;y++)for(let x=125*scale;x<400*scale;x++){
+            const i=(y*c.width+x)*4;
+            if(p[i]===33&&p[i+1]===65&&p[i+2]===75){left=Math.min(left,x);right=Math.max(right,x);count++;}
+        }
+        return {left:left/scale,right:right/scale,pixels:count/scale/scale};
+    }""", base64.b64encode(source_png).decode())
+    # Source navigation must reach the actual Code tab. Status retains the
+    # model namespace in every view, so that text alone cannot distinguish SSA.
+    center = (selected_tab["left"] + selected_tab["right"]) / 2
+    width = selected_tab["right"] - selected_tab["left"]
+    assert selected_tab["pixels"] > 100 and 210 <= center <= 250 and 30 <= width <= 55, selected_tab
     # The virtual hub keeps its qualifier; Code navigation must not turn it
     # into block zero or a Native instruction selection.
     expect(status).to_contain_text("Selected MAY source: unknown-jump hub")
@@ -199,6 +218,8 @@ def cancellation(context,url,rpc):
     # buttons must use the new report even when its numeric state IDs repeat.
     from web_test_layout_helpers import layout_modal
     open_input(page)
+    rendered_frame(page)
+    canvas.screenshot(path=str(context.output / "replacement-input-modal.png"))
     modal=layout_modal(page,canvas)
     canvas.click(position={"x":modal[0]+50,"y":modal[1]+44})
     settle_gesture(page)
@@ -225,7 +246,7 @@ def cancellation(context,url,rpc):
     replacement_result = page.request.get(url + "/api/tasks/" + str(replacement_id) + "/result").json()["result"]["Ok"]
     replacement_controls = process_model(replacement_result["report"], require_hub=True)
     expect(status).to_contain_text("1 expanded unknown-jump hubs")
-    cards = select_may_source(page, canvas)
+    cards = select_may_source(page, canvas, context.output)
     canvas.screenshot(path=str(context.output / "selected-may-hub-source.png"))
     page.keyboard.press("2")
     rendered_frame(page)
