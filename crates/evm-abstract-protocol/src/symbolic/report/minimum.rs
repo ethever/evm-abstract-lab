@@ -1,4 +1,6 @@
 //! Minimum and rich artifacts share source qualification, never private IDs.
+mod source;
+
 use crate::{
     AnalysisReport, CodeKind, MinimumModel, MinimumStore, MinimumValidationKind as Kind,
     ProcessSource, ReportValidationFailure, RichExportOutcome, RootInputBinding,
@@ -86,6 +88,7 @@ impl AnalysisReport {
                 return Err(invalid(Kind::Source));
             }
         }
+        self.minimum_original_source(minimum)?;
         for account in &minimum.accounts {
             let Some(id) = account.program else { continue };
             let program = self

@@ -1,4 +1,6 @@
 //! The application callback publishes numerical/control data before rich work.
+mod sources;
+
 use super::*;
 use evm_abstract::{
     Address, U256,
@@ -511,6 +513,23 @@ fn original_namespace_template_is_distinct_from_physical_store_code_bounds() {
 
     let original_program = original.program.unwrap();
     let coordinate = root.coordinate.clone();
+    report.validate().unwrap();
+    let mut invalid = report.clone();
+    let original = Arc::make_mut(invalid.minimum.as_mut().unwrap())
+        .accounts
+        .iter_mut()
+        .find(|row| row.root_template)
+        .unwrap();
+    original.code_kind = api::CodeKind::Empty;
+    original.program = None;
+    original.delegation_target = None;
+    assert_eq!(
+        invalid.validate(),
+        Err(api::ReportValidationFailure::Minimum(
+            api::MinimumValidationKind::Source
+        )),
+        "removing a program reference cannot erase the original InputProgram observation"
+    );
     for foreign_address in [None, Some(Address::repeat_byte(0x77).to_string())] {
         let mut invalid = report.clone();
         let program = if let Some(address) = foreign_address {
