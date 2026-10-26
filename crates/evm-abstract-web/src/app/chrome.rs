@@ -68,7 +68,7 @@ impl Workspace {
                         .on_hover_text(self.inspector.visibility_hint(ui.ctx()))
                         .changed()
                         && self.inspector.expanded
-                        && self.panels.compact()
+                        && (self.panels.compact() || self.inspector.maximized())
                     {
                         self.directory.open = false;
                     }
@@ -78,9 +78,8 @@ impl Workspace {
                         )
                         .changed()
                         && self.directory.open
-                        && self.panels.compact()
                     {
-                        self.inspector.expanded = false;
+                        self.open_sources();
                     }
                 });
             });

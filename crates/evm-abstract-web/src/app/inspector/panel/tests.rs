@@ -132,6 +132,73 @@ fn label_rect(output: &FullOutput, label: &str) -> Rect {
 }
 
 #[test]
+fn sources_and_context_chooser_remain_reachable_after_maximize() {
+    for context_choice in [false, true] {
+        let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));
+        workbench.frame(vec![]);
+        workbench.drag_to_height(430.0);
+        let preferred = workbench.rect("world_inspector").height();
+        let focus = workbench
+            .workspace
+            .report_view
+            .navigator()
+            .current()
+            .unwrap()
+            .focus
+            .clone();
+        let route = workbench.workspace.view;
+        workbench.click("Maximize");
+        assert!(workbench.workspace.inspector.maximized());
+        if context_choice {
+            workbench
+                .workspace
+                .choose_context(evm_abstract_protocol::AnalysisNamespace::Native);
+            workbench.frame(vec![]);
+        } else {
+            workbench.click("Sources");
+        }
+        assert!(workbench.workspace.directory.open);
+        assert!(!workbench.workspace.inspector.expanded);
+        let filter = workbench
+            .ctx
+            .read_response(Id::new("source_context_filter"))
+            .expect("the requested chooser must render its real editor");
+        assert!(filter.rect.is_positive());
+        assert!(workbench.rect("world_directory").contains_rect(filter.rect));
+        assert_eq!(workbench.workspace.view, route);
+        assert_eq!(
+            workbench
+                .workspace
+                .report_view
+                .navigator()
+                .current()
+                .unwrap()
+                .focus,
+            focus
+        );
+        workbench.click("Inspect");
+        assert!(
+            workbench.workspace.inspector.maximized(),
+            "retain the user's full-panel preference"
+        );
+        assert!(!workbench.workspace.directory.open);
+        workbench.click("Restore");
+        assert!((workbench.rect("world_inspector").height() - preferred).abs() < 2.0);
+        assert_eq!(workbench.workspace.view, route);
+        assert_eq!(
+            workbench
+                .workspace
+                .report_view
+                .navigator()
+                .current()
+                .unwrap()
+                .focus,
+            focus
+        );
+    }
+}
+
+#[test]
 fn dragging_inspect_can_use_most_of_the_result_workspace() {
     let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));
     workbench.frame(vec![]);

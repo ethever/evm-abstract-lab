@@ -13,12 +13,16 @@ use egui::{RichText, Ui};
 use evm_abstract_protocol::{AnalysisNamespace, ProcessLocation, ProcessOwner};
 
 impl Workspace {
-    pub(in crate::app) fn choose_context(&mut self, namespace: AnalysisNamespace) {
-        self.directory.choose_context(namespace);
+    pub(in crate::app) fn open_sources(&mut self) {
         self.directory.open = true;
-        if self.panels.compact() {
+        if self.panels.compact() || self.inspector.maximized() {
             self.inspector.expanded = false;
         }
+    }
+
+    pub(in crate::app) fn choose_context(&mut self, namespace: AnalysisNamespace) {
+        self.directory.choose_context(namespace);
+        self.open_sources();
     }
 
     pub(super) fn show_model_modes(&mut self, ui: &mut Ui) {

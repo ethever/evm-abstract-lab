@@ -20,6 +20,10 @@ pub(super) struct Preparation {
 impl Workspace {
     pub(super) fn show_workbench(&mut self, ui: &mut Ui, viewport: egui::Vec2) -> Preparation {
         self.reconcile_widget_selection();
+        if !self.form.open && self.inspector.maximized() && self.directory.open {
+            self.directory.open = false;
+            ui.ctx().request_discard("maximized inspector owns content");
+        }
         if !self.panels.compact()
             && self
                 .report
@@ -271,7 +275,7 @@ impl Workspace {
             if crate::controls::action(ui, "Choose context", crate::controls::Density::Regular)
                 .clicked()
             {
-                self.directory.open = true;
+                self.open_sources();
             }
             return true;
         }
