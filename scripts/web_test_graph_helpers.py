@@ -375,6 +375,14 @@ def pick_may_point(page, canvas, report, *, summary: int, procedure: int, region
     select_report_context(page, report, "Baseline", summary=summary, procedure=procedure)
     workspace_route(page, "CFG")
     may_source_graph(page, canvas)
+    if not any(item["role"] == "graph-node" and item["label"] == title and item["enabled"]
+               for item in ui_controls(page)):
+        # Entry is deliberately forward-only. Retained off-window receipts
+        # remain reachable through the explicit source view, not model macros.
+        graph_window(page, canvas, "Full source CFG")
+        click_control(page, canvas, "Graph", role="menu")
+        click_control(page, canvas, "Fit graph", role="action")
+        settle_control_geometry(page)
     click_control(page, canvas, title, role="graph-node")
     origins = [item for item in ui_controls(page) if item["role"] == "graph-origin" and item["enabled"]]
     if origins:
