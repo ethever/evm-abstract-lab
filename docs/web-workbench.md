@@ -103,6 +103,7 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 | Logical work / `max_work` | 2,000,000,000 |
 | Call depth / `max_call_depth` | 1,025 |
 | Memory bytes / `max_memory_bytes` | 67,108,864（64 MiB） |
+| Detailed code sources / `max_detail_regions`（analyze / explain / Web） | 1 |
 | Jump context depth / `context_depth` | 128 |
 | Numeric model / `numeric_model` | Product（可选 Finite set） |
 | Constants per value / `max_constants` | 512 |
@@ -116,7 +117,9 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 | Response bytes / `rpc_max_response_bytes` | 67,108,864（64 MiB） |
 | Timeout (ms) / `rpc_timeout_ms` | 120,000（120 秒） |
 
-这些仍是用户指定的有限预算，达到执行、精度或采集边界时仍会停止相应工作并报告原因，不会自动改为无限。数值模型是枚举选择；其余参数除 `context_depth` 可以为 0（不保留内部跳转历史）外，都必须是正整数。默认启用局部关系推理、Product 数值域和完整被调用者摘要复用。RPC 的连接与整个请求（包括响应体）都遵循配置的 timeout，不再叠加固定 5 秒连接上限；账户、响应大小及初始槽位也不再有独立的 4096 / 64 MiB / 1024 硬上限。
+这些仍是用户指定的有限预算，达到执行、精度或采集边界时仍会停止相应工作并报告原因，不会自动改为无限。数值模型是枚举选择；`context_depth` 可以为 0（不保留内部跳转历史），`max_detail_regions` 可以为 0（只运行 Global 模型），其余数值参数必须为正整数。默认启用局部关系推理、Product 数值域和完整被调用者摘要复用。RPC 的连接与整个请求（包括响应体）都遵循配置的 timeout，不再叠加固定 5 秒连接上限；账户、响应大小及初始槽位也不再有独立的 4096 / 64 MiB / 1024 硬上限。
+
+**Precision → Detailed code sources** 设置额外局部精度最多选择多少个已捕获的代码来源。默认 1；2 或 3 可以让更多已捕获的被调用者保留局部细节，这些来源继续共享 Global 之后的剩余执行预算。报告分别显示请求上限和实际选中的来源数量，达到预算时保留实际终止状态。省略 HTTP 字段时使用默认 1，Web 表单始终提交明确的有效值。
 
 Web 协议的数值仍受类型可表示范围约束：表中字段均为 `u64`，最大 18,446,744,073,709,551,615。后端还检查需要转换为原生 `usize` 的字段是否能在运行平台表示。超出类型范围的输入不会被夹紧或近似接受。CLI 使用相同的默认配置，显式参数仍可覆盖；对应选项见[CLI 精度与预算表](05-sensitivity.md#7-实验时分别调整精度与预算)。直接使用 Rust 库的 `Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 和 `RpcInput::new()` 时，仍保留各类型原有的较小默认值；它们不会隐式采用 CLI/Web 配置。
 

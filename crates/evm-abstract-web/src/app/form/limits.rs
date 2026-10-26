@@ -116,6 +116,7 @@ impl AnalysisForm {
                 .num_columns(2)
                 .show(ui, |ui| {
                     for (label, value) in [
+                        ("Detailed code sources", &mut self.limits.max_detail_regions),
                         ("Jump context depth", &mut self.limits.context_depth),
                         ("Constants per value", &mut self.limits.max_constants),
                         ("Reduction rounds", &mut self.limits.reduction_rounds),
@@ -127,6 +128,11 @@ impl AnalysisForm {
                         self.limit_inputs.number(ui, label, value);
                     }
                 });
+            ui.label(
+                RichText::new("0 keeps only the Global model. Selected code sources share the remaining execution work.")
+                    .small()
+                    .color(palette::MUTED),
+            );
             ui.checkbox(&mut self.limits.relations_enabled, "Local path reasoning");
         });
         egui::CollapsingHeader::new("RPC acquisition budget").show(ui, |ui| {
