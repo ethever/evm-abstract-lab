@@ -176,7 +176,7 @@ nix run . -- explain \
 
 数值默认用[第 12 课的组合域](12-product-domains-facts.md)表示。文本里的 `{0x1}` 是候选集合的简写；无法列出完整候选但仍有数值约束时，`bits=` 后用 64 个十六进制位置展示固定位：数字表示该位置全部已知，`*` 表示四位全未知，`[01**]` 这样的四位二进制模式表示部分已知。模式按高位到低位排列，不省略任何 `*`。整个数值没有约束时显示 `⊤`；仅位组件没有约束时，`bits=` 后仍显示完整的 64 个 `*`，其他组件可能仍有约束。完整报告的表格保留全部字符；普通长字段会换行，每个完整 256 位模式及其紧邻的 `bits=` 标签保持在同一行。JSON 还携带位、区间、同余和来源；`known_bits.zero` 与 `known_bits.one` 仍是原来的两个掩码，文本格式变化不改变这些字段。查询 product 的完整候选时可取 `.numeric.constants`；值为 `null` 只说明常量组件没有完整列表。文本保留数值概要，JSON 用于检查各组件。固定输入身份在值的 `.identity.input.name`，不是来源字段；纯运算的持久表达式另在 `.expression`。世界状态入口/出口的关系分别在 `.states[].entry.relations` 和 `.states[].exit.relations`，详见[第 15 课](15-symbolic-relations.md)。
 
-完整报告的摘要统计中 `published=1`、`hits=0` 可以同时成立：分析器保存了一份完整子调用结果，但没有后来的相同调用可复用。在下面的 [`returndata-copy.json`](../examples/worlds/returndata-copy.json) 中，A 只 CALL B 一次，因此没有第二次命中的机会。摘要记录中的 `source` 指向首次分析的状态，`reused_at` 指向后来的复用位置；这些都是分析图编号，不是账户或链上交易编号。
+在 [`returndata-copy.json`](../examples/worlds/returndata-copy.json) 中，默认一个来源的私有上下文让 B 通过当前的 `KnownCall` 相对摘要交付结果；相关证据保存在 `procedure_summaries`，完整调用缓存的统计可以是 `published=0`、`hits=0`。显式设置 `--max-detail-regions 2` 后，同一输入可以保存 B 的完整调用缓存，得到 `published=1`、`hits=0`：A 只 CALL B 一次，没有第二次命中的机会。完整缓存记录中的 `source` 指向首次分析的状态，`reused_at` 指向后来的复用位置；这些都是分析图编号，不是账户或链上交易编号。
 
 ## 2. 为什么结果里还有 2 和 Failure
 
