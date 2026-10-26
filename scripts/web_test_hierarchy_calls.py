@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import json
 import re
 from playwright.sync_api import expect
-from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol, workspace_route
+from web_test_graph_helpers import assert_availability, graph_content, graph_mode, graph_overview, symbol, workspace_route
 from web_test_harness import analysis_server, click_control, complete_submission, edit_control, hide_world_directory, observe_webgpu, rendered_frame, select_report_context, set_control, settle_gesture, ui_control, ui_controls, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_layout_helpers import LAYOUT_FIXTURES, layout_counts, layout_detail_regions
@@ -117,6 +117,19 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     page.on("request",lambda request:posts.append(request.url)
             if request.method=="POST" and request.url.endswith("/api/tasks") else None)
     select_report_context(page,full_report,"Native",state=entry["id"])
+    program=source_program(report,entry["program"])
+    set_control(page,canvas,"Sources",True)
+    edit_control(page,canvas,"source_context_filter",program["code_hash"])
+    address=program["code_address"]
+    caption=address if len(address)<=22 else address[:10]+"…"+address[-8:]
+    click_control(page,canvas,caption,role="source")
+    hide_world_directory(page,canvas)
+    expect(page.locator("#analysis-status")).to_contain_text("Route: Code")
+    ui_control(page,"Copy bytecode",role="action")
+    workspace_route(page,"SSA")
+    source_only=assert_availability(page,"Select an execution context to inspect its evidence")
+    canvas.screenshot(path=str(output/"call-source-only-ssa.png"))
+    select_report_context(page,full_report,"Native",state=entry["id"])
     workspace_route(page,"Compare")
     set_control(page,canvas,"Overview",False,role="checkbox")
     graph_mode(page,canvas,"Blocks")
@@ -163,7 +176,7 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     assert float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])==zoom
     assert not posts,"call navigation, source qualification or Back reran analysis"
     return {"entry":entry["id"],"entry_edge":entry_edge,"call":call,"call_pc":instructions[0]["pc"],"caller":caller["id"],"callee":callee["id"],
-            "context":context,"child_frame":child,"before":before,"restored":restored,"pan_delta":[dx,dy],"zoom_percent":zoom}
+            "context":context,"source_only_availability":source_only,"child_frame":child,"before":before,"restored":restored,"pan_delta":[dx,dy],"zoom_percent":zoom}
 
 
 def _hierarchy_page(browser,url,args,rpc,providers,regions):
