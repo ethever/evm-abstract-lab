@@ -6,7 +6,7 @@ from playwright.sync_api import expect
 import json
 import math
 import time
-from web_test_graph_helpers import graph_mode, graph_scope, pick_graph_instance, symbol
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, graph_scope, pick_graph_instance, symbol
 from web_test_harness import resize_view, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_fixture, layout_page, layout_submission
 from web_test_pixels import assert_layout_same_geometry, assert_translation, node_snapshot
@@ -195,6 +195,8 @@ def edge_flow_interactions(browser, url: str, output: Path):
     page,canvas,errors=layout_page(browser,url)
     code,metadata=layout_fixture("linear-chain")
     report=layout_submission(page,canvas,code,output,"flow-chain")
+    graph_overview(page,canvas,fit=True)
+    graph_content(page,canvas,"SSA")
     assert report["status"]=="Converged" and len(report["cfg"])==metadata["expected_native_states"]
     graph_mode(page,canvas,"States")
     page.keyboard.press("f");settle_gesture(page);page.mouse.move(2,2)
@@ -252,6 +254,8 @@ def edge_flow_interactions(browser, url: str, output: Path):
     # Different stack heights retain parallel native edges without relying on
     # repeated jump sources surviving context canonicalization.
     loop=layout_submission(page,canvas,"60405b600190035f90600c565b8060025700",output,"flow-loop")
+    graph_overview(page,canvas,fit=True)
+    graph_content(page,canvas,"SSA")
     assert loop["status"]=="Converged" and loop["ssa"]["complete"]
     assert len(loop["cfg"])==len(loop["ssa"]["blocks"])==130
     assert {node["id"] for node in loop["cfg"]}==set(range(130))

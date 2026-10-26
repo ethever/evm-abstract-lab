@@ -3,9 +3,8 @@
 from pathlib import Path
 from playwright.sync_api import expect
 import re
-from web_test_graph_helpers import symbol
-from web_test_harness import complete_submission, observe_webgpu, rendered_frame, settle_gesture, webgpu_evidence
-from web_test_inspector_helpers import hide_inspector
+from web_test_graph_helpers import graph_content, graph_overview, symbol
+from web_test_harness import complete_submission, observe_webgpu, set_control, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import assert_layout_same_geometry, layout_ink, node_snapshot, require_scene_complete
 
@@ -16,6 +15,8 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
     for name in ["shortcut", "linear-chain"]:
         code, metadata = layout_fixture(name)
         report = layout_submission(page, canvas, code, output, name)
+        graph_overview(page, canvas, fit=True)
+        graph_content(page, canvas, "SSA")
         assert report["status"] == "Converged", report["frontiers"]
         assert len(report["cfg"]) == metadata["expected_native_states"]
         assert len(report["edges"]) == metadata["expected_original_edges"]
@@ -85,15 +86,11 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
             page.goto(url,wait_until="networkidle")
         complete_submission(page,initial.value, namespace="Native", close_directory=True)
         canvas=page.locator("#evm-canvas")
-        # Inspector is right-aligned and omitted from the graph comparison.
-        if width>=800: hide_inspector(page,canvas)
-        else:
-            canvas.click(position={"x":width-78,"y":12});rendered_frame(page)
-            # Use the public Panels menu's State inspector checkbox.
-            canvas.click(position={"x":width-80,"y":62});settle_gesture(page)
-            expect(page.locator("#analysis-status")).to_contain_text("Inspector hidden")
-        page.keyboard.press("2");settle_gesture(page)
+        # Close the same actual anchored Inspector at either viewport width.
+        set_control(page,canvas,"Inspect",False)
         report=layout_submission(page,canvas,code,output,f"hierarchy-initial-{width}")
+        graph_overview(page,canvas,fit=True)
+        graph_content(page,canvas,"SSA")
         layout_counts(page,report,0)
         samples.append(node_snapshot(page,canvas,output,f"hierarchy-initial-{width}-scene",(4,123,width-4,height-30),True))
         page.close()

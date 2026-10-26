@@ -4,8 +4,8 @@ from pathlib import Path
 from playwright.sync_api import expect
 import math
 import re
-from web_test_graph_helpers import frozen_camera, graph_mode, pinch_wheel, workspace_panes
-from web_test_harness import complete_submission, hide_world_directory, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_graph_helpers import frozen_camera, graph_content, graph_mode, graph_overview, pinch_wheel, workspace_panes
+from web_test_harness import click_control, complete_submission, hide_world_directory, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import assert_anchored_zoom, assert_same_scene, assert_translation, canvas_screenshot, graph_screenshot_metrics, node_snapshot, require_selected_complete, screenshot_metrics
 
@@ -33,7 +33,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             complete_submission(page, initial.value, namespace="Native")
             status = page.locator("#analysis-status")
             expect(status).to_contain_text("Ready:", timeout=60000)
-            expect(status).to_contain_text("CFG nodes: SSA")
+            expect(status).to_contain_text("Route: CFG")
+            expect(status).to_contain_text("CFG nodes: Disasm")
             canvas = page.locator("#evm-canvas")
             page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
             display = page.evaluate("""() => new Promise(resolve => {
@@ -51,8 +52,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             })""")
             hide_inspector(page, canvas)
             hide_world_directory(page, canvas)
-            page.keyboard.press("2")
-            rendered_frame(page)
+            graph_overview(page, canvas, fit=True)
+            graph_content(page, canvas, "SSA")
             graph_mode(page, canvas, "States")
             cdp = context.new_cdp_session(page)
             prefix = f"gestures-dpr{dpr}"
@@ -124,42 +125,37 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
 
             manual_frozen = frozen_camera(page, canvas, output, f"{prefix}-manual-frozen", False)
 
-            # Start in the product default SSA, then exercise both directions using
-            # real toolbar controls. Status and measured node widths verify the
+            # Explicit Native SSA keeps the original all-state gesture oracle.
+            # Real toolbar controls and measured node widths verify the
             # representation change independently of screenshot hashes.
             expect(status).to_contain_text("CFG nodes: SSA")
-            canvas.click(position={"x": 28, "y": 110})
-            settle_gesture(page)
+            graph_content(page, canvas, "Disasm")
             expect(status).to_contain_text("CFG nodes: Disasm")
             disasm = node_snapshot(page, canvas, output, f"{prefix}-nodes-disasm")
             require_selected_complete(disasm);require_selected_complete(safari_zoom)
             disasm_width = disasm["bounds"][2] - disasm["bounds"][0]
             assert disasm["hash"] != safari_zoom["hash"], "Disasm mode retained SSA pixels"
             assert safari_zoom["bounds"][2] - safari_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
-            canvas.click(position={"x": 78, "y": 110})
-            settle_gesture(page)
+            graph_content(page, canvas, "SSA")
             expect(status).to_contain_text("CFG nodes: SSA")
             ssa = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa")
             require_selected_complete(ssa)
             assert ssa["hash"] != disasm["hash"], "SSA mode retained disassembly pixels"
             ssa_width = ssa["bounds"][2] - ssa["bounds"][0]
             assert ssa_width > disasm_width + 10, "SSA definitions/effects did not expand the fixture's rendered node"
-            canvas.click(position={"x": 143, "y": 110})
-            settle_gesture(page)
+            click_control(page, canvas, "Fit graph", role="action")
             expect(status).to_contain_text("CFG nodes: SSA")
             ssa_fit = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa-fit")
             require_selected_complete(ssa_fit)
             assert ssa_fit["bounds"][2] - ssa_fit["bounds"][0] < ssa_width, "Fit did not return the enlarged SSA graph to a readable overview"
-            canvas.click(position={"x": 28, "y": 110})
-            settle_gesture(page)
+            graph_content(page, canvas, "Disasm")
             expect(status).to_contain_text("CFG nodes: Disasm")
             zoom_screenshots = {}
             scene_reference = None
             for layout_name, height in [("tall", 1000), ("short", 390)]:
                 page.set_viewport_size({"width": 1440, "height": height})
                 page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
-                canvas.click(position={"x": 143, "y": 110})
-                settle_gesture(page)
+                click_control(page, canvas, "Fit graph", role="action")
                 # The restored compact toolbar ends at y=115. Include the short
                 # viewport root's real outline at y=122 after the fresh upward pan.
                 region = (4, 119, 1436, height - 30)
