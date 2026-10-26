@@ -87,6 +87,52 @@ fn native_cycle_rollback_and_api_boundary() {
                 && step.opcode == opcode::SSTORE
                 && step.is_static == (op == opcode::STATICCALL)
         }));
+        // The shared trace is collected before each instruction. Pair the
+        // attempted SSTORE with the resumed caller's actual CALL result.
+        let (sstore_index, sstore) = observed
+            .steps
+            .iter()
+            .enumerate()
+            .find(|(_, step)| {
+                step.owner == address(A)
+                    && step.code == address(A)
+                    && step.caller == address(U)
+                    && step.opcode == opcode::SSTORE
+            })
+            .unwrap();
+        assert_eq!(sstore.storage_write, Some((U256::ZERO, U256::from(1))));
+        let caller = observed.steps[..sstore_index]
+            .iter()
+            .rfind(|step| {
+                step.owner == address(U)
+                    && step.code == address(U)
+                    && step.depth + 1 == sstore.depth
+                    && step.opcode == opcode::CALL
+            })
+            .unwrap();
+        assert_eq!(caller.stack[caller.stack.len() - 2], U256::from(A));
+        let (resume_index, resumed) = observed
+            .steps
+            .iter()
+            .enumerate()
+            .skip(sstore_index + 1)
+            .find(|(_, step)| step.depth == caller.depth)
+            .unwrap();
+        assert_eq!((resumed.owner, resumed.code), (address(U), address(U)));
+        assert_eq!(resumed.opcode, opcode::POP);
+        assert_eq!(
+            resumed.stack.last(),
+            Some(&U256::from(u64::from(op == opcode::CALL)))
+        );
+        if op == opcode::CALL {
+            let stopped = &observed.steps[sstore_index + 1];
+            assert_eq!((stopped.owner, stopped.code), (address(A), address(A)));
+            assert_eq!((stopped.depth, stopped.pc), (sstore.depth, sstore.pc + 1));
+            assert_eq!(stopped.opcode, opcode::STOP);
+        } else {
+            assert!(sstore.is_static && resumed.is_static);
+            assert_eq!(resume_index, sstore_index + 1);
+        }
         let config = ExecutionConfig {
             root_terminal_coverage: false,
             max_work: 100_000_000,
@@ -103,62 +149,121 @@ fn native_cycle_rollback_and_api_boundary() {
         let mut known_to_unknown = 0;
         let mut unknown_to_known = 0;
         let mut callback_sstore_visited = false;
-        let mut current_static_callbacks = 0;
+        let mut current_callback_witnesses = 0;
         let mut static_callback_failures = 0;
         let mut records = Vec::new();
+        // The abstract environment also permits zero, repeated and nested
+        // callbacks. Bind a positive receipt to its own subscriber and callee;
+        // these counts are not an enumeration or a must-call claim.
         for record in analysis.procedure_summaries() {
-            for call in &record.regional_cfg.calls {
-                let from = &record.regional_cfg.nodes[call.from].frame;
-                let callee = &record.procedures[call.callee].frame;
-                known_to_unknown += usize::from(
-                    from.mode == FrameCode::Runtime && callee.mode == FrameCode::Unknown,
-                );
-                unknown_to_known += usize::from(
-                    from.mode == FrameCode::Unknown && callee.mode == FrameCode::Runtime,
-                );
-            }
             if op == opcode::STATICCALL && record.closed && record.source_current {
-                for procedure in &record.procedures {
-                    if procedure.frame.mode == FrameCode::Runtime {
-                        assert_eq!(procedure.semantics, TransferSemantics::Native);
-                        assert_eq!(procedure.frame.code_address, address(A));
-                        assert_eq!(procedure.frame.address, address(A));
-                        assert_eq!(
-                            procedure.frame.code_hash,
-                            alloy_primitives::keccak256(&a.bytes)
-                        );
-                        assert!(procedure.frame.is_static);
-                        assert!(!procedure.outputs.is_empty());
-                        for output in &procedure.outputs {
-                            assert_ne!(output.kind, OutcomeKind::Return);
-                            assert_eq!(
-                                serde_json::to_value(&output.store).unwrap(),
-                                serde_json::to_value(&procedure.input).unwrap()
-                            );
-                            only(output.store.storage_bound(address(A), U256::ZERO), &[0]);
-                            static_callback_failures +=
-                                usize::from(output.kind == OutcomeKind::Failure);
-                        }
-                        current_static_callbacks += 1;
-                    }
-                }
+                assert!(record.procedures.iter().all(|p| p.frame.is_static));
+                assert!(record.regional_cfg.nodes.iter().all(|n| n.frame.is_static));
             }
-            for node in &record.regional_cfg.nodes {
-                let block = analysis
-                    .world()
-                    .runtime(address(A))
-                    .and_then(|program| program.blocks().get(node.frame.basic_block_index));
-                callback_sstore_visited |= node.frame.code_address == address(A)
-                    && node
-                        .transfer
-                        .as_ref()
-                        .is_some_and(|t| t.current && t.complete && t.visited_block)
-                    && block.is_some_and(|block| {
-                        block
-                            .instructions
-                            .iter()
-                            .any(|i| i.opcode == opcode::SSTORE)
-                    });
+            for call in &record.regional_cfg.calls {
+                let caller_node = &record.regional_cfg.nodes[call.from];
+                let from = &caller_node.frame;
+                let callee = &record.procedures[call.callee];
+                known_to_unknown += usize::from(
+                    from.mode == FrameCode::Runtime && callee.frame.mode == FrameCode::Unknown,
+                );
+                let callback =
+                    from.mode == FrameCode::Unknown && callee.frame.mode == FrameCode::Runtime;
+                unknown_to_known += usize::from(callback);
+                if !callback || !record.closed || !record.source_current {
+                    continue;
+                }
+                assert_eq!(callee.semantics, TransferSemantics::Native);
+                assert_eq!(callee.frame.code_address, address(A));
+                assert_eq!(callee.frame.address, address(A));
+                assert_eq!(
+                    callee.frame.code_hash,
+                    alloy_primitives::keccak256(&a.bytes)
+                );
+                assert_eq!(callee.frame.is_static, op == opcode::STATICCALL);
+                assert_eq!(from.is_static, callee.frame.is_static);
+                let source = caller_node.transfer.as_ref().unwrap();
+                assert!(!caller_node.excluded && source.current && source.complete);
+                assert_eq!(source.semantics, TransferSemantics::Environment);
+                assert_eq!(source.input_revision, caller_node.input_revision);
+                assert!(source.calls.contains(&call.id));
+                assert!(!call.entries.is_empty());
+                assert!(
+                    call.entries.iter().all(|entry| {
+                        record.regional_cfg.nodes[*entry].procedure == call.callee
+                    })
+                );
+                let kind = if op == opcode::STATICCALL {
+                    OutcomeKind::Failure
+                } else {
+                    OutcomeKind::Return
+                };
+                let body = record
+                    .regional_cfg
+                    .nodes
+                    .iter()
+                    .find(|node| {
+                        node.procedure == call.callee
+                            && !node.excluded
+                            && node.frame.code_address == callee.frame.code_address
+                            && node.frame.code_hash == callee.frame.code_hash
+                            && node.frame.address == callee.frame.address
+                            && node.frame.address_value == callee.frame.address_value
+                            && node.frame.caller == callee.frame.caller
+                            && node.frame.is_static == callee.frame.is_static
+                            && analysis
+                                .world()
+                                .runtime(address(A))
+                                .unwrap()
+                                .blocks()
+                                .get(node.frame.basic_block_index)
+                                .is_some_and(|block| {
+                                    block
+                                        .instructions
+                                        .iter()
+                                        .any(|i| i.opcode == opcode::SSTORE)
+                                })
+                            && node.transfer.as_ref().is_some_and(|transfer| {
+                                transfer.current
+                                    && transfer.complete
+                                    && transfer.visited_block
+                                    && transfer.semantics == TransferSemantics::Native
+                                    && transfer.input_revision == node.input_revision
+                                    && transfer.outcomes.contains(&kind)
+                            })
+                    })
+                    .expect("current source-bound callback SSTORE transfer");
+                assert_eq!(body.procedure, call.callee);
+                let output = callee
+                    .outputs
+                    .iter()
+                    .find(|output| output.kind == kind)
+                    .unwrap();
+                // Body and subscriber-template versions are independent clocks.
+                // A delivery binds only its template and THIS callee generation.
+                assert!(call.deliveries.iter().any(|delivery| {
+                    delivery.current
+                        && delivery.kind == output.kind
+                        && delivery.input_revision == call.input_revision
+                        && delivery.output_generation == output.generation
+                }));
+                if op == opcode::STATICCALL {
+                    assert!(!callee.outputs.is_empty());
+                    for output in &callee.outputs {
+                        assert_ne!(output.kind, OutcomeKind::Return);
+                        assert_eq!(
+                            serde_json::to_value(&output.store).unwrap(),
+                            serde_json::to_value(&callee.input).unwrap()
+                        );
+                        only(output.store.storage_bound(address(A), U256::ZERO), &[0]);
+                        static_callback_failures +=
+                            usize::from(output.kind == OutcomeKind::Failure);
+                    }
+                } else {
+                    only(output.store.storage_bound(address(A), U256::ZERO), &[1]);
+                }
+                callback_sstore_visited = true;
+                current_callback_witnesses += 1;
             }
             records.push(json!({
                 "closed": record.closed, "source_current": record.source_current,
@@ -183,7 +288,7 @@ fn native_cycle_rollback_and_api_boundary() {
                 "known_to_unknown_calls_across_snapshots": known_to_unknown,
                 "unknown_to_known_calls_across_snapshots": unknown_to_known,
                 "current_callback_sstore_body": callback_sstore_visited,
-                "current_static_callbacks": current_static_callbacks,
+                "current_callback_witnesses": current_callback_witnesses,
                 "static_callback_failures": static_callback_failures,
                 "concrete_callback_sstore": true, "concrete_static": op == opcode::STATICCALL,
                 "concrete_rollback_slot0": 0, "root_terminal_coverage": false,
@@ -198,7 +303,7 @@ fn native_cycle_rollback_and_api_boundary() {
         }
         if op == opcode::CALL {
             assert!(known_to_unknown > 0 && unknown_to_known > 0);
-            assert!(callback_sstore_visited);
+            assert!(callback_sstore_visited && current_callback_witnesses > 0);
             // This is an API counterexample, not a new owner abstraction:
             // the same known code under another state owner is a valid frame,
             // but current coarse/relative admission refuses their union.
@@ -227,11 +332,11 @@ fn native_cycle_rollback_and_api_boundary() {
                 "both_coarsened": true, "regional_join": "MachineError::Shape"})
             );
         } else {
-            // A static callback reaches SSTORE and fails there, as the independent
-            // concrete trace above observes. Visiting that block is not a write.
+            // The resumed concrete CALL has failed, while the same abstract
+            // callback preserves its whole Store. A block visit is not a write.
             assert!(known_to_unknown > 0 && unknown_to_known > 0);
-            assert!(callback_sstore_visited);
-            assert!(current_static_callbacks > 0 && static_callback_failures > 0);
+            assert!(callback_sstore_visited && current_callback_witnesses > 0);
+            assert!(static_callback_failures > 0);
         }
         statuses.push(analysis.status());
     }
