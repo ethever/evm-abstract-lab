@@ -205,14 +205,24 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         },indent=2)+"\n")
         touch_attempts=[]
         for attempt in range(1,9):
-            touch_paints=touch_scroll_storage(page, touch_region, swipes=1)
+            touch_paints=touch_scroll_storage(page, touch_region, swipes=1,
+                trace_path=output / f"{kind}-touch-swipe-{attempt}-input.json")
             page.mouse.move(2, 2)
             touched = canvas.screenshot(path=str(output / f"{kind}-touch-swipe-{attempt}.png"))
-            touch_table = storage_table_pixels(page, touched, region)
+            record={"swipe":attempt,"paints":touch_paints,"status":status.text_content()}
+            touch_attempts.append(record)
+            try:
+                touch_table = storage_table_pixels(page, touched, region)
+                record["table"]=storage_pixel_report(touch_table)
+            except Exception as error:
+                record["error"]=str(error)
+                (output / f"{kind}-touch-attempts.json").write_text(json.dumps(touch_attempts,indent=2)+"\n")
+                raise
+            (output / f"{kind}-touch-attempts.json").write_text(json.dumps(touch_attempts,indent=2)+"\n")
             assert touch_table["rows"], "touch drag selected text or hid every painted slot row"
             touch_cells = touch_table["rows"][-1]
-            touch_attempts.append({"swipe":attempt,"paints":touch_paints,
-                                   "last_row":storage_pixel_report(touch_cells)})
+            record["last_row"]=storage_pixel_report(touch_cells)
+            (output / f"{kind}-touch-attempts.json").write_text(json.dumps(touch_attempts,indent=2)+"\n")
             if touch_cells["slot"] and touch_cells["slot"]["mask_sha256"] == last_cell_hashes["slot"]:
                 break
         (output / f"{kind}-touch-last-slots.png").write_bytes(touched)
