@@ -195,15 +195,24 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         assert reopened_facts["hash"] == expanded_facts["hash"], "reopening account facts changed the nine rendered facts"
         selected = re.search(r"Selected [^;]+; source [^;]+;", status.text_content())
         assert selected is not None, status.text_content()
+        touch_body = storage_table_pixels(page, reopened, region)
+        # The outer window also reserves scrollbar/footer space. Start inside
+        # the actually painted table, not below its clipped divider on a bar.
+        touch_region = (*region[:3], min(region[3], touch_body["table_bounds"][3]))
+        (output / f"{kind}-touch-geometry.json").write_text(json.dumps({
+            "store_region":region,"painted_table_bounds":touch_body["table_bounds"],
+            "gesture_region":touch_region,"viewport":page.viewport_size,
+        },indent=2)+"\n")
         touch_attempts=[]
         for attempt in range(1,9):
-            touch_scroll_storage(page, region, swipes=1)
+            touch_paints=touch_scroll_storage(page, touch_region, swipes=1)
             page.mouse.move(2, 2)
             touched = canvas.screenshot(path=str(output / f"{kind}-touch-swipe-{attempt}.png"))
             touch_table = storage_table_pixels(page, touched, region)
             assert touch_table["rows"], "touch drag selected text or hid every painted slot row"
             touch_cells = touch_table["rows"][-1]
-            touch_attempts.append(storage_pixel_report(touch_cells))
+            touch_attempts.append({"swipe":attempt,"paints":touch_paints,
+                                   "last_row":storage_pixel_report(touch_cells)})
             if touch_cells["slot"] and touch_cells["slot"]["mask_sha256"] == last_cell_hashes["slot"]:
                 break
         (output / f"{kind}-touch-last-slots.png").write_bytes(touched)
