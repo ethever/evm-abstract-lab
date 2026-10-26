@@ -9,14 +9,13 @@ use std::{sync::Arc, thread};
 struct RpcServer {
     endpoint: String,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
-    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl RpcServer {
-    fn new() -> Self {
+    fn new<'scope>(scope: &'scope thread::Scope<'scope, '_>) -> Self {
         let (endpoint, receive) = std::sync::mpsc::sync_channel(1);
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let thread = thread::spawn(move || {
+        scope.spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -37,7 +36,6 @@ impl RpcServer {
         Self {
             endpoint: receive.recv().unwrap(),
             stop: Some(stop),
-            thread: Some(thread),
         }
     }
 }
@@ -45,7 +43,6 @@ impl RpcServer {
 impl Drop for RpcServer {
     fn drop(&mut self) {
         let _ = self.stop.take().unwrap().send(());
-        self.thread.take().unwrap().join().unwrap();
     }
 }
 
@@ -193,7 +190,13 @@ fn project(endpoint: &str, limit: usize) -> Projected {
 
 #[test]
 fn final_rpc_refusal_keeps_actual_restrictions_and_required_metadata_failure_stays_error() {
-    let server = RpcServer::new();
+    // The scope joins the server and propagates a panic after this guard sends
+    // shutdown, without exposing a dynamically typed panic payload to the test.
+    thread::scope(|scope| rpc_refusal(scope));
+}
+
+fn rpc_refusal<'scope>(scope: &'scope thread::Scope<'scope, '_>) {
+    let server = RpcServer::new(scope);
     let measured = project(&server.endpoint, 2_000_000);
     let full = measured.result.unwrap();
     assert!(matches!(full.rich_export, api::RichExportOutcome::Complete));

@@ -41,6 +41,13 @@ fn start(limit: u64) -> (Server, String) {
     (Server(child), base)
 }
 
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
 async fn terminal(client: &reqwest::Client, base: &str, id: api::JobId) -> api::JobSnapshot {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -65,8 +72,14 @@ async fn terminal(client: &reqwest::Client, base: &str, id: api::JobId) -> api::
     }
 }
 
-#[tokio::test]
-async fn actual_server_cli_distinguishes_required_minimum_and_optional_rich_refusal() {
+#[test]
+fn actual_server_cli_distinguishes_required_minimum_and_optional_rich_refusal() {
+    runtime().block_on(
+        actual_server_cli_distinguishes_required_minimum_and_optional_rich_refusal_async(),
+    );
+}
+
+async fn actual_server_cli_distinguishes_required_minimum_and_optional_rich_refusal_async() {
     let request = api::AnalyzeRequest::default();
     let calibration = evm_abstract_server::analyze::analyze(request.clone()).unwrap();
     let minimum = calibration.minimum.as_ref().unwrap();

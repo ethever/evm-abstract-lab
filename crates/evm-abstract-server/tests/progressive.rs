@@ -71,6 +71,13 @@ fn config() -> Config {
     }
 }
 
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
 async fn status(client: &reqwest::Client, base: &str, id: JobId) -> JobSnapshot {
     client
         .get(format!("{base}/api/tasks/{id}"))
@@ -136,8 +143,14 @@ async fn server(
     (base, stop, task)
 }
 
-#[tokio::test]
-async fn high_budget_http_global_is_readable_while_native_runs_and_after_cancellation() {
+#[test]
+fn high_budget_http_global_is_readable_while_native_runs_and_after_cancellation() {
+    runtime().block_on(
+        high_budget_http_global_is_readable_while_native_runs_and_after_cancellation_async(),
+    );
+}
+
+async fn high_budget_http_global_is_readable_while_native_runs_and_after_cancellation_async() {
     let pool = Pool::new(config()).unwrap();
     let (base, stop, task) = server(&pool).await;
     let client = reqwest::Client::new();
@@ -269,8 +282,14 @@ async fn high_budget_http_global_is_readable_while_native_runs_and_after_cancell
     pool.shutdown().unwrap();
 }
 
-#[tokio::test]
-async fn final_native_publication_keeps_exact_minimum_identity_and_frozen_previous_handle() {
+#[test]
+fn final_native_publication_keeps_exact_minimum_identity_and_frozen_previous_handle() {
+    runtime().block_on(
+        final_native_publication_keeps_exact_minimum_identity_and_frozen_previous_handle_async(),
+    );
+}
+
+async fn final_native_publication_keeps_exact_minimum_identity_and_frozen_previous_handle_async() {
     let (projected, ready) = mpsc::sync_channel(1);
     let release = Arc::new(AtomicBool::new(false));
     let released = Release(Arc::clone(&release));
@@ -376,8 +395,12 @@ impl Executor for Replacement {
     }
 }
 
-#[tokio::test]
-async fn generic_executor_replacement_gets_a_new_global_version() {
+#[test]
+fn generic_executor_replacement_gets_a_new_global_version() {
+    runtime().block_on(generic_executor_replacement_gets_a_new_global_version_async());
+}
+
+async fn generic_executor_replacement_gets_a_new_global_version_async() {
     let pool = Pool::with_executor(config(), Replacement).unwrap();
     let (base, stop, task) = server(&pool).await;
     let client = reqwest::Client::new();
@@ -436,8 +459,12 @@ impl Executor for RetainedFullGraphs {
     }
 }
 
-#[tokio::test]
-async fn exact_rich_graph_reuse_preserves_both_namespace_versions() {
+#[test]
+fn exact_rich_graph_reuse_preserves_both_namespace_versions() {
+    runtime().block_on(exact_rich_graph_reuse_preserves_both_namespace_versions_async());
+}
+
+async fn exact_rich_graph_reuse_preserves_both_namespace_versions_async() {
     let pool = Pool::with_executor(config(), RetainedFullGraphs).unwrap();
     let (base, stop, task) = server(&pool).await;
     let client = reqwest::Client::new();
@@ -496,8 +523,12 @@ impl Executor for PureNative {
     }
 }
 
-#[tokio::test]
-async fn pure_native_result_has_no_global_graph_version() {
+#[test]
+fn pure_native_result_has_no_global_graph_version() {
+    runtime().block_on(pure_native_result_has_no_global_graph_version_async());
+}
+
+async fn pure_native_result_has_no_global_graph_version_async() {
     let pool = Pool::with_executor(config(), PureNative).unwrap();
     let (base, stop, task) = server(&pool).await;
     let client = reqwest::Client::new();
@@ -571,8 +602,14 @@ impl Executor for RejectedFinalExport {
     }
 }
 
-#[tokio::test]
-async fn final_export_error_remains_failed_while_the_closed_publication_is_readable() {
+#[test]
+fn final_export_error_remains_failed_while_the_closed_publication_is_readable() {
+    runtime().block_on(
+        final_export_error_remains_failed_while_the_closed_publication_is_readable_async(),
+    );
+}
+
+async fn final_export_error_remains_failed_while_the_closed_publication_is_readable_async() {
     let pool = Pool::with_executor(config(), RejectedFinalExport).unwrap();
     let (base, stop, task) = server(&pool).await;
     let client = reqwest::Client::new();
@@ -608,8 +645,12 @@ async fn final_export_error_remains_failed_while_the_closed_publication_is_reada
     pool.shutdown().unwrap();
 }
 
-#[tokio::test]
-async fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http() {
+#[test]
+fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http() {
+    runtime().block_on(real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http_async());
+}
+
+async fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http_async() {
     let request = AnalyzeRequest::default();
     let client = reqwest::Client::new();
     let (projected, ready) = mpsc::sync_channel(1);
@@ -781,8 +822,12 @@ async fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http() {
     pool.shutdown().unwrap();
 }
 
-#[tokio::test]
-async fn required_minimum_payment_failure_never_returns_a_rich_only_success() {
+#[test]
+fn required_minimum_payment_failure_never_returns_a_rich_only_success() {
+    runtime().block_on(required_minimum_payment_failure_never_returns_a_rich_only_success_async());
+}
+
+async fn required_minimum_payment_failure_never_returns_a_rich_only_success_async() {
     let pool = Pool::with_postprocess_work(config(), Default::default(), 1).unwrap();
     let (base, stop, task) = server(&pool).await;
     let client = reqwest::Client::new();
