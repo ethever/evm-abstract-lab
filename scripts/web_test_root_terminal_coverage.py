@@ -13,12 +13,13 @@ import time
 
 from playwright.sync_api import expect
 
+from web_test_graph_helpers import assert_availability, workspace_route
 from web_test_harness import (complete_submission, edit_control, observe_webgpu, open_input,
-                              rendered_frame, resize_view, set_control, settle_gesture, ui_control, ui_controls, webgpu_evidence)
-from web_test_inspector_helpers import (inspector_selected_tab, inspector_title_action,
+                              rendered_frame, resize_view, select_report_context, set_control, settle_gesture, ui_control, ui_controls, webgpu_evidence)
+from web_test_inspector_helpers import (hide_inspector, inspector_selected_tab, inspector_title_action,
                                         select_inspector_tab)
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS
-from web_test_hybrid import assert_hybrid, graph, job_result_report, oracle_graph
+from web_test_hybrid import assert_hybrid, graph, job_result_report, native_entry_context, oracle_graph, source_program
 from web_test_pixels import assert_translation, node_snapshot, text_pixels, workspace_content_bottom
 
 
@@ -424,6 +425,28 @@ def _selection(status):
     return found[0]
 
 
+def _unexecuted_availability(page, canvas, full_report, output):
+    """Use the original real cap2 receipt, without changing its request."""
+    entry = native_entry_context(full_report)
+    native = oracle_graph(full_report, "Native")
+    receipt, = [block for block in native["ssa"]["blocks"] if block["state"] == entry["id"]]
+    assert receipt["coverage"] == "Unexecuted" and receipt["instructions"] == [], receipt
+    program = source_program(full_report, entry["program"])
+    assert program["bytecode"].removeprefix("0x") == RUNTIME
+    select_report_context(page, full_report, "Native", state=entry["id"])
+    hide_inspector(page, canvas)
+    workspace_route(page, "Code")
+    first = program["blocks"][0]
+    ui_control(page, f"Block 0x{first['start_pc']:04x}", role="code-row", selected=True)
+    ui_control(page, "Copy bytecode", role="action")
+    canvas.screenshot(path=str(output / "coverage-unexecuted-captured-code.png"))
+    workspace_route(page, "SSA")
+    reason = assert_availability(page, "This state has no executed instruction receipt")
+    canvas.screenshot(path=str(output / "coverage-unexecuted-ssa-reason.png"))
+    workspace_route(page, "CFG")
+    return {"state": entry["id"], "source_program": program["id"], "receipt": receipt, "reason": reason}
+
+
 def _panel_snapshot(page, canvas, output, name):
     page.mouse.move(2, 2)
     settle_gesture(page)
@@ -661,6 +684,8 @@ def root_terminal_coverage_interactions(context):
     (output / "coverage-default-enabled-analysis.json").write_text(json.dumps(full_ordinary, indent=2) + "\n")
     canvas.screenshot(path=str(output / "coverage-default-enabled-complete.png"))
 
+    scope_evidence = {}
+
     def submit(name, *, enabled, transfers=2, invalid_numeric=False):
         geometry = {"captures": {}, "targets": []}
         labels = ["States", "Transfers", "Logical work", "Call depth", "Memory bytes"]
@@ -754,6 +779,8 @@ def root_terminal_coverage_interactions(context):
         assert report["status"] == "Converged"
         assert graph(report, "Baseline")["transfers"] == 2
         assert graph(report, "Baseline")["root_terminal_coverage"] is None
+        if invalid_numeric:
+            scope_evidence["unexecuted"] = _unexecuted_availability(page, canvas, report, output)
         return native, request
 
     disabled, _ = submit("coverage-disabled-cap", enabled=False, invalid_numeric=True)
@@ -862,6 +889,7 @@ def root_terminal_coverage_interactions(context):
     static = _static_control(page, context.url, request, output)
     schema = _schema_control(page, canvas, output, complete_request)
     result = {"default_enabled": defaults["limits"]["root_terminal_coverage"],
+              "scope_evidence": scope_evidence,
               "attached": {"scope": covered["root_terminal_coverage"]["scope"],
                            "trigger": covered["root_terminal_coverage"]["trigger"],
                            "binding": binding, "inspection": inspect},

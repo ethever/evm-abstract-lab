@@ -353,7 +353,9 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         inspector_title_action(page, canvas, "Maximize", dragged)
         expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
         maximized = inspector_frame_tab(page, canvas)
-        assert maximized[1] < 100, maximized
+        navigation_bottom = max(ui_control(page, label, role="action", enabled=None)["rect"][3]
+                                for label in ["Back", "Forward", "Entry"])
+        assert 0 <= maximized[1] - navigation_bottom <= 16, (navigation_bottom, maximized)
         canvas.screenshot(path=str(output / f"inspect-{platform}-maximized.png"))
         page.keyboard.press(f"{modifier}+j")
         expect(status).to_contain_text("Inspector hidden")

@@ -177,16 +177,19 @@ def drag_storage_separator(page, table, target_x: float):
     page.mouse.up()
     settle_gesture(page)
 
-def storage_ink_pixels(page, screenshot: bytes, region):
+def storage_ink_pixels(page, screenshot: bytes, region, *, tooltip=False):
     """Retain the glyph mask and every RGB sample of the text and its region."""
-    return page.evaluate("""async ({png,region}) => {
+    return page.evaluate("""async ({png,region,tooltip}) => {
         const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
         const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
         const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
         const data=ctx.getImageData(0,0,c.width,c.height).data,scale=image.width/innerWidth;
         const [left,top,right,bottom]=region.map(n=>Math.round(n*scale));
         const ink=(x,y)=>{const i=(y*c.width+x)*4,r=data[i],g=data[i+1],b=data[i+2];
-            return r>=128&&b>=g&&g>=r&&b-r<=35;};
+            // Use the reviewed table's unchanged red coverage threshold for
+            // its same monospace glyphs on the brighter tooltip background.
+            const red=tooltip ? 14+(r-20)*(224-14)/(224-20) : r;
+            return red>=128&&b>=g&&g>=r&&b-r<=35;};
         let minX=right,minY=bottom,maxX=-1,maxY=-1,count=0;
         for(let y=top;y<bottom;y++)for(let x=left;x<right;x++)if(ink(x,y)){
             minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);count++;
@@ -208,7 +211,7 @@ def storage_ink_pixels(page, screenshot: bytes, region):
             mask_size:[width,height],mask_sha256:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join(''),
             rgb_raster:rgb(minX,minY,maxX+1,maxY+1),
             region:{bounds:region,mask_size:[right-left,bottom-top],rgb_raster:rgb(left,top,right,bottom)}};
-    }""", {"png":base64.b64encode(screenshot).decode(),"region":region})
+    }""", {"png":base64.b64encode(screenshot).decode(),"region":region,"tooltip":tooltip})
 
 def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
     left,top,right,bottom=cell["bounds"]
@@ -218,17 +221,20 @@ def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     # Tooltips use the panel fill. Find their real rectangle below the native
     # titlebar, rather than assuming a fixed placement beside the pointer.
-    bounds=page.evaluate("""async png => {
+    # The graph also uses PANEL. Search inside the actual Inspector lane so
+    # a wide card elsewhere cannot impersonate this native hover window.
+    inspector_top=ui_control(page,"inspector_tab",role="combobox")["rect"][1]
+    bounds=page.evaluate("""async ({png,top}) => {
         const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
         const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
         const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
         const data=ctx.getImageData(0,0,c.width,c.height).data,scale=image.width/innerWidth;
         const runs=[];
-        for(let y=80*scale;y<c.height-30*scale;y++) {
+        for(let y=Math.ceil(top*scale);y<c.height-30*scale;y++) {
             let start=0;
             for(let x=0;x<=c.width;x++) {
                 const i=(y*c.width+x)*4;
-                if(x<c.width&&data[i]===21&&data[i+1]===29&&data[i+2]===42)continue;
+                if(x<c.width&&data[i]===20&&data[i+1]===25&&data[i+2]===33)continue;
                 if(x-start>200*scale)runs.push([start,y,x,y+1]);
                 start=x+1;
             }
@@ -238,11 +244,11 @@ def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
         const wide=runs.filter(r=>r[2]-r[0]>=maxWidth-8*scale);
         return [Math.min(...wide.map(r=>r[0]))/scale,Math.min(...wide.map(r=>r[1]))/scale,
             Math.max(...wide.map(r=>r[2]))/scale,Math.max(...wide.map(r=>r[3]))/scale];
-    }""",base64.b64encode(png).decode())
+    }""",{"png":base64.b64encode(png).decode(),"top":inspector_top})
     assert bounds, f"no rendered hover details for {name}"
     metrics=text_pixels(page,png,bounds)
     save_png_crop(page,png,bounds,output/f"{name}-tooltip.png")
-    ink=storage_ink_pixels(page,png,bounds)
+    ink=storage_ink_pixels(page,png,bounds,tooltip=True)
     return {"bounds":bounds,"text":metrics,"raster":ink.pop("region"),"ink":ink}
 
 def assert_storage_cell_text(before, after, label="Value"):
@@ -271,8 +277,29 @@ def storage_reviewed_raster(key, text, size, mask_sha256):
     assert fixture["mask_sha256"]==mask_sha256==hashlib.sha256(mask).hexdigest(), key
     return {"bounds":[0,0,*size],"mask_size":size,"rgb_raster":base64.b64encode(raster).decode()}
 
-def assert_storage_reviewed_pixels(cell, key, text, size, mask_sha256):
+
+def storage_current_palette_raster(reference, *, tooltip=False):
+    """Repaint the independently reviewed coverage using the exact new palette.
+
+    Font/TEXT and body red are unchanged. The old red sample therefore supplies
+    glyph coverage; only the known background changes. Keep the original RGB
+    sample positions and the existing maximum-two compositor-rounding bound.
+    """
+    old_background = (14, 19, 29)
+    background = (20, 25, 33) if tooltip else (14, 17, 23)
+    source = base64.b64decode(reference["rgb_raster"])
+    raster = bytearray()
+    for index in range(0, len(source), 3):
+        coverage = max(0, min(1, (source[index] - old_background[0]) / (224 - old_background[0])))
+        raster.extend(round(source[index + channel]
+                            + (background[channel] - old_background[channel]) * (1 - coverage))
+                      for channel in range(3))
+    return {**reference, "rgb_raster": base64.b64encode(raster).decode()}
+
+
+def assert_storage_reviewed_pixels(cell, key, text, size, mask_sha256, *, tooltip=False):
     reference=storage_reviewed_raster(key,text,size,mask_sha256)
+    reference=storage_current_palette_raster(reference,tooltip=tooltip)
     return {"expected_text":text,"mask_size":size,"reviewed_mask_sha256":mask_sha256,
             **assert_storage_cell_text(reference,cell,text)}
 
