@@ -8,7 +8,7 @@ use evm_abstract_protocol::{
 use super::{Row, rows, scoped_rows, ssa};
 use crate::{app::Selection, ssa_display::SsaDisplay};
 
-fn report() -> AnalysisReport {
+pub(super) fn report() -> AnalysisReport {
     let mut report = crate::tests::empty_report();
     report.model.programs = crate::tests::report().model.programs;
     *report = evm_abstract_protocol::AnalysisGraph {

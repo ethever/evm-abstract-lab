@@ -6,6 +6,11 @@ use crate::{framework, notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 
+mod calls;
+mod scoped;
+
+pub(super) use scoped::Action;
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Kind {
     #[default]
@@ -18,6 +23,8 @@ pub(super) struct Directory {
     pub(super) open: bool,
     kind: Kind,
     filter: String,
+    scoped: scoped::Rows,
+    calls: calls::Calls,
 }
 
 pub(super) enum Pick {

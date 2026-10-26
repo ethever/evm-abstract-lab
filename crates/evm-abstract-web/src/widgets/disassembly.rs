@@ -2,11 +2,16 @@
 use crate::report::ReportView;
 
 use evm_abstract_notation::Symbol;
+mod copy;
+mod source;
 mod tooltip;
+
+pub(super) use copy::reference as source_reference;
+pub(crate) use source::{SourceCache, SourcePick};
 
 use egui::{FontId, ScrollArea, Sense, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
-use evm_abstract_protocol::{BlockCoverage, DisasmInstruction};
+use evm_abstract_protocol::{BlockCoverage, DisasmInstruction, ProcessLocation};
 
 use super::{ROW_HEIGHT, heading, text};
 use crate::{app::Selection, palette};
@@ -54,6 +59,16 @@ fn contents(
         super::empty(ui, "No captured bytecode for this frame or account");
         return;
     }
+    let source = source.expect("captured source checked above");
+    ui.horizontal(|ui| {
+        if crate::controls::action(ui, "Copy code", crate::controls::Density::Compact).clicked() {
+            ui.ctx().copy_text(copy::code(source));
+        }
+        if crate::controls::action(ui, "Copy bytecode", crate::controls::Density::Compact).clicked()
+        {
+            ui.ctx().copy_text(source.bytecode.clone());
+        }
+    });
     let rows = rows(report, program, *selection);
     let focus = (*selection != *previous)
         .then(|| rows.iter().position(|row| row.is_focused(*selection)))
@@ -156,9 +171,28 @@ fn contents(
                             }
                         });
                         let response = table_row.response();
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::SelectableLabel,
+                                true,
+                                row.is_selected(*selection),
+                                row.plain_text(),
+                            )
+                        });
                         if response.clicked() {
                             *selection = row.target();
                         }
+                        response.context_menu(|ui| {
+                            if ui.button("Copy row").clicked() {
+                                ui.ctx().copy_text(row.plain_text());
+                                ui.close();
+                            }
+                            if ui.button("Copy source / PC reference").clicked() {
+                                ui.ctx()
+                                    .copy_text(copy::reference(report, source, row.target()));
+                                ui.close();
+                            }
+                        });
                         if let Row::Instruction {
                             instruction,
                             executed,
@@ -192,6 +226,15 @@ pub(crate) fn natural_width(
         + ui.spacing().scroll.allocated_width()
 }
 
+fn location_label(location: ProcessLocation) -> String {
+    match location {
+        ProcessLocation::Block(index) => format!("block index {index}"),
+        ProcessLocation::JumpTargets => "unknown-jump hub · all legal JUMPDEST targets".into(),
+        ProcessLocation::End => "end of source · no instruction".into(),
+        ProcessLocation::Any => "unobserved code · arbitrary actions".into(),
+    }
+}
+
 fn column_widths(ui: &Ui, rows: &[Row<'_>]) -> [f32; 2] {
     let glyph = ui
         .painter()
@@ -217,6 +260,13 @@ enum Row<'a> {
 }
 
 impl Row<'_> {
+    fn plain_text(&self) -> String {
+        match self {
+            Self::Block { id, pc, .. } => format!("{} · 0x{pc:04x}", Symbol::Block(*id)),
+            Self::Instruction { instruction, .. } => copy::instruction(instruction),
+        }
+    }
+
     fn target(&self) -> Selection {
         match self {
             Self::Block { state, pc, .. } => Selection {
@@ -269,12 +319,18 @@ fn rows<'a>(report: &ReportView<'a>, program: Option<usize>, selection: Selectio
                 && state.basic_block == Some(block.id)
                 && Some(state.id) == selection.state
         });
-        let state = selected_state.or_else(|| {
-            report
-                .cfg
-                .iter()
-                .find(|state| state.program == program && state.basic_block == Some(block.id))
-        });
+        let state = selected_state;
+        let observed = report
+            .cfg
+            .iter()
+            .filter(|state| {
+                state.program == program
+                    && state.basic_block == Some(block.id)
+                    && (selected_state.is_none() || Some(state.id) == selection.state)
+                    && super::coverage(report, state.id) == BlockCoverage::Current
+            })
+            .flat_map(|state| state.executed_pcs.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
         rows.push(Row::Block {
             id: block.id,
             pc: block.start_pc,
@@ -289,10 +345,9 @@ fn rows<'a>(report: &ReportView<'a>, program: Option<usize>, selection: Selectio
                     instruction,
                     state: state.map(|state| state.id),
                     selected_block: selected_state.is_some(),
-                    executed: state.is_some_and(|state| {
-                        super::coverage(report, state.id) == BlockCoverage::Current
-                            && state.executed_pcs.contains(&instruction.pc)
-                    }),
+                    // An observed PC may be shown without selecting an
+                    // arbitrary occurrence as the row's Native target.
+                    executed: observed.contains(&instruction.pc),
                 }),
         );
     }
