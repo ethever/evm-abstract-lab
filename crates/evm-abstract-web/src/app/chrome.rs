@@ -1,15 +1,15 @@
 //! Compact workbench navigation, anchored panels and task status.
 
-use super::{Command, View, Workspace, directory, inspector, terminal_coverage};
+use super::{View, Workspace, directory};
 use crate::{
     controls::{self, Density},
     notation, palette,
 };
 use egui::{RichText, Ui};
-use evm_abstract_notation::{Symbol, WideSymbol};
-use evm_abstract_protocol::AnalysisStatus;
+use evm_abstract_notation::Symbol;
 
 mod panels;
+mod status;
 pub(super) use panels::PanelLayout;
 
 impl Workspace {
@@ -86,113 +86,6 @@ impl Workspace {
                 });
             });
         });
-    }
-
-    pub(super) fn status(&mut self, ui: &mut Ui) -> Option<Command> {
-        let mut command = None;
-        let wide = ui.available_width() > 780.0;
-        // Keep full decimal IDs and their controls outside the truncating
-        // status row, including when a previous report remains visible.
-        if self.task.snapshot.is_some() || self.report_job_id.is_some() {
-            Density::Inline.scope(ui, |ui| {
-                for (label, id) in self.job_identities() {
-                    ui.push_id(label, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.add(egui::Label::new(format!("{label}: {}", id.0)).wrap());
-                            if controls::action(ui, "Copy", Density::Inline)
-                                .on_hover_text(format!("Copy {label}"))
-                                .clicked()
-                            {
-                                ui.ctx().copy_text(id.0.to_string());
-                            }
-                        });
-                    });
-                }
-                if self.report.is_some() && self.report_job_id.is_none() {
-                    ui.label("Result Job ID: unavailable");
-                }
-            });
-        }
-        // Match the native initial row height so this bottom panel does not
-        // shrink after the graph has fitted its first canvas.
-        Density::Regular.scope(ui, |ui| {
-            ui.horizontal(|ui| {
-                if self.task.cancellable() && controls::action(ui, "Cancel", Density::Regular).clicked() {command=self.task.cancel();}
-                // Reserve elapsed time before truncating status/progress. It
-                // remains visible on narrow screens and during disconnection.
-                if let Some(wait) = self.task.wait.summary(super::timing::now()) {
-                    let response = if self.report.is_some() {
-                        controls::action(ui, wait, Density::Regular)
-                    } else {
-                        ui.label(wait)
-                    };
-                    if response.clicked() && self.report.is_some() {
-                        self.inspector.expanded = true;
-                        self.inspector.tab = inspector::Tab::Timing;
-                    }
-                    response.on_hover_text(self.accessible_timing());
-                }
-                if self.task.busy() || self.preparing_current_view() {
-                    ui.spinner();
-                    ui.add(egui::Label::new(RichText::new(self.task_label()).color(palette::ACCENT)).truncate()).on_hover_text(self.task_label());
-                    if wide && let Some(snapshot)=&self.task.snapshot {
-                            ui.label(notation::widget(ui,format!("{} · {:?} · {} accounts · {} slots · {} states · {} transfers",WideSymbol::Task(snapshot.id.0),snapshot.progress.phase,snapshot.progress.accounts,snapshot.progress.slots,snapshot.progress.states,snapshot.progress.transfers)));
-                    }
-                    if let Some(error)=&self.task.error {
-                        ui.colored_label(palette::WARNING,"Connection interrupted").on_hover_text(notation::widget(ui, format!("{error}\nTask status is retained; polling will retry. Cancel can be retried.")));
-                    }
-                } else if let Some(error)=&self.task.error {
-                    if controls::action(ui, "Edit inputs", Density::Regular).clicked() {self.form.open=true;self.form.error=Some(error.to_string());}
-                    ui.add(egui::Label::new(notation::widget(ui,RichText::new(error.to_string()).color(palette::ERROR))).truncate()).on_hover_ui(|ui| {
-                        if let super::job::TaskError::Api(error)=error { inspector::api_error_details(ui,error); }
-                        else { ui.label(notation::widget(ui,error.to_string())); }
-                    });
-                } else if self.task.phase==super::job::TaskPhase::Cancelled {
-                    ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
-                } else if let Some(model)=&self.report {
-                    if let Some(minimum)=self.report_view.minimum(model) {
-                        ui.colored_label(if minimum.current{palette::ACCENT}else{palette::WARNING},terminal_coverage::detail_status(model));
-                        ui.label(format!("{} qualified relations",minimum.summaries.len()));
-                        ui.label(super::minimum::rich_status(model));
-                        return;
-                    }
-                    let report = &self.report_view.shown(model);
-                    let complete=report.hybrid.as_ref().map_or(report.status==AnalysisStatus::Converged&&report.ssa.complete, |hybrid| hybrid.coverage.baseline_current);
-                    let label=terminal_coverage::detail_status(model);
-                    ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
-                    if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),model.work));}
-                    if let Some(hybrid)=&report.hybrid
-                        && controls::action(ui, format!("Coverage · {} prefixes", hybrid.local_prefixes.len()), Density::Regular)
-                            .on_hover_text(super::hybrid::summary(model).unwrap_or_default()).clicked() {
-                        self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Coverage;
-                    }
-                    if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular)
-                        .on_hover_text(format!("{} abstract-state diagnostic entries and {} unexpanded frontiers. Repeated PCs retain separate state evidence; counts are not instructions or failed transactions.",report.diagnostics.len(),report.frontiers.len())).clicked() {
-                        self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
-                    }
-                } else if self.startup.loading() {
-                    ui.spinner();
-                    ui.label(RichText::new("Loading the initial example…").color(palette::MUTED));
-                } else {
-                    ui.label(RichText::new(self.task.label()).color(palette::MUTED));
-                }
-                if self.previous_report {
-                    ui.label(RichText::new("Previous result").small().color(palette::WARNING)).on_hover_text("The visible report belongs to the previous completed task.");
-                }
-            });
-        });
-        if let Some(report) = &self.report
-            && let Some(status) = terminal_coverage::status(report)
-        {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(status).color(palette::ACCENT));
-                if controls::action(ui, "Inspect terminal coverage", Density::Compact).clicked() {
-                    self.inspector.expanded = true;
-                    self.inspector.tab = inspector::Tab::Outcomes;
-                }
-            });
-        }
-        command
     }
 }
 

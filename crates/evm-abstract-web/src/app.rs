@@ -648,24 +648,6 @@ impl Workspace {
         status
     }
 
-    fn job_identities(&self) -> impl Iterator<Item = (&'static str, JobId)> {
-        let current = self.task.snapshot.as_ref().map(|snapshot| snapshot.id);
-        let label = if self.report.is_some() && self.report_job_id != current {
-            "Current Job ID"
-        } else {
-            "Job ID"
-        };
-        [
-            (label, current),
-            (
-                "Result Job ID",
-                self.report_job_id.filter(|id| Some(*id) != current),
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(label, id)| id.map(|id| (label, id)))
-    }
-
     fn task_status_summary(&self) -> String {
         if self.startup.loading() {
             return "Loading the initial example…".into();
