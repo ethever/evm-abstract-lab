@@ -41,6 +41,7 @@ web-sys = { version = "=0.3.104", features = [
     "KeyboardEvent",
     "Node",
     "Performance",
+    "PointerEvent",
     "Request",
     "RequestInit",
     "RequestMode",

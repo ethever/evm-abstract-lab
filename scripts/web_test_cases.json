@@ -9,8 +9,10 @@
       "dependencies": [
         "scripts/test-web-browser.py",
         "scripts/web_test_example_helpers.py",
+        "scripts/web_test_graph_helpers.py",
         "scripts/web_test_harness.py",
         "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
         "scripts/web_test_registry.py",
         "scripts/web_test_startup.py"
       ]
@@ -37,8 +39,10 @@
       "dependencies": [
         "scripts/test-web-browser.py",
         "scripts/web_test_example_helpers.py",
+        "scripts/web_test_graph_helpers.py",
         "scripts/web_test_harness.py",
         "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
         "scripts/web_test_registry.py",
         "scripts/web_test_responsive_views.py"
       ]
@@ -78,12 +82,8 @@
       "dependencies": [
         "scripts/test-web-browser.py",
         "scripts/web_test_budgets.py",
-        "scripts/web_test_graph_helpers.py",
         "scripts/web_test_harness.py",
         "scripts/web_test_hybrid.py",
-        "scripts/web_test_inspector_helpers.py",
-        "scripts/web_test_layout_helpers.py",
-        "scripts/web_test_pixels.py",
         "scripts/web_test_registry.py"
       ]
     },
@@ -268,9 +268,10 @@
       "dependencies": [
         "scripts/test-web-browser.py",
         "scripts/web_test_compact_ssa.py",
+        "scripts/web_test_example_helpers.py",
+        "scripts/web_test_graph_helpers.py",
         "scripts/web_test_harness.py",
         "scripts/web_test_hybrid.py",
-        "scripts/web_test_inspector_helpers.py",
         "scripts/web_test_pixels.py",
         "scripts/web_test_registry.py"
       ]

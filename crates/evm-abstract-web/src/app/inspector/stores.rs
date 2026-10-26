@@ -61,7 +61,7 @@ pub(super) fn storage(
                     account.storage_root
                 };
                 super::symbolic::show(ui, report, root.node, "Ordered storage state");
-                egui::CollapsingHeader::new("Account facts in this store")
+                let section = egui::CollapsingHeader::new("Account facts in this store")
                     .id_salt(("storage_account_facts", address, transient))
                     .show(ui, |ui| {
                         egui::Grid::new(("storage_account_facts_grid", address, transient))
@@ -103,6 +103,13 @@ pub(super) fn storage(
                                 );
                             });
                     });
+                crate::controls::observe(
+                    ui,
+                    &section.header_response,
+                    "Account facts in this store",
+                    "section",
+                    Some(section.body_response.is_some()),
+                );
             }
             let default = account
                 .map(|account| {
@@ -147,48 +154,59 @@ pub(super) fn storage(
 /// Table widths are presentation preferences per storage kind, independent of
 /// the account or selected observation. Rows use the outer scroll area's clip.
 fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
+    slot_rows(
+        ui,
+        egui::Id::new(("inspector_storage_slot_table", transient)),
+        entries.len(),
+        |index| (&entries[index].slot, &entries[index].value),
+    );
+}
+
+fn slot_rows<'a>(
+    ui: &mut Ui,
+    id: egui::Id,
+    len: usize,
+    entry: impl Fn(usize) -> (&'a str, &'a ValueInfo),
+) {
     let row_height = 21.0_f32
         .max(ui.text_style_height(&egui::TextStyle::Monospace))
         .max(ui.spacing().interact_size.y);
-    ui.scope_builder(
-        UiBuilder::new().id(egui::Id::new(("inspector_storage_slot_table", transient))),
-        |ui| {
-            let table_id = ui.id().with(egui::IdSalt::new("slots"));
-            let default_width = slots::default_width(ui);
-            let reset_default = slots::refresh_default(ui, table_id, default_width);
-            let table = TableBuilder::new(ui)
-                .id_salt("slots")
-                .vscroll(false)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(
-                    Column::initial(default_width)
-                        .at_least(56.0)
-                        .clip(true)
-                        .resizable(true),
-                )
-                .column(Column::remainder().at_least(96.0).clip(true));
-            if reset_default {
-                table.reset();
-            }
-            table
-                .header(row_height, |mut header| {
-                    header.col(|ui| {
-                        ui.strong("Slot");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Value");
-                    });
-                })
-                .body(|body| {
-                    body.rows(row_height, entries.len(), |mut row| {
-                        let entry = &entries[row.index()];
-                        row.col(|ui| slots::cell(ui, &entry.slot));
-                        row.col(|ui| value::cell(ui, &entry.value));
-                    });
+    ui.scope_builder(UiBuilder::new().id(id), |ui| {
+        let table_id = ui.id().with(egui::IdSalt::new("slots"));
+        let default_width = slots::default_width(ui);
+        let reset_default = slots::refresh_default(ui, table_id, default_width);
+        let table = TableBuilder::new(ui)
+            .id_salt("slots")
+            .vscroll(false)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(
+                Column::initial(default_width)
+                    .at_least(56.0)
+                    .clip(true)
+                    .resizable(true),
+            )
+            .column(Column::remainder().at_least(96.0).clip(true));
+        if reset_default {
+            table.reset();
+        }
+        table
+            .header(row_height, |mut header| {
+                header.col(|ui| {
+                    ui.strong("Slot");
                 });
-            slots::remember_resize(ui, table_id);
-        },
-    );
+                header.col(|ui| {
+                    ui.strong("Value");
+                });
+            })
+            .body(|body| {
+                body.rows(row_height, len, |mut row| {
+                    let (slot, value) = entry(row.index());
+                    row.col(|ui| slots::cell(ui, slot));
+                    row.col(|ui| value::cell(ui, value));
+                });
+            });
+        slots::remember_resize(ui, table_id);
+    });
 }
 
 pub(super) fn changes(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapshot) {
@@ -289,18 +307,14 @@ pub(super) fn changes(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapsho
                             .id_salt(("outcome_slots", &account.address, transient))
                             .max_height(160.0)
                             .auto_shrink([false, true])
-                            .show_rows(ui, 21.0, changes.len(), |ui, range| {
-                                for index in range {
-                                    let (slot, after) = changes[index];
-                                    ui.horizontal(|ui| {
-                                        ui.add(
-                                            egui::Label::new(RichText::new(slot).monospace())
-                                                .truncate(),
-                                        )
-                                        .on_hover_text(slot);
-                                        value::cell(ui, after);
-                                    });
-                                }
+                            .min_scrolled_height(0.0)
+                            .show(ui, |ui| {
+                                slot_rows(
+                                    ui,
+                                    ui.id().with(("outcome_slot_table", transient)),
+                                    changes.len(),
+                                    |index| changes[index],
+                                );
                             });
                     }
                 }
@@ -354,7 +368,7 @@ pub(super) fn changes(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapsho
 }
 
 fn defaults(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapshot) {
-    ui.collapsing("Unlisted accounts and storage bases", |ui| {
+    crate::framework::section(ui, "Unlisted accounts and storage bases", |ui| {
         egui::Grid::new("store_defaults")
             .num_columns(2)
             .show(ui, |ui| {
@@ -383,19 +397,37 @@ fn defaults(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapshot) {
                         value::text(ui, "Delegation implementation", target);
                     }
                 }
-                value::text(ui, "Unlisted account creation", certainty(store.created_default));
+                value::text(
+                    ui,
+                    "Unlisted account creation",
+                    certainty(store.created_default),
+                );
                 value::text(
                     ui,
                     "Unlisted account pending destruction",
                     certainty(store.pending_destruction_default),
                 );
-                value::text(ui, "Unlisted account touch", touch_status(store.touched_default));
+                value::text(
+                    ui,
+                    "Unlisted account touch",
+                    touch_status(store.touched_default),
+                );
             });
         ui.label(
             "Storage bases are scoped by account owner when read. A shared base does not imply equal values for different owners.",
         );
-        super::symbolic::show(ui, report, store.storage_root.node, "Persistent base template");
-        super::symbolic::show(ui, report, store.transient_root.node, "Transient base template");
+        super::symbolic::show(
+            ui,
+            report,
+            store.storage_root.node,
+            "Persistent base template",
+        );
+        super::symbolic::show(
+            ui,
+            report,
+            store.transient_root.node,
+            "Transient base template",
+        );
         super::symbolic::facts(ui, &store.storage_facts, "Persistent store facts");
         super::symbolic::facts(ui, &store.transient_facts, "Transient store facts");
     });

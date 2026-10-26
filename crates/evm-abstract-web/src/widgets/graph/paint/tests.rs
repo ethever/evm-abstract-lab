@@ -101,7 +101,11 @@ fn geometry(graph: &Graph) -> Geometry {
 fn initialized(mode: GraphMode) -> (Context, Graph, AnalysisReport, Selection) {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
-    let mut graph = Graph::default();
+    let mut graph = Graph {
+        content: NodeView::Ssa,
+        whole_scope: true,
+        ..Graph::default()
+    };
     graph.set_mode(mode);
     let report = crate::tests::report();
     let mut selection = Selection::default();
@@ -112,7 +116,7 @@ fn initialized(mode: GraphMode) -> (Context, Graph, AnalysisReport, Selection) {
 }
 
 #[test]
-fn semantic_zoom_paints_native_ids_then_exact_ssa_without_changing_geometry() {
+fn semantic_zoom_paints_source_identity_then_exact_ssa_without_changing_geometry() {
     let (ctx, mut graph, mut report, mut selection) = initialized(GraphMode::States);
     // An ID independent of vector indices proves the overview uses native IDs.
     report.cfg[2].id = 205;
@@ -132,9 +136,9 @@ fn semantic_zoom_paints_native_ids_then_exact_ssa_without_changing_geometry() {
     for (zoom, preview) in [
         (0.20, false),
         (0.54, false),
-        (0.60, false),
-        (0.66, true),
-        (0.60, true),
+        (0.80, false),
+        (0.90, true),
+        (0.80, true),
         (0.54, false),
         (1.0, true),
     ] {
@@ -143,16 +147,22 @@ fn semantic_zoom_paints_native_ids_then_exact_ssa_without_changing_geometry() {
         let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
         let labels = card_text(&output, &graph, canvas);
         if preview {
-            assert!(labels.contains(&"σ₂₀₅  ·  B₂"));
+            assert!(labels.contains(&"Block 0x000a"));
             assert!(labels.iter().any(|line| line.contains("%5 = ADD %1, %2")));
         } else {
-            assert!(
-                labels.contains(&"σ₂₀₅"),
-                "missing native identity at zoom {zoom}"
-            );
-            assert!(labels.contains(&"B₂"));
+            if zoom < 0.45 {
+                assert!(
+                    labels.is_empty(),
+                    "overview must not paint unreadable card text"
+                );
+            } else {
+                assert!(
+                    labels.contains(&"Block 0x000a"),
+                    "missing source identity at {zoom}"
+                );
+            }
             assert!(labels.iter().all(|line| !line.contains('%')));
-            assert!(!labels.contains(&"σ₂₀₅  ·  B₂"));
+            assert!(labels.iter().all(|line| !line.contains("σ₂₀₅")));
         }
         assert_eq!(geometry(&graph), measured, "zoom {zoom} changed layout");
     }
@@ -162,13 +172,13 @@ fn semantic_zoom_paints_native_ids_then_exact_ssa_without_changing_geometry() {
 fn semantic_zoom_hysteresis_preserves_painted_detail_around_the_threshold() {
     let (ctx, mut graph, report, mut selection) = initialized(GraphMode::States);
     for (zoom, detailed) in [
-        (0.54, false),
-        (0.60, false),
-        (0.649, false),
-        (0.65, true),
-        (0.60, true),
-        (0.551, true),
-        (0.55, false),
+        (0.70, false),
+        (0.80, false),
+        (0.879, false),
+        (0.88, true),
+        (0.80, true),
+        (0.781, true),
+        (0.78, false),
     ] {
         graph.zoom = zoom;
         let (output, _) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
@@ -271,17 +281,20 @@ fn compact_source_groups_show_members_without_presenting_one_state_as_the_group(
     extra_ssa.state = 999;
     extra_ssa.instructions[0].results = vec![9101];
     report.ssa.blocks.push(extra_ssa);
-    let mut graph = Graph::default();
+    let mut graph = Graph {
+        content: NodeView::Ssa,
+        whole_scope: true,
+        ..Graph::default()
+    };
     let mut selection = Selection::default();
     frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     graph.fitted = false;
-    graph.zoom = 0.40;
+    graph.zoom = 0.60;
     graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * graph.zoom;
     let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     let labels = card_text(&output, &graph, canvas);
-    assert!(labels.contains(&"P₀:B₂ · 2 states"));
-    assert!(labels.contains(&"σ₂ · σ₉₉₉"));
-    assert!(!labels.contains(&"σ₂  ·  B₂"));
+    assert!(labels.contains(&"Block 0x000a · 2 states"));
+    assert!(labels.iter().all(|label| !label.contains('σ')));
     assert!(labels.iter().all(|line| !line.contains('%')));
     let measured = geometry(&graph);
     graph.zoom = 1.0;
@@ -308,7 +321,7 @@ fn zooming_restores_the_selected_disassembly_preview() {
         let expected = if visible {
             "CFG detail: disassembly preview"
         } else {
-            "CFG detail: identities"
+            "CFG detail: overview shapes"
         };
         assert!(graph.accessible_summary().contains(expected));
         assert!(
@@ -346,7 +359,11 @@ fn with_receipts(instructions: Vec<SsaInstruction>) -> AnalysisReport {
 fn native_graph(report: &AnalysisReport) -> (Context, Graph, Selection) {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
-    let mut graph = Graph::default();
+    let mut graph = Graph {
+        content: NodeView::Ssa,
+        whole_scope: true,
+        ..Graph::default()
+    };
     graph.set_mode(GraphMode::States);
     let mut selection = Selection::default();
     frame(&ctx, &mut graph, report, &mut selection, vec![]);
@@ -790,8 +807,7 @@ fn frame_return_badges_low_zoom_and_ssa_detail_share_frozen_measured_geometry() 
             let labels = card_text(&output, &graph, canvas);
             assert_eq!(labels.contains(&"Frame return: normal 1"), detailed);
             if !detailed {
-                assert!(labels.contains(&"σ₂"));
-                assert!(labels.contains(&"B₂"));
+                assert!(labels.is_empty());
                 assert!(labels.iter().all(|line| !line.contains("Root end")
                     && !line.contains("Frame return")
                     && !line.contains('%')));

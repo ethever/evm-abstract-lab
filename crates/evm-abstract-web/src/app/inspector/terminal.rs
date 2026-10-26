@@ -25,14 +25,24 @@ pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>) {
     ui.label(
         "The alternatives conservatively cover terminal results for the original input. Each pairs its data with its finalized store; it does not establish that the alternative occurs.",
     );
-    ui.collapsing("Original input binding", |ui| binding(ui, report, coverage));
+    crate::framework::section(ui, "Original input binding", |ui| {
+        binding(ui, report, coverage)
+    });
     for (index, outcome) in coverage.outcomes.iter().enumerate() {
         // Keep all three alternatives separate from the observed-outcome
         // chooser, even when no detailed terminal state has been reached.
         ui.push_id(("root_terminal_alternative", index), |ui| {
-            egui::CollapsingHeader::new(format!("{:?} alternative", outcome.kind))
+            let label = format!("{:?} alternative", outcome.kind);
+            let section = egui::CollapsingHeader::new(&label)
                 .default_open(true)
                 .show(ui, |ui| alternative(ui, report, outcome));
+            crate::controls::observe(
+                ui,
+                &section.header_response,
+                &label,
+                "section",
+                Some(section.body_response.is_some()),
+            );
         });
     }
     ui.separator();
@@ -44,21 +54,26 @@ fn alternative(ui: &mut Ui, report: &ReportView<'_>, outcome: &RootTerminalOutco
             ui.label(format!("Data snapshot #{} · length", outcome.data));
             value::cell(ui, &bytes.length);
         });
-        ui.collapsing("Terminal bytes", |ui| {
+        crate::framework::section(ui, "Terminal bytes", |ui| {
             ui.allocate_ui(egui::vec2(ui.available_width(), 140.0), |ui| {
                 buffers::show(ui, report, outcome.data, "Terminal alternative bytes");
             });
         });
     }
-    let store_label = notation::widget(
-        ui,
-        format!("Finalized store {}", Symbol::Store(outcome.store)),
-    );
-    ui.collapsing(store_label, |ui| {
+    let label = format!("Finalized store {}", Symbol::Store(outcome.store));
+    let store_label = notation::widget(ui, &label);
+    let section = ui.collapsing(store_label, |ui| {
         if let Some(store) = report.stores.get(outcome.store) {
             stores::changes(ui, report, store);
         }
     });
+    crate::controls::observe(
+        ui,
+        &section.header_response,
+        &label,
+        "section",
+        Some(section.body_response.is_some()),
+    );
 }
 
 fn binding(ui: &mut Ui, report: &ReportView<'_>, coverage: &RootTerminalCoverage) {

@@ -21,10 +21,22 @@ pub(super) fn acquisition_summary(report: &ReportView<'_>) -> String {
 }
 
 pub(super) fn acquisition(ui: &mut Ui, report: &ReportView<'_>) {
-    ui.label(acquisition_summary(report));
-    let Some(acquisition) = &report.acquisition else {
+    acquisition_rows(ui, report.acquisition.as_ref(), report.accounts.len());
+}
+
+pub(super) fn acquisition_rows(
+    ui: &mut Ui,
+    acquisition: Option<&api::AcquisitionReport>,
+    accounts: usize,
+) {
+    let Some(acquisition) = acquisition else {
+        ui.label("Standalone bytecode: no RPC acquisition was performed.");
         return;
     };
+    ui.label(format!(
+        "{} rounds · {} RPC requests · {} observed accounts",
+        acquisition.rounds, acquisition.requests, accounts
+    ));
     ui.label(format!(
         "Refinement acquired {} additional accounts and {} initial slots",
         acquisition.fetched_accounts.len(),
@@ -92,10 +104,15 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &ReportView<'_>, selection: &mut 
         let presentation = diagnostic_presentation(diagnostic);
         // State identity and receipt index keep repeated PCs independently clickable.
         ui.push_id(("diagnostic", index, diagnostic.state), |ui| {
-            if ui
-                .selectable_label(false, notation::widget(ui, &presentation.label))
-                .clicked()
-            {
+            let response = ui.selectable_label(false, notation::widget(ui, &presentation.label));
+            crate::controls::observe(
+                ui,
+                &response,
+                &presentation.label,
+                "diagnostic",
+                Some(false),
+            );
+            if response.clicked() {
                 *selection = Selection {
                     value: None,
                     state: Some(diagnostic.state),
@@ -130,17 +147,13 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &ReportView<'_>, selection: &mut 
             (None, Some(pc)) => format!("0x{pc:x}"),
             (None, None) => "Pending entry".into(),
         };
-        if ui
-            .selectable_label(
-                false,
-                notation::widget(
-                    ui,
-                    RichText::new(format!("{location} · {:?}", frontier.kind))
-                        .color(palette::WARNING),
-                ),
-            )
-            .clicked()
-        {
+        let label = format!("{location} · {:?}", frontier.kind);
+        let response = ui.selectable_label(
+            false,
+            notation::widget(ui, RichText::new(&label).color(palette::WARNING)),
+        );
+        crate::controls::observe(ui, &response, &label, "frontier", Some(false));
+        if response.clicked() {
             *selection = Selection {
                 value: None,
                 state: frontier.from,

@@ -13,12 +13,13 @@ import time
 
 from playwright.sync_api import expect
 
-from web_test_harness import (complete_submission, observe_webgpu, open_input,
-                              rendered_frame, resize_view, settle_gesture, webgpu_evidence)
-from web_test_inspector_helpers import (inspector_painted_controls, inspector_selected_tab, inspector_title_action,
+from web_test_graph_helpers import assert_availability, workspace_route
+from web_test_harness import (complete_submission, edit_control, observe_webgpu, open_input,
+                              rendered_frame, resize_view, select_report_context, set_control, settle_gesture, ui_control, ui_controls, webgpu_evidence)
+from web_test_inspector_helpers import (hide_inspector, inspector_selected_tab, inspector_title_action,
                                         select_inspector_tab)
-from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_modal
-from web_test_hybrid import assert_hybrid, graph, job_result_report, oracle_graph
+from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS
+from web_test_hybrid import assert_hybrid, graph, job_result_report, native_entry_context, oracle_graph, source_program
 from web_test_pixels import assert_translation, node_snapshot, text_pixels, workspace_content_bottom
 
 
@@ -424,29 +425,54 @@ def _selection(status):
     return found[0]
 
 
-def _panel_snapshot(page, canvas, output, name):
+def _unexecuted_availability(page, canvas, full_report, output):
+    """Use the original real cap2 receipt, without changing its request."""
+    entry = native_entry_context(full_report)
+    native = oracle_graph(full_report, "Native")
+    receipt, = [block for block in native["ssa"]["blocks"] if block["state"] == entry["id"]]
+    assert receipt["coverage"] == "Unexecuted" and receipt["instructions"] == [], receipt
+    program = source_program(full_report, entry["program"])
+    assert program["bytecode"].removeprefix("0x") == RUNTIME
+    select_report_context(page, full_report, "Native", state=entry["id"])
+    hide_inspector(page, canvas)
+    workspace_route(page, "Code")
+    first = program["blocks"][0]
+    ui_control(page, f"Block 0x{first['start_pc']:04x}", role="code-row", selected=True)
+    ui_control(page, "Copy bytecode", role="action")
+    canvas.screenshot(path=str(output / "coverage-unexecuted-captured-code.png"))
+    workspace_route(page, "SSA")
+    reason = assert_availability(page, "This state has no executed instruction receipt")
+    canvas.screenshot(path=str(output / "coverage-unexecuted-ssa-reason.png"))
+    workspace_route(page, "CFG")
+    return {"state": entry["id"], "source_program": program["id"], "receipt": receipt, "reason": reason}
+
+
+def _panel_snapshot(page, canvas, output, name, *, section=None):
     page.mouse.move(2, 2)
     settle_gesture(page)
     # CollapsingHeader's real animation must finish before row targeting.
     page.wait_for_timeout(200)
     toolbar = inspector_selected_tab(page, canvas, "Outcomes")
-    observations = [rect for rect in inspector_painted_controls(page, canvas)["selected"]
-                    if 20 <= rect[0] <= 50 and 70 <= rect[2] - rect[0] <= 85
-                    and 0 <= rect[1] - toolbar[3] <= 10 and 14 <= rect[3] - rect[1] <= 20]
-    assert len(observations) == 1, f"expected one selected Block entry control, got {observations}"
     png = canvas.screenshot(path=str(output / f"{name}.png"))
-    # Outcomes content follows the native observation bar and its separator gap.
-    region = (8, observations[0][3] + 6, 400, workspace_content_bottom(page, png))
+    # Outcomes is a joint root observation, independent of before/after block
+    # snapshots. Measure its content below the actual shared navigation row.
+    region = (8, toolbar[3] + 3, 400, workspace_content_bottom(page, png))
     pixels = text_pixels(page, png, region)
     assert pixels["white_pixels"] > 100 and len(pixels["rows"]) >= 8, pixels
+    if section is not None:
+        header = ui_control(page, section, role="section")
+        following = [control["rect"][1] for control in ui_controls(page)
+                     if control["enabled"] and control["rect"][1] >= header["rect"][3]
+                     and ((control["role"] == "section" and control["label"] in {
+                         "Return alternative", "Revert alternative", "Failure alternative"})
+                         or (control["role"] == "combobox" and control["label"] == "outcome_selection"))]
+        scoped_region = (region[0], header["rect"][1], region[2], min([region[3], *following]))
+        # Keep the complete-panel readiness proof above. Compare this tuple's
+        # rows separately: expanding it legitimately scrolls unrelated observed
+        # outcomes below the viewport and cannot subtract its newly shown facts.
+        scoped = text_pixels(page, png, scoped_region)
+        return {**scoped, "section": section, "region": scoped_region, "panel": pixels}
     return pixels
-
-
-def _row_click(page, canvas, pixels, index, *, x=80):
-    assert 0 <= index < len(pixels["rows"]), (index, pixels)
-    top, bottom = pixels["rows"][index]
-    canvas.click(position={"x": x, "y": (top + bottom) / 2})
-    settle_gesture(page)
 
 
 def _inspect(page, canvas, report, output, posts):
@@ -463,40 +489,57 @@ def _inspect(page, canvas, report, output, posts):
     # Existing painted-text measurement targets real CollapsingHeaders: title,
     # coverage, explanation, binding, then four rows per default-open tuple.
     initial = _panel_snapshot(page, canvas, output, "coverage-all-alternatives")
-    for row in [12, 8, 4]:
-        pixels = _panel_snapshot(page, canvas, output, f"coverage-before-collapse-{row}")
-        _row_click(page, canvas, pixels, row)
+    for outcome in reversed(report["root_terminal_coverage"]["outcomes"]):
+        set_control(page, canvas, f"{outcome['kind']} alternative", False, role="section")
     collapsed = _panel_snapshot(page, canvas, output, "coverage-alternatives-collapsed")
     assert len(collapsed["rows"]) < len(initial["rows"])
     result = {}
-    for index, outcome in enumerate(report["root_terminal_coverage"]["outcomes"]):
+    for outcome in report["root_terminal_coverage"]["outcomes"]:
         name = outcome["kind"].lower()
-        row = 4 + index
-        before = _panel_snapshot(page, canvas, output, f"coverage-{name}-closed")
-        _row_click(page, canvas, before, row)
-        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-alternative")
+        section = f"{outcome['kind']} alternative"
+        before = _panel_snapshot(page, canvas, output, f"coverage-{name}-closed", section=section)
+        set_control(page, canvas, f"{outcome['kind']} alternative", True, role="section")
+        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-alternative", section=section)
         assert len(opened["rows"]) >= len(before["rows"]) + 3
-        _row_click(page, canvas, opened, row + 2)  # Actual Terminal bytes header.
-        data = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes")
+        set_control(page, canvas, "Terminal bytes", True, role="section")
+        data = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes", section=section)
         assert data["hash"] != opened["hash"] and len(data["rows"]) > len(opened["rows"])
-        _row_click(page, canvas, data, row + 2)
-        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes-closed")
-        _row_click(page, canvas, opened, row + 3)  # Actual Finalized store header.
-        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-store")
+        set_control(page, canvas, "Terminal bytes", False, role="section")
+        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes-closed", section=section)
+        stores = [control for control in ui_controls(page)
+                  if control["role"] == "section" and control["label"].startswith("Finalized store ")]
+        assert len(stores) == 1, stores
+        store_label = stores[0]["label"]
+        expected_store = str(outcome["store"]).translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉"))
+        assert store_label == f"Finalized store store{expected_store}", (store_label, outcome)
+        set_control(page, canvas, store_label, True, role="section")
+        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-store", section=section)
         assert len(store["rows"]) > len(opened["rows"])
-        _row_click(page, canvas, store, row + 5)  # Unlisted accounts and storage bases.
-        defaults = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-defaults")
+        parent = ui_control(page, store_label, role="section", selected=True)
+        following = [control["rect"][1] for control in ui_controls(page)
+                     if control["enabled"] and control["rect"][1] > parent["rect"][3]
+                     and ((control["role"] == "section" and control["label"] in {
+                         "Return alternative", "Revert alternative", "Failure alternative"})
+                         or (control["role"] == "combobox" and control["label"] == "outcome_selection"))]
+        # The observed Native outcome below the auxiliary tuples has its own
+        # defaults section. Bind this header to the expanded tuple's actual
+        # indentation and following sibling, never a first matching label.
+        scope = (parent["rect"][0] + 1, parent["rect"][3], page.viewport_size["width"],
+                 min(following, default=page.viewport_size["height"] - 30))
+        defaults_control = ui_control(page, "Unlisted accounts and storage bases", role="section", within=scope)
+        set_control(page, canvas, "Unlisted accounts and storage bases", True, role="section", id=defaults_control["id"])
+        defaults = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-defaults", section=section)
         assert len(defaults["rows"]) >= len(store["rows"]) + 9
-        _row_click(page, canvas, defaults, row + 5)
-        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-defaults-closed")
-        _row_click(page, canvas, store, row + 3)
-        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-closed")
-        _row_click(page, canvas, opened, row)
+        set_control(page, canvas, "Unlisted accounts and storage bases", False, role="section", id=defaults_control["id"])
+        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-defaults-closed", section=section)
+        set_control(page, canvas, store_label, False, role="section")
+        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-closed", section=section)
+        set_control(page, canvas, f"{outcome['kind']} alternative", False, role="section")
         assert _selection(status.text_content()) == selected and len(posts) == count
         result[name] = {"tuple": outcome, "bytes": data, "store": defaults}
-    closed = _panel_snapshot(page, canvas, output, "coverage-before-binding")
-    _row_click(page, canvas, closed, 3)
-    binding = _panel_snapshot(page, canvas, output, "coverage-original-input-binding")
+    closed = _panel_snapshot(page, canvas, output, "coverage-before-binding", section="Original input binding")
+    set_control(page, canvas, "Original input binding", True, role="section")
+    binding = _panel_snapshot(page, canvas, output, "coverage-original-input-binding", section="Original input binding")
     assert len(binding["rows"]) >= len(closed["rows"]) + 21
     assert _selection(status.text_content()) == selected and len(posts) == count
     result["binding"] = binding
@@ -599,7 +642,7 @@ def _schema_control(page, canvas, output, expected_request):
     page.route("**/api/tasks/*/result", old_schema)
     page.on("request", record_post)
     try:
-        open_input(page)
+        open_input(page, mode="Bytecode")
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                                   and response.request.method == "POST") as submitted:
             page.keyboard.press("Control+Enter")
@@ -630,7 +673,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert_translation(before_card, after_card, 0, 0, tolerance=1.0)
         assert after_card["selected_kind"] == before_card["selected_kind"]
         assert after_ink == before_ink, (before_ink, after_ink)
-        return {"received": 16, "expected": 20, "retained_selection": selected,
+        return {"received": 16, "expected": 21, "retained_selection": selected,
                 "retained_result_job_id": result_id, "current_job_id": current_id,
                 "evidence": evidence, "status": after_status, "control_only": True}
     finally:
@@ -667,12 +710,11 @@ def root_terminal_coverage_interactions(context):
     (output / "coverage-default-enabled-analysis.json").write_text(json.dumps(full_ordinary, indent=2) + "\n")
     canvas.screenshot(path=str(output / "coverage-default-enabled-complete.png"))
 
-    execution_open, coverage_enabled = False, True
-    header_offset = None
+    scope_evidence = {}
 
     def submit(name, *, enabled, transfers=2, invalid_numeric=False):
-        nonlocal execution_open, coverage_enabled, header_offset
         geometry = {"captures": {}, "targets": []}
+        labels = ["States", "Transfers", "Logical work", "Call depth", "Memory bytes"]
 
         def save_geometry():
             (output / f"{name}-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
@@ -680,95 +722,68 @@ def root_terminal_coverage_interactions(context):
         def capture(stage):
             page.mouse.move(2, 2)
             settle_gesture(page)
-            page.wait_for_timeout(200)  # Finish the native collapse/recentering animation.
+            page.wait_for_timeout(200)
             png = canvas.screenshot(path=str(output / f"{stage}.png"))
-            bounds = layout_modal(page, canvas)
-            geometry["captures"][stage] = {"modal": bounds}
-            save_geometry()
+            fields = {label: ui_control(page, label, role="text") for label in labels}
+            section = ui_control(page, "Execution budget", role="section", selected=True)
+            coverage = ui_control(page, "Prepare conservative root terminal coverage", role="checkbox")
             assert page.viewport_size == {"width": 1440, "height": 1000}
-            assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
-                    and 750 <= bounds[2] - bounds[0] <= 780), (stage, bounds)
-            # A narrow label column excludes numeric editor borders/error text.
-            # The footer is outside this strip; the last six collapsed rows are
-            # the six native headers visible in the saved 1440x1000 capture.
-            region = (bounds[0] + 29, bounds[1] + (header_offset or 10),
-                      bounds[0] + 95, bounds[3] - 40)
-            pixels = text_pixels(page, png, region)
-            errors = text_pixels(page, png, (bounds[0] + 10, bounds[1] + 10,
-                                             bounds[2] - 10, bounds[3] - 40))["error_pixels"]
-            captured = {"stage": stage, "modal": bounds, "region": region,
-                        **pixels, "form_error_pixels": errors}
+            assert len({field["id"] for field in fields.values()}) == len(labels), fields
+            assert all(0 <= field["rect"][0] < field["rect"][2] <= 1440
+                       and 0 <= field["rect"][1] < field["rect"][3] <= 1000
+                       for field in fields.values()), fields
+            assert all(before["rect"][3] <= after["rect"][1]
+                       for before, after in zip(list(fields.values()), list(fields.values())[1:])), fields
+            assert max(field["rect"][0] for field in fields.values()) - min(
+                field["rect"][0] for field in fields.values()) <= 1, fields
+            assert section["rect"][3] < fields["States"]["rect"][1], (section, fields)
+            assert fields["Memory bytes"]["rect"][3] < coverage["rect"][1], (fields, coverage)
+            region = (max(0, section["rect"][0]), section["rect"][3],
+                      min(1440, max(field["rect"][2] for field in fields.values()) + 260), coverage["rect"][1])
+            captured = {"stage": stage, "section": section, "fields": fields, "coverage": coverage,
+                        "region": region, **text_pixels(page, png, region)}
+            captured["form_error_pixels"] = captured["error_pixels"]
             geometry["captures"][stage] = captured
             save_geometry()
             return captured
 
-        def click(captured, row, x, label):
-            top, bottom = captured["rows"][row]
-            bounds = captured["modal"]
-            target = {"stage": captured["stage"], "label": label, "row": [top, bottom],
-                      "x": x, "y": (top + bottom) / 2}
-            geometry["targets"].append(target)
-            save_geometry()
-            assert bounds[0] < x < bounds[2] and bounds[1] < top < bottom < bounds[3], target
-            _row_click(page, canvas, captured, row, x=x)
-
-        open_input(page)
-        page.keyboard.press("Control+A")
-        page.keyboard.insert_text(RUNTIME)
-        rendered_frame(page)
-        form = capture(f"{name}-before-execution")
-        if not execution_open:
-            headers = form["rows"][-6:]
-            assert len(headers) == 6 and all(20 <= second[0] - first[0] <= 26
-                                           for first, second in zip(headers, headers[1:])), form
-            header_offset = headers[0][0] - form["modal"][1] - 2
-            header_positions = [row[0] - form["modal"][1] for row in headers[:4]]
-            click(form, len(form["rows"]) - 3, form["modal"][0] + 70, "Execution budget")
-            form = capture(f"{name}-execution-expanded")
-            # limits.rs: three environment headers, Execution budget, five
-            # numeric rows, summaries, coverage, explanation, Precision, RPC.
-            # A missing control or a hit on Analyze must fail before editing.
-            assert len(form["rows"]) == 14, form
-            assert all(abs(row[0] - form["modal"][1] - expected) <= 2
-                       for row, expected in zip(form["rows"][:4], header_positions)), form
-            assert form["rows"][-2][0] - form["rows"][3][1] > 150, form
-            execution_open = True
+        open_input(page, mode="Bytecode")
+        editor = edit_control(page, canvas, "Runtime bytecode", RUNTIME)
+        geometry["targets"].append(editor)
+        set_control(page, canvas, "Execution budget", True, role="section")
+        form = capture(f"{name}-execution-expanded")
+        assert form["section"]["selected"] and form["coverage"]["enabled"], form
+        assert len(form["fields"]) == 5 and form["fields"]["Transfers"]["enabled"], form
 
         def transfer(text):
-            assert len(form["rows"]) == 14, form
-            assert 20 <= form["rows"][5][0] - form["rows"][4][0] <= 26, form
-            # The second measured grid label is Transfers; x is inside the
-            # native 180-point value editor, beyond the label column.
-            click(form, 5, form["modal"][0] + 180, "Transfers")
-            page.keyboard.press("Control+A")
-            page.keyboard.insert_text(text)
-            rendered_frame(page)
+            target = edit_control(page, canvas, "Transfers", text)
+            geometry["targets"].append({"control": target, "literal": text})
+            save_geometry()
 
         if invalid_numeric:
             transfer("18446744073709551616")
             before_posts = len(posts)
+            ui_control(page, "Analyze", role="action", enabled=False)
             page.keyboard.press("Control+Enter")
             rendered_frame(page)
             page.wait_for_timeout(200)
             assert len(posts) == before_posts, "invalid numeric form admitted a task"
             invalid = capture("coverage-invalid-numeric-form")
-            assert len(invalid["rows"]) == 14 and invalid["form_error_pixels"] > 20, invalid
-            # The unsupported-u64 error adds a real grid row below Transfers.
-            assert (invalid["rows"][6][0] - invalid["rows"][5][1]
-                    > form["rows"][6][0] - form["rows"][5][1] + 10), invalid
-            form = invalid
+            assert len(invalid["fields"]) == 5 and invalid["form_error_pixels"] > 20, invalid
+            assert (invalid["fields"]["Logical work"]["rect"][1] - invalid["fields"]["Transfers"]["rect"][3]
+                    > form["fields"]["Logical work"]["rect"][1] - form["fields"]["Transfers"]["rect"][3] + 10), invalid
+            expect(status).to_contain_text("Input validation: Correct invalid numeric settings")
         transfer(str(transfers))
         form = capture(f"{name}-numeric-recovered")
-        assert len(form["rows"]) == 14 and form["form_error_pixels"] == 0, form
-        assert all(20 <= second[0] - first[0] <= 26
-                   for first, second in zip(form["rows"][4:8], form["rows"][5:9])), form
-        if enabled != coverage_enabled:
-            click(form, 10, form["modal"][0] + 70, "Prepare conservative root terminal coverage")
-            coverage_enabled = enabled
+        assert len(form["fields"]) == 5 and form["form_error_pixels"] == 0, form
+        assert all(field["enabled"] for field in form["fields"].values()), form
+        coverage = set_control(page, canvas, "Prepare conservative root terminal coverage", enabled, role="checkbox")
+        assert coverage["selected"] is enabled, coverage
+        ui_control(page, "Analyze", role="action", enabled=True)
         final_form = capture(f"{name}-form")
-        assert len(final_form["rows"]) == 14 and final_form["form_error_pixels"] == 0, final_form
-        assert all(abs(sum(after) / 2 - sum(before) / 2) <= 2
-                   for before, after in zip(form["rows"], final_form["rows"])), final_form
+        assert len(final_form["fields"]) == 5 and final_form["form_error_pixels"] == 0, final_form
+        assert all(abs(final_form["fields"][label]["rect"][1] - form["fields"][label]["rect"][1]) <= 2
+                   for label in labels), (form, final_form)
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                                   and response.request.method == "POST") as posted:
             page.keyboard.press("Control+Enter")
@@ -790,6 +805,8 @@ def root_terminal_coverage_interactions(context):
         assert report["status"] == "Converged"
         assert graph(report, "Baseline")["transfers"] == 2
         assert graph(report, "Baseline")["root_terminal_coverage"] is None
+        if invalid_numeric:
+            scope_evidence["unexecuted"] = _unexecuted_availability(page, canvas, report, output)
         return native, request
 
     disabled, _ = submit("coverage-disabled-cap", enabled=False, invalid_numeric=True)
@@ -898,6 +915,7 @@ def root_terminal_coverage_interactions(context):
     static = _static_control(page, context.url, request, output)
     schema = _schema_control(page, canvas, output, complete_request)
     result = {"default_enabled": defaults["limits"]["root_terminal_coverage"],
+              "scope_evidence": scope_evidence,
               "attached": {"scope": covered["root_terminal_coverage"]["scope"],
                            "trigger": covered["root_terminal_coverage"]["trigger"],
                            "binding": binding, "inspection": inspect},

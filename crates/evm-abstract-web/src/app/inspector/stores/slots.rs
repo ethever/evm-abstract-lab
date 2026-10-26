@@ -55,9 +55,13 @@ pub(in crate::app::inspector) fn refresh_default(ui: &mut Ui, table: Id, default
 }
 
 pub(in crate::app::inspector) fn remember_resize(ui: &mut Ui, table: Id) {
+    remember_resize_at(ui, table, 0);
+}
+
+pub(in crate::app::inspector) fn remember_resize_at(ui: &mut Ui, table: Id, column: usize) {
     if ui
         .ctx()
-        .read_response(table.with("resize_column").with(0_usize))
+        .read_response(table.with("resize_column").with(column))
         .is_some_and(|response| response.dragged())
     {
         ui.data_mut(|data| {
@@ -86,6 +90,9 @@ pub(in crate::app::inspector) fn cell(ui: &mut Ui, slot: &str) {
     } else {
         Sense::hover()
     };
+    // Copying the complete key remains available even when text selection is
+    // disabled or the user narrows the column below a single glyph.
+    sense |= Sense::click() - Sense::FOCUSABLE;
     if selectable {
         // Match native Label: touch drags belong to the enclosing ScrollArea,
         // and selecting text must not add labels to keyboard tab navigation.
@@ -121,7 +128,19 @@ pub(in crate::app::inspector) fn cell(ui: &mut Ui, slot: &str) {
     }
     // Hover the full cell, including when no glyph fits. The original key is
     // independent of the fitted display string and remains available in full.
-    response.on_hover_text(slot);
+    response.context_menu(|ui| {
+        let copy = ui.button("Copy full slot key");
+        crate::controls::observe(ui, &copy, "Copy full slot key", "action", None);
+        if copy.clicked() {
+            ui.ctx().copy_text(slot.to_owned());
+            ui.close();
+        }
+        ui.label(slot);
+    });
+    response.on_hover_ui(|ui| {
+        ui.set_max_width(default_width(ui));
+        ui.monospace(slot);
+    });
 }
 
 fn suffix(ui: &Ui, slot: &str, width: f32, font: FontId, color: Color32) -> Arc<Galley> {

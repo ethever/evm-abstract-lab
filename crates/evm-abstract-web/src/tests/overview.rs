@@ -7,6 +7,7 @@ use crate::{
     app::{Selection, View},
 };
 use egui::{Context, Event, FullOutput, Key, Modifiers, MouseWheelUnit, Rect, TouchPhase, Vec2};
+use evm_abstract_protocol as api;
 use evm_abstract_protocol::{AnalyzeReply, CfgEdge, DisasmBlock, EdgeKind};
 
 fn workspace(report: AnalysisReport) -> Workspace {
@@ -102,6 +103,26 @@ fn choose(ctx: &Context, workspace: &mut Workspace, label: &str) {
     );
     settled(ctx, workspace);
 }
+
+fn choose_program(ctx: &Context, workspace: &mut Workspace, label: &str) {
+    crate::controls::begin_observation(ctx, true);
+    settled(ctx, workspace);
+    let records: Vec<serde_json::Value> =
+        serde_json::from_str(&crate::controls::observed(ctx).unwrap()).unwrap();
+    let trigger = records
+        .iter()
+        .rev()
+        .find(|record| record["role"] == "combobox" && record["label"] == "cfg_program_scope")
+        .expect("the real graph source filter must be painted");
+    let rect = &trigger["rect"];
+    let center = egui::pos2(
+        (rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap()) as f32 / 2.0,
+        (rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap()) as f32 / 2.0,
+    );
+    crate::controls::begin_observation(ctx, false);
+    click(ctx, workspace, center);
+    choose(ctx, workspace, label);
+}
 fn grouped_report(count: usize) -> AnalysisReport {
     let mut result = report();
     let template = result.cfg[0].clone();
@@ -128,6 +149,44 @@ fn grouped_report(count: usize) -> AnalysisReport {
         .collect();
     result.ssa.value_count = count * 4 + 100;
     result.ssa.effect_count = count * 4 + 100;
+    // Canonical value navigation requires an actual report-local definition,
+    // independently of the numeric counter and the instruction's display token.
+    let mut definitions = std::collections::BTreeMap::new();
+    for block in &result.ssa.blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            for &id in &instruction.results {
+                definitions.insert(
+                    id,
+                    api::SsaInstructionOrigin {
+                        state: block.state,
+                        instruction_index: index,
+                        pc: instruction.pc,
+                    },
+                );
+            }
+        }
+    }
+    let first = result.cfg[0].id;
+    result.ssa.values = (0..result.ssa.value_count)
+        .map(|id| api::SsaValue {
+            id,
+            original_value: id,
+            origin: definitions.get(&id).cloned().map_or_else(
+                || {
+                    api::SsaValueOrigin::Phi(api::SsaPhiOrigin {
+                        state: first,
+                        frame: 0,
+                        slot: id,
+                    })
+                },
+                api::SsaValueOrigin::Instruction,
+            ),
+            facts: vec![],
+            transformation: api::SsaTransformation::Original,
+            equivalent: None,
+            dependencies: vec![],
+        })
+        .collect();
     result.edges = (0..count)
         .map(|index| CfgEdge {
             id: 900 + index * 7,
@@ -203,6 +262,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
         evm_abstract_notation::Symbol::State(last),
         evm_abstract_notation::Symbol::Program(0)
     )));
+    choose(&ctx, &mut workspace, "Frame");
     choose(&ctx, &mut workspace, "Stack");
     let output = settled(&ctx, &mut workspace);
     assert!(workspace.accessible_status().contains("Frame f₀"));
@@ -233,11 +293,16 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
     assert!(
         painted_text(&output)
             .iter()
-            .filter(|(text, _)| text == &prefix)
-            .count()
-            >= 2,
-        "both SSA's selected native block and inspector must identify the chosen instance: {:?}",
+            .any(|(text, _)| text == &prefix),
+        "SSA must identify the chosen sparse Native instance: {:?}",
         painted_text(&output)
+    );
+    assert_eq!(workspace.selection.state, Some(last));
+    assert!(
+        painted_text(&output)
+            .iter()
+            .any(|(text, _)| text == &format!("{{0x{last:x}}}")),
+        "the linked Inspector must retain that exact state's snapshot"
     );
     assert_typeset_index(&output, &prefix);
     let instruction = text_rect(&output, |text| text == format!("%{}", last + 1));
@@ -262,7 +327,7 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
         }],
     );
     let output = settled(&ctx, &mut workspace);
-    let card = text_rect(&output, |text| text == "P0:B0 · 129 states");
+    let card = text_rect(&output, |text| text == "Block 0x0000 · 129 states");
     click(&ctx, &mut workspace, card.center());
     settled(&ctx, &mut workspace);
     assert_eq!(
@@ -324,7 +389,8 @@ fn default_overview_instance_picker_keeps_sparse_native_ids_and_linked_ssa() {
         assert_eq!(workspace.selection.state, Some(last));
     }
     choose(&ctx, &mut workspace, "Local");
-    assert_scope(&workspace, "Local", 3, "3/129");
+    // Three retained Native states and one explicit out-of-window boundary.
+    assert_scope(&workspace, "Local", 4, "3/129");
     let status = workspace.accessible_status();
     assert!(
         status.contains("126 hidden states") && status.contains("1 boundary edges"),
@@ -381,13 +447,13 @@ fn states_and_program_filter_preserve_cross_program_local_neighbors() {
     attach_snapshots(&mut report);
     let mut workspace = workspace(report);
     settled(&ctx, &mut workspace);
+    choose(&ctx, &mut workspace, "Overview");
+    choose_program(&ctx, &mut workspace, "All programs");
+    settled(&ctx, &mut workspace);
     assert_scope(&workspace, "Blocks", 2, "3/3");
     choose(&ctx, &mut workspace, "States");
     assert_scope(&workspace, "States", 3, "3/3");
-    choose(&ctx, &mut workspace, "All programs");
-    let output = settled(&ctx, &mut workspace);
-    let p1 = text_rect(&output, |text| text == "P1 · Runtime");
-    click(&ctx, &mut workspace, p1.center());
+    choose_program(&ctx, &mut workspace, "0x222222…222222");
     settled(&ctx, &mut workspace);
     assert_scope(&workspace, "States", 1, "1/3");
     let status = workspace.accessible_status();

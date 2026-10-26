@@ -520,3 +520,110 @@ fn invalid_final_publication_stops_download_retries_without_erasing_the_previous
         assert!(workspace.task.next_command(10.0).is_none());
     }
 }
+
+#[test]
+fn catalog_growth_keeps_canonical_focus_and_binds_the_exact_installed_job() {
+    use super::{navigation::CameraBookmark, presentation::PublicationIdentity};
+    use std::sync::Arc;
+    let mut workspace = Workspace::default();
+    workspace.initial_command();
+    let mut report: AnalysisReport = crate::tests::report().into();
+    let first = publication(1, None, Some(1));
+    status(
+        &mut workspace,
+        evm_abstract_protocol::JobState::Running,
+        first.clone(),
+    );
+    let (generation, id) = fetch(&mut workspace, 0.0);
+    result(&mut workspace, generation, id, first, report.clone());
+    let view = workspace.report_view.identity();
+    let camera = CameraBookmark::new(0.75, [17.0, -23.0]).unwrap();
+    workspace
+        .report_view
+        .navigator_mut()
+        .remember_camera(camera);
+    let focus = workspace
+        .report_view
+        .navigator()
+        .current()
+        .cloned()
+        .unwrap();
+    assert_eq!(workspace.report_view.index().identity().job, Some(id));
+
+    let mut alias = report.programs[0].as_ref().clone();
+    alias.id = report.programs.len();
+    alias.code_address = Some(format!("0x{}02", "00".repeat(19)));
+    report.programs.push(Arc::new(alias));
+    report.validate().unwrap();
+    let richer = publication(2, None, Some(1));
+    status(
+        &mut workspace,
+        evm_abstract_protocol::JobState::Completed,
+        richer.clone(),
+    );
+    let (generation, id) = fetch(&mut workspace, 1.0);
+    result(&mut workspace, generation, id, richer.clone(), report);
+    assert_eq!(workspace.report_view.identity(), view);
+    assert_eq!(workspace.report_view.navigator().current(), Some(&focus));
+    let presentation = workspace
+        .report_view
+        .presentation(workspace.report.as_ref().unwrap());
+    assert!(
+        presentation.program(1).is_some(),
+        "new catalog aliases are indexed even when graph version stays fixed"
+    );
+    assert_eq!(
+        presentation.identity(),
+        PublicationIdentity {
+            report: view.generation(),
+            job: Some(id),
+            publication: Some(richer.version),
+            minimum: None,
+            global: None,
+            native: richer.native_version,
+        }
+    );
+}
+
+#[test]
+fn report_replacement_retires_canonical_history_and_old_numeric_source_handles() {
+    use super::{
+        navigation::{Intent, NavigationError},
+        presentation::ContextTarget,
+    };
+    let mut workspace = Workspace::default();
+    let report: AnalysisReport = crate::tests::report().into();
+    workspace.receive(Ok(AnalyzeReply {
+        result: Ok(report.clone()),
+    }));
+    let first = workspace
+        .report_view
+        .navigator()
+        .current()
+        .unwrap()
+        .focus
+        .clone();
+    let next = workspace
+        .report_view
+        .presentation(&report)
+        .focus_context(ContextTarget {
+            view: first.view,
+            context: navigation::ContextFocus::Graph { state: 2 },
+        })
+        .unwrap();
+    workspace
+        .report_view
+        .navigate(&report, Intent::Open(next))
+        .unwrap();
+    assert!(workspace.report_view.navigator().can_back());
+    workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
+    assert!(!workspace.report_view.navigator().can_back());
+    assert!(!workspace.report_view.navigator().can_forward());
+    assert_ne!(workspace.report_view.identity(), first.view);
+    assert_eq!(
+        workspace
+            .report_view
+            .navigate(workspace.report.as_ref().unwrap(), Intent::Open(first)),
+        Err(NavigationError::StaleReport)
+    );
+}

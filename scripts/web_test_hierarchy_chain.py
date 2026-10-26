@@ -4,8 +4,8 @@ from playwright.sync_api import expect
 import hashlib
 import json
 import re
-from web_test_graph_helpers import graph_mode, symbol
-from web_test_harness import settle_gesture, webgpu_evidence
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol
+from web_test_harness import click_control, settle_control_geometry, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_camera_intervals, layout_card_extent, layout_ink, node_snapshot
 from web_test_hybrid import source_instructions
@@ -15,16 +15,18 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
     page, canvas, errors = layout_page(browser, url)
     code, metadata = layout_fixture(fixture_name)
     report = layout_submission(page, canvas, code, output, fixture_name)
-    # Namespace activation preserves the previous Global camera. Establish the
-    # all-content Native fit required by the affine pixel measurement below.
-    canvas.click(position={"x":132,"y":110})  # Native Fit graph, with World closed.
-    page.mouse.move(2,2);settle_gesture(page)
+    # The original full-scene and camera proofs deliberately use all contexts.
+    # The default readable entry window has its own scoped-card semantics.
+    graph_overview(page, canvas)
+    graph_content(page, canvas, "SSA")
+    click_control(page,canvas,"Fit graph",role="action")
+    settle_control_geometry(page)
     assert report["status"] == "Converged", report["frontiers"]
     assert len(report["cfg"]) == metadata["expected_native_states"]
     assert len(report["edges"]) == metadata["expected_original_edges"]
     scene = layout_counts(page, report, metadata["expected_spatial_groups"])
     assert scene["nodes"] == metadata["expected_source_blocks"]
-    assert scene["detail"] == "identities"
+    assert scene["detail"] == "overview shapes"
     if native_projection:
         assert hashlib.sha256(bytes.fromhex(code)).hexdigest() == metadata["code_sha256"]
         request = json.loads((output/f"{fixture_name}-request.json").read_text())
@@ -67,7 +69,8 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
                (before["bounds"][1]+before["bounds"][3])/2)
     page.mouse.move(*pointer)
     page.keyboard.down("Control"); page.mouse.wheel(0, 160); page.keyboard.up("Control")
-    page.mouse.move(2,2); settle_gesture(page)
+    settle_gesture(page)
+    settle_control_geometry(page)
     after = layout_card_extent(page, canvas.screenshot(path=str(output/f"{prefix}-zoom-out.png")))
     assert after["bounds"] and after["pixels"] > 50, after
     before_height = before["bounds"][3]-before["bounds"][1]
@@ -98,7 +101,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert native_scene["shown_states"] == native_scene["total_states"] == metadata["expected_native_states"]
         assert native_scene["hidden_states"] == native_scene["boundary_edges"] == 0
         canvas.screenshot(path=str(output/f"{prefix}-states-overview.png"))
-        canvas.click(position={"x":225,"y":107});settle_gesture(page)
+        click_control(page, canvas, "Focus selected", role="action")
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         native_focus = node_snapshot(page,canvas,output,f"{prefix}-states-focused")
         selected = re.search(r"Selected (σ[^;]+);",page.locator("#analysis-status").text_content())[1]
@@ -109,7 +112,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert native_ink["preview_pixels"] > 0, "native focus did not paint real SSA instructions"
         assert layout_counts(page,report,1,mode="States") == {**native_scene,"detail":"SSA preview"}
         graph_mode(page,canvas,"Blocks")
-        canvas.click(position={"x":225,"y":107});settle_gesture(page)
+        click_control(page, canvas, "Focus selected", role="action")
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         source_scene = layout_counts(page,report,1)
         assert source_scene == {**scene,"detail":"SSA preview"}

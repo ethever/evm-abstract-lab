@@ -7,11 +7,153 @@ import json
 import time
 import zlib
 from playwright.sync_api import Error as PlaywrightError
-from web_test_harness import rendered_frame, settle_gesture
+from web_test_harness import click_control, rendered_frame, settle_gesture, ui_control
 from web_test_pixels import canvas_screenshot, save_png_crop, text_pixels
 
 
 STORAGE_SLOT_WORD = "0x1234567890abcdef234567890abcdef134567890abcdef124567890190abcdef"
+
+
+def storage_content_region(page):
+    """Start below the actual current/rollback store row, after Native scope."""
+    controls = [ui_control(page, label, role="tab")
+                for label in ["Current store", "Frame rollback store"]]
+    top = max(control["rect"][3] for control in controls) + 3
+    size = page.viewport_size
+    return (4, top, size["width"] - 24, size["height"] - 30)
+
+
+def storage_copy_full_slot(page, canvas, cell, expected):
+    """Read the clipboard after the real context-menu action on a painted slot."""
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    left, top, right, bottom = cell["bounds"]
+    page.mouse.click((left + right) / 2, (top + bottom) / 2, button="right")
+    settle_gesture(page)
+    click_control(page, canvas, "Copy full slot key", role="action")
+    deadline = time.monotonic() + 5
+    while True:
+        copied = page.evaluate("navigator.clipboard.readText()")
+        if copied == expected or time.monotonic() >= deadline:
+            break
+        page.wait_for_timeout(25)
+    assert copied == expected, (expected, copied)
+    return copied
+
+
+def touch_scroll_storage(page, region, *, swipes=3, trace_path=None):
+    """Swipe the real viewport without turning paint diagnostics into a hold."""
+    left, top, right, bottom = region
+    x, start, end = min(left + 80, right - 8), bottom - 25, top + 25
+    assert start - end > 100, region
+    assert type(swipes) is int and swipes > 0, swipes
+    session = page.context.new_cdp_session(page)
+    paints = []
+    host_origin = time.monotonic()
+    native_events = None
+    page.evaluate("""() => {
+        const canvas=document.querySelector('#evm-canvas');
+        const types=['pointerdown','pointermove','pointerup','pointercancel',
+                     'touchstart','touchmove','touchend','touchcancel'];
+        const events=[];
+        const record=event=>events.push({type:event.type,timeStamp:event.timeStamp,
+            observedPerformanceNow:performance.now(),trusted:event.isTrusted,
+            pointerType:event.pointerType ?? null,pointerId:event.pointerId ?? null,
+            x:event.clientX ?? null,y:event.clientY ?? null,
+            touches:event.changedTouches ? Array.from(event.changedTouches,t=>({
+                id:t.identifier,x:t.clientX,y:t.clientY})) : null});
+        for(const type of types)canvas.addEventListener(type,record,{capture:true,passive:true});
+        window.__storageTouchEventProbe={canvas,types,record,events};
+    }""")
+
+    def persist():
+        if trace_path is not None:
+            Path(trace_path).write_text(json.dumps({"region":region,"swipes":swipes,
+                "moves_per_swipe":16,"host_clock":"Python time.monotonic relative seconds",
+                "native_clock":"DOM event.timeStamp / performance.now observation only",
+                "events":paints,"native_events":native_events},indent=2)+"\n")
+
+    def dispatch_painted(group):
+        # Start and the ORIGINAL Move1 share one consumed-paint confirmation.
+        # No browser probe, paint wait or screenshot may hold a stationary finger
+        # between their real dispatches: egui correctly interprets that as a menu.
+        before = page.evaluate("window.__webgpuEvidence.submissions")
+        steps=[step for _,_,step in group]
+        records=[{"swipe":swipe+1,"phase":phase,"step":step,"points":points,
+                  "paint_group_steps":steps,"gpu_submissions_before":before,
+                  "gpu_submissions_after":None,"status":"queued"}
+                 for phase,points,step in group]
+        paints.extend(records)
+        persist()
+        try:
+            for event in records:
+                event["status"]="dispatching"
+                event["host_dispatch_started_seconds"]=time.monotonic()-host_origin
+                session.send("Input.dispatchTouchEvent", {
+                    "type":event["phase"],"touchPoints":event["points"]})
+                event["host_dispatch_acked_seconds"]=time.monotonic()-host_origin
+                event["status"]="dispatched"
+            persist()
+            wait_started=time.monotonic()-host_origin
+            page.wait_for_function("before => window.__webgpuEvidence.submissions >= before + 2",
+                                   arg=before, polling=25, timeout=5000)
+            rendered_frame(page)
+            after=page.evaluate("window.__webgpuEvidence.submissions")
+            for event in records:
+                event.update(gpu_submissions_after=after,
+                    status="painted_group" if len(records)>1 else "painted",
+                    host_wait_started_seconds=wait_started,
+                    host_paint_confirmed_seconds=time.monotonic()-host_origin)
+            persist()
+            if trace_path is not None and len(records)>1:
+                image=Path(trace_path).with_name(Path(trace_path).stem+"-post-move1.png")
+                png_started=time.monotonic()-host_origin
+                canvas_screenshot(page,path=str(image))
+                for event in records:
+                    event.update(phase_png=str(image),phase_png_after_step=1,
+                        host_png_started_seconds=png_started,
+                        host_png_finished_seconds=time.monotonic()-host_origin)
+                persist()
+        except Exception as error:
+            for event in records:
+                event.update(status="failed",error=str(error))
+            try:
+                after=page.evaluate("window.__webgpuEvidence.submissions")
+                for event in records:
+                    event.update(gpu_submissions_after=after,
+                        analysis_status=page.locator("#analysis-status").text_content())
+                persist()
+                if trace_path is not None:
+                    canvas_screenshot(page,path=str(Path(trace_path).with_suffix(".png")))
+            except Exception as capture_error:
+                for event in records:event["capture_error"]=str(capture_error)
+            persist()
+            raise
+
+    try:
+        for swipe in range(swipes):
+            dispatch_painted([
+                ("touchStart",[{"id":1,"x":x,"y":start,"radiusX":3,"radiusY":3}],0),
+                ("touchMove",[{"id":1,"x":x,"y":start+(end-start)/16,
+                               "radiusX":3,"radiusY":3}],1)])
+            for step in range(2,17):
+                dispatch_painted([("touchMove",[
+                    {"id":1,"x":x,"y":start+(end-start)*step/16,
+                     "radiusX":3,"radiusY":3}],step)])
+            dispatch_painted([("touchEnd",[],17)])
+            settle_gesture(page)
+    finally:
+        try:
+            native_events=page.evaluate("""() => {
+                const probe=window.__storageTouchEventProbe;
+                for(const type of probe.types)probe.canvas.removeEventListener(type,probe.record,true);
+                delete window.__storageTouchEventProbe;
+                return probe.events;
+            }""")
+            persist()
+        finally:
+            session.detach()
+    return paints
+
 
 def storage_table_pixels(page, screenshot: bytes, region):
     """Find the painted divider, header and cells, without reading egui state."""
@@ -75,8 +217,7 @@ def storage_table_snapshot(page, canvas, output: Path, name: str, tab_bottom: fl
     page.mouse.move(2,2)
     settle_gesture(page)
     png=canvas.screenshot(path=str(output/f"{name}.png"))
-    size=page.viewport_size
-    table=storage_table_pixels(page,png,(4,tab_bottom+52,size["width"]-24,size["height"]-30))
+    table=storage_table_pixels(page,png,storage_content_region(page))
     assert table["header"]["slot"] and table["header"]["value"], f"Slot/Value headers are missing: {storage_pixel_report(table)}"
     assert len(table["rows"])==count, f"expected {count} body rows distinct from the header: {storage_pixel_report(table)}"
     assert all(row["slot"] and row["value"] for row in table["rows"]), storage_pixel_report(table)
@@ -129,16 +270,19 @@ def drag_storage_separator(page, table, target_x: float):
     page.mouse.up()
     settle_gesture(page)
 
-def storage_ink_pixels(page, screenshot: bytes, region):
+def storage_ink_pixels(page, screenshot: bytes, region, *, tooltip=False):
     """Retain the glyph mask and every RGB sample of the text and its region."""
-    return page.evaluate("""async ({png,region}) => {
+    return page.evaluate("""async ({png,region,tooltip}) => {
         const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
         const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
         const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
         const data=ctx.getImageData(0,0,c.width,c.height).data,scale=image.width/innerWidth;
         const [left,top,right,bottom]=region.map(n=>Math.round(n*scale));
         const ink=(x,y)=>{const i=(y*c.width+x)*4,r=data[i],g=data[i+1],b=data[i+2];
-            return r>=128&&b>=g&&g>=r&&b-r<=35;};
+            // Use the reviewed table's unchanged red coverage threshold for
+            // its same monospace glyphs on the brighter tooltip background.
+            const red=tooltip ? 14+(r-20)*(224-14)/(224-20) : r;
+            return red>=128&&b>=g&&g>=r&&b-r<=35;};
         let minX=right,minY=bottom,maxX=-1,maxY=-1,count=0;
         for(let y=top;y<bottom;y++)for(let x=left;x<right;x++)if(ink(x,y)){
             minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);count++;
@@ -160,7 +304,7 @@ def storage_ink_pixels(page, screenshot: bytes, region):
             mask_size:[width,height],mask_sha256:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join(''),
             rgb_raster:rgb(minX,minY,maxX+1,maxY+1),
             region:{bounds:region,mask_size:[right-left,bottom-top],rgb_raster:rgb(left,top,right,bottom)}};
-    }""", {"png":base64.b64encode(screenshot).decode(),"region":region})
+    }""", {"png":base64.b64encode(screenshot).decode(),"region":region,"tooltip":tooltip})
 
 def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
     left,top,right,bottom=cell["bounds"]
@@ -170,17 +314,20 @@ def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     # Tooltips use the panel fill. Find their real rectangle below the native
     # titlebar, rather than assuming a fixed placement beside the pointer.
-    bounds=page.evaluate("""async png => {
+    # The graph also uses PANEL. Search inside the actual Inspector lane so
+    # a wide card elsewhere cannot impersonate this native hover window.
+    inspector_top=ui_control(page,"inspector_tab",role="combobox")["rect"][1]
+    bounds=page.evaluate("""async ({png,top}) => {
         const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
         const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
         const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
         const data=ctx.getImageData(0,0,c.width,c.height).data,scale=image.width/innerWidth;
         const runs=[];
-        for(let y=80*scale;y<c.height-30*scale;y++) {
+        for(let y=Math.ceil(top*scale);y<c.height-30*scale;y++) {
             let start=0;
             for(let x=0;x<=c.width;x++) {
                 const i=(y*c.width+x)*4;
-                if(x<c.width&&data[i]===21&&data[i+1]===29&&data[i+2]===42)continue;
+                if(x<c.width&&data[i]===20&&data[i+1]===25&&data[i+2]===33)continue;
                 if(x-start>200*scale)runs.push([start,y,x,y+1]);
                 start=x+1;
             }
@@ -190,11 +337,11 @@ def storage_hover_snapshot(page, canvas, output: Path, name: str, cell):
         const wide=runs.filter(r=>r[2]-r[0]>=maxWidth-8*scale);
         return [Math.min(...wide.map(r=>r[0]))/scale,Math.min(...wide.map(r=>r[1]))/scale,
             Math.max(...wide.map(r=>r[2]))/scale,Math.max(...wide.map(r=>r[3]))/scale];
-    }""",base64.b64encode(png).decode())
+    }""",{"png":base64.b64encode(png).decode(),"top":inspector_top})
     assert bounds, f"no rendered hover details for {name}"
     metrics=text_pixels(page,png,bounds)
     save_png_crop(page,png,bounds,output/f"{name}-tooltip.png")
-    ink=storage_ink_pixels(page,png,bounds)
+    ink=storage_ink_pixels(page,png,bounds,tooltip=True)
     return {"bounds":bounds,"text":metrics,"raster":ink.pop("region"),"ink":ink}
 
 def assert_storage_cell_text(before, after, label="Value"):
@@ -223,8 +370,29 @@ def storage_reviewed_raster(key, text, size, mask_sha256):
     assert fixture["mask_sha256"]==mask_sha256==hashlib.sha256(mask).hexdigest(), key
     return {"bounds":[0,0,*size],"mask_size":size,"rgb_raster":base64.b64encode(raster).decode()}
 
-def assert_storage_reviewed_pixels(cell, key, text, size, mask_sha256):
+
+def storage_current_palette_raster(reference, *, tooltip=False):
+    """Repaint the independently reviewed coverage using the exact new palette.
+
+    Font/TEXT and body red are unchanged. The old red sample therefore supplies
+    glyph coverage; only the known background changes. Keep the original RGB
+    sample positions and the existing maximum-two compositor-rounding bound.
+    """
+    old_background = (14, 19, 29)
+    background = (20, 25, 33) if tooltip else (14, 17, 23)
+    source = base64.b64decode(reference["rgb_raster"])
+    raster = bytearray()
+    for index in range(0, len(source), 3):
+        coverage = max(0, min(1, (source[index] - old_background[0]) / (224 - old_background[0])))
+        raster.extend(round(source[index + channel]
+                            + (background[channel] - old_background[channel]) * (1 - coverage))
+                      for channel in range(3))
+    return {**reference, "rgb_raster": base64.b64encode(raster).decode()}
+
+
+def assert_storage_reviewed_pixels(cell, key, text, size, mask_sha256, *, tooltip=False):
     reference=storage_reviewed_raster(key,text,size,mask_sha256)
+    reference=storage_current_palette_raster(reference,tooltip=tooltip)
     return {"expected_text":text,"mask_size":size,"reviewed_mask_sha256":mask_sha256,
             **assert_storage_cell_text(reference,cell,text)}
 

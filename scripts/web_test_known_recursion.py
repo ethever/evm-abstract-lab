@@ -2,9 +2,9 @@
 
 from playwright.sync_api import expect
 import json
-from web_test_graph_helpers import graph_mode, symbol
+from web_test_graph_helpers import graph_mode, graph_overview, symbol
 from web_test_harness import settle_gesture, webgpu_evidence
-from web_test_inspector_helpers import hide_inspector, inspector_frame_tab, inspector_title_action
+from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_tab
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import node_snapshot, text_pixels, workspace_content_bottom
 from web_test_wire_bytes import assert_return_word42
@@ -44,6 +44,7 @@ def known_recursion_interactions(browser, url, output):
     assert returns
     for outcome in returns:
         assert_return_word42(report, outcome)
+    graph_overview(page, canvas, all_programs=True)
     graph_mode(page, canvas, "States")
     page.keyboard.press("f")
     settle_gesture(page)
@@ -58,15 +59,16 @@ def known_recursion_interactions(browser, url, output):
         if f"Selected {symbol('σ', source)};" in status.text_content():
             break
     expect(status).to_contain_text(f"Selected {symbol('σ', source)};")
-    hide_inspector(page, canvas)
+    select_inspector_tab(page, canvas, "Frame")
     expect(status).to_contain_text("Inspector: Frame")
     expect(status).to_contain_text("Recursive bytecode · closed")
     expect(status).not_to_contain_text("Abstract interactions")
     tab = inspector_frame_tab(page, canvas)
     inspector_title_action(page, canvas, "Maximize", tab)
+    tab = inspector_frame_tab(page, canvas)
     settle_gesture(page)
     png = canvas.screenshot(path=str(output / "known-recursion-summary-inspector.png"))
-    pixels = text_pixels(page, png, (8, 80, 1410, workspace_content_bottom(page, png)))
+    pixels = text_pixels(page, png, (8, tab[3] + 3, 1410, workspace_content_bottom(page, png)))
     assert len(pixels["rows"]) >= 10 and pixels["white_pixels"] > 100, pixels
     assert len(posts) == 1 and not errors
     result = {"status": report["status"], "ssa_complete": report["ssa"]["complete"],

@@ -132,6 +132,117 @@ fn label_rect(output: &FullOutput, label: &str) -> Rect {
 }
 
 #[test]
+fn desktop_sources_keep_their_height_beside_a_tall_docked_inspector() {
+    let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));
+    workbench.frame(vec![]);
+    workbench.drag_to_height(2000.0);
+    let preferred = workbench.rect("world_inspector").height();
+    let selected = workbench.workspace.selection;
+    let route = workbench.workspace.view;
+    workbench.click("Sources");
+    assert!(workbench.workspace.inspector.expanded);
+    assert!(!workbench.workspace.inspector.maximized());
+    let sources = workbench.rect("world_directory");
+    let inspector = workbench.rect("world_inspector");
+    assert!(
+        sources.height() > 600.0,
+        "the chooser must not inherit the graph's 72px remainder"
+    );
+    assert!(inspector.left() >= sources.right() - 1.0);
+    let filter = workbench
+        .ctx
+        .read_response(Id::new("source_context_filter"))
+        .unwrap();
+    assert!(sources.contains_rect(filter.rect));
+    assert!((inspector.height() - preferred).abs() < 2.0);
+    workbench
+        .workspace
+        .choose_context(evm_abstract_protocol::AnalysisNamespace::Native);
+    workbench.frame(vec![]);
+    let filter = workbench
+        .ctx
+        .read_response(Id::new("source_context_filter"))
+        .unwrap();
+    assert!(workbench.rect("world_directory").contains_rect(filter.rect));
+    workbench.click("Sources");
+    assert!(!workbench.workspace.directory.open);
+    assert!((workbench.rect("world_inspector").height() - preferred).abs() < 2.0);
+    assert_eq!(workbench.workspace.selection, selected);
+    assert_eq!(workbench.workspace.view, route);
+}
+
+#[test]
+fn sources_and_context_chooser_remain_reachable_after_maximize() {
+    for context_choice in [false, true] {
+        let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));
+        workbench.frame(vec![]);
+        workbench.drag_to_height(430.0);
+        let preferred = workbench.rect("world_inspector").height();
+        let focus = workbench
+            .workspace
+            .report_view
+            .navigator()
+            .current()
+            .unwrap()
+            .focus
+            .clone();
+        let route = workbench.workspace.view;
+        workbench.click("Maximize");
+        assert!(workbench.workspace.inspector.maximized());
+        if context_choice {
+            workbench
+                .workspace
+                .choose_context(evm_abstract_protocol::AnalysisNamespace::Native);
+            workbench.frame(vec![]);
+        } else {
+            workbench.click("Sources");
+        }
+        assert!(workbench.workspace.directory.open);
+        assert!(!workbench.workspace.inspector.expanded);
+        let filter = workbench
+            .ctx
+            .read_response(Id::new("source_context_filter"))
+            .expect("the requested chooser must render its real editor");
+        assert!(filter.rect.is_positive());
+        assert!(workbench.rect("world_directory").contains_rect(filter.rect));
+        assert_eq!(workbench.workspace.view, route);
+        assert_eq!(
+            workbench
+                .workspace
+                .report_view
+                .navigator()
+                .current()
+                .unwrap()
+                .focus,
+            focus
+        );
+        workbench.click("Inspect");
+        assert!(
+            workbench.workspace.inspector.maximized(),
+            "retain the user's full-panel preference"
+        );
+        assert!(!workbench.workspace.sources_visible());
+        assert!(
+            workbench.workspace.directory.open,
+            "retain the source-panel preference while Inspect is maximized"
+        );
+        workbench.click("Restore");
+        assert!((workbench.rect("world_inspector").height() - preferred).abs() < 2.0);
+        assert_eq!(workbench.workspace.view, route);
+        assert_eq!(
+            workbench
+                .workspace
+                .report_view
+                .navigator()
+                .current()
+                .unwrap()
+                .focus,
+            focus
+        );
+    }
+}
+
+#[test]
 fn dragging_inspect_can_use_most_of_the_result_workspace() {
     let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));
     workbench.frame(vec![]);
@@ -146,16 +257,22 @@ fn dragging_inspect_can_use_most_of_the_result_workspace() {
     let status = workbench.rect("workspace_status");
     assert!(inspector.top() >= context.bottom());
     assert!(inspector.bottom() <= status.top());
-    assert!((inspector.top() - context.bottom() - 32.0).abs() < 2.0);
+    assert!((inspector.top() - context.bottom() - super::PANE_REMAINDER).abs() < 2.0);
 }
 
 #[test]
 fn short_viewports_use_a_moderate_default_but_allow_a_larger_user_height() {
     let mut workbench = Workbench::new(egui::vec2(390.0, 300.0));
     workbench.frame(vec![]);
-    assert!(workbench.rect("world_inspector").height() <= 300.0 * 0.38 + 1.0);
+    let initial = workbench.rect("world_inspector").height();
+    assert!(initial <= 300.0 * 0.38 + 1.0);
     workbench.drag_to_height(175.0);
-    assert!(workbench.rect("world_inspector").height() > 300.0 * 0.38 + 20.0);
+    let available = workbench.rect("workspace_status").top()
+        - workbench.rect("result_context").bottom()
+        - super::PANE_REMAINDER;
+    let chosen = workbench.rect("world_inspector").height();
+    assert!(chosen > initial + 1.0);
+    assert!((chosen - 175.0_f32.min(available)).abs() < 2.0);
 }
 
 #[test]
@@ -318,10 +435,27 @@ fn maximizing_and_restoring_keep_the_existing_cfg_camera() {
         .zoom_at(egui::vec2(140.0, 120.0), 0.7);
     let before = workbench.frame(vec![]);
     let camera = workbench.workspace.graph.accessible_summary();
+    let report = workbench.workspace.report.as_ref().unwrap();
+    let state = report
+        .native
+        .as_ref()
+        .unwrap()
+        .cfg
+        .iter()
+        .find(|state| state.id == 1)
+        .unwrap();
+    let source = report.source_block(state.source_block().unwrap()).unwrap();
+    let instruction = &source.instructions[0];
+    let title = format!("Block 0x{:04x}", source.start_pc);
+    let source_row = format!("{:04x}  {}", instruction.pc, instruction.name);
     let (node_title, node) = labels(&before)
         .into_iter()
-        .find(|(text, _)| text.split("  ·").next() == Some("σ1"))
-        .expect("the unselected native node is visible in the CFG");
+        .find(|(text, _)| {
+            text == &title
+                || text.starts_with(&source_row)
+                || text.split("  ·").next() == Some("σ1")
+        })
+        .expect("the unselected node's actual source instruction is visible in the CFG");
     let selection = workbench.workspace.selection;
     workbench.click("Maximize");
     workbench.click("Restore");
@@ -379,8 +513,10 @@ fn maximizing_and_restoring_keep_the_source_reading_position() {
     fn rows(output: &FullOutput) -> Vec<(String, Pos2)> {
         labels(output)
             .into_iter()
-            .filter(|(text, _)| text.starts_with("ROW_"))
-            .map(|(text, rect)| (text, rect.min))
+            .filter_map(|(text, rect)| {
+                text.find("ROW_")
+                    .map(|start| (text[start..].to_owned(), rect.min))
+            })
             .collect()
     }
     let before = rows(&workbench.frame(vec![]));

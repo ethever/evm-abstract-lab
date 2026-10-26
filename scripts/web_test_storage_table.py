@@ -5,9 +5,9 @@ from pathlib import Path
 import base64
 from playwright.sync_api import expect
 import json
-from web_test_harness import observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
-from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_tab
-from web_test_storage_helpers import STORAGE_SLOT_WORD, assert_storage_cell_text, assert_storage_literal_pixels, assert_storage_preference, assert_storage_reviewed_pixels, assert_storage_suffix, drag_storage_separator, storage_glyph_cells, storage_hover_snapshot, storage_pixel_report, storage_reviewed_raster, storage_scrolled_snapshot, storage_separator_offset, storage_table_snapshot
+from web_test_harness import observe_webgpu, rendered_frame, set_control, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_boundary, select_inspector_tab
+from web_test_storage_helpers import STORAGE_SLOT_WORD, assert_storage_cell_text, assert_storage_literal_pixels, assert_storage_preference, assert_storage_reviewed_pixels, assert_storage_suffix, drag_storage_separator, storage_content_region, storage_copy_full_slot, storage_current_palette_raster, storage_glyph_cells, storage_hover_snapshot, storage_pixel_report, storage_reviewed_raster, storage_scrolled_snapshot, storage_separator_offset, storage_table_snapshot
 
 
 def storage_table_interactions(browser, url: str, output: Path):
@@ -45,7 +45,7 @@ def storage_table_interactions(browser, url: str, output: Path):
 
     def submit_fixture(revision, long_slots=True, literal_word=word):
         code,expected=fixture(revision,long_slots,literal_word)
-        reply=submit_bytecode(page,canvas,code,output/f"storage-table-input-{revision}.png")
+        reply=submit_bytecode(page,canvas,code,output/f"storage-table-input-{revision}.png",close_directory=True)
         assert reply.status==200,reply.json()
         report=reply.report
         (output/f"storage-table-full-analysis-{revision}.json").write_text(json.dumps(report,indent=2)+"\n")
@@ -72,8 +72,7 @@ def storage_table_interactions(browser, url: str, output: Path):
         return expected
 
     submit_fixture(-1,long_slots=False)
-    canvas.click(position={"x":720,"y":600})
-    page.keyboard.press("3")
+    select_inspector_tab(page,canvas,"Frame")
     tab=inspector_frame_tab(page,canvas)
     page.mouse.move(720,tab[1]-3)
     page.mouse.down()
@@ -86,7 +85,7 @@ def storage_table_interactions(browser, url: str, output: Path):
     short_defaults={}
     for title,kind in [("Storage","storage"),("Transient","transient")]:
         select_inspector_tab(page,canvas,title,toolbar_y)
-        canvas.click(position={"x":145,"y":tab[3]+14})
+        select_inspector_boundary(page,canvas,"after")
         expect(status).to_contain_text("Observed exit")
         short_defaults[kind]=storage_table_snapshot(page,canvas,output,
             f"storage-table-{kind}-short-default",tab[3],3)
@@ -95,7 +94,7 @@ def storage_table_interactions(browser, url: str, output: Path):
     expected=submit_fixture(0)
     for title,kind in [("Storage","storage"),("Transient","transient")]:
         select_inspector_tab(page,canvas,title,toolbar_y)
-        canvas.click(position={"x":145,"y":tab[3]+14})
+        select_inspector_boundary(page,canvas,"after")
         expect(status).to_contain_text("Observed exit")
         initial=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-initial",tab[3],len(slots))
         for slot,row in zip(slots[:3],initial["rows"][:3],strict=True):
@@ -105,12 +104,17 @@ def storage_table_interactions(browser, url: str, output: Path):
         full_comparison=assert_storage_literal_pixels(full,word)
         full_value_comparison=assert_storage_literal_pixels(initial["rows"][2]["value"],"{"+word+"}")
         assert full["bounds"][2]-full["bounds"][0]>500,storage_pixel_report(full)
+        # Copy a different key first, so stale clipboard content cannot prove
+        # the complete key action, either here or after opt-in elision below.
+        storage_copy_full_slot(page,canvas,initial["rows"][0]["slot"],"0x0")
+        full_copy=storage_copy_full_slot(page,canvas,full,word)
         full_hover=storage_hover_snapshot(page,canvas,output,f"storage-table-{kind}-full-slot-hover",initial["rows"][-1]["slot"])
-        # This varied literal fits one proportional-font tooltip line. Require
-        # its complete reviewed raster, including the original 0x prefix.
-        assert len(full_hover["text"]["rows"])==1 and full_hover["ink"]["mask_size"]==[465,10],storage_pixel_report(full_hover)
-        full_hover_comparison=assert_storage_reviewed_pixels(full_hover["raster"],"slot_hover",word,[476,23],
-            "c24455921e771f31c4dff3e171ab62b12271f5c29b07f653f4492e6b0092488a")
+        # The accepted slot widget now uses ui.monospace in the tooltip. Reuse
+        # the independent complete Slot raster, with the exact tooltip palette,
+        # rather than the earlier proportional-font hover's window margins.
+        assert len(full_hover["text"]["rows"])==1 and full_hover["ink"]["mask_size"]==[514,10],storage_pixel_report(full_hover)
+        full_hover_comparison=assert_storage_reviewed_pixels(full_hover["ink"],"full_slot",word,[514,10],
+            "7f1ebe5c7ae6c51205b1c0ab84b5f70a7f2d6e0c00c2254e8bfb973e378fb7b0",tooltip=True)
         if kind=="transient":
             assert initial["rows"][0]["value"]["mask_sha256"]!=results["storage"]["initial"]["rows"][0]["value"]["mask_sha256"], "Transient rendered the persistent value"
         drag_storage_separator(page,initial,initial["separator"]+320)
@@ -137,6 +141,8 @@ def storage_table_interactions(browser, url: str, output: Path):
                 assert_storage_cell_text(first["slot"],last["slot"],"un-padded short Slot")
             current=narrow
         assert narrow["separator"]<initial["separator"]-20,storage_pixel_report((initial,narrow))
+        storage_copy_full_slot(page,canvas,narrow["rows"][0]["slot"],"0x0")
+        suffix_copy=storage_copy_full_slot(page,canvas,narrow["rows"][-1]["slot"],word)
         assert_storage_cell_text(initial["rows"][-1]["slot"],wide["rows"][-1]["slot"],"complete widened Slot")
         value_comparisons=[assert_storage_cell_text(first["value"],last["value"])
             for first,last in zip(initial["rows"],narrow["rows"],strict=True)]
@@ -161,23 +167,25 @@ def storage_table_interactions(browser, url: str, output: Path):
         small_tab=inspector_frame_tab(page,canvas)
         small_toolbar_y=sum(small_tab[1::2])/2
         select_inspector_tab(page,canvas,title,small_toolbar_y)
-        canvas.click(position={"x":120,"y":small_tab[3]+80})
+        set_control(page,canvas,"Account facts in this store",True,role="section")
         # The indented symbolic tree has its own scroll area. Target the outer
         # inspector's left margin so it receives the complete wheel delta.
-        page.mouse.move(8,small_tab[3]+115)
+        scroll_region=storage_content_region(page)
+        wheel_y=min(scroll_region[1]+24,scroll_region[3]-24)
+        page.mouse.move(8,wheel_y)
         page.mouse.wheel(0,600)
         settle_gesture(page)
         # Keep the pointer in the outer scroll area while pending wheel frames
         # bring the complete table into view.
         scrolled=storage_scrolled_snapshot(page,output/f"storage-table-{kind}-scrolled.png",
-            (4,small_tab[3]+52,1416,970),narrow)
+            storage_content_region(page),narrow)
         page.mouse.move(2,2)
         assert_storage_preference(scrolled,preferences[kind])
         scrolled_value=assert_storage_cell_text(narrow["rows"][-1]["value"],scrolled["rows"][-1]["value"])
-        page.mouse.move(8,small_tab[3]+115)
+        page.mouse.move(8,wheel_y)
         page.mouse.wheel(0,-600)
         settle_gesture(page)
-        canvas.click(position={"x":120,"y":small_tab[3]+80})
+        set_control(page,canvas,"Account facts in this store",False,role="section")
         select_inspector_tab(page,canvas,"Frame",small_toolbar_y)
         frame=inspector_frame_tab(page,canvas)
         page.mouse.move(720,frame[1]-3)
@@ -190,11 +198,13 @@ def storage_table_interactions(browser, url: str, output: Path):
         scroll_returned=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-scroll-return",tab[3],len(slots))
         assert_storage_preference(scroll_returned,preferences[kind])
         results[kind]={"expected":expected[kind],"short_default":short_defaults[kind],
+                       "full_copy":full_copy,"elided_full_copy":suffix_copy,
                        "full_slot_raster":full,"full_slot_comparison":full_comparison,"full_value_comparison":full_value_comparison,
                        "full_slot_hover":full_hover,"full_hover_comparison":full_hover_comparison,
                        "suffixes":suffixes,"initial":initial,"wide":wide,"narrow":narrow,
                        "slot_hover":slot_hover,"value_hover":value_hover,"scrolled":scrolled,"scroll_return":scroll_returned}
         results[kind].update(value_comparisons=value_comparisons,scrolled_value=scrolled_value)
+        results[kind].update(scroll_region=scroll_region,scroll_pointer=[8,wheel_y])
 
     # Returning from another inspector tab, workspace views, hidden/maximized
     # inspector and a new report must preserve each independently dragged width.
@@ -236,7 +246,7 @@ def storage_table_interactions(browser, url: str, output: Path):
     tab=inspector_frame_tab(page,canvas)
     for title,kind in [("Storage","storage"),("Transient","transient")]:
         select_inspector_tab(page,canvas,title,toolbar_y)
-        canvas.click(position={"x":145,"y":tab[3]+14})
+        select_inspector_boundary(page,canvas,"after")
         expect(status).to_contain_text("Observed exit")
         updated=storage_table_snapshot(page,canvas,output,f"storage-table-{kind}-new-report",tab[3],len(slots))
         assert_storage_preference(updated,preferences[kind])
@@ -249,12 +259,12 @@ def storage_table_interactions(browser, url: str, output: Path):
     assert wrong_word[:-1]==word[:-1] and wrong_word[-1]!=word[-1]
     submit_fixture(2,literal_word=wrong_word)
     select_inspector_tab(page,canvas,"Storage",toolbar_y)
-    canvas.click(position={"x":145,"y":tab[3]+14})
+    select_inspector_boundary(page,canvas,"after")
     expect(status).to_contain_text("Observed exit")
     wrong=storage_table_snapshot(page,canvas,output,"storage-table-wrong-last-glyph",tab[3],len(slots))
     wrong_value=wrong["rows"][2]["value"]
-    reference=storage_reviewed_raster("full_value","{"+word+"}",[531,12],
-        "441542c8fa375969f42f890a0240ae01222ff506ba5da7a71cfbee95695caa2e")
+    reference=storage_current_palette_raster(storage_reviewed_raster("full_value","{"+word+"}",[531,12],
+        "441542c8fa375969f42f890a0240ae01222ff506ba5da7a71cfbee95695caa2e"))
     assert wrong_value["mask_size"]==reference["mask_size"],storage_pixel_report(wrong_value)
     first,last=base64.b64decode(reference["rgb_raster"]),base64.b64decode(wrong_value["rgb_raster"])
     differences=[abs(a-b) for a,b in zip(first,last,strict=True)]

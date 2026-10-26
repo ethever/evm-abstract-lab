@@ -16,6 +16,10 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn blocks_submit(&self, target: Target, composing: bool, repeat: bool) -> bool {
+        composing || repeat || self.composing[target as usize].get()
+    }
+
     pub(super) fn set_available(&self, available: bool) {
         self.available.set(available);
     }
@@ -39,7 +43,7 @@ impl State {
         composing: bool,
         repeat: bool,
     ) -> bool {
-        if !self.available.get() || !focused || composing || self.composing[target as usize].get() {
+        if !self.available.get() || !focused || self.blocks_submit(target, composing, false) {
             return false;
         }
         if !repeat {
@@ -50,5 +54,28 @@ impl State {
 
     pub(super) fn take_presses(&self) -> usize {
         self.pending.replace(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{State, Target};
+
+    #[test]
+    fn submit_guard_preserves_inspect_delivery_and_clears_composition_on_blur() {
+        let state = State::default();
+        state.set_available(true);
+        for target in [Target::Canvas, Target::TextAgent] {
+            assert!(!state.blocks_submit(target, false, false));
+            assert!(state.blocks_submit(target, true, false));
+            assert!(state.blocks_submit(target, false, true));
+            state.composition(target, true);
+            assert!(state.blocks_submit(target, false, false));
+            assert!(!state.keydown(target, true, false, false));
+            state.blur(target);
+            assert!(!state.blocks_submit(target, false, false));
+            assert!(state.keydown(target, true, false, false));
+        }
+        assert_eq!(state.take_presses(), 2);
     }
 }

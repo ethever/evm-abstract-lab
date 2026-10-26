@@ -1,0 +1,12 @@
+--- a/src/input_state/mod.rs
++++ b/src/input_state/mod.rs
+@@ -1105 +1105 @@
+-        let old_pos = self.latest_pos;
++        let mut old_pos = self.latest_pos;
+@@ -1140,0 +1141,6 @@
++
++                    // A new contact starts here, not at a preceding mouse hover.
++                    // Keep motion after this press, including in the same pass.
++                    if pressed && button == PointerButton::Primary && !self.down[button as usize] {
++                        old_pos = Some(pos);
++                    }

@@ -7,10 +7,10 @@ use egui::Color32;
 #[cfg(any(target_arch = "wasm32", test))]
 use egui::{Context, FontDefinitions, FontFamily, Stroke, Visuals};
 
-pub const BACKGROUND: Color32 = Color32::from_rgb(14, 19, 29);
-pub const PANEL: Color32 = Color32::from_rgb(21, 29, 42);
-pub const RAISED: Color32 = Color32::from_rgb(29, 40, 56);
-pub const BORDER: Color32 = Color32::from_rgb(47, 62, 80);
+pub const BACKGROUND: Color32 = Color32::from_rgb(14, 17, 23);
+pub const PANEL: Color32 = Color32::from_rgb(20, 25, 33);
+pub const RAISED: Color32 = Color32::from_rgb(29, 35, 45);
+pub const BORDER: Color32 = Color32::from_rgb(48, 58, 72);
 pub const TEXT: Color32 = Color32::from_rgb(224, 233, 244);
 pub const MUTED: Color32 = Color32::from_rgb(145, 164, 186);
 pub const ACCENT: Color32 = Color32::from_rgb(99, 214, 202);

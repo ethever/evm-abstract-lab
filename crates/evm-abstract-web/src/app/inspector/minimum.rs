@@ -1,120 +1,221 @@
-//! Read-only numerical observations retain their procedure and joint output
-//! association. Original World observations stay separate from joined inputs.
+//! Conservative inspection keeps original observations, joined procedure
+//! inputs and paired relative outcomes in explicit, independent scopes.
+
+mod bytes;
+mod original;
+mod stores;
 
 use super::{Inspector, Tab, process, scroll, summaries, value};
 use crate::{
     app::minimum::{self, Selection},
     controls::{self, Density},
+    palette,
 };
+use bytes::show as bytes;
 use egui::{RichText, Ui};
-use evm_abstract_protocol::{
-    self as api, MinimumByteArray, MinimumByteContent, MinimumModel, MinimumPlane, MinimumStore,
-};
+use evm_abstract_protocol::{self as api, MinimumModel};
+
+pub(super) use bytes::show as original_calldata;
+pub(super) use original::{account as original_account, environment as original_environment};
+pub(super) use stores::original_slots;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Scope {
+    #[default]
+    Original,
+    Input,
+    Outcome,
+}
+
+impl Scope {
+    const ALL: [(Self, &'static str); 3] = [
+        (Self::Original, "Original observations"),
+        (Self::Input, "Procedure input"),
+        (Self::Outcome, "Joint outcome"),
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Original => "Original observations",
+            Self::Input => "Procedure input",
+            Self::Outcome => "Joint outcome",
+        }
+    }
+}
 
 impl Inspector {
+    pub(in crate::app) fn select_original(&mut self) {
+        self.scope = Scope::Original;
+        self.tab = Tab::Frame;
+    }
+
     pub(in crate::app) fn minimum_summary(&self, selection: &Selection) -> String {
-        let tab = match self.tab {
-            Tab::Coverage => "Control",
-            Tab::Outcomes | Tab::Returndata => "Joint outputs",
-            Tab::Storage | Tab::Transient => "Procedure input",
-            Tab::Timing => "Timing",
-            _ => "Original inputs",
-        };
         format!(
-            "Inspector{}: {tab}{} · procedure {} · output {:?}",
+            "Inspector{}: {} · {}{}{}",
             if self.expanded { "" } else { " hidden" },
+            self.tab.label(),
+            self.scope.label(),
             if self.panel.maximized() {
                 " · Maximized"
             } else {
                 ""
             },
-            selection.procedure,
-            selection.output
+            if selection.output.is_some() {
+                " · outcome selected"
+            } else {
+                ""
+            },
         )
     }
 
-    pub(in crate::app) fn show_minimum(
+    pub(super) fn minimum_contents(
         &mut self,
         ui: &mut Ui,
         report: &api::AnalysisReport,
         model: &MinimumModel,
         selected: &mut Selection,
     ) {
-        let rect = ui.available_rect_before_wrap();
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .id(egui::Id::new("inspector_contents"))
-                .max_rect(rect),
-        );
-        child.set_clip_rect(child.clip_rect().intersect(rect));
-        let ui = &mut child;
-        let mut tab = match self.tab {
-            Tab::Coverage => Tab::Coverage,
-            Tab::Outcomes | Tab::Returndata => Tab::Outcomes,
-            Tab::Storage | Tab::Transient => Tab::Storage,
-            Tab::Timing => Tab::Timing,
-            _ => Tab::Frame,
-        };
-        let previous = tab;
+        // Remembering the last rendered coordinates only chooses a useful
+        // observation scope; navigation and selection remain owned by the shell.
+        if selected.account.is_some()
+            && self
+                .last_minimum
+                .is_none_or(|last| last.account != selected.account)
+        {
+            self.select_original();
+        } else if self.last_minimum.is_some_and(|last| {
+            (last.summary, last.procedure, last.node, last.control)
+                != (
+                    selected.summary,
+                    selected.procedure,
+                    selected.node,
+                    selected.control,
+                )
+        }) {
+            self.scope = Scope::Input;
+        }
+        if selected.output.is_some()
+            && self.last_minimum.is_none_or(|last| {
+                last.output != selected.output
+                    || last.procedure != selected.procedure
+                    || last.summary != selected.summary
+            })
+        {
+            self.scope = Scope::Outcome;
+        }
+        self.navigation(ui);
+        if self.last_minimum_tab != Some(self.tab) && self.tab == Tab::Outcomes {
+            self.scope = Scope::Outcome;
+        }
+        self.last_minimum_tab = Some(self.tab);
         Density::Compact.scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                for (choice, label) in [
-                    (Tab::Frame, "Original inputs"),
-                    (Tab::Coverage, "Control"),
-                    (Tab::Storage, "Procedure input"),
-                    (Tab::Outcomes, "Joint outputs"),
-                    (Tab::Timing, "Timing"),
-                ] {
-                    controls::tab_value(ui, &mut tab, choice, label, Density::Compact);
+                if ui.available_width() < 600.0 {
+                    let observed_inspector_observation_scope = egui::ComboBox::from_id_salt("inspector_observation_scope")
+                        .width(158.0)
+                        .selected_text(self.scope.label())
+                        .show_ui(ui, |ui| {
+                            for (scope, label) in Scope::ALL {
+                                controls::tab_value(ui, &mut self.scope, scope, label, Density::Compact);
+                            }
+                        });
+                    controls::observe(ui, &observed_inspector_observation_scope.response, "inspector_observation_scope", "combobox", None);
+                } else {
+                    for (scope, label) in Scope::ALL {
+                        controls::tab_value(ui, &mut self.scope, scope, label, Density::Compact);
+                    }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.window_controls(ui)
-                });
-            })
+                ui.label(RichText::new(if model.current { "Global MAY" } else { "Historical Global MAY" }).small().color(if model.current { palette::MUTED } else { palette::WARNING }))
+                    .on_hover_text("Possible control and procedure bounds are qualified by this retained model. They do not supply a Native instruction stack or SSA value.");
+            });
         });
-        if tab != previous {
-            self.tab = tab;
-        }
+        ui.separator();
         scroll(ui, "minimum_inspection", |ui| {
-            if tab == Tab::Timing {
+            if self.tab == Tab::Timing {
                 super::super::timing::show(ui, report, &self.timings);
                 return;
             }
-            if tab == Tab::Frame {
-                original_inputs(ui, report, model, selected);
+            if self.tab == Tab::Acquisition {
+                super::evidence::acquisition_rows(
+                    ui,
+                    report.acquisition.as_ref(),
+                    model.accounts.len(),
+                );
+                return;
+            }
+            if self.tab == Tab::Environment {
+                original::show(ui, report, model, selected);
+                return;
+            }
+            if self.scope == Scope::Original
+                && !matches!(self.tab, Tab::Coverage | Tab::Diagnostics)
+            {
+                match self.tab {
+                    Tab::Calldata => bytes(ui, &model.environment.calldata),
+                    Tab::Frame | Tab::Storage => original::show(ui, report, model, selected),
+                    Tab::Transient => {
+                        ui.label("Original transaction transient storage starts at zero. Procedure inputs and outcomes retain transaction-local changes.");
+                    }
+                    _ => {
+                        ui.label("This field has no original observation. Select Procedure input, Joint outcome or a retained Native block snapshot.");
+                    }
+                }
                 return;
             }
             let Some(summary) = selected.summary(model) else {
-                ui.label("No procedure relation is attached.");
+                ui.label("No procedure relation is attached to this source selection.");
                 return;
             };
-            let source = minimum::source_status(model, selected.summary);
-            ui.label(summaries::coverage_label(summary.relation.closed, source));
-            ui.label("Numerical observations belong to this qualified model and procedure.");
+            let status = minimum::source_status(model, selected.summary);
+            ui.label(
+                RichText::new(summaries::coverage_label(summary.relation.closed, status))
+                    .small()
+                    .color(if status == api::SummarySourceStatus::Current {
+                        palette::MUTED
+                    } else {
+                        palette::WARNING
+                    }),
+            );
             let mut procedure = selected.procedure;
-            egui::ComboBox::from_id_salt("minimum_procedure")
-                .selected_text(format!("Procedure {procedure}"))
+            let procedure_picker = egui::ComboBox::from_id_salt("minimum_procedure")
+                .width(ui.available_width().min(440.0))
+                .selected_text(
+                    summary
+                        .relation
+                        .procedures
+                        .get(procedure)
+                        .map(context_label)
+                        .unwrap_or_else(|| "No compatible context".into()),
+                )
                 .show_ui(ui, |ui| {
                     for (id, relation) in summary.relation.procedures.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut procedure,
-                            id,
-                            format!(
-                                "Procedure {id} · {:?}{}",
-                                relation.kind,
-                                if Some(id) == summary.relation.root_procedure {
-                                    " · entry"
-                                } else {
-                                    ""
-                                }
-                            ),
+                        let label = format!(
+                            "{}{}",
+                            context_label(relation),
+                            if Some(id) == summary.relation.root_procedure {
+                                " · entry"
+                            } else {
+                                ""
+                            }
                         );
+                        let was_selected = procedure == id;
+                        let option = ui.selectable_value(&mut procedure, id, label.as_str());
+                        controls::observe(ui, &option, &label, "option", Some(was_selected));
                     }
                 });
+            controls::observe(
+                ui,
+                &procedure_picker.response,
+                "minimum_procedure",
+                "combobox",
+                None,
+            );
             if procedure != selected.procedure {
                 selected.procedure = procedure;
                 selected.output = None;
                 selected.control = None;
+                selected.account = None;
+                self.scope = Scope::Input;
                 selected.node = summary
                     .relation
                     .regional_cfg
@@ -123,416 +224,203 @@ impl Inspector {
                     .find(|node| node.procedure == procedure)
                     .map(|node| node.id);
             }
-            if let Some(relation) = summary.relation.procedures.get(selected.procedure) {
-                if let Some(frame) = &relation.process {
-                    process::frame(ui, frame);
-                }
-                ui.label(format!(
-                    "Interpretation: {:?} · static: {}",
-                    relation.semantics, relation.is_static
-                ));
+            let Some(relation) = summary.relation.procedures.get(selected.procedure) else {
+                ui.label("This context is unavailable in the selected model. Choose a compatible context above.");
+                return;
+            };
+            let node = selected.node.and_then(|id| {
+                summary
+                    .relation
+                    .regional_cfg
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == id && node.procedure == selected.procedure)
+            });
+            if selected.node.is_some() && node.is_none() {
+                ui.label("The selected regional observation does not belong to this context. Choose a compatible context above.");
+                return;
             }
-            if tab == Tab::Coverage {
-                if let Some(node) = selected.node.and_then(|id| {
-                    summary
-                        .relation
-                        .regional_cfg
-                        .nodes
-                        .iter()
-                        .find(|node| node.id == id)
-                }) {
-                    ui.label(RichText::new(format!("Regional node r{}", node.id)).strong());
-                    ui.label(crate::report::regional_status(node, source));
-                    summaries::regional::node_details(ui, node, source);
-                    if let Some(location) = selected.control {
-                        ui.label(format!(
-                            "Selected MAY source: {}",
-                            minimum::location_label(location)
-                        ));
-                    }
-                    process::control(ui, report, node, selected.control);
+            if let Some(location) = selected.control {
+                let admitted = node.is_some_and(|node| {
+                    node.frame
+                        .process
+                        .as_ref()
+                        .is_some_and(|frame| frame.location == location)
+                        || node
+                            .transfer
+                            .as_ref()
+                            .and_then(|transfer| transfer.process.as_ref())
+                            .and_then(|process| process.control.as_ref())
+                            .is_some_and(|region| {
+                                region.entry == location
+                                    || region.through.contains(&location)
+                                    || region.boundaries.contains(&location)
+                            })
+                });
+                if !admitted {
+                    ui.label("The selected MAY location is not attached to this regional observation. Choose a source or context from the workspace.");
+                    return;
                 }
-                summaries::regional::show(ui, &summary.relation.regional_cfg, source);
+            }
+            ui.label(if relation.is_static {
+                "Context · read only"
+            } else {
+                "Context · writes permitted"
+            });
+            if self.tab == Tab::Frame {
+                if self.scope == Scope::Input
+                    && let Some(input) = &relation.process_input
+                {
+                    super::observation::process_input(ui, input);
+                }
+                ui.collapsing("Context and code source", |ui| {
+                    if let Some(frame) = &relation.process {
+                        process::frame(ui, frame);
+                    } else {
+                        ui.label(process::interpretation(relation.semantics));
+                        if let Some(source) = &relation.code_address {
+                            ui.monospace(format!("Code: {source}"));
+                        }
+                        if let Some(owner) = &relation.storage_address {
+                            ui.monospace(format!("Storage owner: {owner}"));
+                        }
+                        ui.label(format!("Static: {}", relation.is_static));
+                    }
+                });
+            }
+            if matches!(self.tab, Tab::Coverage | Tab::Diagnostics) {
+                if let Some(node) = node {
+                    ui.label(RichText::new(crate::report::regional_status(node, status)).strong());
+                    process::control(ui, report, node, selected.control);
+                    ui.collapsing("Advanced regional receipt", |ui| {
+                        ui.label(format!(
+                            "Regional node r{} · procedure {}",
+                            node.id, node.procedure
+                        ));
+                        summaries::regional::node_details(ui, node, status);
+                    });
+                }
+                summaries::regional::show(ui, &summary.relation.regional_cfg, status);
                 return;
             }
             let Some(bounds) = summary.bounds.get(selected.procedure) else {
                 ui.label("Numerical bounds are not attached for this procedure.");
                 return;
             };
-            ui.label(format!(
-                "Producer namespace {} · input revision {} · output revision {}",
-                bounds.version.namespace,
-                bounds.version.entry_revision,
-                bounds.version.output_revision
-            ));
-            if tab == Tab::Storage {
-                ui.label("Joined procedure input bounds");
-                store(ui, &bounds.input);
+            ui.collapsing("Advanced model and observation identity", |ui| {
+                ui.label(format!(
+                    "Procedure {} · evidence namespace {} · generation {}",
+                    selected.procedure, summary.version.namespace, summary.version.generation
+                ));
+                ui.label(format!(
+                    "Producer namespace {} · input revision {} · output revision {}",
+                    bounds.version.namespace,
+                    bounds.version.entry_revision,
+                    bounds.version.output_revision
+                ));
+                if let Some(epoch) = &bounds.version.source_epoch {
+                    ui.monospace(format!("Source epoch: {epoch}"));
+                }
+                ui.monospace(&model.fingerprint);
+            });
+            if matches!(
+                self.tab,
+                Tab::Stack | Tab::SsaValue | Tab::Memory | Tab::Calldata
+            ) {
+                ui.label(match self.tab {
+                    Tab::Stack => "Conservative procedure bounds have no Native instruction stack. Select a retained Native block to inspect its stack.",
+                    Tab::SsaValue => "Global MAY control has no Native SSA definition. Select a retained Native SSA value.",
+                    Tab::Memory => "Conservative procedure bounds have no Native memory snapshot. Select a retained Native block before or after observation.",
+                    _ => "Procedure calldata is not retained as a separate numerical byte array. Original calldata is available under Original observations.",
+                });
+                return;
+            }
+            if self.scope == Scope::Input {
+                if matches!(self.tab, Tab::Returndata | Tab::Outcomes) {
+                    ui.label("Return/revert data belongs to a Joint outcome; choose that scope to keep its data and store paired.");
+                } else {
+                    ui.label("Joined procedure input bounds");
+                    selected_store(ui, &bounds.input, self.tab);
+                }
                 return;
             }
             if bounds.outputs.is_empty() {
                 ui.label("No relative output alternative is attached.");
                 return;
             }
-            let mut output = selected.output.unwrap_or(0).min(bounds.outputs.len() - 1);
-            egui::ComboBox::from_id_salt("minimum_joint_output")
+            let mut output = selected.output.unwrap_or(0);
+            if output >= bounds.outputs.len() {
+                ui.label("This outcome is unavailable in the selected context. Select a current outcome from the graph.");
+                return;
+            }
+            let output_picker = egui::ComboBox::from_id_salt("minimum_joint_output")
                 .selected_text(format!(
-                    "{:?} · generation {}",
-                    bounds.outputs[output].kind, bounds.outputs[output].generation
+                    "{:?} · alternative {} / {}",
+                    bounds.outputs[output].kind,
+                    output + 1,
+                    bounds.outputs.len()
                 ))
                 .show_ui(ui, |ui| {
                     for (id, item) in bounds.outputs.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut output,
-                            id,
-                            format!("{:?} · generation {}", item.kind, item.generation),
-                        );
+                        let label = format!("{:?} · alternative {}", item.kind, id + 1);
+                        let was_selected = output == id;
+                        let option = ui.selectable_value(&mut output, id, label.as_str());
+                        controls::observe(ui, &option, &label, "option", Some(was_selected));
+                        if option.clicked() {
+                            selected.output = Some(id);
+                        }
                     }
                 });
-            selected.output = Some(output);
+            controls::observe(
+                ui,
+                &output_picker.response,
+                "minimum_joint_output",
+                "combobox",
+                None,
+            );
             let output = &bounds.outputs[output];
             ui.label("Data and Store below belong to this same relative outcome. The caller applies rollback.");
-            ui.collapsing("Returned data", |ui| bytes(ui, &output.data));
-            store(ui, &output.store);
-        });
-        ui.advance_cursor_after_rect(rect);
-    }
-}
-
-fn original_inputs(
-    ui: &mut Ui,
-    report: &api::AnalysisReport,
-    model: &MinimumModel,
-    selected: &mut Selection,
-) {
-    ui.label("Original input observations");
-    ui.label("These rows precede analysis effects; procedure inputs may join additional invocation states.");
-    egui::Grid::new("minimum_original_environment")
-        .num_columns(2)
-        .show(ui, |ui| {
-            value::text(
-                ui,
-                "Original input scope",
-                model
-                    .environment
-                    .input_scope
-                    .map_or("Not retained".into(), |scope| {
-                        evm_abstract_notation::WideSymbol::Scope(scope.0).to_string()
-                    }),
-            );
-            value::text(ui, "Logical ADDRESS", value::address(&model.environment.to));
-            value::text(ui, "CALLER", value::address(&model.environment.caller));
-            value::text(ui, "ORIGIN", value::address(&model.environment.origin));
-            value::named(ui, "CALLVALUE", &model.environment.call_value);
-            value::text(ui, "Static", model.environment.is_static.to_string());
-            value::text(
-                ui,
-                "Gas upper bound",
-                model
-                    .environment
-                    .gas_upper_bound
-                    .as_deref()
-                    .unwrap_or("Unknown"),
-            );
-            for (name, bound) in [
-                ("Gas price", &model.environment.gas_price),
-                ("Timestamp", &model.environment.timestamp),
-                ("Block number", &model.environment.number),
-                ("Randomness", &model.environment.prevrandao),
-                ("Block gas limit", &model.environment.gas_limit),
-                ("Chain ID", &model.environment.chain_id),
-                ("Base fee", &model.environment.base_fee),
-                ("Blob base fee", &model.environment.blob_base_fee),
-                ("Blob count", &model.environment.blob_count),
-            ] {
-                value::named(ui, name, bound);
-            }
-            value::text(ui, "Coinbase", value::address(&model.environment.coinbase));
-        });
-    ui.collapsing("Original calldata", |ui| {
-        bytes(ui, &model.environment.calldata)
-    });
-    ui.collapsing("Original accounts and root template",|ui| {
-        ui.label(format!("{} supplied rows",model.accounts.len()));
-        if model.accounts.is_empty() {ui.label("No supplied account row is attached.");return;}
-        let mut chosen=selected.account.unwrap_or(0).min(model.accounts.len()-1);
-        egui::ComboBox::from_id_salt("minimum_input_account").selected_text(&model.accounts[chosen].address).show_ui(ui,|ui| {
-            for (id,account) in model.accounts.iter().enumerate(){ui.selectable_value(&mut chosen,id,&account.address);}
-        });
-        selected.account=Some(chosen);
-        let account=&model.accounts[chosen];
-            ui.push_id(&account.address,|ui|egui::CollapsingHeader::new(format!("{} · {}",account.address,if account.root_template {"Root input template"} else {"Physical account"})).default_open(true).show(ui,|ui| {
-                if account.root_template { ui.label("This supplied row is an input namespace; logical ADDRESS retains the original symbolic qualification."); }
-                egui::Grid::new("minimum_original_account").num_columns(2).show(ui,|ui| {
-                    value::text(ui,"Existence",format!("{:?}",account.existence));
-                    value::named(ui,"Balance",&account.balance);
-                    value::named(ui,"Nonce",&account.nonce);
-                    value::text(ui,"Code",format!("{:?} · program {:?}",account.code_kind,account.program));
-                    if let Some(target)=&account.delegation_target { value::text(ui,"Delegation target",target); }
-                    value::text(ui,"Unlisted initial slots",if account.storage_unknown {"Unknown"} else {"Zero"});
-                });
-                if !account.storage.is_empty() {
-                    original_slots(ui,&account.storage);
-                }
-            }));
-
-    });
-    ui.collapsing("Model qualification and policy", |ui| {
-        if let Some(policy) = crate::app::hybrid::source_policy(report) {
-            ui.label(policy);
-        }
-        ui.monospace(format!(
-            "Source: {:?} · facts {}",
-            model.source_snapshot, model.revision
-        ));
-        ui.monospace(&model.fingerprint);
-        ui.label(format!(
-            "{:?} · {:?} · current: {}",
-            model.fork, model.numeric_model, model.current
-        ));
-        ui.monospace(format!("{:?}", model.domain_spec));
-        ui.monospace(format!("{:?}", model.config));
-        ui.label(format!(
-            "Minimum projection work {} · application allowance {}",
-            model.export_usage.work, model.postprocessing_max_work
-        ));
-    });
-}
-
-fn bytes(ui: &mut Ui, data: &MinimumByteArray) {
-    egui::Grid::new("minimum_bytes_length")
-        .num_columns(2)
-        .show(ui, |ui| {
-            value::named(ui, "Length", &data.length);
-            value::text(ui, "Memory rules", data.memory.to_string());
-        });
-    match &data.content {
-        MinimumByteContent::Zero => {
-            ui.label("All content bytes are zero.");
-        }
-        MinimumByteContent::Exact(exact) => {
-            ui.monospace(if exact.len() > 130 {
-                format!(
-                    "{}… ({} hex digits)",
-                    exact.chars().take(130).collect::<String>(),
-                    exact.len()
-                )
+            ui.collapsing("Advanced outcome producer", |ui| {
+                ui.label(format!("Output generation {}", output.generation));
+            });
+            if self.tab == Tab::Returndata {
+                bytes(ui, &output.data);
             } else {
-                exact.clone()
-            });
-            if controls::action(ui, "Copy complete bytes", Density::Compact).clicked() {
-                ui.ctx().copy_text(exact.clone());
-            }
-        }
-        MinimumByteContent::Cells(cells) => {
-            ui.label("Unlisted byte cells are unconstrained.");
-            byte_cells(ui, "minimum_byte_cells", cells);
-        }
-    }
-    if !data.words.is_empty() {
-        ui.label("Additional whole-word bounds");
-        byte_cells(ui, "minimum_word_cells", &data.words);
-    }
-}
-
-fn byte_cells(ui: &mut Ui, id: &str, cells: &[api::MinimumByteCell]) {
-    egui::ScrollArea::vertical()
-        .id_salt(id)
-        .max_height(220.0)
-        .show_rows(ui, 22.0, cells.len(), |ui, rows| {
-            for row in rows {
-                ui.horizontal(|ui| {
-                    ui.monospace(format!("0x{:x}", cells[row].offset));
-                    value::cell(ui, &cells[row].value);
-                });
+                ui.collapsing("Returned data", |ui| bytes(ui, &output.data));
+                selected_store(ui, &output.store, self.tab);
             }
         });
-}
-
-fn store(ui: &mut Ui, store: &MinimumStore) {
-    ui.label("Physical owner/alias bounds");
-    ui.collapsing("Persistent storage", |ui| {
-        plane(ui, "minimum_persistent", &store.persistent)
-    });
-    ui.collapsing("Transient storage", |ui| {
-        plane(ui, "minimum_transient", &store.transient)
-    });
-    ui.collapsing("Balances and nonces", |ui| {
-        ui.label("Unlisted balance bound");
-        value::details(ui, &store.balance_default);
-        owner_values(ui, "minimum_balances", &store.balances);
-        ui.label("Unlisted nonces are unconstrained words.");
-        owner_values(ui, "minimum_nonces", &store.nonces);
-    });
-    ui.collapsing("Code and presence", |ui| {
-        ui.label("Unlisted code and account presence are unknown.");
-        for code in &store.codes {
-            ui.monospace(format!(
-                "{} · {:?} · program {:?} · delegation {:?}",
-                code.owner, code.kind, code.program, code.delegation_target
-            ));
-        }
-        for presence in &store.existence {
-            ui.monospace(format!("{} · {:?}", presence.owner, presence.value));
-        }
-    });
-    ui.collapsing("Lifecycle bounds", |ui| {
-        flags(ui, "Created", store.created_default, &store.created);
-        flags(
-            ui,
-            "Pending destruction",
-            store.pending_destruction_default,
-            &store.pending_destruction,
-        );
-        flags(ui, "Touched", store.touched_default, &store.touched);
-    });
-    ui.collapsing("Possible log sources", |ui| {
-        ui.label(format!(
-            "{} source alternatives · additional sources: {}",
-            store.logs.len(),
-            store.logs_unknown
-        ));
-        ui.label("Source alternatives do not preserve event order or multiplicity.");
-        for (id, log) in store.logs.iter().enumerate() {
-            ui.push_id(id, |ui| {
-                ui.collapsing(format!("{} · PC 0x{:x}", log.address, log.pc), |ui| {
-                    ui.monospace(format!(
-                        "Code {} · {} · {:?}",
-                        log.code_address, log.code_hash, log.source_kind
-                    ));
-                    for (id, topic) in log.topics.iter().enumerate() {
-                        ui.label(format!("Topic {id}"));
-                        value::details(ui, topic);
-                    }
-                    bytes(ui, &log.data);
-                })
-            });
-        }
-    });
-}
-
-fn owner_values(ui: &mut Ui, id: &str, rows: &[api::MinimumOwnerValue]) {
-    egui::ScrollArea::vertical()
-        .id_salt(id)
-        .max_height(220.0)
-        .show_rows(ui, 22.0, rows.len(), |ui, range| {
-            for row in range {
-                ui.horizontal(|ui| {
-                    ui.monospace(&rows[row].owner);
-                    value::cell(ui, &rows[row].value);
-                });
-            }
-        });
-}
-
-fn flags(ui: &mut Ui, label: &str, default: Option<bool>, rows: &[api::MinimumOwnerFlag]) {
-    let text = |value: Option<bool>| {
-        value.map_or("Both allowed", |value| if value { "True" } else { "False" })
-    };
-    ui.label(format!("{label}: unlisted owners {}", text(default)));
-    for row in rows {
-        ui.monospace(format!("{} · {}", row.owner, text(row.value)));
+        self.last_minimum = Some(*selected);
     }
 }
 
-fn plane(ui: &mut Ui, id: &str, plane: &MinimumPlane) {
-    ui.label("Unlisted owner/slot bound");
-    value::details(ui, &plane.default);
-    ui.label("Owner defaults");
-    owner_values(ui, &format!("{id}_owners"), &plane.owners);
-    ui.label("Explicit physical slots");
-    let table = ui.id().with(egui::IdSalt::new(id));
-    let width = super::stores::slots::default_width(ui);
-    let reset = super::stores::slots::refresh_default(ui, table, width);
-    let builder = egui_extras::TableBuilder::new(ui)
-        .id_salt(id)
-        .resizable(true)
-        .vscroll(true)
-        .max_scroll_height(260.0);
-    if reset {
-        builder.reset();
-    }
-    builder
-        .column(egui_extras::Column::auto())
-        .column(
-            egui_extras::Column::initial(width)
-                .clip(true)
-                .resizable(true),
-        )
-        .column(egui_extras::Column::remainder().at_least(180.0))
-        .header(22.0, |mut row| {
-            row.col(|ui| {
-                ui.label("Physical owner");
-            });
-            row.col(|ui| {
-                ui.label("Slot");
-            });
-            row.col(|ui| {
-                ui.label("Bound");
-            });
-        })
-        .body(|body| {
-            body.rows(22.0, plane.slots.len(), |mut row| {
-                let entry = &plane.slots[row.index()];
-                row.col(|ui| {
-                    ui.monospace(&entry.owner);
-                });
-                row.col(|ui| super::stores::slots::cell(ui, &entry.slot));
-                row.col(|ui| value::cell(ui, &entry.value));
-            })
+fn context_label(relation: &api::AbstractProcedure) -> String {
+    let source = relation
+        .process
+        .as_ref()
+        .map(|frame| process::source_label(&frame.source))
+        .unwrap_or_else(|| {
+            relation
+                .code_address
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", relation.kind))
         });
-    super::stores::slots::remember_resize(ui, table);
-    ui.collapsing("Dependence on initial slot values", |ui| {
-        ui.label(format!(
-            "Unlisted coordinates independent: {}",
-            plane.independent_default
-        ));
-        for owner in &plane.independent_owners {
-            ui.monospace(format!("{} · independent {:?}", owner.owner, owner.value));
-        }
-        for slot in &plane.independent_slots {
-            ui.monospace(format!(
-                "{} · {} · independent {}",
-                slot.owner, slot.slot, slot.independent
-            ));
-        }
-    });
+    let owner = relation
+        .process
+        .as_ref()
+        .map(|frame| process::owner(&frame.owner))
+        .or_else(|| relation.storage_address.clone())
+        .unwrap_or_else(|| "Unknown owner".into());
+    format!(
+        "{source} · {owner}{}",
+        if relation.is_static { " · static" } else { "" }
+    )
 }
 
-fn original_slots(ui: &mut Ui, entries: &[api::StorageEntry]) {
-    let id = "minimum_original_slots";
-    let table = ui.id().with(egui::IdSalt::new(id));
-    let width = super::stores::slots::default_width(ui);
-    let reset = super::stores::slots::refresh_default(ui, table, width);
-    let builder = egui_extras::TableBuilder::new(ui)
-        .id_salt(id)
-        .resizable(true)
-        .vscroll(true)
-        .max_scroll_height(240.0);
-    if reset {
-        builder.reset();
+fn selected_store(ui: &mut Ui, store: &api::MinimumStore, tab: Tab) {
+    match tab {
+        Tab::Storage => stores::plane(ui, "minimum_persistent", &store.persistent),
+        Tab::Transient => stores::plane(ui, "minimum_transient", &store.transient),
+        _ => stores::show(ui, store),
     }
-    builder
-        .column(
-            egui_extras::Column::initial(width)
-                .clip(true)
-                .resizable(true),
-        )
-        .column(egui_extras::Column::remainder().at_least(180.0))
-        .header(22.0, |mut row| {
-            row.col(|ui| {
-                ui.label("Slot");
-            });
-            row.col(|ui| {
-                ui.label("Original value");
-            });
-        })
-        .body(|body| {
-            body.rows(22.0, entries.len(), |mut row| {
-                let entry = &entries[row.index()];
-                row.col(|ui| super::stores::slots::cell(ui, &entry.slot));
-                row.col(|ui| value::cell(ui, &entry.value));
-            })
-        });
-    super::stores::slots::remember_resize(ui, table);
 }

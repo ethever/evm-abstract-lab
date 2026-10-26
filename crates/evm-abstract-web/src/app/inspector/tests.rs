@@ -5,6 +5,7 @@ use evm_abstract_protocol as api;
 mod diagnostics;
 mod hybrid;
 mod regional;
+mod scopes;
 mod scroll_bounds;
 mod storage;
 
@@ -767,6 +768,66 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
             None,
         );
     });
+    let wheel = vec![
+        egui::Event::PointerMoved(egui::pos2(260.0, 220.0)),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -100_000.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        },
+    ];
+    rendered(&context, &mut time, wheel.clone(), |ui| {
+        workspace.inspector.show(
+            ui,
+            &crate::tests::fixture_view(report),
+            &mut workspace.selection,
+            None,
+        );
+    });
+    let mut visible = visible;
+    for _ in 0..20 {
+        visible = rendered(&context, &mut time, vec![], |ui| {
+            workspace.inspector.show(
+                ui,
+                &crate::tests::fixture_view(report),
+                &mut workspace.selection,
+                None,
+            );
+        });
+    }
+    let details = visible
+        .iter()
+        .find(|(text, _)| text == "Advanced observation identity")
+        .expect("internal identities remain available in Advanced")
+        .1
+        .center();
+    click(&context, &mut time, details, |ui| {
+        workspace.inspector.show(
+            ui,
+            &crate::tests::fixture_view(report),
+            &mut workspace.selection,
+            None,
+        );
+    });
+    rendered(&context, &mut time, wheel, |ui| {
+        workspace.inspector.show(
+            ui,
+            &crate::tests::fixture_view(report),
+            &mut workspace.selection,
+            None,
+        );
+    });
+    for _ in 0..20 {
+        visible = rendered(&context, &mut time, vec![], |ui| {
+            workspace.inspector.show(
+                ui,
+                &crate::tests::fixture_view(report),
+                &mut workspace.selection,
+                None,
+            );
+        });
+    }
     for expected in ["σ425", "Frame f17"] {
         assert!(
             visible.iter().any(|(text, _)| text == expected),
@@ -1015,7 +1076,7 @@ fn task_progress_and_typed_task_error_keep_the_full_u64_handle() {
             workspace.status(ui);
         },
     );
-    let prefix = format!("task{} ·", u64::MAX);
+    let prefix = format!("Job ID: {}", u64::MAX);
     assert!(
         visible.iter().any(|(text, _)| text.starts_with(&prefix)),
         "missing {prefix}: {visible:?}"

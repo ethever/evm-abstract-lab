@@ -5,8 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
 from web_test_ending_helpers import selected_ending
-from web_test_graph_helpers import graph_mode, symbol
-from web_test_harness import analysis_server, complete_submission, observe_webgpu, settle_gesture, webgpu_evidence
+from web_test_graph_helpers import graph_mode, graph_overview, symbol
+from web_test_harness import analysis_server, complete_submission, hide_world_directory, observe_webgpu, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_layout_helpers import layout_detail_regions
 from web_test_pixels import node_snapshot
@@ -125,8 +125,10 @@ def _termination_call_page(browser,url,output,rpc,providers,regions):
     failure,returning=_termination_call_oracle(report,rpc.root_code,rpc.root_address,rpc.child_address,relative=regions==1)
     caller=failure['from']
     sources={node['id']:node['program'] for node in report['cfg']}
-    canvas.click(position={'x':1440-180,'y':12});hide_inspector(page,canvas)
-    page.keyboard.press('2');settle_gesture(page);graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
+    hide_world_directory(page,canvas);hide_inspector(page,canvas)
+    page.keyboard.press('2');settle_gesture(page)
+    graph_overview(page,canvas,all_programs=True)
+    graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
     submitted=[]
     page.on('request',lambda request:submitted.append(request.url) if request.method=='POST' and request.url.endswith('/api/tasks') else None)
     # The one green child frame and one green resumed root are verified

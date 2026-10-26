@@ -41,14 +41,21 @@ fn draw_with_output(
         },
     );
     output.textures_delta.clear();
-    let painted = output
-        .shapes
-        .into_iter()
-        .filter_map(|shape| match shape.shape {
-            egui::Shape::Text(text) => Some((shape.clip_rect, text)),
-            _ => None,
-        })
-        .collect();
+    fn collect(shape: egui::Shape, clip: Rect, painted: &mut Vec<(Rect, TextShape)>) {
+        match shape {
+            egui::Shape::Text(text) => painted.push((clip, text)),
+            egui::Shape::Vec(items) => {
+                for item in items {
+                    collect(item, clip, painted);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut painted = Vec::new();
+    for shape in output.shapes {
+        collect(shape.shape, shape.clip_rect, &mut painted);
+    }
     (cell, painted, output.platform_output)
 }
 
@@ -59,6 +66,77 @@ fn glyphs(text: &TextShape) -> String {
         .flat_map(|row| &row.glyphs)
         .map(|glyph| glyph.chr)
         .collect()
+}
+
+#[test]
+fn context_menu_copies_the_complete_key_when_no_glyph_or_selection_is_available() {
+    let context = Context::default();
+    crate::notation::initialize_fonts(&context);
+    context.global_style_mut(|style| {
+        style.interaction.selectable_labels = false;
+        style.animation_time = 0.0;
+    });
+    let slot = format!("0x{}cafe", "0123456789abcdef".repeat(3) + "000000000000");
+    let mut time = 0.0;
+    let (cell, _) = draw(&context, &mut time, &slot, 4.0, vec![]);
+    let mut paint = vec![];
+    for pressed in [true, false] {
+        (_, paint) = draw(
+            &context,
+            &mut time,
+            &slot,
+            4.0,
+            vec![
+                Event::PointerMoved(cell.center()),
+                Event::PointerButton {
+                    pos: cell.center(),
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    for _ in 0..3 {
+        paint = draw(&context, &mut time, &slot, 4.0, vec![]).1;
+    }
+    let copy = paint
+        .iter()
+        .find(|(_, text)| glyphs(text) == "Copy full slot key")
+        .unwrap_or_else(|| {
+            panic!(
+                "complete-key copy action remains reachable: {:?}",
+                paint
+                    .iter()
+                    .map(|(_, text)| glyphs(text))
+                    .collect::<Vec<_>>()
+            )
+        });
+    let position = copy.1.pos + copy.1.galley.size() * 0.5;
+    let mut output = egui::PlatformOutput::default();
+    for pressed in [true, false] {
+        (_, _, output) = draw_with_output(
+            &context,
+            &mut time,
+            &slot,
+            4.0,
+            vec![
+                Event::PointerMoved(position),
+                Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    assert!(
+        output
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == &slot))
+    );
 }
 
 fn pointer_copy(slot: &str, width: Option<f32>, selectable: bool) -> (String, Vec<String>) {

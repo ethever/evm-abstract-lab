@@ -4,6 +4,7 @@
   dependencies,
   dylint,
   web,
+  developmentCargoEnvironment,
 }:
 craneLib.devShell (
   dependencies.environment
@@ -16,6 +17,7 @@ craneLib.devShell (
       ++ dependencies.developmentTools
       ++ dylint.devPackages
       ++ web.devPackages;
+    shellHook = developmentCargoEnvironment;
     RUST_BACKTRACE = "1";
     FONTCONFIG_FILE = dependencies.fontConfig;
   }

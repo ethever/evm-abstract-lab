@@ -4,7 +4,7 @@ from pathlib import Path
 from playwright.sync_api import expect
 import json
 import re
-from web_test_harness import complete_submission, observe_webgpu, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_harness import click_control, complete_submission, edit_control, observe_webgpu, rendered_frame, settle_gesture, ui_control, webgpu_evidence
 from web_test_rpc_helpers import CUSTOM_ENTRY, RPC_ENTRY_EXAMPLES, RPC_PROVIDERS, automatic_rpc_entry, configured_rpc_server, open_rpc_input, select_rpc_provider
 from web_test_hybrid import graph
 
@@ -21,8 +21,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     results = {"automatic_entry": baseline["input"], "selected_addresses": [],
                "selected_examples": [], "snapshot_pins": {}}
     # Keep the original token transitions, then exercise every new mainnet row.
-    # The expanded popup retains 20-point controls and a 23-point row stride;
-    # its 300-point height displays all eight presets and Custom without scrolling.
+    # Every choice uses the actual popup response, independent of row spacing.
     for ordinal, menu_index in enumerate([1, 2, 0, *range(3, len(RPC_ENTRY_EXAMPLES))]):
         ui_label, address = RPC_ENTRY_EXAMPLES[menu_index]
         label = re.sub(r"[^a-z0-9]+", "-", ui_label.lower()).strip("-")
@@ -32,12 +31,10 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
             select_rpc_provider(page, canvas, 1, output, "entry-weth")
             expect(page.locator("#analysis-status")).to_contain_text(
                 f"RPC provider: {providers[1]['name']} ({providers[1]['endpoint']})")
-        canvas.click(position={"x": 454, "y": 425})
-        rendered_frame(page)
+        click_control(page, canvas, "rpc_entry_example", role="combobox")
         canvas.screenshot(path=str(output / f"entry-{label}-options.png"))
         request_offset = len(rpc.requests)
-        canvas.click(position={"x": 460, "y": 464 + menu_index * 23})
-        settle_gesture(page)
+        click_control(page, canvas, ui_label, role="tab")
         assert submitted == expected_submissions, f"choosing {ui_label} unexpectedly submitted analysis"
         assert len(rpc.requests) == request_offset, f"choosing {ui_label} unexpectedly contacted the provider"
         canvas.screenshot(path=str(output / f"entry-{label}-selected.png"))
@@ -60,17 +57,19 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
         results["selected_addresses"].append(address)
         results["selected_examples"].append({"label": ui_label, "address": address})
     open_rpc_input(page, canvas)
-    canvas.click(position={"x": 454, "y": 425})
-    rendered_frame(page)
+    click_control(page, canvas, "rpc_entry_example", role="combobox")
     canvas.screenshot(path=str(output / "entry-custom-options.png"))
-    # Custom follows all presets plus the popup's separator.
-    canvas.click(position={"x": 460, "y": 464 + len(RPC_ENTRY_EXAMPLES) * 23 + 9})
-    settle_gesture(page)
+    click_control(page, canvas, "Custom", role="tab")
     assert submitted == expected_submissions, "choosing Custom unexpectedly submitted analysis"
-    canvas.click(position={"x": 600, "y": 448})
-    page.keyboard.press("Control+A")
-    page.keyboard.type(CUSTOM_ENTRY, delay=3)
+    edit_control(page, canvas, "rpc_address", CUSTOM_ENTRY)
+    # Clearing must replace a nonempty draft. An empty insertText event alone
+    # does not delete the selection and could leave a valid previous address.
+    edit_control(page, canvas, "rpc_address", "")
+    ui_control(page, "Analyze", role="action", enabled=False)
+    page.keyboard.press("Control+Enter")
     rendered_frame(page)
+    assert submitted == expected_submissions, "cleared Custom address admitted another task"
+    edit_control(page, canvas, "rpc_address", CUSTOM_ENTRY)
     canvas.screenshot(path=str(output / "entry-custom-edited.png"))
     page.keyboard.press("Escape")
     settle_gesture(page)
@@ -94,6 +93,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     assert submitted == expected_submissions, "Custom did not submit exactly once to the chosen provider"
     assert graph(reply.report, "Native")["metadata"]["entry_address"].lower() == CUSTOM_ENTRY.lower()
     results["custom_reopened_address"] = CUSTOM_ENTRY
+    results["cleared_custom_address_blocks_submission"] = True
     results["provider_submissions"] = [request["input"] for request in submitted]
     results["renderer"] = webgpu_evidence(page)
     page.close()

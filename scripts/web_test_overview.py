@@ -4,9 +4,9 @@ from web_test_hybrid import oracle_graph
 from pathlib import Path
 from playwright.sync_api import expect
 import json
-from web_test_graph_helpers import graph_mode, graph_scope, pick_graph_instance, symbol
-from web_test_harness import complete_submission, hide_world_directory, observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
-from web_test_inspector_helpers import hide_inspector
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, graph_scope, pick_graph_instance, symbol
+from web_test_harness import click_control, complete_submission, hide_world_directory, observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_inspector_helpers import hide_inspector, select_inspector_tab
 from web_test_pixels import node_snapshot, screenshot_metrics
 
 
@@ -33,8 +33,8 @@ def block_overview_interactions(browser, url: str, output: Path):
     canvas = page.locator("#evm-canvas")
     hide_world_directory(page, canvas)
     hide_inspector(page, canvas)
-    page.keyboard.press("2")
-    settle_gesture(page)
+    graph_overview(page, canvas, fit=True)
+    graph_content(page, canvas, "SSA")
     blocks = graph_scope(page, "Blocks", 4, 5, 5)
     assert blocks["edges"] == 4 and blocks["native_edges"] == len(report["edges"])
     block_pixels = node_snapshot(page, canvas, output, "overview-blocks", measure_nodes=True)
@@ -71,6 +71,8 @@ def block_overview_interactions(browser, url: str, output: Path):
     expected_edges.update((state, state + 1, "BranchTrue") for state in range(1, 129))
     assert len(loop["edges"]) == 130
     assert {(edge["from"], edge["to"], edge["kind"]) for edge in loop["edges"]} == expected_edges
+    graph_overview(page, canvas, fit=True)
+    graph_content(page, canvas, "SSA")
     settle_gesture(page)
     grouped = graph_scope(page, "Blocks", 3, 131, 131)
     assert grouped["edges"] == 3 and grouped["native_edges"] == 130
@@ -96,14 +98,13 @@ def block_overview_interactions(browser, url: str, output: Path):
                     (129, "  σ₁₂₉  ")]
     for index, (state, query) in enumerate(search_forms):
         if index:
-            canvas.click(position={"x": 300, "y": 133})  # Instances toolbar
-            settle_gesture(page)
+            click_control(page, canvas, "Instances", role="action")
         pick_graph_instance(page, canvas, state, query, program=root)
     canvas.screenshot(path=str(output / "overview-loop-symbol-search.png"))
     graph_scope(page, "Blocks", 3, 131, 131)
     # Expose both the native inspector and the full SSA table for the selected
     # instance. A virtualized table must finish its long focus animation.
-    hide_inspector(page, canvas)  # toggle the initially hidden inspector on
+    select_inspector_tab(page, canvas, "Frame")
     page.keyboard.press("3")
     page.wait_for_timeout(800)
     rendered_frame(page)
@@ -120,8 +121,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     assert all(value["constants"] == ["0x0"] for value in frame["stack"][:-1])
     page.keyboard.press("2")
     settle_gesture(page)
-    canvas.click(position={"x": 300, "y": 133})  # Instances toolbar
-    settle_gesture(page)
+    click_control(page, canvas, "Instances", role="action")
     pick_graph_instance(page, canvas, 129, program=root)
     graph_mode(page, canvas, "Local")
     neighborhood = graph_scope(page, "Local", 4, 4, 131)

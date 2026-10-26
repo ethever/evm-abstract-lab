@@ -30,6 +30,21 @@ pub(super) fn owner(target: &ProcessOwner) -> String {
     }
 }
 
+pub(super) fn source_label(source: &evm_abstract_protocol::ProcessSource) -> String {
+    use evm_abstract_protocol::ProcessSource as Source;
+    match source {
+        Source::InputProgram(_) => "Supplied input code".into(),
+        Source::InputDelegation(_) => "Supplied delegation".into(),
+        Source::Runtime(source) => format!("Runtime {}", source.source),
+        Source::InitCode(_) => "Constructor code".into(),
+        Source::AnyRuntime(_) => "Unobserved runtime".into(),
+        Source::AnyInitCode(_) => "Unobserved constructor".into(),
+        Source::Empty(_) => "Empty execution".into(),
+        Source::Precompile(source) => format!("Precompile {}", source.address),
+        Source::InvalidDelegation(source) => format!("Invalid delegation {}", source.source),
+    }
+}
+
 pub(super) fn boundary(reason: &ProcessBoundary) -> String {
     match reason {
         ProcessBoundary::Catalogue => {
@@ -56,13 +71,15 @@ pub(super) fn boundary(reason: &ProcessBoundary) -> String {
 pub(super) fn frame(ui: &mut egui::Ui, key: &evm_abstract_protocol::ProcessFrameKey) {
     ui.label(interpretation(key.source.semantics()));
     ui.monospace(format!("Owner class: {}", owner(&key.owner)));
-    ui.monospace(format!("Catalogue epoch: {}", key.epoch));
     ui.label(format!("Static: {}", key.is_static));
     ui.label(format!(
         "MAY location: {}",
         crate::app::minimum::location_label(key.location)
     ));
     source(ui, &key.source);
+    ui.collapsing("Advanced source epoch", |ui| {
+        ui.monospace(format!("Catalogue epoch: {}", key.epoch));
+    });
 }
 
 pub(super) fn control(
@@ -71,6 +88,18 @@ pub(super) fn control(
     node: &evm_abstract_protocol::RegionalNode,
     selected: Option<evm_abstract_protocol::ProcessLocation>,
 ) {
+    if let Some(frame) = &node.frame.process {
+        ui.label(format!(
+            "Selected MAY source: {}",
+            crate::app::minimum::location_label(selected.unwrap_or(frame.location))
+        ));
+        ui.monospace(format!("Owner class: {}", owner(&frame.owner)));
+        ui.label(if frame.is_static {
+            "Static context · writes prohibited"
+        } else {
+            "Mutable context"
+        });
+    }
     let Some(region) = node
         .transfer
         .as_ref()
@@ -82,10 +111,12 @@ pub(super) fn control(
     let Some(relation) = report.process_controls.get(region.relation) else {
         return;
     };
-    ui.label(format!(
-        "MAY control directory {} · epoch {} · program {:?}",
-        relation.id, relation.epoch, relation.program
-    ));
+    ui.collapsing("Advanced control directory", |ui| {
+        ui.monospace(format!(
+            "MAY control directory {} · epoch {} · program {:?}",
+            relation.id, relation.epoch, relation.program
+        ));
+    });
     ui.label(format!(
         "Region entry: {}",
         crate::app::minimum::location_label(region.entry)

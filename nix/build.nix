@@ -17,7 +17,19 @@ let
       cargoVendorDir
       ;
   };
-  cargoVendorDir = craneLib.vendorCargoDeps { src = sources.workspace; };
+  cargoVendorDir = import ./cargo-vendor.nix {
+    inherit craneLib;
+    src = sources.workspace;
+  };
+  developmentCargoVendorDir = import ./cargo-vendor.nix {
+    inherit craneLib;
+    src = sources.workspace;
+    extraLocks = [ (sourceRoot + "/lints/no_dyn/Cargo.lock") ];
+  };
+  developmentCargoEnvironment = import ./cargo-environment.nix {
+    inherit pkgs;
+    cargoVendorDir = developmentCargoVendorDir;
+  };
   common = dependencies.environment // {
     src = sources.workspace;
     inherit cargoVendorDir;
@@ -122,6 +134,7 @@ let
 in
 {
   inherit
+    developmentCargoEnvironment
     common
     commonFor
     sources

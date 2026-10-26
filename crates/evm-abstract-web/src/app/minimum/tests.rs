@@ -86,8 +86,16 @@ fn body_and_interior_selection_navigate_exact_may_source_without_native_ids() {
     );
     assert_eq!(workspace.selection, crate::app::Selection::default());
     assert_eq!(
-        workspace.minimum_source.focus.unwrap().2,
-        api::ProcessLocation::Block(1)
+        workspace
+            .report_view
+            .navigator()
+            .current()
+            .unwrap()
+            .focus
+            .minimum_selection()
+            .unwrap()
+            .control,
+        Some(api::ProcessLocation::Block(1))
     );
     workspace.inspector.tab = super::super::inspector::Tab::Coverage;
     click(&ctx, &mut workspace, size, "Maximize");
@@ -116,12 +124,7 @@ fn clicking_an_interior_after_an_original_account_keeps_its_actual_source() {
     let program = workspace.program.unwrap();
     workspace.minimum_selection.account = Some(0);
     workspace.view = View::Graph;
-    click(
-        &ctx,
-        &mut workspace,
-        size,
-        &format!("MAY B1 · program {program} · source 0x0003"),
-    );
+    click(&ctx, &mut workspace, size, "Block 0x0003–0x0006");
     assert_eq!(
         workspace.minimum_selection.control,
         Some(api::ProcessLocation::Block(1))
@@ -265,8 +268,10 @@ fn minimum_only_renders_all_views_and_mobile_directory_without_private_state_or_
             assert!(workspace.report_view.identity().is_minimum());
             assert_eq!(workspace.selection, crate::app::Selection::default());
             if view == View::Ssa {
+                workspace.directory.open = false;
+                let output = render(&ctx, &mut workspace, size);
                 assert!(crate::tests::painted_text(&output).iter().any(|(text, _)| {
-                    text.contains("Instruction SSA is available in Detailed paths")
+                    text == crate::app::model::presentation::UnavailableReason::ConservativeEvidence.label()
                 }));
             }
         }
@@ -294,7 +299,13 @@ fn native_and_rich_arrival_keep_the_canonical_minimum_camera_selection_and_sourc
     let selected = workspace.minimum_selection;
     let identity = workspace.report_view.identity();
     let camera = workspace.graph.camera();
-    let cache = workspace.minimum_source.blocks.as_ptr();
+    workspace.view = View::Disassembly;
+    let before_source = render(&ctx, &mut workspace, size);
+    let cache = crate::tests::painted_text(&before_source)
+        .into_iter()
+        .find(|(text, _)| text == "Block 0x0003")
+        .expect("the selected MAY source row is actually rendered");
+
     let global = rich.global.as_ref().map(|_| 2);
     let native = rich.native.as_ref().map(|_| 2);
     deliver(
@@ -303,11 +314,18 @@ fn native_and_rich_arrival_keep_the_canonical_minimum_camera_selection_and_sourc
         publication(2, 1, global, native),
         rich,
     );
-    render(&ctx, &mut workspace, size);
+    let after_source = render(&ctx, &mut workspace, size);
     assert_eq!(workspace.report_view.identity(), identity);
     assert_eq!(workspace.minimum_selection, selected);
     assert_eq!(workspace.graph.camera(), camera);
-    assert_eq!(workspace.minimum_source.blocks.as_ptr(), cache);
+    assert_eq!(
+        crate::tests::painted_text(&after_source)
+            .into_iter()
+            .find(|(text, _)| text == "Block 0x0003")
+            .expect("the same source row remains visible after richer publication"),
+        cache
+    );
+
     workspace.activate_view(crate::app::model::Activation::Namespace(
         api::AnalysisNamespace::Native,
     ));
@@ -362,7 +380,7 @@ fn refused_and_cancelled_details_keep_the_same_usable_minimum_and_joint_bounds()
     assert!(
         crate::tests::painted_text(&output)
             .iter()
-            .any(|(text, _)| text.contains("presentation refused"))
+            .any(|(text, _)| text == "Detail refused")
     );
     assert!(workspace.task.cancellable());
     assert_eq!(workspace.report_view.identity(), identity);

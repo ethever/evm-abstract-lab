@@ -2,10 +2,11 @@
 
 from pathlib import Path
 from playwright.sync_api import expect
+import json
 import math
 import re
-from web_test_graph_helpers import frozen_camera, graph_mode, pinch_wheel, workspace_panes
-from web_test_harness import complete_submission, hide_world_directory, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_graph_helpers import frozen_camera, graph_content, graph_mode, graph_overview, pinch_wheel, workspace_panes
+from web_test_harness import click_control, complete_submission, hide_world_directory, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, ui_controls, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import assert_anchored_zoom, assert_same_scene, assert_translation, canvas_screenshot, graph_screenshot_metrics, node_snapshot, require_selected_complete, screenshot_metrics
 
@@ -33,7 +34,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             complete_submission(page, initial.value, namespace="Native")
             status = page.locator("#analysis-status")
             expect(status).to_contain_text("Ready:", timeout=60000)
-            expect(status).to_contain_text("CFG nodes: SSA")
+            expect(status).to_contain_text("Route: CFG")
+            expect(status).to_contain_text("CFG nodes: Disasm")
             canvas = page.locator("#evm-canvas")
             page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
             display = page.evaluate("""() => new Promise(resolve => {
@@ -51,8 +53,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             })""")
             hide_inspector(page, canvas)
             hide_world_directory(page, canvas)
-            page.keyboard.press("2")
-            rendered_frame(page)
+            graph_overview(page, canvas, fit=True)
+            graph_content(page, canvas, "SSA")
             graph_mode(page, canvas, "States")
             cdp = context.new_cdp_session(page)
             prefix = f"gestures-dpr{dpr}"
@@ -99,67 +101,69 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             pinch_ratio = assert_anchored_zoom(ctrl_zoom, pinched, anchor)
             assert abs(pinch_ratio - math.exp(0.18)) < 0.06, f"eframe pinch conversion changed: {pinch_ratio}"
             bounds = pinched["bounds"]
-            safari_anchor = ((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)
-            page.mouse.move(*safari_anchor)
+            touch_anchor = ((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)
+            page.mouse.move(*touch_anchor)
             rendered_frame(page)
-            # Safari sends non-standard gesture events instead of relying solely on
-            # Ctrl+wheel. Exercise eframe's generic Event/Reflect adapter in Chromium;
-            # this is not a claim of testing Safari or a physical Mac trackpad.
-            page.evaluate("""() => {
-                const canvas = document.querySelector('#evm-canvas');
-                for (const [kind, scale] of [['gesturestart', 1], ['gesturechange', 1.12], ['gestureend', 1.12]]) {
-                    const event = new Event(kind, {bubbles: true, cancelable: true});
-                    Object.assign(event, {scale, rotation: 0});
-                    canvas.dispatchEvent(event);
-                }
-            }""")
+            # Exercise a real two-contact touchscreen pinch. The quantitative
+            # anchor/scale contract remains independent of Ctrl+wheel; no app
+            # events or clock are synthesized through JavaScript.
+            def touch_points(scale):
+                return [{"x":touch_anchor[0]+sign*60*scale,"y":touch_anchor[1],
+                         "id":index,"radiusX":2,"radiusY":2,"force":1}
+                        for index,sign in [(1,-1),(2,1)]]
+            cdp.send("Input.dispatchTouchEvent",{"type":"touchStart","touchPoints":touch_points(1)[:1]})
+            cdp.send("Input.dispatchTouchEvent",{"type":"touchStart","touchPoints":touch_points(1)})
+            rendered_frame(page)
+            for step in range(1,7):
+                cdp.send("Input.dispatchTouchEvent",{"type":"touchMove","touchPoints":touch_points(1+0.12*step/6)})
+                rendered_frame(page)
+            cdp.send("Input.dispatchTouchEvent",{"type":"touchEnd","touchPoints":[]})
             settle_gesture(page)
             page.mouse.move(30, 700)
             rendered_frame(page)
-            safari_zoom = node_snapshot(page, canvas, output, f"{prefix}-safari-format-gesture")
-            safari_ratio = assert_anchored_zoom(pinched, safari_zoom, safari_anchor)
-            assert abs(safari_ratio - 1.12) < 0.04, f"Safari-format gesture scale was not applied: {safari_ratio}"
+            touch_zoom = node_snapshot(page, canvas, output, f"{prefix}-touch-pinch")
+            touch_ratio = assert_anchored_zoom(pinched, touch_zoom, touch_anchor)
+            assert abs(touch_ratio - 1.12) < 0.04, f"touchscreen pinch scale was not applied: {touch_ratio}"
             assert page.evaluate("devicePixelRatio") == dpr, "graph gesture changed browser page zoom"
             assert page.evaluate("visualViewport.scale") == 1, "graph gesture changed visual viewport zoom"
+            (output / f"{prefix}-touch-proof.json").write_text(json.dumps({
+                "before": pinched, "after": touch_zoom, "centroid": touch_anchor,
+                "ratio": touch_ratio, "requested_ratio": 1.12, "anchor_tolerance_css_px": 4,
+            }, indent=2) + "\n")
 
             manual_frozen = frozen_camera(page, canvas, output, f"{prefix}-manual-frozen", False)
 
-            # Start in the product default SSA, then exercise both directions using
-            # real toolbar controls. Status and measured node widths verify the
+            # Explicit Native SSA keeps the original all-state gesture oracle.
+            # Real toolbar controls and measured node widths verify the
             # representation change independently of screenshot hashes.
             expect(status).to_contain_text("CFG nodes: SSA")
-            canvas.click(position={"x": 28, "y": 110})
-            settle_gesture(page)
+            graph_content(page, canvas, "Disasm")
             expect(status).to_contain_text("CFG nodes: Disasm")
             disasm = node_snapshot(page, canvas, output, f"{prefix}-nodes-disasm")
-            require_selected_complete(disasm);require_selected_complete(safari_zoom)
+            require_selected_complete(disasm);require_selected_complete(touch_zoom)
             disasm_width = disasm["bounds"][2] - disasm["bounds"][0]
-            assert disasm["hash"] != safari_zoom["hash"], "Disasm mode retained SSA pixels"
-            assert safari_zoom["bounds"][2] - safari_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
-            canvas.click(position={"x": 78, "y": 110})
-            settle_gesture(page)
+            assert disasm["hash"] != touch_zoom["hash"], "Disasm mode retained SSA pixels"
+            assert touch_zoom["bounds"][2] - touch_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
+            graph_content(page, canvas, "SSA")
             expect(status).to_contain_text("CFG nodes: SSA")
             ssa = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa")
             require_selected_complete(ssa)
             assert ssa["hash"] != disasm["hash"], "SSA mode retained disassembly pixels"
             ssa_width = ssa["bounds"][2] - ssa["bounds"][0]
             assert ssa_width > disasm_width + 10, "SSA definitions/effects did not expand the fixture's rendered node"
-            canvas.click(position={"x": 143, "y": 110})
-            settle_gesture(page)
+            click_control(page, canvas, "Fit graph", role="action")
             expect(status).to_contain_text("CFG nodes: SSA")
             ssa_fit = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa-fit")
             require_selected_complete(ssa_fit)
             assert ssa_fit["bounds"][2] - ssa_fit["bounds"][0] < ssa_width, "Fit did not return the enlarged SSA graph to a readable overview"
-            canvas.click(position={"x": 28, "y": 110})
-            settle_gesture(page)
+            graph_content(page, canvas, "Disasm")
             expect(status).to_contain_text("CFG nodes: Disasm")
             zoom_screenshots = {}
             scene_reference = None
             for layout_name, height in [("tall", 1000), ("short", 390)]:
                 page.set_viewport_size({"width": 1440, "height": height})
                 page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
-                canvas.click(position={"x": 143, "y": 110})
-                settle_gesture(page)
+                click_control(page, canvas, "Fit graph", role="action")
                 # The restored compact toolbar ends at y=115. Include the short
                 # viewport root's real outline at y=122 after the fresh upward pan.
                 region = (4, 119, 1436, height - 30)
@@ -196,8 +200,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
 
             # Compare shortcut behavior with the actual Fit button at the same
             # viewport, without assuming where any individual node should end up.
-            canvas.click(position={"x": 143, "y": 110})
-            settle_gesture(page)
+            click_control(page, canvas, "Fit graph", role="action")
             fit_keys = {"button": fitted["bounds"]}
             fresh_wheel_after_fit = None
             for key, name in [("f", "f"), ("Shift+f", "shift-f")]:
@@ -246,7 +249,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             bytecode = "\n".join(f"60{index:02x}" for index in range(70)) + "\n00"
             editor_region = (4, 123, 1436, 970)
             before_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-before-f", editor_region)
-            open_input(page)
+            open_input(page, mode="Bytecode")
             page.keyboard.press("Control+A")
             page.keyboard.type(bytecode, delay=5)
             settle_gesture(page)
@@ -263,7 +266,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             settle_gesture(page)
             after_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-after-f", editor_region)
             assert_translation(before_typing, after_typing, 0, 0)
-            open_input(page)
+            open_input(page, mode="Bytecode")
             with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
                 page.keyboard.press("Control+Enter")
             reply = complete_submission(page, response.value, namespace="Native")
@@ -296,6 +299,12 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
                     # source tooltip can overlap the neighboring selected node.
                     page.mouse.move(2, 2)
                     settle_gesture(page)
+                    if name == "ssa":
+                        rows = [row for row in ui_controls(page) if row["role"] == "ssa-row" and row["enabled"]]
+                        assert rows, "missing actual neighboring SSA table"
+                        # Selected state/All source states are fixed scope tabs.
+                        # Only the real table header should scroll out of view.
+                        region = (region[0], min(row["rect"][1] for row in rows), region[2], region[3])
                     before_png = canvas_screenshot(page)
                     before_node = graph_screenshot_metrics(page, before_png, graph_region)
                     before_code = screenshot_metrics(page, before_png, region)
@@ -317,8 +326,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             results[f"dpr{dpr}"] = {
                 "renderer": webgpu_evidence(page), "display": display, "initial": initial, "pan_background": panned, "pan_over_node": over_node,
                 "ctrl_wheel_ratio": ctrl_ratio, "pinch_ratio": pinch_ratio,
-                "safari_format_gesture": {"ratio": safari_ratio, "requested_scale": 1.12,
-                                          "platform": "synthetic gesturestart/change/end events in Chromium"},
+                "touch_pinch": {"ratio": touch_ratio, "requested_scale": 1.12,
+                                "platform": "actual Chromium CDP touchStart/move/end"},
                 "initial_frozen": initial_frozen, "manual_frozen": manual_frozen,
                 "initial_node_view": "SSA", "disasm_mode": disasm,
                 "ssa_mode": ssa, "ssa_fit": ssa_fit, "edge_zoom_screenshots": zoom_screenshots,

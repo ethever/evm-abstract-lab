@@ -72,7 +72,7 @@ pub(super) fn prepare(
             continue;
         };
         let mut depths = BTreeSet::new();
-        let mut boundary = false;
+        let mut boundary = display.portals.contains_key(&node.id);
         for member in &node.members {
             if let Some(state) = index.cfg(report, *member) {
                 depths.insert(state.frame_depth);
@@ -117,7 +117,7 @@ pub(super) fn prepare(
             let measured = painter
                 .layout_job(crate::notation::job(
                     &text,
-                    FontId::monospace(9.0),
+                    FontId::monospace(10.0),
                     palette::MUTED,
                 ))
                 .size();

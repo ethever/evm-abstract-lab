@@ -38,6 +38,8 @@ fn workspace() -> Workspace {
         })
         .collect();
     let mut workspace = Workspace::default();
+    workspace.graph.set_mode(crate::widgets::GraphMode::States);
+    workspace.graph.show_ssa_content();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok((report).into()),
     }));
@@ -72,7 +74,12 @@ fn text_position(output: &FullOutput, expected: &str) -> Option<Pos2> {
         .iter()
         .rev()
         .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.text() == expected => Some(text.pos),
+            egui::Shape::Text(text)
+                if text.galley.text() == expected
+                    || text.galley.text().starts_with(&format!("0x{expected}  ")) =>
+            {
+                Some(text.pos)
+            }
             _ => None,
         })
 }
@@ -98,7 +105,7 @@ fn source_heading_position(output: &FullOutput, view: View) -> Pos2 {
                         && (detail.starts_with("verified complete")
                             || detail.starts_with("partial coverage"))
                 }
-                View::Disassembly => title == "DISASSEMBLY" && detail.starts_with("P₀ · Runtime"),
+                View::Disassembly => title == "CODE" && detail.starts_with("Runtime"),
                 _ => false,
             };
             matches.then_some(pair[0].pos)
@@ -115,7 +122,7 @@ fn first_pc(output: &FullOutput, view: View) -> (usize, Pos2) {
                 let label = text.galley.text();
                 let pc = match view {
                     View::Ssa if label.len() == 6 && label.ends_with("  ") => &label[..4],
-                    View::Disassembly if label.len() == 4 => label,
+                    View::Disassembly => label.strip_prefix("0x")?.split_once("  ")?.0,
                     _ => return None,
                 };
                 usize::from_str_radix(pc, 16).ok().map(|pc| (pc, text.pos))

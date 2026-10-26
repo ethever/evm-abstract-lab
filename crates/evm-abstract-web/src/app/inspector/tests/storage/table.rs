@@ -47,6 +47,7 @@ fn panel(report: &crate::tests::AnalysisReport) -> Panel<'_> {
     }
 }
 
+#[track_caller]
 fn near(actual: f32, expected: f32) {
     assert!((actual - expected).abs() < 1.0, "{actual} != {expected}");
 }
@@ -527,9 +528,14 @@ impl Workbench {
     }
 
     fn graph_titles(&mut self) -> Vec<(String, Rect)> {
-        self.draw(vec![])
-            .into_iter()
-            .filter(|(text, _)| text.starts_with('σ') && text.contains("  ·  B"))
+        let text = self.draw(vec![]);
+        let nodes = self.workspace.graph.painted_nodes();
+        text.into_iter()
+            .filter(|(label, rect)| {
+                nodes
+                    .iter()
+                    .any(|(title, bounds)| label == title && bounds.contains(rect.center()))
+            })
             .collect()
     }
 
