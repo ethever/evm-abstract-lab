@@ -84,6 +84,7 @@ def minimum_result():
     payload = {"schema_version": 21, "selected_view": "Baseline", "minimum": minimum,
                "rich_export": "NotRequested", "status": "Converged", "work": 42, "transfers": 7,
                "postprocessing_work": 10, "timings": {"projecting_ns": 12}, "acquisition": None,
+               "process_controls": [],
                "programs": [{"id": 91, "fork": "Osaka", "code_address": ADDRESS, "code_hash": HASH,
                              "kind": "Runtime", "bytecode": "0x00", "blocks": [
                                  {"id": 12, "start_pc": 0, "instructions": [{"pc": 0}]}]}],
@@ -223,6 +224,8 @@ class ParserTests(unittest.TestCase):
             lambda r: r["report"]["minimum"]["summaries"][0].update(bounds=[]),
             lambda r: r["report"]["minimum"]["summaries"][0]["bounds"][0]["version"].update(source_epoch="wrong"),
             lambda r: r["report"]["programs"][0].update(fork="London"),
+            lambda r: r["report"].pop("process_controls"),
+            lambda r: r["report"].update(process_controls=None),
         ):
             invalid = minimum_result()
             mutate(invalid)
