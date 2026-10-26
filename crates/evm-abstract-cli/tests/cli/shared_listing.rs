@@ -813,7 +813,23 @@ fn world_explain_and_analyze_ssa_preserve_calls_returns_and_complete_ir() {
         assert!(
             transitions
                 .iter()
-                .any(|transition| transition["kind"] == "Return")
+                .any(|transition| transition["kind"] == json!({"Summary": "Return"}))
+        );
+        assert_eq!(report["hybrid"]["coverage"]["requested_detail_regions"], 1);
+        assert_eq!(report["hybrid"]["coverage"]["detail_current"], true);
+        assert_eq!(report["analysis"]["config"]["max_work"], 2_000_000_000_u64);
+        assert_eq!(
+            report["analysis"]["config"]["analysis"]["max_transfers"],
+            10_000_000
+        );
+        assert!(
+            report["analysis"]["procedure_summaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|summary| summary["source_current"] == true
+                    && summary["closed"] == true
+                    && summary["kind"] == "KnownCall")
         );
         for (command, extra, detailed) in [
             ("explain", vec![], false),
@@ -822,6 +838,57 @@ fn world_explain_and_analyze_ssa_preserve_calls_returns_and_complete_ir() {
         ] {
             let output = world(command, &path, ENTRY, &extra, 0);
             assert_world_listing(&output, &report, detailed);
+        }
+    }
+}
+
+#[test]
+fn two_and_three_region_world_listings_keep_private_returns_and_the_full_code_catalogue() {
+    for (name, regions) in [("call-return-branch", "2"), ("proxy-storage", "3")] {
+        let path = example(&format!("worlds/{name}.json"));
+        let extra = ["--max-detail-regions", regions];
+        let report = world_report(&path, ENTRY, &extra);
+        assert_eq!(
+            report["hybrid"]["coverage"]["requested_detail_regions"],
+            regions.parse::<u64>().unwrap()
+        );
+        assert_eq!(report["hybrid"]["coverage"]["detail_current"], true);
+        assert_eq!(report["analysis"]["config"]["max_work"], 2_000_000_000_u64);
+        assert_eq!(
+            report["analysis"]["config"]["analysis"]["max_transfers"],
+            10_000_000
+        );
+        let transitions = report["ssa"]["transitions"].as_array().unwrap();
+        assert!(
+            transitions
+                .iter()
+                .any(|transition| transition["kind"] == "Call")
+        );
+        assert!(
+            transitions
+                .iter()
+                .any(|transition| transition["kind"] == "Return")
+        );
+        let input: Json = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let programs: Vec<_> = input["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|account| Program::from_hex(account["code"].as_str().unwrap()).unwrap())
+            .collect();
+        for (command, presentation, detailed) in [
+            ("explain", vec![], false),
+            ("explain", vec!["--verbose"], true),
+            ("analyze", vec!["--ssa"], true),
+        ] {
+            let mut options = extra.to_vec();
+            options.extend(presentation);
+            let output = world(command, &path, ENTRY, &options, 0);
+            assert_world_listing(&output, &report, detailed);
+            if command == "explain" {
+                let boundary = if detailed { "\nAnalysis\n" } else { "\nCFG\n" };
+                assert_raw_directory(output.split_once(boundary).unwrap().0, &programs);
+            }
         }
     }
 }
@@ -984,8 +1051,12 @@ fn incomplete_explanations_keep_aligned_input_and_exit_two_without_partial_ssa()
         2,
     ))
     .unwrap();
-    let report = crate::native::select(&report);
+    assert!(report["native"].is_null());
+    assert_eq!(report["hybrid"]["coverage"]["requested_detail_regions"], 1);
+    assert_eq!(report["hybrid"]["coverage"]["detail"], "BaselinePending");
+    let report = crate::native::global(&report);
     assert_eq!(report["status"], "Incomplete");
+    assert_eq!(report["config"]["max_work"], 1);
     assert!(report["states"].as_array().unwrap().is_empty());
     assert!(report.get("ssa").is_none());
     for detailed in [false, true] {
