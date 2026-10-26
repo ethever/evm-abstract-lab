@@ -6,7 +6,8 @@ use crate::{
     analysis::{ExecutionConfig, state::stack_alias::StackAliases, worklist::runtime::TaskKind},
     domain::{EvmValue, ValueAlgebra},
     resource::clone_payment::tests::{
-        Policy, RECEIPT, Receipt, SummaryPolicy, Word, reset, summary_fixture,
+        Policy, RANGE, RECEIPT, RangeControl, Receipt, SummaryPolicy, Word, range_receipt, reset,
+        summary_fixture,
     },
     world::{EvmEntry, EvmWorld},
 };
@@ -184,9 +185,10 @@ impl Harness {
 }
 
 #[test]
-fn persistent_coarse_revisit_charges_native_copy_and_retains_its_closure() {
+fn persistent_coarse_revisit_omits_discarded_copy_and_retains_its_closure() {
     let _scope = RECEIPT.scope();
     let mut costs = Vec::new();
+    let mut retained_costs = Vec::new();
     for fee in [64, 1_000_000] {
         let mut h = Harness::new();
         let layout = match &h.table.nodes[0].runtime_retry {
@@ -198,13 +200,22 @@ fn persistent_coarse_revisit_charges_native_copy_and_retains_its_closure() {
         };
         let mut budget = WorkBudget::new(100_000_000);
         let incoming = h.incoming(Word::expensive(fee));
+        let mut retained_budget = WorkBudget::new(100_000_000);
+        reset();
+        let retained = incoming.clone_with_payment(&mut retained_budget).unwrap();
+        assert_eq!(RECEIPT.get().bytes, 4096);
+        assert_eq!(RECEIPT.get().private_quotes, 1);
+        assert!(semantic_eq(&incoming, &retained));
+        assert!(!retained.active().stack[0].contains(U256::from(7)));
+        assert!(retained.active().stack[0].contains(U256::from(8)));
+        retained_costs.push(retained_budget.used());
         reset();
         assert_eq!(h.revisit(incoming, &mut budget).unwrap(), 0);
-        assert_eq!(RECEIPT.get().bytes, 4096);
+        assert_eq!(RECEIPT.get().bytes, 0);
         assert_eq!(
             RECEIPT.get().private_quotes,
-            1,
-            "the incoming value is paid before coarse erasure"
+            0,
+            "coarse erasure never stages the discarded private value"
         );
         costs.push(budget.used());
         let updates = h.table.nodes[0].updates;
@@ -229,12 +240,14 @@ fn persistent_coarse_revisit_charges_native_copy_and_retains_its_closure() {
         assert!(!budget.exhausted());
         h.assert_pending();
     }
-    assert_eq!(costs[1] - costs[0], 1_000_000 - 64);
+    assert_eq!(costs[1], costs[0]);
+    assert_eq!(retained_costs[1] - retained_costs[0], 1_000_000 - 64);
 }
 
 #[test]
-fn persistent_coarse_revisit_refuses_copy_before_hook_without_replacing_bound() {
+fn persistent_coarse_revisit_refuses_retained_operations_without_replacing_bound() {
     let _scope = RECEIPT.scope();
+    let _range_scope = RANGE.scope();
     for fee in [1_000_000, usize::MAX] {
         let mut h = Harness::new();
         let before = h.retained_copy();
@@ -242,18 +255,52 @@ fn persistent_coarse_revisit_refuses_copy_before_hook_without_replacing_bound() 
         let incoming = h.incoming(Word::expensive(fee));
         let mut budget = WorkBudget::new(500_000);
         reset();
-        assert_eq!(h.revisit(incoming, &mut budget), Err(MachineError::Work));
-        assert!(
-            RECEIPT.get().private_quotes > 0,
-            "reached persistent coarse native invoice"
-        );
+        assert!(matches!(
+            incoming.clone_with_payment(&mut budget),
+            Err(MachineError::Work)
+        ));
+        assert_eq!(RECEIPT.get().private_quotes, 1);
         assert_eq!(
             RECEIPT.get().bytes,
             0,
             "refused private value was never cloned"
         );
+        // That private copy is unnecessary for a coarse revisit, but the
+        // replacement range really is retained and must pay its own invoice.
+        RANGE.set(RangeControl {
+            work: Some(fee),
+            ..RangeControl::default()
+        });
+        let mut budget = WorkBudget::new(500_000);
+        reset();
+        assert_eq!(h.revisit(incoming, &mut budget), Err(MachineError::Work));
+        assert_eq!(
+            range_receipt(),
+            (1, 0),
+            "refused before the actual range factory"
+        );
+        assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (0, 0));
         assert!(semantic_eq(&before, &h.table.nodes[0].payload));
         assert_eq!(h.table.nodes[0].updates, updates);
+        h.assert_pending();
+
+        RANGE.set(RangeControl {
+            work: Some(64),
+            ..RangeControl::default()
+        });
+        let incoming = h.incoming(Word::expensive(fee));
+        reset();
+        assert_eq!(
+            h.revisit(incoming, &mut WorkBudget::new(500_000)).unwrap(),
+            0
+        );
+        let (quotes, constructions) = range_receipt();
+        assert!(
+            quotes > 0 && constructions == quotes,
+            "funded ranges are actually constructed"
+        );
+        assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (0, 0));
+        assert!(semantic_eq(&before, &h.table.nodes[0].payload));
         h.assert_pending();
     }
 }
@@ -261,34 +308,70 @@ fn persistent_coarse_revisit_refuses_copy_before_hook_without_replacing_bound() 
 #[test]
 fn persistent_coarse_revisit_checks_both_cancellation_owners_before_hook() {
     let _scope = RECEIPT.scope();
+    let _range_scope = RANGE.scope();
     for captured_target in [true, false] {
-        let mut h = Harness::new();
-        let before = h.retained_copy();
-        let captured = analysis_control::Cancellation::new();
-        let ambient = analysis_control::Cancellation::new();
-        let mut word = Word::expensive(64);
-        word.cancel_price = Some(if captured_target {
-            captured.clone()
-        } else {
-            ambient.clone()
-        });
-        let incoming = h.incoming(word);
-        let mut budget =
-            analysis_control::with_cancellation(&captured, || WorkBudget::new(100_000_000));
-        RECEIPT.set(Receipt {
-            armed: true,
-            ..Receipt::default()
-        });
-        assert_eq!(
-            analysis_control::with_cancellation(&ambient, || h.revisit(incoming, &mut budget)),
-            Err(MachineError::Relations(
-                crate::domain::relational::QueryReason::Cancelled
-            ))
-        );
-        assert!(RECEIPT.get().private_quotes > 0);
-        assert_eq!(RECEIPT.get().bytes, 0);
-        assert!(semantic_eq(&before, &h.table.nodes[0].payload));
-        h.assert_pending();
+        for retained_copy in [true, false] {
+            let mut h = Harness::new();
+            let before = h.retained_copy();
+            let captured = analysis_control::Cancellation::new();
+            let ambient = analysis_control::Cancellation::new();
+            let target = if captured_target { &captured } else { &ambient };
+            let mut word = Word::expensive(64);
+            word.cancel_price = Some(target.clone());
+            let incoming = h.incoming(word);
+            let mut budget =
+                analysis_control::with_cancellation(&captured, || WorkBudget::new(100_000_000));
+            RECEIPT.set(Receipt {
+                armed: true,
+                ..Receipt::default()
+            });
+            RANGE.set(RangeControl::default());
+            assert_eq!(
+                analysis_control::with_cancellation(&ambient, || h.revisit(incoming, &mut budget))
+                    .unwrap(),
+                0
+            );
+            assert!(!target.is_cancelled(), "discarded copy has no price hook");
+            assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (0, 0));
+
+            let mut word = Word::expensive(64);
+            word.cancel_price = Some(target.clone());
+            let incoming = h.incoming(word);
+            if !retained_copy {
+                RANGE.set(RangeControl {
+                    work: Some(64),
+                    cancel_quote: Some(target.clone()),
+                    ..RangeControl::default()
+                });
+            }
+            RECEIPT.set(Receipt {
+                armed: true,
+                ..Receipt::default()
+            });
+            let result = analysis_control::with_cancellation(&ambient, || {
+                if retained_copy {
+                    incoming.clone_with_payment(&mut budget).map(|_| 0)
+                } else {
+                    h.revisit(incoming, &mut budget)
+                }
+            });
+            assert_eq!(
+                result,
+                Err(MachineError::Relations(
+                    crate::domain::relational::QueryReason::Cancelled
+                ))
+            );
+            assert!(target.is_cancelled());
+            if retained_copy {
+                assert_eq!(RECEIPT.get().private_quotes, 1);
+            } else {
+                assert_eq!(RECEIPT.get().private_quotes, 0);
+                assert_eq!(range_receipt(), (1, 0));
+            }
+            assert_eq!(RECEIPT.get().bytes, 0);
+            assert!(semantic_eq(&before, &h.table.nodes[0].payload));
+            h.assert_pending();
+        }
     }
 }
 
@@ -306,8 +389,9 @@ fn accept_preserves_the_original_successor_when_its_coarse_copy_is_refused() {
     let paid = RECEIPT.get();
     assert!(paid.private_quotes > 0 && paid.bytes >= 4096);
     // Owned partitioning does no native copy. The separate direct revisit
-    // regression proves that this final private quote belongs to Coarse's
-    // incoming copy; normalization erases it before later policy admission.
+    // regression proves coarse normalization erases the private value without
+    // copying it. This executable successor still needs real native copies at
+    // the fallback/summary-formation boundary before that normalization.
     let cut = first_work_reaching(funded, |limit| {
         let mut h = Harness::new();
         let execution = h.produced_successor();
@@ -324,7 +408,7 @@ fn accept_preserves_the_original_successor_when_its_coarse_copy_is_refused() {
     assert_eq!(
         RECEIPT.get().private_quotes,
         paid.private_quotes,
-        "the Coarse invoice was reached"
+        "the retained successor's native invoice was reached"
     );
     assert_eq!(
         RECEIPT.get().bytes + 4096,

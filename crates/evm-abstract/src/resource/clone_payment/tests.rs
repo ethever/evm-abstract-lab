@@ -38,6 +38,30 @@ pub(crate) static RECEIPT: crate::test_instrumentation::Counter<Receipt> =
         armed: false,
     });
 
+/// Independent invoice and factory hooks for ranges retained by coarse bounds.
+/// Ordinary clone-payment fixtures leave this separate counter unscoped.
+#[derive(Clone, Default)]
+pub(crate) struct RangeControl {
+    pub work: Option<usize>,
+    pub quotes: usize,
+    pub constructions: usize,
+    pub cancel_quote: Option<analysis_control::Cancellation>,
+}
+
+pub(crate) static RANGE: crate::test_instrumentation::Counter<RangeControl> =
+    crate::test_instrumentation::Counter::new(RangeControl {
+        work: None,
+        quotes: 0,
+        constructions: 0,
+        cancel_quote: None,
+    });
+
+pub(crate) fn range_receipt() -> (usize, usize) {
+    let mut receipt = (0, 0);
+    RANGE.update(|control| receipt = (control.quotes, control.constructions));
+    receipt
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Word {
     native: NumericValue,
@@ -117,6 +141,10 @@ impl WordElement for Word {
             native: NumericValue::from_observation(value),
             ..Self::top()
         }
+    }
+    fn unsigned_range(lower: U256, upper: U256) -> Option<Self> {
+        RANGE.update(|control| control.constructions += 1);
+        WordObservation::unsigned_range(lower, upper).map(|facts| Self::from_observation(&facts))
     }
     fn observation(&self) -> WordObservation {
         RECEIPT.update(|r| r.exports += 1);
@@ -300,6 +328,21 @@ impl EvmNumericAlgebra for SummaryPolicy {
         v.clone_work()
     }
     fn summary_construction_work(&self, c: crate::domain::SummaryConstruction) -> usize {
+        if matches!(c, crate::domain::SummaryConstruction::UnsignedRange { .. }) {
+            let mut work = None;
+            let mut cancellation = None;
+            RANGE.update(|control| {
+                control.quotes += 1;
+                work = control.work;
+                cancellation = control.cancel_quote.clone();
+            });
+            if let Some(cancellation) = cancellation {
+                cancellation.cancel();
+            }
+            if let Some(work) = work {
+                return work;
+            }
+        }
         self.0
             .0
             .summary_construction_work(c)
