@@ -99,14 +99,18 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
             .reserve(((usize::BITS as usize) + 1) * 8)
             .map_err(KernelError::Stopped)?;
         let job = self.consumer_job(runtime, consumer, budget)?;
-        if let Some(owner) = super::source::Owner::of(&runtime.view().task(job)?.0) {
-            self.sources.remove(&owner);
-        }
+        let owner = super::source::Owner::of(&runtime.view().task(job)?.0)
+            .ok_or(KernelError::InvalidJob)?;
+        self.sources.remove(&owner);
         let old = self.owner_epochs.get(&job).copied().unwrap_or(0);
-        self.owner_epochs.insert(
-            job,
-            old.checked_add(1).ok_or(KernelError::VersionExhausted)?,
-        );
+        let next = old.checked_add(1).ok_or(KernelError::VersionExhausted)?;
+        let slot = self.source_slot(owner, runtime, budget)?;
+        let mut meter = MachineMeter(budget);
+        let mut run = runtime.kernel().resume(consumer, &mut meter)?;
+        run.publish_prepared_with(&slot, analysis_kernel::Change::Changed, 1, || {
+            self.owner_epochs.insert(job, next);
+        })?;
+        *consumer = run.suspend();
         Ok(())
     }
 

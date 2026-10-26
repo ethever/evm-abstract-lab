@@ -40,6 +40,65 @@ pub(super) struct Source {
 }
 
 impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
+    pub(super) fn source_slot(
+        &mut self,
+        owner: Owner,
+        runtime: &mut Runtime<<X as InputTasks>::Task>,
+        budget: &mut WorkBudget,
+    ) -> Result<analysis_kernel::SlotMeta<usize>, CooperationError<E>> {
+        MachineMeter(budget)
+            .reserve(((usize::BITS as usize) + 1) * 8)
+            .map_err(KernelError::Stopped)?;
+        if let Some(slot) = self.source_slots.get(&owner) {
+            return Ok(slot.clone());
+        }
+        let scope = match owner {
+            Owner::World(_) => runtime.world,
+            Owner::Body(_) | Owner::Resume(_) => runtime.relative,
+        };
+        let slot = runtime.kernel().slot(scope, &mut MachineMeter(budget))?;
+        self.source_slots.insert(owner, slot.clone());
+        Ok(slot)
+    }
+
+    /// Observe actual regional owner evaluations on the suspended World job.
+    /// An equal-numeric reproof still changes its source basis. Keeping these
+    /// clocks separate from numerical slots preserves row/cache identity while
+    /// waking World to retain fresh evidence after a Body/Resume retry.
+    pub(in crate::analysis) fn observe_regional_sources(
+        &mut self,
+        cfg: &crate::analysis::transfer::procedure::EvmRegionalCfg,
+        runtime: &mut Runtime<<X as InputTasks>::Task>,
+        caller: &mut RunningJob,
+        budget: &mut WorkBudget,
+    ) -> Result<(), CooperationError<E>> {
+        if !X::ENABLED {
+            return Ok(());
+        }
+        MachineMeter(budget)
+            .reserve(
+                cfg.nodes
+                    .len()
+                    .saturating_add(cfg.calls.len())
+                    .saturating_mul(4)
+                    .saturating_add(8),
+            )
+            .map_err(KernelError::Stopped)?;
+        for owner in cfg
+            .nodes
+            .iter()
+            .map(|node| Owner::Body(node.id))
+            .chain(cfg.calls.iter().map(|call| Owner::Resume(call.id)))
+        {
+            let slot = self.source_slot(owner, runtime, budget)?;
+            let mut meter = MachineMeter(budget);
+            let mut run = runtime.kernel().resume(caller, &mut meter)?;
+            run.observe_slot(&slot)?;
+            *caller = run.suspend();
+        }
+        Ok(())
+    }
+
     /// Capture only after complete transfer/admission and source stamp checks.
     /// Later guard checks include selector identity, staleness, client closure,
     /// current owner epoch and pending native work. No numerical equality test
@@ -121,6 +180,41 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
                     != Closure::Closed
                 || (point.namespace == 2 && binding.producer != Some((source.job, source.epoch)))
             {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// A World observation contains regional work performed by other owners.
+    /// Its own input receipt does not inherit those owners' selected scopes:
+    /// native World/relative scopes are persistent, not replaceable generations.
+    /// Check the actual retained model's Body/Resume basis before certifying it.
+    pub(in crate::analysis) fn regional_sources_current(
+        &self,
+        cfg: &crate::analysis::transfer::procedure::EvmRegionalCfg,
+        runtime: &Runtime<<X as InputTasks>::Task>,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, CooperationError<E>> {
+        if !X::ENABLED {
+            return Ok(true);
+        }
+        SourceMeter(budget)
+            .reserve(
+                cfg.nodes
+                    .len()
+                    .saturating_add(cfg.calls.len())
+                    .saturating_mul(4)
+                    .saturating_add(8),
+            )
+            .map_err(KernelError::Stopped)?;
+        for node in &cfg.nodes {
+            if !self.source_current(&TaskKind::Body(node.id), runtime, budget)? {
+                return Ok(false);
+            }
+        }
+        for call in &cfg.calls {
+            if !self.source_current(&TaskKind::Resume(call.id), runtime, budget)? {
                 return Ok(false);
             }
         }
