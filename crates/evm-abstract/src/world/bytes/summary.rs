@@ -259,6 +259,20 @@ impl<N: WordElement> EvmByteArray<N> {
 }
 
 impl<N: WordElement> EvmByteArraySummary<N> {
+    /// Arbitrary finite bytes without allocating an executable source root.
+    pub(crate) fn unknown_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, crate::resource::CloneError> {
+        crate::resource::clone_payment::pay(budget, 16)?;
+        Ok(Self {
+            length: crate::domain::summary::top(domain, budget)?,
+            memory: false,
+            content: Content::Cells(BTreeMap::new()),
+            words: BTreeMap::new(),
+        })
+    }
+
     /// Canonical empty summary, built without allocating an executable byte root.
     /// Process adapters erase private arrays before numerical admission, so a
     /// Native array followed by projection would construct discarded identities.

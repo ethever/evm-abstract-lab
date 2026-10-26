@@ -315,6 +315,35 @@ impl<
         }
     }
 
+    /// The same Body receipt for a numerical Process transfer. No executable
+    /// private carrier was constructed, so this cannot claim a visited PC.
+    pub(super) fn regional_compact_transfer(
+        &mut self,
+        id: usize,
+        input: Version,
+        process: crate::analysis::EvmProcessTransfer,
+        outcomes: Vec<OutcomeKind>,
+    ) -> Result<(), MachineError> {
+        let old = self.table.nodes[id]
+            .transfer
+            .as_ref()
+            .map_or(0, EvmRegionalTransfer::work_size);
+        self.reserve(old.saturating_add(outcomes.len()).saturating_add(32))?;
+        self.table.regional_snapshot = None;
+        self.table.nodes[id].transfer = Some(EvmRegionalTransfer {
+            semantics: self.table.nodes[id].payload.active().semantics,
+            process: Some(process),
+            input_revision: input.get(),
+            current: false,
+            complete: true,
+            visited_block: false,
+            successors: Vec::new(),
+            calls: Vec::new(),
+            outcomes,
+        });
+        Ok(())
+    }
+
     /// observe_body_edge is reached after native node admission, for both
     /// interpreter successors and separately executed Resume deliveries.
     pub(super) fn regional_edge(

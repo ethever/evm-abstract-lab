@@ -839,13 +839,29 @@ impl<
             self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
             return false;
         }
-        let input = match self.table.nodes[id].payload.clone_with_payment(self.budget) {
+        let mut input = match self.table.nodes[id].payload.clone_with_payment(self.budget) {
             Ok(input) => input,
             Err(error) => {
                 self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
                 return false;
             }
         };
+        if !X::ENABLED
+            && self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Process
+            && input.active().semantics != crate::analysis::TransferSemantics::Native
+            && input.frames.len() == 1
+            && input.storage_observations.is_empty()
+        {
+            match self.process_compact(id, input) {
+                Ok(Some(original)) => input = original,
+                Ok(None) => return true,
+                Err(error) => {
+                    self.regional_transfer_complete(id, false);
+                    self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
+                    return false;
+                }
+            }
+        }
         #[cfg(test)]
         let instantiated = super::evidence::refuse_body_instantiation().map_or_else(
             || payload::caller::instantiate_with_payment(&input, self.domain, self.budget),
@@ -1413,6 +1429,15 @@ impl<
             &store,
             &mut PolicyContext::new(self.domain, self.entry, self.budget),
         )?;
+        self.publish_summary(procedure, kind, incoming)
+    }
+
+    pub(super) fn publish_summary(
+        &mut self,
+        procedure: usize,
+        kind: OutcomeKind,
+        incoming: ProcedureOutput<D::Element>,
+    ) -> Result<(), MachineError> {
         let procedure_state = &self.table.procedures[procedure];
         let feedback = procedure_state.recursive || procedure_state.local_cycle;
         let old = procedure_state.outputs.get(&kind);

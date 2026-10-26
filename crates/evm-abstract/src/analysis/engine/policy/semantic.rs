@@ -717,6 +717,30 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<RelativeState<D::Element>, MachineError> {
+        // Process admission has already erased private stack/byte coordinates
+        // and frozen the source/owner vocabulary. These fields cannot acquire
+        // fresh execution history or dynamically enumerated storage keys.
+        // Keep the general regional path for an unprepared Native input.
+        cx.reserve(
+            current
+                .frames
+                .len()
+                .saturating_add(incoming.frames.len())
+                .saturating_mul(8),
+        )?;
+        let process = !current.frames.is_empty()
+            && !incoming.frames.is_empty()
+            && current.frames.iter().chain(&incoming.frames).all(|frame| {
+                frame.key.process.is_some()
+                    && frame.semantics != crate::analysis::TransferSemantics::Native
+                    && frame.stack.is_empty()
+            });
+        if process {
+            if current.eq_with_payment(incoming, cx.domain, cx.budget)? {
+                return current.clone_with_payment(cx.budget);
+            }
+            return current.covering_join(incoming, acceleration, cx);
+        }
         current.regional_join(incoming, acceleration, cx)
     }
     fn admit_output(
@@ -726,9 +750,25 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<ProcedureOutput<D::Element>, MachineError> {
-        current
-            .unwrap_or(incoming)
-            .regional_join(incoming, acceleration, cx)
+        // Current is already admitted under this frozen Process policy.
+        // Exact paid Native equality includes private predicates and lifecycle
+        // metadata; public projections are insufficient for this reuse. The
+        // outer adapter still owns generation/feedback invalidation.
+        if let Some(current) = current
+            && current.eq_with_payment(incoming, cx.domain, cx.budget)?
+        {
+            return current.clone_with_payment(cx.budget);
+        }
+        // The Process operators already bound coordinates by their frozen
+        // owner/source catalogue and initial input. Effects use arbitrary
+        // defaults, and erased return data introduces no private byte keys.
+        // Re-freezing this same output layout would repeat numerical
+        // interpretation without buying a finite representation boundary.
+        if let Some(current) = current {
+            current.covering_join(incoming, acceleration, cx)
+        } else {
+            incoming.clone_with_payment(cx.budget)
+        }
     }
 }
 

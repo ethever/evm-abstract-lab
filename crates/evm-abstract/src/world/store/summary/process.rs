@@ -19,6 +19,44 @@ use alloy_primitives::{Address, U256};
 #[cfg(test)]
 mod tests;
 
+impl<N: WordElement> EvmStoreSummary<N> {
+    /// Numerical counterpart of EvmStore::restore. Only RIPEMD-160's touch is
+    /// sticky on rollback; all other effects come from this invocation's checkpoint.
+    pub(crate) fn process_restore_with_payment(
+        &self,
+        checkpoint_store: &Self,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, CloneError> {
+        pay_structure(
+            self.touched
+                .len()
+                .saturating_add(checkpoint_store.touched.len())
+                .saturating_add(2),
+            budget,
+        )?;
+        let ripemd = Address::from_word(U256::from(3).into());
+        let touched = self
+            .touched
+            .get(&ripemd)
+            .copied()
+            .unwrap_or(self.touched_default);
+        let mut restored = checkpoint_store.clone_with_payment(budget)?;
+        let prior = restored
+            .touched
+            .get(&ripemd)
+            .copied()
+            .unwrap_or(restored.touched_default);
+        let sticky = super::super::lifecycle::or(prior, touched);
+        if sticky == restored.touched_default {
+            restored.touched.remove(&ripemd);
+        } else {
+            restored.touched.insert(ripemd, sticky);
+        }
+        checkpoint(budget)?;
+        Ok(restored)
+    }
+}
+
 fn named_numeric<N: WordElement>(
     values: &OrderedMap<Address, EvmValue<N>>,
     names: &std::collections::BTreeSet<Address>,

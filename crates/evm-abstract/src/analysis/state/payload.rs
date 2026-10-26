@@ -33,7 +33,7 @@ fn join_scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 }
 
 impl<N: WordElement> EvmPayloadSummary<N> {
-    fn check_shape(&self) -> Result<(), MachineError> {
+    pub(in crate::analysis) fn check_shape(&self) -> Result<(), MachineError> {
         if self.frames.len().checked_sub(1) != Some(self.continuations.len()) {
             return Err(MachineError::Shape);
         }
