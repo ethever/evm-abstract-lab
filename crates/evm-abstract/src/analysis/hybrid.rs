@@ -141,6 +141,8 @@ pub struct HybridCoverage {
     pub detail: DetailState,
     /// Original requested cap, before remaining-work admission.
     pub requested_detail_work: usize,
+    /// Original source-region bound, independent of the actually admitted list.
+    pub requested_detail_regions: usize,
     /// Original explicit auxiliary option; produced coverage, if any, belongs
     /// only to detail and never establishes either phase's completion.
     pub requested_native_terminal_coverage: bool,
@@ -233,6 +235,7 @@ impl<N: WordElement> HybridAnalysis<N> {
     pub(in crate::analysis) fn defer_detail(&mut self, requested: HybridConfig) {
         debug_assert!(self.detail.is_none());
         self.coverage.requested_detail_work = requested.max_detail_work;
+        self.coverage.requested_detail_regions = requested.max_detail_regions;
         if self.coverage.baseline_current {
             self.coverage.detail =
                 if requested.max_detail_work == 0 || requested.max_detail_regions == 0 {

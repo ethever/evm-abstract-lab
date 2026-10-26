@@ -73,20 +73,18 @@ impl WorldArgs {
         control: &Control,
         publisher: &mut T,
     ) -> Result<WorldAnalysis<D::Element>, CliError> {
+        let hybrid = analysis::HybridConfig {
+            max_detail_regions: self.max_detail_regions,
+            ..Default::default()
+        };
         let (source, config) = self.prepare()?;
         let policies: EnginePolicies = EnginePolicies::default();
         let mut extension = NoExtension;
         let mut engine = AnalysisEngine::new(algebra, &policies, &mut extension);
         match source {
-            WorldSource::Offline(input) => {
-                Ok(WorldAnalysis::from(engine.run_hybrid_with_publisher(
-                    *input,
-                    config,
-                    analysis::HybridConfig::default(),
-                    control,
-                    publisher,
-                )?))
-            }
+            WorldSource::Offline(input) => Ok(WorldAnalysis::from(
+                engine.run_hybrid_with_publisher(*input, config, hybrid, control, publisher)?,
+            )),
             WorldSource::Rpc {
                 input,
                 entry,
@@ -97,19 +95,13 @@ impl WorldArgs {
                     Ok(WorldAnalysis::from(engine.run_hybrid_with_publisher(
                         AnalysisInput::new(world, *entry)?,
                         config,
-                        analysis::HybridConfig::default(),
+                        hybrid,
                         control,
                         publisher,
                     )?))
                 } else {
                     let result = analysis::analyze_rpc_hybrid_with_publisher(
-                        engine,
-                        &input,
-                        *entry,
-                        config,
-                        analysis::HybridConfig::default(),
-                        control,
-                        publisher,
+                        engine, &input, *entry, config, hybrid, control, publisher,
                     )?;
                     for failure in result.failures() {
                         eprintln!("RPC discovery: {failure}");

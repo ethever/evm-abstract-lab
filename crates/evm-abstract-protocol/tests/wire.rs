@@ -40,6 +40,7 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         context_depth: count,
         max_constants: count,
         max_work: count,
+        max_detail_regions: count,
         max_call_depth: count,
         max_memory_bytes: count,
         use_summaries: false,
@@ -124,7 +125,7 @@ fn numeric_models_are_explicit_and_legacy_selectors_are_rejected() {
 }
 
 #[test]
-fn all_request_and_limit_fields_are_required_on_the_wire() {
+fn existing_request_and_limit_fields_remain_required_on_the_wire() {
     let encoded = serde_json::to_value(AnalyzeRequest::default()).unwrap();
     for field in encoded.as_object().unwrap().keys() {
         let mut missing = encoded.clone();
@@ -138,6 +139,9 @@ fn all_request_and_limit_fields_are_required_on_the_wire() {
         );
     }
     for field in encoded["limits"].as_object().unwrap().keys() {
+        if field == "max_detail_regions" {
+            continue;
+        }
         let mut missing = encoded.clone();
         assert!(
             missing["limits"]
@@ -154,6 +158,45 @@ fn all_request_and_limit_fields_are_required_on_the_wire() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn detail_region_omission_defaults_one_and_present_values_remain_strict() {
+    let mut historical = serde_json::to_value(AnalyzeRequest::default()).unwrap();
+    assert_eq!(historical.as_object().unwrap().len(), 4);
+    historical["limits"]
+        .as_object_mut()
+        .unwrap()
+        .remove("max_detail_regions");
+    let decoded: AnalyzeRequest = serde_json::from_value(historical).unwrap();
+    assert_eq!(decoded.limits, AnalysisLimits::default());
+    assert_eq!(decoded.limits.max_detail_regions, 1);
+    assert_eq!(decoded.limits.max_work, 2_000_000_000);
+    for bound in [0, 1, 2, 3, u64::MAX] {
+        let mut request = serde_json::to_value(&decoded).unwrap();
+        request["limits"]["max_detail_regions"] = bound.into();
+        let request: AnalyzeRequest = serde_json::from_value(request).unwrap();
+        assert_eq!(request.limits.max_detail_regions, bound);
+        roundtrip(request);
+    }
+    for invalid in [
+        serde_json::json!(null),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!("2"),
+    ] {
+        let mut request = serde_json::to_value(&decoded).unwrap();
+        request["limits"]["max_detail_regions"] = invalid;
+        assert!(serde_json::from_value::<AnalyzeRequest>(request).is_err());
+    }
+    let encoded = serde_json::to_string(&decoded.limits).unwrap();
+    let duplicate = encoded.replacen('{', r#"{"max_detail_regions":0,"#, 1);
+    assert!(
+        serde_json::from_str::<AnalysisLimits>(&duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate field: max_detail_regions")
+    );
 }
 
 #[test]

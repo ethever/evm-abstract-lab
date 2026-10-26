@@ -41,6 +41,9 @@ pub(crate) struct ExplainArgs {
     /// Emit recorded partial SSA when frontiers remain; the exit code stays 2.
     #[arg(long)]
     allow_partial_ssa: bool,
+    /// World/RPC source regions retaining Native context; 0 returns only Global.
+    #[arg(long, requires = "world-input", default_value_t = defaults::MAX_DETAIL_REGIONS)]
+    max_detail_regions: usize,
     #[command(flatten)]
     execution: ExecutionArgs,
     /// Disable on-demand acquisition of missing RPC code and storage slots.
@@ -90,6 +93,7 @@ impl ExplainArgs {
     ) -> Result<(String, bool), CliError> {
         if self.world.is_some() || self.rpc.is_some() {
             let args = WorldArgs {
+                max_detail_regions: self.max_detail_regions,
                 numeric: self.numeric,
                 world: self.world,
                 rpc: self.rpc,

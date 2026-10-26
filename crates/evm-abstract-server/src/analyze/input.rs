@@ -227,6 +227,16 @@ fn host_size(value: u64, field: &str) -> Result<usize, api::ApiError> {
     })
 }
 
+/// Optional detail shares the original execution payer; this adds no allowance.
+pub(super) fn hybrid_config(
+    input: &api::AnalysisLimits,
+) -> Result<analysis::HybridConfig, api::ApiError> {
+    Ok(analysis::HybridConfig {
+        max_detail_regions: host_size(input.max_detail_regions, "max_detail_regions")?,
+        ..Default::default()
+    })
+}
+
 pub(super) fn config(
     input: &api::AnalysisLimits,
 ) -> Result<analysis::ExecutionConfig, api::ApiError> {

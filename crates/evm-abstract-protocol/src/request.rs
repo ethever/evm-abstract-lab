@@ -179,6 +179,9 @@ record! {
         pub max_constants: u64,
         /// Maximum cumulative logical execution work.
         pub max_work: u64,
+        /// Captured source regions retaining optional Native context. Zero
+        /// disables detail; omission by older clients defaults to one region.
+        pub max_detail_regions: u64 = defaults::MAX_DETAIL_REGIONS as u64,
         /// Maximum simultaneously retained frames.
         pub max_call_depth: u64,
         /// Maximum modeled byte-array span.
@@ -222,6 +225,7 @@ impl Default for AnalysisLimits {
             context_depth: defaults::CONTEXT_DEPTH as u64,
             max_constants: defaults::MAX_CONSTANTS as u64,
             max_work: defaults::MAX_WORK as u64,
+            max_detail_regions: defaults::MAX_DETAIL_REGIONS as u64,
             max_call_depth: defaults::MAX_CALL_DEPTH as u64,
             max_memory_bytes: defaults::MAX_MEMORY_BYTES as u64,
             use_summaries: true,

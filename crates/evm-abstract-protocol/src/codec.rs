@@ -1,7 +1,8 @@
-// Records require an object and every declared key, including nullable fields.
+// Records require an object and every key without an explicit omission default,
+// including nullable fields. Defaults never apply to malformed present values.
 // Plain Serde derives also accept sequences and default missing Option fields.
 macro_rules! record {
-    ($(#[$meta:meta])* pub struct $name:ident { $($(#[$field_meta:meta])* pub $field:ident: $ty:ty),* $(,)? }) => {
+    ($(#[$meta:meta])* pub struct $name:ident { $($(#[$field_meta:meta])* pub $field:ident: $ty:ty $(= $default:expr)?),* $(,)? }) => {
         $(#[$meta])*
         #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
         pub struct $name { $($(#[$field_meta])* pub $field: $ty),* }
@@ -26,12 +27,21 @@ macro_rules! record {
                                 _ => return Err(serde::de::Error::custom(format!("unknown {} field: {key}", stringify!($name)))),
                             }
                         }
-                        Ok($name { $($field: $field.ok_or_else(|| serde::de::Error::custom(concat!("missing field: ", stringify!($field))))?),* })
+                        Ok($name { $($field: match $field {
+                            Some(value) => value,
+                            None => record!(@missing $field $(, $default)?)?,
+                        }),* })
                     }
                 }
                 deserializer.deserialize_map(RecordVisitor)
             }
         }
+    };
+    (@missing $field:ident) => {
+        Err(serde::de::Error::custom(concat!("missing field: ", stringify!($field))))
+    };
+    (@missing $field:ident, $default:expr) => {
+        Ok($default)
     };
 }
 
