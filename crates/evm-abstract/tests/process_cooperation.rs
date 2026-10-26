@@ -78,12 +78,30 @@ impl ExtraStores for Stores {
         Ok(Cons::new(kernel.channel(Ascending(Or), meter)?, Nil))
     }
 }
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 enum Failure {
-    #[error("{0}")]
-    Kernel(#[from] KernelError<MachineError>),
-    #[error("{0}")]
-    Publish(#[from] PublishError<Infallible, MachineError>),
+    Kernel(KernelError<MachineError>),
+    Publish(PublishError<Infallible, MachineError>),
+}
+// Keep concrete causes without generating a dynamic Error::source hook.
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kernel(error) => std::fmt::Display::fmt(error, f),
+            Self::Publish(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for Failure {}
+impl From<KernelError<MachineError>> for Failure {
+    fn from(error: KernelError<MachineError>) -> Self {
+        Self::Kernel(error)
+    }
+}
+impl From<PublishError<Infallible, MachineError>> for Failure {
+    fn from(error: PublishError<Infallible, MachineError>) -> Self {
+        Self::Publish(error)
+    }
 }
 
 struct Producer {
@@ -386,8 +404,15 @@ fn nonzero_invocation_is_a_negative_control_for_the_source_proof() {
     concrete.covers(&analysis);
 }
 
+fn property_config() -> proptest::test_runner::Config {
+    // Preserve defaults and disable persistence through the static constructor.
+    proptest::test_runner::Config::with_failure_persistence(
+        proptest::test_runner::FileFailurePersistence::Off,
+    )
+}
+
 proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..Default::default() })]
+    #![proptest_config(property_config())]
     #[test]
     fn zero_invocation_preserves_arbitrary_original_storage_and_concrete_witness(initial in 0u16..1000) {
         let (joint, proved, refined) = run(initial, 0, true, true, false);

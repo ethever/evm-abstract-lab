@@ -106,12 +106,30 @@ impl ExtraStores for GlobalFactory {
         Ok(Cons::new(kernel.channel(Ascending(Or), meter)?, Nil))
     }
 }
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 enum Failure {
-    #[error("{0}")]
-    Kernel(#[from] KernelError<MachineError>),
-    #[error("{0}")]
-    Publish(#[from] PublishError<Infallible, MachineError>),
+    Kernel(KernelError<MachineError>),
+    Publish(PublishError<Infallible, MachineError>),
+}
+// Keep concrete causes without generating a dynamic Error::source hook.
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kernel(error) => std::fmt::Display::fmt(error, f),
+            Self::Publish(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for Failure {}
+impl From<KernelError<MachineError>> for Failure {
+    fn from(error: KernelError<MachineError>) -> Self {
+        Self::Kernel(error)
+    }
+}
+impl From<PublishError<Infallible, MachineError>> for Failure {
+    fn from(error: PublishError<Infallible, MachineError>) -> Self {
+        Self::Publish(error)
+    }
 }
 #[derive(Clone, Debug)]
 struct Observation {

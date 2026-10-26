@@ -66,12 +66,25 @@ impl ExtraStores for Factory {
         Ok(Store(Rc::clone(&self.counts)))
     }
 }
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 enum Error {
-    #[error("{0}")]
-    Kernel(#[from] KernelError<MachineError>),
-    #[error("native sentinel")]
+    Kernel(KernelError<MachineError>),
     Sentinel,
+}
+// Keep concrete causes without generating a dynamic Error::source hook.
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kernel(error) => std::fmt::Display::fmt(error, f),
+            Self::Sentinel => f.write_str("native sentinel"),
+        }
+    }
+}
+impl std::error::Error for Error {}
+impl From<KernelError<MachineError>> for Error {
+    fn from(error: KernelError<MachineError>) -> Self {
+        Self::Kernel(error)
+    }
 }
 struct Watch {
     counts: Rc<Counts>,
