@@ -7,6 +7,9 @@ use crate::analysis::engine::{
 use crate::domain::EvmNumericAlgebra;
 use analysis_kernel::{Change, algebra::Prepared};
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn prepare<D: EvmNumericAlgebra, S: ProcedureSummaryPolicy<D>>(
     policy: &S,
     current: &EvmPayloadSummary<D::Element>,
@@ -56,19 +59,38 @@ pub(super) fn prepare_output<D: EvmNumericAlgebra, S: ProcedureSummaryPolicy<D>>
     invalidate: bool,
     cx: &mut PolicyContext<'_, D>,
 ) -> Result<Option<EvmOutput<D::Element>>, MachineError> {
-    let summary =
-        policy.admit_output(current.map(|old| &old.summary), incoming, acceleration, cx)?;
+    let (summary, unchanged) = match policy.admit_output_change(
+        current.map(|old| &old.summary),
+        incoming,
+        acceleration,
+        cx,
+    )? {
+        Some(summary) => (summary, false),
+        None => {
+            // The policy has paid for its complete semantic proof. There is no
+            // detached value to retain or compare again on a duplicate output.
+            cx.reserve(8)?;
+            let old = current.ok_or(MachineError::Shape)?;
+            if !invalidate {
+                return Ok(None);
+            }
+            // Delivery invalidation still installs a new output generation.
+            // Its owned summary is retained, so the actual native copy remains.
+            (old.summary.clone_with_payment(cx.budget)?, true)
+        }
+    };
     let work = summary.work_size();
     cx.reserve(
         work.saturating_add(current.map_or(0, |old| old.work))
             .saturating_add(usize::from(invalidate)),
     )?;
-    let changed = match current {
-        Some(old) => !old
-            .summary
-            .eq_with_payment(&summary, cx.domain, cx.budget)?,
-        None => true,
-    };
+    let changed = !unchanged
+        && match current {
+            Some(old) => !old
+                .summary
+                .eq_with_payment(&summary, cx.domain, cx.budget)?,
+            None => true,
+        };
     if !changed && !invalidate {
         return Ok(None);
     }

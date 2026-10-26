@@ -581,6 +581,26 @@ pub trait ProcedureSummaryPolicy<D: EvmNumericAlgebra> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<ProcedureOutput<D::Element>, MachineError>;
+
+    /// Admit an output without materializing a result that will be discarded.
+    /// `None` certifies that this policy's admitted bound is exactly `current`
+    /// under the supplied acceleration; it requires a previous output. It does
+    /// not certify source currency, completion or delivery generations.
+    ///
+    /// The default preserves the policy's actual `admit_output` operation and
+    /// its payment/hooks. Overrides must fund their complete proof, including
+    /// opaque native predicates. Callers still copy a required retained result
+    /// when invalidating delivery without a numerical change.
+    fn admit_output_change(
+        &self,
+        current: Option<&ProcedureOutput<D::Element>>,
+        incoming: &ProcedureOutput<D::Element>,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<Option<ProcedureOutput<D::Element>>, MachineError> {
+        self.admit_output(current, incoming, acceleration, cx)
+            .map(Some)
+    }
 }
 
 /// Preserve finite projection guarantees while joining procedure summaries.
@@ -765,6 +785,20 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<ProcedureOutput<D::Element>, MachineError> {
+        match self.admit_output_change(current, incoming, acceleration, cx)? {
+            Some(summary) => Ok(summary),
+            None => current
+                .ok_or(MachineError::Shape)?
+                .clone_with_payment(cx.budget),
+        }
+    }
+    fn admit_output_change(
+        &self,
+        current: Option<&ProcedureOutput<D::Element>>,
+        incoming: &ProcedureOutput<D::Element>,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<Option<ProcedureOutput<D::Element>>, MachineError> {
         // Current is already admitted under this frozen Process policy.
         // Exact paid Native equality includes private predicates and lifecycle
         // metadata; public projections are insufficient for this reuse. The
@@ -772,7 +806,7 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         if let Some(current) = current
             && current.eq_with_payment(incoming, cx.domain, cx.budget)?
         {
-            return current.clone_with_payment(cx.budget);
+            return Ok(None);
         }
         // The Process operators already bound coordinates by their frozen
         // owner/source catalogue and initial input. Effects use arbitrary
@@ -780,9 +814,9 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
         // Re-freezing this same output layout would repeat numerical
         // interpretation without buying a finite representation boundary.
         if let Some(current) = current {
-            current.covering_join(incoming, acceleration, cx)
+            current.covering_join(incoming, acceleration, cx).map(Some)
         } else {
-            incoming.clone_with_payment(cx.budget)
+            incoming.clone_with_payment(cx.budget).map(Some)
         }
     }
 }
@@ -962,6 +996,16 @@ where
     ) -> Result<ProcedureOutput<D::Element>, MachineError> {
         self.summary
             .admit_output(current, incoming, acceleration, cx)
+    }
+    fn admit_output_change(
+        &self,
+        current: Option<&ProcedureOutput<D::Element>>,
+        incoming: &ProcedureOutput<D::Element>,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<Option<ProcedureOutput<D::Element>>, MachineError> {
+        self.summary
+            .admit_output_change(current, incoming, acceleration, cx)
     }
 }
 
