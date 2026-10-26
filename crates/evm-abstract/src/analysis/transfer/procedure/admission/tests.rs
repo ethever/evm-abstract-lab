@@ -14,6 +14,13 @@ use crate::{
 use std::cell::Cell;
 
 fn fixture(fee: usize) -> (ValueAlgebra<SummaryPolicy>, EvmEntry<Word>, EvmOutput<Word>) {
+    fixture_with_data(fee, &EvmByteArray::empty())
+}
+
+fn fixture_with_data(
+    fee: usize,
+    data: &EvmByteArray<Word>,
+) -> (ValueAlgebra<SummaryPolicy>, EvmEntry<Word>, EvmOutput<Word>) {
     let (world, entry, _, algebra) = summary_fixture("00");
     let mut setup = WorkBudget::new(100_000_000);
     let mut payload = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
@@ -21,7 +28,7 @@ fn fixture(fee: usize) -> (ValueAlgebra<SummaryPolicy>, EvmEntry<Word>, EvmOutpu
         .store
         .write_balance(entry.address, EvmValue::from_numeric(Word::expensive(fee)));
     let incoming = ProcedureOutput::project(
-        &EvmByteArray::empty(),
+        data,
         &payload.store,
         &mut PolicyContext::new(algebra.borrowed(), &entry, &mut setup),
     )
@@ -45,6 +52,35 @@ fn fixture(fee: usize) -> (ValueAlgebra<SummaryPolicy>, EvmEntry<Word>, EvmOutpu
             updates: 5,
         },
     )
+}
+
+fn copy_invoice(summary: &ProcedureOutput<Word>) -> usize {
+    let mut quotation = WorkBudget::new(100_000_000);
+    let work = summary.clone_work_with(&mut quotation).unwrap();
+    assert_eq!((RECEIPT.get().clones, RECEIPT.get().bytes), (0, 0));
+    quotation.used() + work
+}
+
+fn retained_balance_copy_bytes(
+    original: &ProcedureOutput<Word>,
+    retained: &ProcedureOutput<Word>,
+    entry: &EvmEntry<Word>,
+) -> usize {
+    let original = original.store().view().balances[&entry.address].numeric();
+    let retained = retained.store().view().balances[&entry.address].numeric();
+    assert_eq!(original.private.len(), 4096);
+    assert_eq!(retained.private, original.private);
+    let shared = std::ptr::eq(original, retained);
+    // Check the actual retained entry and its allocation, not just a
+    // feature-selected counter: imbl shares immutable nodes; std copies them.
+    assert_eq!(shared, cfg!(feature = "imbl"));
+    if shared {
+        assert_eq!(original.private.as_ptr(), retained.private.as_ptr());
+        0
+    } else {
+        assert_ne!(original.private.as_ptr(), retained.private.as_ptr());
+        original.private.len()
+    }
 }
 
 /// It deliberately inherits the default change-admission method. Exact equal
@@ -116,6 +152,11 @@ fn unchanged_output_proof_avoids_discarded_private_copy_but_preserves_custom_hoo
 fn first_output_still_pays_for_its_actual_retained_native_copy() {
     let _scope = RECEIPT.scope();
     let (algebra, entry, old) = fixture(1_000_000);
+    // Setup is complete. Quotation itself must not execute a native clone.
+    reset();
+    let invoice = copy_invoice(&old.summary);
+    assert!(invoice > 1_000_000);
+    assert_eq!(RECEIPT.get().private_quotes, 1);
     reset();
     assert!(matches!(
         prepare_output(
@@ -129,22 +170,29 @@ fn first_output_still_pays_for_its_actual_retained_native_copy() {
         Err(MachineError::Work)
     ));
     assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (1, 0));
+    assert_eq!(RECEIPT.get().clones, 0);
     reset();
+    let mut budget = WorkBudget::new(100_000_000);
     let output = prepare_output(
         &KnownProcessSummaries,
         None,
         &old.summary,
         Acceleration::Join,
         false,
-        &mut PolicyContext::new(
-            algebra.borrowed(),
-            &entry,
-            &mut WorkBudget::new(100_000_000),
-        ),
+        &mut PolicyContext::new(algebra.borrowed(), &entry, &mut budget),
     )
     .unwrap()
     .expect("the initial output requires an owned retained summary");
-    assert_eq!(RECEIPT.get().bytes, 4096);
+    let receipt = RECEIPT.get();
+    assert_eq!(receipt.private_quotes, 1);
+    assert!(receipt.clones > 0);
+    assert_eq!(
+        receipt.bytes,
+        retained_balance_copy_bytes(&old.summary, &output.summary, &entry)
+    );
+    // The current invoice conservatively funds a deep map copy on either
+    // backend, even when immutable nodes make that native copy unnecessary.
+    assert_eq!(budget.used(), invoice + old.work);
     assert_eq!(output.summary, old.summary);
     assert_eq!((output.generation, output.updates), (1, 0));
 }
@@ -153,6 +201,16 @@ fn first_output_still_pays_for_its_actual_retained_native_copy() {
 fn invalidation_still_pays_the_retained_copy_and_changes_only_delivery_generation() {
     let _scope = RECEIPT.scope();
     let (algebra, entry, old) = fixture(1_000_000);
+    reset();
+    let mut proof = WorkBudget::new(100_000_000);
+    assert!(
+        old.summary
+            .eq_with_payment(&old.summary, algebra.borrowed(), &mut proof)
+            .unwrap()
+    );
+    let invoice = copy_invoice(&old.summary);
+    assert!(invoice > 1_000_000);
+    assert_eq!(RECEIPT.get().private_quotes, 1);
     reset();
     assert!(matches!(
         prepare_output(
@@ -166,6 +224,7 @@ fn invalidation_still_pays_the_retained_copy_and_changes_only_delivery_generatio
         Err(MachineError::Work)
     ));
     assert_eq!((RECEIPT.get().private_quotes, RECEIPT.get().bytes), (1, 0));
+    assert_eq!(RECEIPT.get().clones, 0);
 
     reset();
     let mut budget = WorkBudget::new(100_000_000);
@@ -179,7 +238,14 @@ fn invalidation_still_pays_the_retained_copy_and_changes_only_delivery_generatio
     )
     .unwrap()
     .expect("actual invalidation installs a new owned output");
-    assert_eq!(RECEIPT.get().bytes, 4096);
+    let receipt = RECEIPT.get();
+    assert_eq!(receipt.private_quotes, 1);
+    assert!(receipt.clones > 0);
+    assert_eq!(
+        receipt.bytes,
+        retained_balance_copy_bytes(&old.summary, &output.summary, &entry)
+    );
+    assert_eq!(budget.used(), proof.used() + 8 + invoice + old.work * 2 + 1);
     assert_eq!(output.summary, old.summary);
     assert_eq!((output.generation, output.updates), (8, 5));
     assert_eq!((old.generation, old.updates), (7, 5));
@@ -190,6 +256,75 @@ fn invalidation_still_pays_the_retained_copy_and_changes_only_delivery_generatio
         .unwrap();
     assert!(!retained.read_balance(entry.address).contains(U256::from(7)));
     assert!(retained.read_balance(entry.address).contains(U256::from(8)));
+}
+
+#[test]
+fn retained_owned_scalar_refuses_underpayment_before_cloning_on_both_backends() {
+    let _scope = RECEIPT.scope();
+    // Exact empty content is zero-padded. Give its independently owned length
+    // a private predicate; projection discards the unused byte default. Unlike
+    // a balance map entry, the retained length cannot share a persistent node.
+    let mut data = EvmByteArray::empty();
+    data.update_values(&mut |value| {
+        *value = EvmValue::from_numeric(Word::expensive(1_000_000));
+    });
+    let (algebra, entry, old) = fixture_with_data(64, &data);
+    let length = old.summary.data().len().numeric();
+    assert_eq!(length.private.len(), 4096);
+    reset();
+    let invoice = copy_invoice(&old.summary);
+    assert!(invoice > 1_000_000);
+    assert_eq!(RECEIPT.get().private_quotes, 2);
+
+    for invalidate in [false, true] {
+        let current = invalidate.then_some(&old);
+        reset();
+        let mut refused = WorkBudget::new(invoice - 1);
+        assert!(matches!(
+            prepare_output(
+                &KnownProcessSummaries,
+                current,
+                &old.summary,
+                Acceleration::Join,
+                invalidate,
+                &mut PolicyContext::new(algebra.borrowed(), &entry, &mut refused),
+            ),
+            Err(MachineError::Work)
+        ));
+        assert!(refused.exhausted());
+        assert_eq!(RECEIPT.get().private_quotes, 2);
+        assert_eq!((RECEIPT.get().clones, RECEIPT.get().bytes), (0, 0));
+        assert_eq!((old.generation, old.updates), (7, 5));
+
+        reset();
+        let mut budget = WorkBudget::new(100_000_000);
+        let output = prepare_output(
+            &KnownProcessSummaries,
+            current,
+            &old.summary,
+            Acceleration::Join,
+            invalidate,
+            &mut PolicyContext::new(algebra.borrowed(), &entry, &mut budget),
+        )
+        .unwrap()
+        .expect("first publication and invalidation retain an owned scalar");
+        let receipt = RECEIPT.get();
+        let retained_length = output.summary.data().len().numeric();
+        assert_eq!(receipt.private_quotes, 2);
+        assert_ne!(length.private.as_ptr(), retained_length.private.as_ptr());
+        assert_eq!(retained_length.private, length.private);
+        assert_eq!(
+            receipt.bytes,
+            length.private.len()
+                + retained_balance_copy_bytes(&old.summary, &output.summary, &entry)
+        );
+        assert_eq!(output.summary, old.summary);
+        assert_eq!(
+            (output.generation, output.updates),
+            if invalidate { (8, 5) } else { (1, 0) }
+        );
+        assert_eq!((old.generation, old.updates), (7, 5));
+    }
 }
 
 #[test]
