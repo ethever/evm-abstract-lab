@@ -3,7 +3,7 @@ from copy import deepcopy
 import unittest
 
 from web_test_hybrid import oracle_graph
-from web_test_runtime_report import _runtime_account_code, _runtime_numeric_contains, layout_runtime_programs
+from web_test_runtime_report import _router_callback_output, _runtime_account_code, _runtime_numeric_contains, layout_runtime_programs
 
 
 def instruction(pc, opcode, name, immediate, size=1, valid=True):
@@ -30,6 +30,40 @@ def source_fixture():
 
 
 class RuntimeReportTests(unittest.TestCase):
+    def test_static_global_callback_keeps_complete_same_outcome_bounds(self):
+        zero = dict(summary="{0x0}", constants=["0x0"], known_zero=hex((1 << 256) - 1), known_one="0x0",
+                    nonzero=False, unsigned=dict(lower="0x0", upper="0x0"), signed=dict(lower="0x0", upper="0x0"),
+                    congruence={"Exact": "0x0"}, origins=["Constant"], code_address_role=False,
+                    identity=None, expression=None, symbolic_limit=False)
+        plane = dict(default=zero, owners=[], slots=[], independent_default=True,
+                     independent_owners=[], independent_slots=[])
+        store = dict(persistent=plane, transient=plane, balance_default=zero, balances=[], nonces=[], codes=[],
+                     existence=[], created_default=False, created=[], pending_destruction_default=False,
+                     pending_destruction=[], touched_default=False, touched=[], logs=[], logs_unknown=False)
+        source = {"InputProgram": {"hash": "0x" + "ab" * 32, "fork": "Osaka"}}
+        envelope = {"minimum": {"fork": "Osaka", "entry_address": "0x" + "11" * 20, "declared_root_source": source},
+                    "programs": []}
+        procedure = dict(is_static=True, process=dict(is_static=True, owner="RootNamespace", source=source), outcomes=["Return"])
+        bound = {"input": store}
+        output = dict(kind="Return", generation=1, data=dict(length=zero, memory=False, content="Zero", words=[]), store=deepcopy(store))
+        _router_callback_output(envelope, procedure, bound, output)
+        for field in ["data", "store"]:
+            damaged = deepcopy(output);damaged[field] = {}
+            with self.subTest(empty=field), self.assertRaises(AssertionError):
+                _router_callback_output(envelope, procedure, bound, damaged)
+        for corruption in ["length", "words", "persistent", "plane-default", "owner", "code-program", "static-change", "memory"]:
+            damaged = deepcopy(output)
+            if corruption == "length": damaged["data"]["length"] = {}
+            elif corruption == "words": del damaged["data"]["words"]
+            elif corruption == "persistent": del damaged["store"]["persistent"]
+            elif corruption == "plane-default": damaged["store"]["persistent"]["default"] = {}
+            elif corruption == "owner": damaged["store"]["balances"] = [{"owner": "0x1", "value": zero}]
+            elif corruption == "code-program": damaged["store"]["codes"] = [{"owner": "0x" + "11" * 20, "kind": "Runtime", "program": 99, "delegation_target": None}]
+            elif corruption == "static-change": damaged["store"]["logs_unknown"] = True
+            else: damaged["data"]["memory"] = True
+            with self.subTest(corruption=corruption), self.assertRaises(AssertionError):
+                _router_callback_output(envelope, procedure, bound, damaged)
+
     def test_visited_store_account_code_uses_exact_wire_variants(self):
         for code in [None, "Empty", "Unknown", {"Runtime": "0x00"}, {"Runtime": "0x"},
                      {"Runtime": "0xA0ff"}, {"Delegation": "0x" + "12" * 20}]:

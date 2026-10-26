@@ -283,6 +283,43 @@ class BrowserRegistryTests(unittest.TestCase):
 class ReportWireTests(unittest.TestCase):
     """Namespace/source adapters cannot reinterpret lifecycle or remap wire IDs."""
 
+    def test_empty_return_is_a_zero_byte_view_not_backing_state_identity(self):
+        from web_test_wire_bytes import assert_empty_return_data
+        zero = {"constants": ["0x0"], "known_zero": hex((1 << 256) - 1), "known_one": "0x0",
+                "unsigned": {"lower": "0x0", "upper": "0x0"}, "signed": {"lower": "0x0", "upper": "0x0"},
+                "nonzero": False, "congruence": {"Exact": "0x0"}}
+        report = {"symbolic": {"nodes": [{"Constant": "0x0"}, {"Constant": "0x1"},
+            {"BytesExact": "0x"}, "BytesZero", {"Fresh": 0},
+            {"BytesIte": {"condition": {"node": 4}, "then_state": {"node": 2}, "else_state": {"node": 3}}},
+            {"View": {"state": {"node": 5}, "offset": {"node": 0}, "length": {"node": 0}}}]},
+            "byte_arrays": [{"memory": False, "length": zero, "symbolic": {"node": 6}, "cells": []}]}
+        assert_empty_return_data(report, 0)
+        report["symbolic"]["nodes"][6]["View"]["state"] = {"node": 2}
+        assert_empty_return_data(report, 0)
+        for corruption in ["length", "view-length", "numeric", "memory", "cells", "word-state", "forward-reference"]:
+            damaged = deepcopy(report)
+            data, view = damaged["byte_arrays"][0], damaged["symbolic"]["nodes"][6]["View"]
+            if corruption == "length": data["length"]["constants"] = ["0x1"]
+            elif corruption == "view-length": view["length"] = {"node": 1}
+            elif corruption == "numeric": data["length"]["known_one"] = "0x1"
+            elif corruption == "memory": data["memory"] = True
+            elif corruption == "cells": data["cells"] = [{"offset": 0, "value": 0}]
+            elif corruption == "word-state": view["state"] = {"node": 0}
+            else: view["state"] = {"node": 6}
+            with self.subTest(corruption=corruption), self.assertRaises(AssertionError):
+                assert_empty_return_data(damaged, 0)
+
+    def test_retained_caller_zero_window_rejects_nonzero_literal_background(self):
+        from web_test_wire_bytes import _Graph
+        for payload in ["0x", "0xff", "0xff" + "00" * 63, "0x" + "00" * 64 + "ff"]:
+            with self.subTest(payload=payload):
+                _Graph({"symbolic": {"nodes": [{"BytesExact": payload}]}}).zero_window({"node": 0}, 1, 1, 64)
+        for position in [1, 31, 32, 63]:
+            payload = bytearray(64);payload[position] = 1
+            graph = _Graph({"symbolic": {"nodes": [{"BytesExact": "0x" + payload.hex()}]}})
+            with self.subTest(position=position), self.assertRaises(AssertionError):
+                graph.zero_window({"node": 0}, 1, 1, 64)
+
     def report(self):
         # Equal local IDs deliberately name different Native/Global data. Source
         # IDs are sparse and shared, so array-position lookups cannot pass.

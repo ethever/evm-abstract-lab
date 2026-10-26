@@ -9,7 +9,8 @@ from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout
 from web_test_pixels import layout_ink, node_snapshot
 from web_test_hybrid import oracle_graph
 from web_test_runtime_report import (layout_runtime_programs, layout_runtime_request,
-    layout_runtime_coverage, layout_pending_machines, _runtime_boundary_negative_controls)
+    layout_runtime_coverage, layout_pending_machines, _runtime_boundary_negative_controls,
+    layout_router_current_scope, router_scope_negative_controls)
 
 
 # Historical runtime detail/precision oracles retain their explicit 1T/OFF
@@ -57,21 +58,14 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         layout_runtime_programs(report,code,metadata)
         assert {block["state"] for block in report["ssa"]["blocks"]} == {node["id"] for node in report["cfg"]}
         assert report["status"] == entry["expected_status"]
-        pending = layout_pending_machines(report,entry,RUNTIME_DETAIL_LIMITS) if "product_oracle" in entry else None
-        boundary_controls = _runtime_boundary_negative_controls(report, entry, RUNTIME_DETAIL_LIMITS) if "product_oracle" in entry else []
+        if name == "ethereum-uniswap-v2-router02":
+            pending = layout_router_current_scope(original_report, RUNTIME_DETAIL_LIMITS)
+            boundary_controls = router_scope_negative_controls(original_report, RUNTIME_DETAIL_LIMITS)
+        else:
+            pending = layout_pending_machines(report,entry,RUNTIME_DETAIL_LIMITS) if "product_oracle" in entry else None
+            boundary_controls = _runtime_boundary_negative_controls(report, entry, RUNTIME_DETAIL_LIMITS) if "product_oracle" in entry else []
         if "minimum_native_states" in entry:
             assert len(report["cfg"]) >= entry["minimum_native_states"] and len(report["frontiers"]) == entry["expected_frontiers"]
-        if name == "ethereum-uniswap-v2-router02":
-            assert report["abstract_summaries"]
-            nodes={node["id"]:node for node in report["cfg"]};states={state["state"]:state for state in report["states"]}
-            for summary in report["abstract_summaries"]:
-                assert summary["closed"] and summary["kind"] == "UnknownEnvironment" and summary["procedures"]
-                source=nodes[summary["source_state"]];active=states[source["id"]]["entry"]["frames"][-1]
-                assert source["program"] is None and active["kind"] == "AbstractEnvironment" and active["is_static"]
-                for procedure in summary["procedures"]:
-                    assert procedure["kind"]=="AbstractEnvironment" and procedure["is_static"]
-                    assert not procedure["covered_blocks"]
-                    assert set(procedure["outcomes"])=={"Return","Revert","Failure"}
         ending_status=re.search(r"CFG endings: (.+?); Selected CFG ending:",page.locator("#analysis-status").text_content())[1]
         def scene_counts(mode="Blocks"):
             counts=layout_counts(page,report,mode=mode)

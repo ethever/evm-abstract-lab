@@ -257,7 +257,7 @@ def open_input(page):
 def posted_bytecode(reply):
     return reply.request.post_data_json["input"]["Bytecode"]["bytecode"]
 
-def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
+def submit_bytecode(page, canvas, bytecode: str, evidence: Path, *, close_directory=False):
     open_input(page)
     page.keyboard.press("Control+A")
     rendered_frame(page)
@@ -269,7 +269,7 @@ def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
     admitted = response.value
     posted = posted_bytecode(admitted)
     assert posted == bytecode, f"editor input did not reach the typed request: expected {bytecode!r}, got {posted!r}"
-    return complete_submission(page, admitted, namespace="Native")
+    return complete_submission(page, admitted, namespace="Native", close_directory=close_directory)
 
 def settle_gesture(page) -> None:
     """Wait for consumed input, including the tail of an actual smooth wheel.

@@ -1,6 +1,6 @@
 """Rpc world browser acceptance cases."""
 
-from web_test_hybrid import oracle_graph, source_instructions
+from web_test_hybrid import assert_detail_policy, oracle_graph, source_instructions
 from pathlib import Path
 from playwright.sync_api import expect
 import hashlib
@@ -8,9 +8,142 @@ import json
 from web_test_graph_helpers import graph_mode, graph_scope, symbol
 from web_test_harness import complete_submission, observe_webgpu, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector, inspector_block_entry_control, select_inspector_tab
+from web_test_layout_helpers import layout_detail_regions
 from web_test_pixels import node_snapshot
-from web_test_rpc_helpers import RPC_PROVIDERS, RPC_TEST_TOKEN, automatic_rpc_entry, configured_rpc_server, submit_rpc
-from web_test_wire_bytes import _Graph, _buffer, _numeric_contains, assert_child_bytes
+from web_test_rpc_helpers import RPC_PROVIDERS, RPC_TEST_TOKEN, automatic_rpc_entry, configured_rpc_server, native_call_summary, submit_rpc
+from web_test_wire_bytes import _Graph, _buffer, _numeric_contains, assert_child_bytes, assert_empty_return_data, assert_summary_child_bytes
+
+
+def _relative_world_call_contract(report, rpc, child, child_state):
+    """Qualify the original cap-one regional delivery, including its joint Store."""
+    summary = native_call_summary(report, child_state)
+    procedure, = summary["procedures"]
+    body, = summary["regional_cfg"]["nodes"]
+    assert procedure["code_address"] == procedure["storage_address"] == rpc.child_address
+    assert procedure["covered_blocks"] == [0] and procedure["dependencies"] == []
+    assert set(procedure["outcomes"]) == set(body["transfer"]["outcomes"]) == {"Return", "Failure"}
+    assert body["frame"]["caller"] == {"Concrete": rpc.root_address}
+    assert body["frame"]["basic_block"] == 0 and body["successors"] == []
+    assert body["transfer"]["successors"] == body["transfer"]["calls"] == []
+    assert summary["regional_cfg"]["calls"] == []
+    states = {state["id"]: state for state in report["cfg"]}
+    snapshots = {item["state"]: item for item in report["states"]}
+    edges = report["edges"]
+    call, = [edge for edge in edges if edge["kind"] == "Call"]
+    returned, = [edge for edge in edges if edge["kind"] == "SummaryReturn"]
+    failed, = [edge for edge in edges if edge["kind"] == "SummaryFailure"]
+    rejected, = [edge for edge in edges if edge["kind"] == "Failure"]
+    assert len(edges) == len(states) == len(snapshots) == 4
+    assert call["to"] == returned["from"] == failed["from"] == child_state["id"]
+    assert call["from"] == rejected["from"] and rejected["to"] == failed["to"]
+    assert len({call["from"], call["to"], returned["to"], failed["to"]}) == 4
+    parent = states[call["from"]]
+    parent_exit = snapshots[parent["id"]]["exit"]
+    child_entry = snapshots[child_state["id"]]["entry"]
+    failure = snapshots[failed["to"]]["entry"]
+    success = snapshots[returned["to"]]["entry"]
+    assert parent["code_address"] == parent["storage_address"] == rpc.root_address
+    assert parent["executed_pcs"][-1] == rpc.expected["root_call_pc"]
+    assert source_instructions(report, parent)[-1]["name"] == "CALL"
+    assert source_instructions(report, child_state)[-1]["name"] == "RETURN"
+    assert child["bytecode"] == rpc.child_code and child_state["frame_depth"] == 2
+    assert child_entry["frames"][0] == parent_exit["frames"][0]
+    active = child_entry["frames"][-1]
+    assert active["program"] == child["id"] and active["code_hash"] == child["code_hash"]
+    assert active["caller"] == {"Concrete": rpc.root_address}
+    assert active["call_value"]["constants"] == ["0x0"]
+    continuation = active["continuation"]
+    assert continuation["return_block"] == states[failed["to"]]["basic_block"] == states[returned["to"]]["basic_block"]
+    assert continuation["creation"] is None
+    assert continuation["output_offset"]["constants"] == continuation["output_size"]["constants"] == ["0x20"]
+    assert failure["store"] == active["rollback_store"] == parent_exit["store"]
+    assert failure["frames"][0]["memory"] == parent_exit["frames"][0]["memory"]
+    assert failure["frames"][0]["stack"][-1]["constants"] == ["0x0"]
+    assert success["frames"][0]["stack"][-1]["constants"] == ["0x1"]
+    for resumed in [failure, success]:
+        frame = resumed["frames"][0]
+        assert {**frame, "basic_block": parent["basic_block"], "stack": [],
+                "memory": parent_exit["frames"][0]["memory"],
+                "returndata": parent_exit["frames"][0]["returndata"]} == parent_exit["frames"][0]
+    assert_summary_child_bytes(report, active, parent_exit["frames"][0], success["frames"][0])
+
+    graph = _Graph(report)
+    stores = report["stores"]
+    before, after = stores[child_entry["store"]], stores[success["store"]]
+    # Relative instantiation uses canonical SlotsInput bindings for persistent
+    # storage. Check the whole fixed Store, including unchanged account fields
+    # and every numeric component, rather than borrowing independent witnesses.
+    def same_numeric(old, new):
+        fields = {"constants", "known_zero", "known_one", "nonzero", "unsigned", "signed", "congruence", "code_address_role", "symbolic_limit"}
+        assert {key: old[key] for key in fields} == {key: new[key] for key in fields}
+
+    same_numeric(before["transient_default"], after["transient_default"])
+    assert graph.node(after["storage_root"], len(graph.nodes), "SlotsInput")[1]["bindings"] == []
+    assert after == {**before, "transient_default": after["transient_default"],
+                     "storage_root": after["storage_root"], "storage_facts": after["storage_facts"],
+                     "accounts": after["accounts"]}
+    assert {account["address"] for account in after["accounts"]} == {rpc.root_address, rpc.child_address}
+    for old in before["accounts"]:
+        new, = [account for account in after["accounts"] if account["address"] == old["address"]]
+        is_child = old["address"] == rpc.child_address
+        for field in ["balance", "nonce", "transient_default"]:
+            same_numeric(old[field], new[field])
+        expected_slots = {"storage": {3: 99}, "transient": {2: 7}} if is_child else {"storage": {1: 42, 4: 9}, "transient": {5: 8}}
+        for plane, expected in expected_slots.items():
+            cells = new[plane]
+            assert len(cells) == len(expected)
+            assert {int(cell["slot"], 16): cell["value"]["constants"] for cell in cells} == {
+                slot: [hex(value)] for slot, value in expected.items()}
+            assert all(_numeric_contains(cell["value"], expected[int(cell["slot"], 16)]) for cell in cells)
+            for previous in old[plane]:
+                current, = [cell for cell in cells if cell["slot"] == previous["slot"]]
+                same_numeric(previous["value"], current["value"])
+        root_id, persistent = graph.node(new["storage_root"], len(graph.nodes), "SlotsInput", ("source", "bindings"))
+        graph.node(persistent["source"]["token"], root_id, "Fresh")
+        assert persistent["source"]["namespace"] == "0x0"
+        assert {int(binding["index"], 16): graph.node(binding["value"], root_id, "Constant")[1]
+                for binding in persistent["bindings"]} == {slot: hex(value) for slot, value in expected_slots["storage"].items()}
+        for binding in persistent["bindings"]:
+            assert binding["numeric"]["constants"] == [hex(expected_slots["storage"][int(binding["index"], 16)])]
+        if is_child:
+            write_id, write = graph.node(new["transient_root"], len(graph.nodes), "Store", ("previous", "key", "value"))
+            assert write["previous"] == old["transient_root"]
+            assert graph.node(write["key"], write_id, "Constant")[1] == "0x2"
+            assert graph.node(write["value"], write_id, "Constant")[1] == "0x7"
+        else:
+            assert new["transient_root"] == old["transient_root"]
+        assert new == {**old, **{key: new[key] for key in ["balance", "nonce", "storage_root", "transient_root", "storage", "transient", "transient_default"]}}
+    assert len(after["storage_facts"]) == 3
+    assert {graph.node(fact["expression"], len(graph.nodes), "Constant")[1] for fact in after["storage_facts"]} == {"0x2a", "0x63", "0x9"}
+    for fact in after["storage_facts"]:
+        value = graph.node(fact["expression"], len(graph.nodes), "Constant")[1]
+        assert fact["value"]["constants"] == [value] and _numeric_contains(fact["value"], int(value, 16))
+    parent_ids = {call["from"], rejected["to"], returned["to"]}
+    failures = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Failure"]
+    returns = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Return"]
+    assert len(returns) == 2 and len(failures) + len(returns) == len(report["outcomes"])
+    assert {outcome["state"] for outcome in failures} == parent_ids
+    checkpoint = parent_exit["frames"][0]["rollback_store"]
+    assert all(outcome["store"] == checkpoint for outcome in failures)
+    assert {outcome["state"] for outcome in returns} == {failed["to"], returned["to"]}
+    empty = failure["frames"][0]["returndata"]
+    assert_empty_return_data(report, empty)
+    for outcome in failures:
+        assert_empty_return_data(report, outcome["data"])
+    zero_slots = before["accounts"][0]["transient_default"]
+    assert zero_slots["constants"] == ["0x0"]
+    for outcome in returns:
+        source = snapshots[outcome["state"]]["exit"]
+        zero = next(account["transient_root"] for account in stores[checkpoint]["accounts"])
+        assert graph.node(zero, len(graph.nodes))[1] == "SlotsZero"
+        zero_default = stores[checkpoint]["transient_default"]
+        assert zero_default["constants"] == ["0x0"] and _numeric_contains(zero_default, 0)
+        assert stores[outcome["store"]] == {**stores[source["store"]], "transient_default": zero_default, "accounts": [
+            {**account, "transient": [], "transient_root": zero, "transient_default": zero_default, "touched": False}
+            for account in stores[source["store"]]["accounts"]]}
+    return {"call": call, "return": returned, "failure": failed, "rejection": rejected,
+            "rollback_store": failure["store"], "success_store": success["store"],
+            "regional_transfer": body["transfer"], "private_child_pcs": False}
 
 
 def _world_call_contract(report, rpc, child, child_state):
@@ -109,9 +242,7 @@ def _world_call_contract(report, rpc, child, child_state):
 
     graph = _Graph(report)
     empty = failure_entry["frames"][0]["returndata"]
-    data = _buffer(report, empty, False, 0)
-    empty_id, view = graph.view(data["symbolic"], len(graph.nodes), 0)
-    assert graph.node(view["state"], empty_id, "BytesExact")[1] == "0x"
+    assert_empty_return_data(report, empty)
     stores = report["stores"]
     root_entry = snapshots[parent["id"]]["entry"]
     root_checkpoint = parent_exit["frames"][0]["rollback_store"]
@@ -168,15 +299,20 @@ def _world_call_contract(report, rpc, child, child_state):
     assert terminal_failures and len(terminal_returns) == 2
     assert len(terminal_failures) + len(terminal_returns) == len(report["outcomes"])
     assert {outcome["state"] for outcome in terminal_failures} == parent_ids
-    assert all(outcome["store"] == root_checkpoint and outcome["data"] == empty for outcome in terminal_failures)
+    assert all(outcome["store"] == root_checkpoint for outcome in terminal_failures)
+    for outcome in terminal_failures:
+        assert_empty_return_data(report, outcome["data"])
     assert {outcome["state"] for outcome in terminal_returns} == {failure_id, success_resume["id"]}
     zero_slots = checkpoint_child["transient_root"]
     assert graph.node(zero_slots, len(graph.nodes))[1] == "SlotsZero"
     for outcome in terminal_returns:
         source = snapshots[outcome["state"]]["exit"]
+        zero_default = stores[root_checkpoint]["transient_default"]
+        assert zero_default["constants"] == ["0x0"] and _numeric_contains(zero_default, 0)
         assert stores[outcome["store"]] == {
-            **stores[source["store"]], "accounts": [
-                {**account, "transient": [], "transient_root": zero_slots, "touched": False}
+            **stores[source["store"]], "transient_default": zero_default, "accounts": [
+                {**account, "transient": [], "transient_root": zero_slots,
+                 "transient_default": zero_default, "touched": False}
                 for account in stores[source["store"]]["accounts"]]}
     boundary = [edge for edge in edges if (edge["from"] in child_ids) != (edge["to"] in child_ids)]
     assert len(boundary) == 3 and {edge["kind"] for edge in boundary} == {"Call", "Return", "Failure"}
@@ -185,8 +321,9 @@ def _world_call_contract(report, rpc, child, child_state):
             "root_failure_outcomes": len(terminal_failures)}
 
 
-def world_graph_scopes(page, canvas, report, child, child_state, output: Path, rpc):
-    contract = _world_call_contract(report, rpc, child, child_state)
+def world_graph_scopes(page, canvas, report, child, child_state, output: Path, rpc, *, relative=False):
+    contract = (_relative_world_call_contract(report, rpc, child, child_state) if relative else
+                _world_call_contract(report, rpc, child, child_state))
     edges = report["edges"]
     # Keep the native child selected while narrowing visibility. Switching to
     # Local must cross all three boundary links even with P1 still selected.
@@ -198,6 +335,8 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path, r
     page.keyboard.press("2")
     settle_gesture(page)
     graph_mode(page, canvas, "States")
+    page.keyboard.press("f")
+    settle_gesture(page)
     full = graph_scope(page, "States", 4, 4, 4)
     assert full["scope"] == "All programs" and full["edges"] == full["native_edges"] == len(edges)
     canvas.click(position={"x": 205, "y": 133})  # native program ComboBox
@@ -227,7 +366,7 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path, r
             "selected_native_state": child_state["id"], "child_pixels": child_pixels,
             "local_pixels": local_pixels, "native_call_contract": contract}
 
-def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, providers):
+def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, providers, *, regions=1):
     results = {}
     page = browser.new_page(viewport={"width": 1440, "height": 1000})
     observe_webgpu(page)
@@ -235,11 +374,16 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     page.on("pageerror", lambda error: failures.append(str(error)))
     startup = automatic_rpc_entry(page, url, providers[0], output, "world-startup")
     pending_rpc.requests.clear()
+    rpc.requests.clear()
     status = page.locator("#analysis-status")
     expect(status).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
-    admitted = submit_rpc(page, canvas, rpc, output, "world", provider_index=1, providers=providers)
-    reply = complete_submission(page, admitted, namespace="Native")
+    admitted = submit_rpc(page, canvas, rpc, output, "world", provider_index=1, providers=providers,
+                          configure_form=(lambda: layout_detail_regions(page,canvas,output,"world",regions))
+                          if regions != 1 else None)
+    reply = complete_submission(page, admitted, namespace="Native", expected_detail_regions=regions)
+    request = reply.request.post_data_json
+    (output / "world-request.json").write_text(reply.request.post_data + "\n")
     envelope = reply.json()
     (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
     assert reply.status == 200 and "Ok" in envelope["result"], f"RPC world task failed: {json.dumps(envelope, sort_keys=True)}"
@@ -247,6 +391,8 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     assert global_report["status"] == "Converged"
     assert global_report["hybrid"]["coverage"]["baseline_current"] is True
     assert global_report["hybrid"]["rpc"]["detail_at_current_revision"] is True
+    selected = assert_detail_policy(global_report, regions)
+    assert len(selected["detail_regions"]) == regions
     report = oracle_graph(global_report, "Native")
     assert len(report["programs"]) >= 2, "RPC call failed to capture the child program"
     assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
@@ -262,7 +408,11 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     assert child_snapshot["exit"] and len(child_snapshot["exit"]["frames"]) == 2
     child_frame = child_snapshot["exit"]["frames"][-1]
     assert child_frame["kind"] == "Runtime" and child_frame["program"] == child["id"]
-    assert_child_bytes(report, child_frame)
+    if regions == 2:
+        assert_child_bytes(report, child_frame)
+    else:
+        assert regions == 1 and child_state["executed_pcs"] == []
+        assert _buffer(report, child_frame["memory"], True, 0)
     def contains(value, number):
         return value["constants"] is not None and number in [int(word, 16) for word in value["constants"]]
     child_accounts = [account for store in report["stores"] for account in store["accounts"] if account["address"] == rpc.child_address]
@@ -298,7 +448,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     select_inspector_tab(page, canvas, "Memory")
     expect(status).to_contain_text("Memory")
     canvas.screenshot(path=str(output / "world-child-exit-memory.png"))
-    graph_scopes = world_graph_scopes(page, canvas, report, child, child_state, output, rpc)
+    graph_scopes = world_graph_scopes(page, canvas, report, child, child_state, output, rpc, relative=regions==1)
     # All acquisition reads remain on one canonical snapshot.
     reads = [request for request in rpc.requests if request["method"] in ("eth_getCode", "eth_getStorageAt", "eth_getBalance", "eth_getTransactionCount")]
     assert reads and all(request["params"][-1] == {"blockHash": rpc.block_hash, "requireCanonical": True} for request in reads)
@@ -306,16 +456,23 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     assert not pending_rpc.requests, "selecting the second provider contacted the default provider"
     assert RPC_TEST_TOKEN not in json.dumps(report), "provider URL escaped into the analysis report"
     (output / "world-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+    (output / "world-rpc-requests.json").write_text(json.dumps(rpc.requests, indent=2) + "\n")
     results["analysis"] = {"programs": len(report["programs"]), "states": len(report["states"]), "outcomes": len(report["outcomes"]), "rpc_requests": len(rpc.requests), "inspector_views": screenshots, "graph_scopes": graph_scopes, "renderer": webgpu_evidence(page)}
     assert not failures, failures
     page.close()
     results["automatic_entry"] = startup["input"]
-    return results
+    results["requested_detail_regions"] = regions
+    return results, request
 
 
 def run(context):
     with configured_rpc_server(context.args) as (url, pending, rpc, providers):
-        result = world_interactions(context.browser, url, context.output, rpc, pending, providers)
+        default, request = world_interactions(context.browser, url, context.output, rpc, pending, providers)
+        private_output = context.output / "private2"
+        private_output.mkdir()
+        private, private_request = world_interactions(context.browser, url, private_output, rpc, pending, providers, regions=2)
+        assert private_request == {**request, "limits": {**request["limits"], "max_detail_regions": 2}}
+        result = {"default1": default, "private2": private, "same_original_request_except_detail_regions": True}
         result.update(providers=providers, selected_provider_id=RPC_PROVIDERS[1]["id"],
                       endpoint_displayed_in_selector=True, submission_uses_provider_id=True)
         return result

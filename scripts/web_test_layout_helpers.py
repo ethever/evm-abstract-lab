@@ -37,6 +37,52 @@ def layout_modal(page, canvas):
                                (0, 0, viewport["width"], viewport["height"]), True)["nodes"]
     return max(boxes, key=lambda rect: (rect[2]-rect[0])*(rect[3]-rect[1]))
 
+
+def layout_detail_regions(page, canvas, output, name, requested):
+    """Edit D5's real Precision row in an already open, collapsed input form."""
+    assert type(requested) is int and 0 <= requested <= (1 << 64) - 1
+    assert page.viewport_size == {"width": 1440, "height": 1000}
+    geometry = {}
+    header_offset = 10
+
+    def capture(stage):
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        page.wait_for_timeout(200)
+        png = canvas.screenshot(path=str(output / f"{name}-precision-{stage}.png"))
+        bounds = layout_modal(page, canvas)
+        assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
+                and 750 <= bounds[2] - bounds[0] <= 780), bounds
+        region = (bounds[0] + 29, bounds[1] + header_offset, bounds[0] + 95, bounds[3] - 40)
+        measured = {"modal": bounds, "region": region, **text_pixels(page, png, region)}
+        geometry[stage] = measured
+        (output / f"{name}-precision-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
+        return measured
+
+    before = capture("closed")
+    headers = before["rows"][-6:]
+    assert len(headers) == 6 and all(20 <= b[0] - a[0] <= 26
+                                   for a, b in zip(headers, headers[1:])), before
+    header_offset = headers[0][0] - before["modal"][1] - 2
+    canvas.click(position={"x": before["modal"][0] + 70, "y": sum(headers[-2]) / 2})
+    opened = capture("open")
+    # Three environment headers, Execution, Precision, Numeric model, then
+    # Detailed code sources. The POST caller checks the complete applied policy.
+    assert len(opened["rows"]) >= 15, opened
+    assert all(abs(a[0] - opened["modal"][1] - (b[0] - before["modal"][1])) <= 2
+               for a, b in zip(opened["rows"][:5], headers[:5])), opened
+    assert all(20 <= b[0] - a[0] <= 26
+               for a, b in zip(opened["rows"][5:13], opened["rows"][6:14])), opened
+    canvas.click(position={"x": opened["modal"][0] + 250, "y": sum(opened["rows"][6]) / 2})
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text(str(requested))
+    rendered_frame(page)
+    edited = capture("edited")
+    canvas.click(position={"x": edited["modal"][0] + 70, "y": sum(edited["rows"][4]) / 2})
+    closed = capture("restored")
+    assert len(closed["rows"]) == 6, closed
+
+
 def layout_entry_form(page, canvas, entry, source_height_offset=0):
     """Edit actual egui controls; the typed POST below verifies every choice."""
     root_offset = source_height_offset + (10 if "address" in entry else 0)

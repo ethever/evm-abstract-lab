@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from web_test_hybrid import oracle_graph, source_block as resolve_source_block
+from web_test_hybrid import assert_detail_policy, oracle_graph, process_control_relation, source_block as resolve_source_block, source_program
 
 
 def _runtime_account_code(code):
@@ -183,6 +183,373 @@ def _runtime_boundary_profile(report, entry, nodes, expected_limits):
         actual.append((source["start_pc"] if source else None, frontier["pc"], frontier["kind"]))
     assert Counter(actual) == Counter(expected), actual
     return profile
+
+
+def _router_callback_output(envelope, procedure, bound, output):
+    """Check this static Global callback's same-outcome public bounds, not Native execution."""
+    def record(value, fields):
+        assert type(value) is dict and set(value) == set(fields.split()), value
+
+    def word(value):
+        assert type(value) is str and re.fullmatch(r"0x[0-9a-fA-F]{1,64}", value), value
+        return int(value, 16)
+
+    def address(value):
+        assert type(value) is str and re.fullmatch(r"0x[0-9a-fA-F]{40}", value), value
+
+    def scalar(value):
+        record(value, "summary constants known_zero known_one nonzero unsigned signed congruence origins code_address_role identity expression symbolic_limit")
+        assert type(value["summary"]) is str and value["expression"] is None
+        for field in ["nonzero", "code_address_role", "symbolic_limit"]:
+            assert type(value[field]) is bool
+        assert word(value["known_zero"]) & word(value["known_one"]) == 0
+        for field in ["unsigned", "signed"]:
+            record(value[field], "lower upper")
+            low, high = (word(value[field][key]) for key in ["lower", "upper"])
+            bias = (1 << 255) if field == "signed" else 0
+            assert low ^ bias <= high ^ bias
+        congruence = value["congruence"]
+        if congruence != "Any":
+            assert type(congruence) is dict and len(congruence) == 1
+            if "Exact" in congruence:
+                word(congruence["Exact"])
+            else:
+                record(congruence, "Modulo");record(congruence["Modulo"], "modulus residue")
+                assert 0 <= word(congruence["Modulo"]["residue"]) < word(congruence["Modulo"]["modulus"])
+        if value["constants"] is not None:
+            assert type(value["constants"]) is list
+            assert all(_runtime_numeric_contains(value, word(item)) for item in value["constants"])
+        assert value["origins"] is None or (type(value["origins"]) is list and all(type(item) is str for item in value["origins"]))
+        assert value["identity"] is None or type(value["identity"]) is dict
+
+    def cells(items):
+        assert type(items) is list
+        offsets = set()
+        for item in items:
+            record(item, "offset value")
+            assert type(item["offset"]) is int and item["offset"] >= 0 and item["offset"] not in offsets
+            offsets.add(item["offset"]);scalar(item["value"])
+
+    def data(value):
+        record(value, "length memory content words");scalar(value["length"])
+        assert value["memory"] is False
+        content = value["content"]
+        if content != "Zero":
+            assert type(content) is dict and len(content) == 1
+            if "Exact" in content:
+                assert type(content["Exact"]) is str and re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", content["Exact"])
+            else:
+                record(content, "Cells");cells(content["Cells"])
+        cells(value["words"])
+
+    def owners(items, kind):
+        assert type(items) is list
+        seen = set()
+        for item in items:
+            record(item, "owner value");address(item["owner"])
+            assert item["owner"].lower() not in seen;seen.add(item["owner"].lower())
+            if kind == "scalar": scalar(item["value"])
+            elif kind == "flag": assert item["value"] is None or type(item["value"]) is bool
+            else: assert item["value"] in {"Unknown", "Present", "Absent"}
+
+    def plane(value):
+        record(value, "default owners slots independent_default independent_owners independent_slots")
+        scalar(value["default"]);owners(value["owners"], "scalar")
+        assert type(value["independent_default"]) is bool
+        owners(value["independent_owners"], "flag")
+        for field, last in [("slots", "value"), ("independent_slots", "independent")]:
+            assert type(value[field]) is list
+            seen = set()
+            for item in value[field]:
+                record(item, "owner slot " + last);address(item["owner"])
+                key = (item["owner"].lower(), word(item["slot"]))
+                assert key not in seen;seen.add(key)
+                if last == "value": scalar(item[last])
+                else: assert type(item[last]) is bool
+
+    def store(value):
+        record(value, "persistent transient balance_default balances nonces codes existence created_default created pending_destruction_default pending_destruction touched_default touched logs logs_unknown")
+        plane(value["persistent"]);plane(value["transient"]);scalar(value["balance_default"])
+        owners(value["balances"], "scalar");owners(value["nonces"], "scalar");owners(value["existence"], "existence")
+        for field in ["created", "pending_destruction", "touched"]:
+            assert value[field + "_default"] is None or type(value[field + "_default"]) is bool
+            owners(value[field], "flag")
+        assert type(value["codes"]) is list
+        seen = set()
+        for code in value["codes"]:
+            record(code, "owner kind program delegation_target");address(code["owner"])
+            assert code["owner"].lower() not in seen;seen.add(code["owner"].lower())
+            assert code["kind"] in {"Empty", "Unknown", "Runtime", "Delegation"}
+            assert (code["kind"] == "Runtime") == (code["program"] is not None)
+            assert (code["kind"] == "Delegation") == (code["delegation_target"] is not None)
+            if code["program"] is not None:
+                program = source_program(envelope, code["program"])
+                assert program["kind"] == "Runtime" and program["fork"] == envelope["minimum"]["fork"]
+                if program["code_address"] is None:
+                    assert code["owner"].lower() == envelope["minimum"]["entry_address"].lower()
+                    assert program["code_hash"] == envelope["minimum"]["declared_root_source"]["InputProgram"]["hash"]
+                else:
+                    assert program["code_address"].lower() == code["owner"].lower()
+            if code["delegation_target"] is not None: address(code["delegation_target"])
+        assert type(value["logs_unknown"]) is bool and type(value["logs"]) is list
+        for log in value["logs"]:
+            record(log, "address code_address code_hash source_kind pc topics data")
+            address(log["address"]);address(log["code_address"])
+            assert type(log["code_hash"]) is str and re.fullmatch(r"0x[0-9a-fA-F]{64}", log["code_hash"])
+            assert log["source_kind"] in {"Runtime", "Initcode"}
+            assert type(log["pc"]) is int and log["pc"] >= 0
+            assert type(log["topics"]) is list and len(log["topics"]) <= 4
+            for topic in log["topics"]: scalar(topic)
+            data(log["data"])
+
+    record(output, "kind generation data store")
+    assert output["kind"] in procedure["outcomes"] and type(output["generation"]) is int
+    assert output["generation"] >= 0
+    assert procedure["is_static"] is True and procedure["process"]["is_static"] is True
+    assert procedure["process"]["owner"] == "RootNamespace"
+    assert procedure["process"]["source"] == envelope["minimum"]["declared_root_source"]
+    data(output["data"]);store(output["store"]);store(bound["input"])
+    # This Process fixture's static callbacks preserve the complete input Store.
+    # Data and that Store remain attached to this one producer outcome/generation.
+    assert output["store"] == bound["input"]
+
+
+def layout_router_current_scope(envelope, expected_limits):
+    """Qualify this original Router stress input's Global and optional Native scopes.
+
+    Static unknown callees can callback known code with unknown calldata. Paid
+    relative snapshot refusal can leave Work obligations without private target
+    payloads. Neither an empty snapshot nor a queue count proves completion.
+    """
+    assert envelope["schema_version"] == 21 and envelope["status"] == "Converged"
+    minimum = envelope["minimum"]
+    global_graph = oracle_graph(envelope, "Baseline")
+    native = oracle_graph(envelope, "Native")
+    assert minimum["namespace"] == "Baseline" and minimum["current"] is True
+    assert minimum["status"] == global_graph["status"] == "Converged"
+    assert global_graph["frontiers"] == []
+    assert native["status"] == "Incomplete" and native["frontiers"]
+    assert native["metadata"]["limits"] == global_graph["metadata"]["limits"] == expected_limits
+    assert expected_limits["max_work"] == 1_000_000_000_000
+    assert expected_limits["root_terminal_coverage"] is False
+    precision = assert_detail_policy(envelope, 1)
+    assert precision["detail_current"] is False and precision["baseline_current"] is True
+    assert len(precision["detail_regions"]) == 1
+    condition = precision["detail_binding"]["SymbolicOwnerNamespace"]["namespace"]
+    assert global_graph["metadata"]["environment"]["to"] == {"Symbolic": {"kind": "To", "index": None}}
+    assert native["metadata"]["environment"]["to"] == {"Concrete": condition}
+    assert native["metadata"]["entry_address"] == condition
+    assert minimum["source_snapshot"] == global_graph["metadata"]["source_snapshot"] == native["metadata"]["source_snapshot"]
+    assert minimum["revision"] == global_graph["metadata"]["revision"] == native["metadata"]["revision"]
+    assert minimum["root_binding"] == global_graph["metadata"]["root_binding"]
+    rows = [row for row in minimum["summaries"] if row["relation"]["kind"] == "KnownProcess"]
+    assert rows
+    callbacks = []
+    for row in rows:
+        relation, bounds = row["relation"], row["bounds"]
+        assert relation in global_graph["abstract_summaries"]
+        assert relation["closed"] is True and relation["source_current"] is True
+        procedures = relation["procedures"]
+        assert len(bounds) == len(procedures)
+        nodes = {node["id"]: node for node in relation["regional_cfg"]["nodes"]}
+        for node in nodes.values():
+            key, transfer = node["frame"]["process"], node["transfer"]
+            assert key is not None and transfer is not None
+            assert transfer["current"] is True and transfer["complete"] is True
+            assert transfer["visited_block"] is False
+            assert transfer["input_revision"] == node["input_revision"]
+            procedure_key = procedures[node["procedure"]]["process"]
+            assert all(key[field] == procedure_key[field] for field in ["epoch", "owner", "source", "is_static"])
+            assert key["epoch"] == bounds[node["procedure"]]["version"]["source_epoch"]
+            control = transfer["process"]["control"]
+            if control is not None:
+                process_control_relation(envelope, key, control)
+        for call in relation["regional_cfg"]["calls"]:
+            source = nodes[call["from"]]
+            caller, callee = procedures[source["procedure"]], procedures[call["callee"]]
+            if not (caller["semantics"] == "Environment" and caller["is_static"] is True
+                    and callee["semantics"] == "KnownProcess" and callee["is_static"] is True
+                    and call["action"] == "Call" and call["target"] == "RootNamespace"):
+                continue
+            assert callee["process"]["source"] == minimum["declared_root_source"]
+            assert callee["process"]["owner"] == "RootNamespace"
+            assert caller["process"]["epoch"] == callee["process"]["epoch"]
+            assert call["entries"] and all(nodes[index]["procedure"] == call["callee"] for index in call["entries"])
+            assert all(nodes[index]["frame"]["process"] == callee["process"] for index in call["entries"])
+            # The continuation template and the caller body have separate input
+            # clocks. Current deliveries bind to this call's template revision.
+            revision = call["input_revision"]
+            assert type(revision) is str and revision.isascii() and revision.isdecimal()
+            assert str(int(revision)) == revision and 0 <= int(revision) < 2**64
+            outputs = {output["kind"]: output for output in bounds[call["callee"]]["outputs"]}
+            assert {delivery["kind"] for delivery in call["deliveries"]} == {"Return", "Revert", "Failure"}
+            for delivery in call["deliveries"]:
+                assert delivery["current"] is True and delivery["input_revision"] == call["input_revision"]
+                assert delivery["output_generation"] == outputs[delivery["kind"]]["generation"]
+                _router_callback_output(envelope, callee, bounds[call["callee"]], outputs[delivery["kind"]])
+                assert delivery["successors"] and all(edge["to"] in nodes for edge in delivery["successors"])
+                assert all(edge["kind"] == "Summary" + delivery["kind"] for edge in delivery["successors"])
+            callbacks.append(call)
+    assert callbacks, "closed static unknown code must retain source-qualified known callbacks"
+
+    nodes = {node["id"]: node for node in native["cfg"]}
+    states = {state["state"]: state for state in native["states"]}
+    blocks = {block["state"]: block for block in native["ssa"]["blocks"]}
+    values = {value["id"]: value for value in native["ssa"]["values"]}
+    assert len(nodes) == len(native["cfg"]) == len(states) == len(blocks)
+    assert set(nodes) == set(states) == set(blocks)
+    current_prefixes = []
+    for sid, node in nodes.items():
+        block = blocks[sid]
+        assert [instruction["pc"] for instruction in block["instructions"]] == node["executed_pcs"]
+        if not block["instructions"]:
+            continue
+        assert block["coverage"] == "Current" and node["program"] is not None
+        source = resolve_source_block(native, node)
+        assert node["start_pc"] == source["start_pc"]
+        assert node["executed_pcs"] == [item["pc"] for item in source["instructions"][:len(block["instructions"])]]
+        for instruction, decoded in zip(block["instructions"], source["instructions"]):
+            assert all(instruction[key] == decoded[key] for key in ["pc", "opcode", "name", "immediate"])
+            assert all(type(vid) is int and vid in values for vid in instruction["operands"] + instruction["results"])
+        current_prefixes.append(sid)
+    assert current_prefixes and not native["ssa"]["complete"]
+    summaries = [summary for summary in native["abstract_summaries"] if summary["kind"] == "UnknownEnvironment"]
+    summary, = summaries
+    assert summary["closed"] is False and summary["source_current"] is False
+    assert summary["root_procedure"] is None and summary["procedures"] == []
+    assert summary["regional_cfg"] == {"nodes": [], "calls": []}
+    assert summary["state_count"] > 0 and summary["transfers"] > 0
+    child = nodes[summary["source_state"]]
+    assert child["program"] is None and child["start_pc"] is None and child["executed_pcs"] == []
+    child_entry = states[child["id"]]["entry"]
+    active = child_entry["frames"][-1]
+    assert active["kind"] == "AbstractEnvironment" and active["is_static"] is True
+    assert active["program"] is None and active["process"] is None
+    assert active["code_address"] == active["storage_address"] == child["code_address"]
+    call, = [edge for edge in native["edges"] if edge["kind"] == "Call" and edge["to"] == child["id"]]
+    caller = nodes[call["from"]]
+    caller_state = states[caller["id"]]
+    caller_frame = caller_state["exit"]["frames"][-1]
+    instruction = blocks[caller["id"]]["instructions"][-1]
+    assert (instruction["opcode"], instruction["name"], instruction["progress"]) == (0xfa, "STATICCALL", "Dispatched")
+    assert active["caller"] == {"Concrete": caller_frame["storage_address"]}
+    assert active["rollback_store"] == caller_state["entry"]["store"] == caller_state["exit"]["store"]
+    target = int(active["code_address"], 16)
+    target_facts = [fact for fact in values[instruction["operands"][1]]["facts"]
+                    if fact["status"] == "Current" and fact["scope"] == {"State": caller["id"]}]
+    assert target_facts and all(_runtime_numeric_contains(fact["value"], target) for fact in target_facts)
+    assert any(fact["value"]["constants"] == [hex(target)] for fact in target_facts)
+    rejected, = [edge for edge in native["edges"] if edge["from"] == caller["id"] and edge["kind"] == "Failure"]
+    assert nodes[rejected["to"]]["basic_block"] == active["continuation"]["return_block"]
+    old_store = native["stores"][active["rollback_store"]]
+    entered_store = native["stores"][child_entry["store"]]
+    added, = [account for account in entered_store["accounts"] if account["address"] == active["storage_address"]]
+    assert added["touched"] is True and added["program"] is None and added["code_kind"] == "Unknown"
+    assert added["storage"] == added["transient"] == []
+    assert entered_store == {**old_store, "accounts": [*old_store["accounts"], added]}
+    obligations = Counter()
+    for frontier in native["frontiers"]:
+        assert set(frontier) == {"from", "pc", "kind", "reason", "detail", "range", "payload"}
+        assert frontier["kind"] == frontier["reason"] == frontier["detail"] == "Work"
+        assert frontier["range"] is None and frontier["payload"] is None
+        if frontier["from"] is None:
+            assert frontier["pc"] is None
+            obligations["unlocated"] += 1
+        else:
+            assert type(frontier["from"]) is int and frontier["from"] == child["id"]
+            assert type(frontier["pc"]) is int and frontier["pc"] == 0
+            obligations["relative_source"] += 1
+    assert obligations["relative_source"] and obligations["unlocated"]
+    assert native["pending_machines"] == [], "the paid snapshot refusal has no resumable private target payload"
+    work = envelope["hybrid"]["coverage"]["work"]
+    assert work["prior"] == 0 and work["baseline"] > 0 and work["detail"] > 0
+    assert work["detail_allowance"] == expected_limits["max_work"] - work["baseline"]
+    assert work["total"] == sum(work[key] for key in ["prior", "baseline", "preparation", "detail"])
+    assert work["total"] == native["metadata"]["work"] == envelope["work"] <= expected_limits["max_work"]
+    return {"scope": "closed Global with optional Native callback-work refusal", "global_callbacks": len(callbacks),
+            "current_native_prefixes": len(current_prefixes), "work_obligations": dict(obligations),
+            "relative_work_source_state": child["id"], "caller_state": caller["id"],
+            "dispatched_staticcall_pc": instruction["pc"],
+            "unobserved_world_states": [sid for sid, block in blocks.items() if block["coverage"] != "Current"],
+            "pending_machines": 0, "pending_sources": [], "instruction_frontiers": [],
+            "pending_sources_scope": "exported World payloads only; internal relative target IDs unavailable on wire",
+            "retained_instruction_frontiers": [], "work": work,
+            "native_owner_condition": condition,
+            "native_callback_snapshot_exported": False,
+            "successful_native_summary_return_observed": any(edge["kind"] == "SummaryReturn" for edge in native["edges"]),
+            "root_return_observed": any(outcome["kind"] == "Return" for outcome in native["outcomes"])}
+
+
+def router_scope_negative_controls(envelope, expected_limits):
+    """Corrupt actual source/phase/refusal receipts, restoring every mutation."""
+    rejected = []
+
+    def reject(label, target, key, replacement):
+        original = target[key]
+        target[key] = replacement
+        try:
+            try:
+                layout_router_current_scope(envelope, expected_limits)
+            except AssertionError:
+                rejected.append(label)
+            else:
+                raise AssertionError(f"Router accepted corrupted {label}")
+        finally:
+            target[key] = original
+
+    native = envelope["native"]
+    summary, = [item for item in native["abstract_summaries"] if item["kind"] == "UnknownEnvironment"]
+    sid = summary["source_state"]
+    snapshot, = [item for item in native["states"] if item["state"] == sid]
+    relative, = [item for item in native["cfg"] if item["id"] == sid]
+    frontier = next(item for item in native["frontiers"] if item["from"] == sid)
+    reject("Global-current", envelope["minimum"], "current", False)
+    reject("minimum-rich-agreement", envelope["minimum"]["summaries"][0]["relation"], "closed", False)
+    reject("open-relative-closure", summary, "closed", True)
+    reject("open-relative-currentness", summary, "source_current", True)
+    reject("missing-Work-obligations", native, "frontiers", [])
+    reject("relative-Work-fabricated-PC", frontier, "pc", 21331)
+    reject("relative-Work-fabricated-payload", frontier, "payload", 0)
+    reject("unknown-body-fabricated-PCs", relative, "executed_pcs", [0])
+    reject("STATICCALL-static-mode", snapshot["entry"]["frames"][-1], "is_static", False)
+    reject("STATICCALL-rollback-store", snapshot["entry"]["frames"][-1], "rollback_store", snapshot["entry"]["store"])
+    block = next(item for item in native["ssa"]["blocks"] if item["instructions"])
+    reject("Native-SSA-source-PC", block["instructions"][0], "pc", block["instructions"][0]["pc"] + 1)
+    row = envelope["minimum"]["summaries"][0]
+    relation = row["relation"]
+    nodes = {node["id"]: node for node in relation["regional_cfg"]["nodes"]}
+    procedures = relation["procedures"]
+    callback = next(call for call in relation["regional_cfg"]["calls"]
+                    if procedures[nodes[call["from"]]["procedure"]]["semantics"] == "Environment"
+                    and procedures[nodes[call["from"]]["procedure"]]["is_static"] is True
+                    and procedures[call["callee"]]["semantics"] == "KnownProcess"
+                    and procedures[call["callee"]]["is_static"] is True
+                    and call["action"] == "Call" and call["target"] == "RootNamespace")
+    rich_relation, = [item for item in envelope["global"]["abstract_summaries"]
+                      if item["kind"] == relation["kind"] and item["source_state"] == relation["source_state"]]
+    rich_callback = next(call for call in rich_relation["regional_cfg"]["calls"] if call["id"] == callback["id"])
+
+    def reject_pair(label, target, rich_target, key, replacement):
+        # Keep the two publication copies equal so the revision guard itself
+        # must reject the corruption, rather than minimum/rich disagreement.
+        original, rich_original = target[key], rich_target[key]
+        rich_target[key] = replacement
+        try:
+            reject(label, target, key, replacement)
+        finally:
+            rich_target[key] = rich_original
+        assert target[key] == original
+
+    reject_pair("call-template-revision", callback, rich_callback, "input_revision", str(int(callback["input_revision"]) + 1))
+    reject_pair("delivery-template-revision", callback["deliveries"][0], rich_callback["deliveries"][0],
+                "input_revision", str(int(callback["input_revision"]) + 1))
+    reject_pair("delivery-output-generation", callback["deliveries"][0], rich_callback["deliveries"][0],
+                "output_generation", callback["deliveries"][0]["output_generation"] + 1)
+    output = next(output for output in row["bounds"][callback["callee"]]["outputs"]
+                  if output["kind"] == callback["deliveries"][0]["kind"])
+    reject("callback-empty-data-bound", output, "data", {})
+    reject("callback-empty-store-bound", output, "store", {})
+    return rejected
 
 
 def _runtime_current_prefix(report, source, state, block):
@@ -659,7 +1026,10 @@ def main():
     original = oracle_graph(envelope, "Baseline")
     layout_runtime_request(request, original, code, metadata, limits)
     layout_runtime_programs(report, code, metadata)
-    if "product_oracle" in entry:
+    if metadata["name"] == "ethereum-uniswap-v2-router02":
+        layout_router_current_scope(envelope, limits)
+        router_scope_negative_controls(envelope, limits)
+    elif "product_oracle" in entry:
         layout_pending_machines(report, entry, limits)
         _runtime_boundary_negative_controls(report, entry, limits)
     print("current runtime report and negative controls passed")
