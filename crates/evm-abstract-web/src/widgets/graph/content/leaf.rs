@@ -44,17 +44,13 @@ pub(super) fn preview(
             format!("  {coverage:?}")
         }
     );
+    let ending = if block.start_pc.is_some() {
+        super::super::source::ending(report.instructions(block))
+    } else {
+        "no bytecode".into()
+    };
     let mut detail = format!(
-        "Native · {} · depth {}{}",
-        block.start_pc.map_or_else(
-            || if abstract_environment {
-                "abstract environment"
-            } else {
-                "no bytecode"
-            }
-            .into(),
-            |pc| format!("0x{pc:04x}")
-        ),
+        "{ending} · Native · depth {}{}",
         block.frame_depth,
         if frontier { " · !" } else { "" }
     );
@@ -106,18 +102,13 @@ pub(super) fn preview(
             );
         }
     }
-    NodeText::new(title, detail, lines, coverage, frontier).with_identity(vec![location])
+    NodeText::new(title, detail, lines, coverage, frontier).with_identity(vec![location, ending])
 }
 
 pub(super) fn source_identity(report: &ReportView<'_>, block: &CfgBlock) -> String {
     block.start_pc.map_or_else(
         || "Process control".into(),
-        |pc| {
-            report.instructions(block).last().map_or_else(
-                || format!("0x{pc:04x}"),
-                |instruction| format!("0x{pc:04x} · {}", instruction.name),
-            )
-        },
+        |pc| super::super::source::title(pc, report.instructions(block)),
     )
 }
 

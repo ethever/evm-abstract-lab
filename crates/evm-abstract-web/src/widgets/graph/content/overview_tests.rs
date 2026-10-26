@@ -82,7 +82,7 @@ fn grouped_ssa_never_relabels_one_members_names_as_the_whole_block() {
         context.run_ui(RawInput::default(), |ui| {
             let preview =
                 node_preview(ui.painter(), &(report).view(), &index, &node, NodeView::Ssa);
-            assert_eq!(preview.title, "0x000a · ADD · 3 states");
+            assert_eq!(preview.title, "Block 0x000a · 3 states");
             assert!(
                 preview
                     .lines

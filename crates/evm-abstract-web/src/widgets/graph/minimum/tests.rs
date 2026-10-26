@@ -52,13 +52,12 @@ fn actual_scoped_source_layout_is_readable_and_low_zoom_omits_card_text() {
     assert!(graph.zoom >= 0.9);
     assert!(
         scene
-            .control
-            .cards
+            .text
             .iter()
-            .any(|card| card.title.starts_with("0x0000"))
+            .any(|card| card.title.starts_with("Block 0x0000"))
     );
     let output = frame(&ctx, &mut graph, &report, &mut selection);
-    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().starts_with("0x0000"))));
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().starts_with("Block 0x0000"))));
     graph.restore_camera(0.005, Vec2::ZERO);
     let output = frame(&ctx, &mut graph, &report, &mut selection);
     let titles: Vec<_> = graph
@@ -66,8 +65,7 @@ fn actual_scoped_source_layout_is_readable_and_low_zoom_omits_card_text() {
         .minimum
         .as_ref()
         .unwrap()
-        .control
-        .cards
+        .text
         .iter()
         .map(|card| card.title.as_str())
         .collect();
@@ -92,3 +90,5 @@ fn canonical_history_camera_survives_the_first_scoped_layout() {
     assert!(graph.prepared());
     assert!(!graph.camera_restored);
 }
+
+mod interaction;

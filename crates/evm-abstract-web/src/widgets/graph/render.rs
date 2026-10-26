@@ -144,11 +144,11 @@ impl Graph {
             return None;
         }
         self.update_highlight(report, selection.state);
-        let visible = Rect::from_min_max(
+        let world_view = Rect::from_min_max(
             Pos2::ZERO - self.pan / self.zoom,
             Pos2::ZERO + (canvas.size() - self.pan) / self.zoom,
-        )
-        .expand(16.0 / self.zoom);
+        );
+        let visible = world_view.expand(16.0 / self.zoom);
         groups::paint(
             ui,
             &painter,
@@ -159,6 +159,7 @@ impl Graph {
             visible,
         );
         let mut animating_edges = false;
+        let mut deferred_edges = 0;
         for id in self.scene.edge_visibility.query(visible) {
             let Some(route) = self.scene.placement.edges.get(&id) else {
                 continue;
@@ -172,6 +173,10 @@ impl Graph {
                 continue;
             };
             let label = self.scene.edge_labels.get(&id).map_or("", String::as_str);
+            if !edges::has_visible_geometry(route, visible, self.zoom >= 0.9 && !label.is_empty()) {
+                deferred_edges += 1;
+                continue;
+            }
             animating_edges |= paint_edge_text(
                 &painter,
                 route,
@@ -191,6 +196,7 @@ impl Graph {
                 hover.on_hover_ui(|ui| self.edge_detail(ui, report, id));
             }
         }
+        self.scene.deferred_edges = deferred_edges;
         if animating_edges {
             ui.ctx().request_repaint_after(edges::FLOW_FRAME_INTERVAL);
         }
