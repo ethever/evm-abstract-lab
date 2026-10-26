@@ -7,8 +7,9 @@ from playwright.sync_api import expect
 import hashlib
 import json
 import re
-from web_test_harness import complete_submission, observe_webgpu, open_input, resize_view, select_report_namespace, settle_gesture, submit_bytecode, webgpu_evidence
-from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_tab
+from web_test_harness import complete_submission, hide_world_directory, observe_webgpu, open_input, resize_view, select_report_namespace, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_inspector_helpers import inspector_frame_tab, inspector_selected_tab, inspector_title_action, select_inspector_tab
+from web_test_pixels import text_pixels, workspace_content_bottom
 
 
 def inspect_shortcut_events(page):
@@ -106,7 +107,12 @@ def model_namespace_controls(page, canvas, report, output):
     expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', root['id'])}")
     expect(status).to_contain_text(f"Additional condition: root ADDRESS = {coordinate}")
     expect(status).to_contain_text(f"{len(native['cfg'])} CFG states")
-    expect(status).to_contain_text("Inspector: SSA value · no value selected")
+    # The Native SSA inspector deliberately picks ValueId0 on reopening.
+    # Qualify that new default against Native, never a Global/old-state ID.
+    definition = native["ssa"]["values"][0]["origin"]["Instruction"]
+    assert definition["state"] == 0 and definition["pc"] == 0
+    expect(status).to_contain_text("Inspector: SSA value %0")
+    expect(status).to_contain_text("Instruction σ₀ · pc 0x0")
     select_inspector_tab(page, canvas, "Frame")
     expect(status).to_contain_text("Block entry · Frame f₀")
     page.keyboard.press("0")
@@ -114,7 +120,8 @@ def model_namespace_controls(page, canvas, report, output):
     canvas.screenshot(path=str(output / "namespace-native-reset.png"))
     return {"native_selected_state": target["id"], "global_regional_node": root_node["id"],
             "global_may_location": point, "returned_native_state": 0,
-            "root_condition": coordinate, "ssa_value_cleared": True, "graph_ids_separate": True}
+            "root_condition": coordinate, "global_has_no_ssa_selection": True,
+            "native_selection_reset": True, "graph_ids_separate": True}
 
 
 def coarse_process_controls(page, canvas, output):
@@ -124,7 +131,7 @@ def coarse_process_controls(page, canvas, output):
     (output/"process-original-report.json").write_text(json.dumps(report,indent=2)+"\n")
     assert report["hybrid"]["coverage"]["baseline_current"]
     assert oracle_graph(report, "Native")["status"] == "Incomplete"
-    summary=oracle_graph(report, "Baseline")["abstract_summaries"][-1]
+    summary=report["minimum"]["summaries"][-1]["relation"]
     assert summary["source_current"] and summary["closed"]
     procedures=summary["procedures"]
     constructor=next(i for i,p in enumerate(procedures)
@@ -136,45 +143,60 @@ def coarse_process_controls(page, canvas, output):
     cases=[case for call in calls for delivery in call["deliveries"] for case in delivery["creation"]]
     assert any(case["result"]=="Zero" for case in cases)
     assert any(isinstance(case["result"],dict) and "Address" in case["result"] for case in cases)
-    canvas.click(position={"x":50,"y":38})
-    expect(page.locator("#analysis-status")).to_contain_text("View: Global model")
-    select_inspector_tab(page,canvas,"Frame")
-    expect(page.locator("#analysis-status")).to_contain_text("Original input entry")
-    inspector_title_action(page,canvas,"Maximize",inspector_frame_tab(page,canvas))
+    select_report_namespace(page,report,"Baseline")
+    select_inspector_tab(page,canvas,"Control",minimum=True)
+    inspector_title_action(page,canvas,"Maximize",inspector_selected_tab(page,canvas,"Control",minimum=True))
     page.mouse.move(2,2);settle_gesture(page)
     canvas.screenshot(path=str(output/"process-global-routes.png"))
-    # Compare the route list below the expanded header, excluding task timings
-    # and the clicked header's legitimate keyboard-focus decoration.
-    route_region={"x":0,"y":510,"width":500,"height":100}
+    toolbar=inspector_selected_tab(page,canvas,"Control",minimum=True)
+    # The canonical model chooses a procedure instead of expanding a rich
+    # private Frame tree. Compare its qualified body below the selector.
+    route_region={"x":8,"y":toolbar[3]+74,"width":900,"height":140}
     routes=page.screenshot(clip=route_region)
-    expanded={}
-    # Actual maximized Frame layout: the original snapshot stays collapsed;
-    # Procedure 0 begins at y234 and each collapsed procedure uses 23 points.
+    inspected={}
+
+    def choose_procedure(index):
+        page.mouse.move(800,400);page.mouse.wheel(0,-5000);settle_gesture(page)
+        png=canvas.screenshot()
+        rows=text_pixels(page,png,(8,toolbar[3]+3,600,toolbar[3]+100))["rows"]
+        assert len(rows)>=3,rows
+        selector=rows[2]
+        canvas.click(position={"x":60,"y":sum(selector)/2});settle_gesture(page)
+        png=canvas.screenshot(path=str(output/f"process-procedure-{index}-menu.png"))
+        choices=text_pixels(page,png,(10,selector[1]+5,190,selector[1]+195))["rows"]
+        assert len(choices)>index,(index,choices)
+        canvas.click(position={"x":70,"y":sum(choices[index])/2})
+        page.mouse.move(2,2);settle_gesture(page)
+        expect(page.locator("#analysis-status")).to_contain_text(f"· procedure {index} · output None")
+
     for name,index in [("constructor",constructor),("static-callback",callback)]:
-        y=234+23*index
-        canvas.click(position={"x":110,"y":y})
+        choose_procedure(index)
+        painted=canvas.screenshot(path=str(output/f"process-{name}-selected.png"))
+        assert page.screenshot(clip=route_region) != routes, f"the actual {name} body did not change"
+        inspected[name]=hashlib.sha256(painted).hexdigest()
+        choose_procedure(summary["root_procedure"])
+        canvas.screenshot(path=str(output/f"process-{name}-returned.png"))
+        assert page.screenshot(clip=route_region) == routes, f"returning from {name} lost the global body"
+
+    def open_last_control(name):
+        page.mouse.move(800,400);page.mouse.wheel(0,5000);settle_gesture(page)
+        png=canvas.screenshot(path=str(output/f"process-{name}-closed.png"))
+        rows=text_pixels(page,png,(8,toolbar[3]+3,600,workspace_content_bottom(page,png)))["rows"]
+        assert rows, f"missing {name} control"
+        canvas.click(position={"x":110,"y":sum(rows[-1])/2})
         page.mouse.move(2,2);settle_gesture(page)
-        painted=canvas.screenshot(path=str(output/f"process-{name}-expanded.png"))
-        assert page.screenshot(clip=route_region) != routes, f"the actual {name} procedure did not expand"
-        expanded[name]=hashlib.sha256(painted).hexdigest()
-        canvas.click(position={"x":110,"y":y})
-        page.mouse.move(2,2);settle_gesture(page)
-        canvas.screenshot(path=str(output/f"process-{name}-closed.png"))
-        assert page.screenshot(clip=route_region) == routes, f"closing {name} lost the global routes"
-    canvas.click(position={"x":110,"y":234+23*len(procedures)})
-    page.mouse.move(2,2);settle_gesture(page)
+
+    open_last_control("regional-control")
     canvas.screenshot(path=str(output/"process-regional-control.png"))
+    open_last_control("calls-and-returns")
     page.mouse.move(1000,800);page.mouse.wheel(0,600);settle_gesture(page)
-    canvas.screenshot(path=str(output/"process-regional-control-end.png"))
-    canvas.click(position={"x":110,"y":page.viewport_size["height"]-103})
-    page.mouse.move(1000,800);page.mouse.wheel(0,500);settle_gesture(page)
     canvas.screenshot(path=str(output/"process-creation-deliveries.png"))
     first=calls[0]
     assert first["action"]=="Create" and first["scope"]=="Primitive"
     assert any(case["result"]=="Zero" for delivery in first["deliveries"] for case in delivery["creation"])
     assert any(isinstance(case["result"],dict) and "Address" in case["result"]
                for delivery in first["deliveries"] for case in delivery["creation"])
-    inspector_title_action(page,canvas,"Restore",inspector_frame_tab(page,canvas))
+    inspector_title_action(page,canvas,"Restore",inspector_selected_tab(page,canvas,"Control",minimum=True))
     canvas.click(position={"x":148,"y":38})
     expect(page.locator("#analysis-status")).to_contain_text("View: Detailed paths")
     expect(page.locator("#analysis-status")).to_contain_text("SSA partial")
@@ -191,7 +213,7 @@ def coarse_process_controls(page, canvas, output):
     assert any(step["phase"]=="Dispatched" for prefix in report["hybrid"]["local_prefixes"]
                for step in prefix["instructions"])
     return {"constructor_procedure":constructor,"static_callback_procedure":callback,
-            "calls":len(calls),"creation_cases":len(cases),"expanded":expanded}
+            "calls":len(calls),"creation_cases":len(cases),"inspected":inspected}
 
 def inspector_controls_interactions(browser, url: str, output: Path):
     """Exercise panel state and the DOM shortcut boundary on the packaged app."""
@@ -224,6 +246,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         status = page.locator("#analysis-status")
         expect(status).to_contain_text("Ready:", timeout=60000)
         canvas = page.locator("#evm-canvas")
+        hide_world_directory(page, canvas)
         namespace_checks = None
         if platform == "linux":
             namespace_checks = model_namespace_controls(page, canvas, initial_reply.report, output)

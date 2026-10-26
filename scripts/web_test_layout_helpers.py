@@ -195,7 +195,7 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
             assert request["input"]["Bytecode"]["address"] == entry["address"], request
         if "chain_id" in entry:
             assert request["environment"]["chain_id"] == entry["chain_id"], request
-    result = complete_submission(page, admitted, timeout_seconds, namespace="Native")
+    result = complete_submission(page, admitted, timeout_seconds, namespace="Native", close_directory=True)
     assert result.status == 200 and "Ok" in result.json()["result"], result.json()
     full_report = result.report
     (output / f"{name}-task-reply.json").write_text(json.dumps(result.json(), indent=2) + "\n")
@@ -255,7 +255,7 @@ def layout_page(browser, url: str):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    complete_submission(page, initial.value, namespace="Native")
+    complete_submission(page, initial.value, namespace="Native", close_directory=True)
     canvas = page.locator("#evm-canvas")
     hide_inspector(page, canvas)
     page.keyboard.press("2")

@@ -3,7 +3,7 @@
 from pathlib import Path
 from playwright.sync_api import expect
 import json
-from web_test_harness import complete_submission, observe_webgpu, rendered_frame, resize_view, settle_gesture, webgpu_evidence
+from web_test_harness import complete_submission, hide_world_directory, observe_webgpu, rendered_frame, resize_view, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import screenshot_metrics
 
@@ -16,6 +16,7 @@ def compact_ssa_interactions(browser, url: str, output: Path):
     complete_submission(page, initial.value, namespace="Native")
     expect(page.locator("#analysis-status")).to_contain_text("Ready:",timeout=60000)
     canvas=page.locator("#evm-canvas");hide_inspector(page,canvas)
+    hide_world_directory(page,canvas)
     requests=[]
     page.on("request",lambda request:requests.append(request.url)
             if request.method=="POST" and request.url.endswith("/api/tasks") else None)

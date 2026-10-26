@@ -11,6 +11,10 @@ INSPECTOR_TAB_POSITIONS = {
     "Storage": 346, "Transient": 413, "Calldata": 480, "Returndata": 553,
     "Outcomes": 633, "Acquisition": 712, "Environment": 799, "Timing": 871, "Diagnostics": 938,
 }
+MINIMUM_INSPECTOR_TAB_POSITIONS = {
+    "Original inputs": 55, "Control": 135, "Procedure input": 222,
+    "Joint outputs": 323, "Timing": 399,
+}
 
 def hide_inspector(page, canvas):
     # Native geometry tests cover this right-aligned header control; the action
@@ -18,13 +22,14 @@ def hide_inspector(page, canvas):
     canvas.click(position={"x": page.viewport_size["width"] - 124, "y": 12})
     settle_gesture(page)
 
-def select_inspector_tab(page, canvas, tab: str, y: float | None = None):
+def select_inspector_tab(page, canvas, tab: str, y: float | None = None, *, minimum=False):
     # Compact shared controls, measured in the packaged 1440x1000 WASM app.
     # Preserve caller-supplied geometry after inspector resizing or dragging.
     if y is None:
-        selected = inspector_selected_tab(page, canvas)
+        selected = inspector_selected_tab(page, canvas, minimum=minimum)
         y = (selected[1] + selected[3]) / 2
-    canvas.click(position={"x": INSPECTOR_TAB_POSITIONS[tab], "y": y})
+    positions = MINIMUM_INSPECTOR_TAB_POSITIONS if minimum else INSPECTOR_TAB_POSITIONS
+    canvas.click(position={"x": positions[tab], "y": y})
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: {tab}")
 
 def inspector_painted_controls(page, canvas):
@@ -64,9 +69,10 @@ def inspector_painted_controls(page, canvas):
         return result;
     }""", base64.b64encode(png).decode())
 
-def inspector_selected_tab(page, canvas, tab: str | None = None):
+def inspector_selected_tab(page, canvas, tab: str | None = None, *, minimum=False):
     """Locate the status-selected tab without assuming the inspector's height."""
-    labels = "|".join(re.escape(label) for label in INSPECTOR_TAB_POSITIONS)
+    positions = MINIMUM_INSPECTOR_TAB_POSITIONS if minimum else INSPECTOR_TAB_POSITIONS
+    labels = "|".join(re.escape(label) for label in positions)
     selected = re.findall(rf"(?:^|; )Inspector: ({labels})(?= ·| %|;|$)",
                           page.locator("#analysis-status").text_content() or "")
     assert len(selected) == 1, f"expected one selected Inspector label, got {selected}"
@@ -87,7 +93,7 @@ def inspector_selected_tab(page, canvas, tab: str | None = None):
     assert len(titlebars) == 1, f"expected one Inspector Hide/Maximize titlebar, got {titlebars}"
     titlebar = titlebars[0]
     candidates = [rect for rect in controls["selected"]
-                  if abs((rect[0] + rect[2]) / 2 - INSPECTOR_TAB_POSITIONS[tab]) <= 8
+                  if abs((rect[0] + rect[2]) / 2 - positions[tab]) <= 8
                   and abs((rect[1] + rect[3] - titlebar[1] - titlebar[3]) / 2) <= 1
                   and (tab != "Frame" or (76 <= rect[0] <= 84 and 40 <= rect[2] - rect[0] <= 50))]
     assert len(candidates) == 1, f"expected one selected {tab} tab, got {candidates}"

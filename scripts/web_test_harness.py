@@ -4,6 +4,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from contextvars import ContextVar
 from playwright.sync_api import expect
+import base64
 import json
 import re
 import selectors
@@ -118,6 +119,63 @@ def measured_backend_timings(report, *, require_ssa=True):
     assert timing["projecting_ns"] > 0, timing
     return timing
 
+def wait_for_report_publication(page, job_id, publication, timeout_ms=60000):
+    """Follow IDs only after Web activates the exact received publication."""
+    status = page.locator("#analysis-status")
+    fields = {"Job ID": str(job_id), "Publication": publication["version"],
+              "Minimum model": publication["minimum_version"], "Global graph": publication["global_version"],
+              "Native graph": publication["native_version"], "Closed model": str(publication["model_closed"]).lower()}
+    for label, value in fields.items():
+        shown = "unavailable" if value is None else value
+        expect(status).to_contain_text(
+            re.compile(rf"(?:^|; ){re.escape(label)}: {re.escape(shown)}(?=;|$)"), timeout=timeout_ms)
+
+
+def hide_world_directory(page, canvas):
+    """Close the painted directory before tests that need the full Native canvas."""
+    def control():
+        page.mouse.move(2, 2)
+        settle_gesture(page)
+        return page.evaluate("""async png => {
+            const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
+            const c=document.createElement('canvas');c.width=image.width;c.height=image.height;
+            const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
+            const scale=image.width/innerWidth;
+            if(innerWidth<800){
+                // Compact chrome puts the open directory in a floating window.
+                // Its real grey titlebar can occlude the namespace selectors.
+                const h=Math.min(c.height,Math.ceil(140*scale));
+                const pixels=ctx.getImageData(0,0,c.width,h).data;
+                let left=c.width,right=-1,top=h,bottom=-1,count=0;
+                for(let y=0;y<h;y++){
+                    let row=0,rowLeft=c.width,rowRight=-1;
+                    for(let x=0;x<c.width;x++){
+                        const i=(y*c.width+x)*4;
+                        if(pixels[i]===45&&pixels[i+1]===45&&pixels[i+2]===45){
+                            rowLeft=Math.min(rowLeft,x);rowRight=Math.max(rowRight,x);row++;
+                        }
+                    }
+                    if(row>200*scale){
+                        left=Math.min(left,rowLeft);right=Math.max(right,rowRight);
+                        top=Math.min(top,y);bottom=Math.max(bottom,y);count+=row;
+                    }
+                }
+                const width=(right-left+1)/scale,height=(bottom-top+1)/scale;
+                return count>1500*scale*scale&&width>=200&&height>=24&&height<=40 ?
+                    {x:(right+1)/scale-17,y:(top+bottom+1)/2/scale}:null;
+            }
+            const p=ctx.getImageData(Math.round((innerWidth-202)*scale),Math.round(4*scale),
+                Math.round(44*scale),Math.round(16*scale)).data;
+            let count=0;
+            for(let i=0;i<p.length;i+=4)if(p[i]===33&&p[i+1]===65&&p[i+2]===75)count++;
+            return count>100*scale*scale ? {x:innerWidth-180,y:12}:null;
+        }""", base64.b64encode(canvas.screenshot()).decode())
+    target=control()
+    if target is not None:
+        canvas.click(position=target)
+        assert control() is None, "World directory did not close"
+
+
 def select_report_namespace(page, report, namespace):
     """Use the real selector before following IDs in a particular graph."""
     assert namespace_available(report, namespace), namespace
@@ -134,7 +192,7 @@ def select_report_namespace(page, report, namespace):
         settle_gesture(page)
 
 
-def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=None):
+def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=None, close_directory=False):
     # Parse raw HTTP text in Python so u64 Job IDs never pass through JS Number.
     reply = json.loads(admitted.text())["result"]
     if "Err" in reply:
@@ -154,8 +212,9 @@ def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=
             timing = measured_backend_timings(report, require_ssa=namespace == "Native")
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
-            expect(page.locator("#analysis-status")).to_contain_text(
-                re.compile(rf"(?:^|; )Job ID: {job_id}(?=;|$)"), timeout=timeout_seconds * 1000)
+            wait_for_report_publication(page, job_id, job["publication"], timeout_seconds * 1000)
+            if close_directory:
+                hide_world_directory(page, page.locator("#evm-canvas"))
             if namespace is not None:
                 select_report_namespace(page, report, namespace)
             return AnalysisResponse(admitted, envelope, result.status, job)

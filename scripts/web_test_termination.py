@@ -1,6 +1,6 @@
 """Termination browser acceptance cases."""
 
-from web_test_hybrid import source_instructions, source_program
+from web_test_hybrid import oracle_graph, source_instructions, source_program
 from playwright.sync_api import expect
 import json
 from web_test_ending_helpers import selected_ending, warning_pixels
@@ -190,10 +190,11 @@ def termination_interactions(browser, url, args):
                                 ('revert','6003565b5f5ffd','Revert','ordinary'),
                                 ('failure','6003565bfe','Failure','failure')]:
         report=layout_submission(page,canvas,code,output,f'termination-{name}')
-        original=json.loads((output/f'termination-{name}-analysis.json').read_text())
+        envelope=json.loads((output/f'termination-{name}-analysis.json').read_text())
+        original=oracle_graph(envelope, "Baseline")
         assert original['metadata']['environment']['to']=={'Symbolic':{'kind':'To','index':None}}
         assert original['stores'][original['states'][0]['entry']['store']]['touched_default'] is None
-        assert original['hybrid']['coverage']['baseline_current']
+        assert envelope['hybrid']['coverage']['baseline_current']
         expect(page.locator('#analysis-status')).to_contain_text('Additional condition: root ADDRESS =')
         entry,target=_termination_oracle(report,code,kind)
         color={'Return':'normal','Revert':'ordinary','Failure':'failure'}[kind]

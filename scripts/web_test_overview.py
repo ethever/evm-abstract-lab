@@ -5,7 +5,7 @@ from pathlib import Path
 from playwright.sync_api import expect
 import json
 from web_test_graph_helpers import graph_mode, graph_scope, pick_graph_instance, symbol
-from web_test_harness import complete_submission, observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_harness import complete_submission, hide_world_directory, observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import node_snapshot, screenshot_metrics
 
@@ -31,6 +31,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     page.on("request", lambda request: submitted.append(request.post_data_json)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
     canvas = page.locator("#evm-canvas")
+    hide_world_directory(page, canvas)
     hide_inspector(page, canvas)
     page.keyboard.press("2")
     settle_gesture(page)
@@ -54,6 +55,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     # every trip. Distinct stack heights retain 129 instances at PC 2 even
     # when repeated jump sources are canonicalized to a single context entry.
     loop_reply = submit_bytecode(page, canvas, "60815b600190035f908060025700", output / "overview-loop-input.png")
+    hide_world_directory(page, canvas)
     assert loop_reply.status == 200 and "Ok" in loop_reply.json()["result"], loop_reply.json()
     loop = loop_reply.report
     (output / "overview-loop-analysis.json").write_text(json.dumps(loop, indent=2) + "\n")

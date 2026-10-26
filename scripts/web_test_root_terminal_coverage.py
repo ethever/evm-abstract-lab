@@ -1,8 +1,9 @@
 """Real form coverage controls and native terminal tuples, independent of CFG evidence.
 
 This case runs only with matched server/Wasm assets. Its small two-block input
-uses one global transfer plus one native transfer deliberately; other defaults stay
-unchanged. Negative transport controls are recorded separately from real jobs.
+keeps its original cap2 checkbox controls. Global consumes those two transfers;
+a separately labeled cap3 control admits the first Native block. Other defaults
+stay unchanged. Negative transport controls are recorded separately from real jobs.
 """
 
 from copy import deepcopy
@@ -398,16 +399,18 @@ def _observed_failures(report, independent=()):
     _empty_data_controls(report, data, expected)
 
 
-def _detail(report):
-    assert report["status"] == "Incomplete" and report["transfers"] == 2
+def _detail(report, *, cumulative_transfers=2, first_native_block=False):
+    assert report["status"] == "Incomplete" and report["transfers"] == cumulative_transfers
     assert report["ssa"]["complete"] is False
     assert report["frontiers"] and all(item["kind"] == "Transfers" for item in report["frontiers"])
     entry, = [block for block in report["cfg"] if block["id"] == 0]
-    assert entry["executed_pcs"] == [0, 2]
+    assert entry["executed_pcs"] == ([0, 2] if first_native_block else [])
     assert all(block["executed_pcs"] == [] for block in report["cfg"] if block["id"] != 0)
     block, = [block for block in report["ssa"]["blocks"] if block["state"] == 0]
-    assert [(item["pc"], item["opcode"], item["progress"]) for item in block["instructions"]] == [
-        (0, 0x60, "Completed"), (2, 0x56, "Dispatched")]
+    expected = [(0, 0x60, "Completed"), (2, 0x56, "Dispatched")] if first_native_block else []
+    assert [(item["pc"], item["opcode"], item["progress"]) for item in block["instructions"]] == expected
+    if not first_native_block:
+        assert len(report["cfg"]) == len(report["ssa"]["blocks"]) == 1
     _observed_failures(report)
     return {**{key: report[key] for key in
                ["status", "transfers", "cfg", "edges", "ssa", "frontiers", "diagnostics", "outcomes"]},
@@ -785,6 +788,7 @@ def root_terminal_coverage_interactions(context):
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         assert_hybrid(report)
         assert report["status"] == "Converged"
+        assert graph(report, "Baseline")["transfers"] == 2
         assert graph(report, "Baseline")["root_terminal_coverage"] is None
         return native, request
 
@@ -868,6 +872,22 @@ def root_terminal_coverage_interactions(context):
     finally:
         page.unroute("**/api/tasks/*/result", without_certificate)
 
+    # This is additional to the original cap2 observations above. Measured
+    # Global2 + Native1 gives the first dispatched Native block at total3.
+    boundary_disabled, _ = submit("coverage-disabled-global-native-boundary", enabled=False, transfers=3)
+    boundary_prefix = _detail(boundary_disabled, cumulative_transfers=3, first_native_block=True)
+    assert boundary_disabled["root_terminal_coverage"] is None
+    boundary_covered, boundary_request = submit("coverage-enabled-global-native-boundary", enabled=True, transfers=3)
+    assert _detail(boundary_covered, cumulative_transfers=3, first_native_block=True) == boundary_prefix
+    boundary_binding = _binding(boundary_covered, boundary_request, is_static=False)
+    _tuples(boundary_covered, boundary_binding)
+    expect(status).to_contain_text(COVERED)
+    page.keyboard.press("3");settle_gesture(page)
+    expect(status).to_contain_text("SSA partial")
+    canvas.screenshot(path=str(output / "coverage-global-native-boundary.png"))
+    boundary_inspect = {"status": status.text_content(), "screenshot": "coverage-global-native-boundary.png"}
+    page.keyboard.press("2");settle_gesture(page)
+
     complete, complete_request = submit("coverage-enabled-complete", enabled=True,
                                          transfers=LAYOUT_DEFAULT_LIMITS["max_transfers"])
     assert complete_request["limits"]["root_terminal_coverage"] is True
@@ -883,10 +903,12 @@ def root_terminal_coverage_interactions(context):
                            "binding": binding, "inspection": inspect},
               "ordinary_outcome_count": len(covered["outcomes"]),
               "detail_preserved": prior_detail, "enabled_converged_certificate": None,
+              "additional_global_native_boundary": {"cumulative_transfers": 3, "global_transfers": 2,
+                  "native_prefix": boundary_prefix, "binding": boundary_binding, "inspection": boundary_inspect},
               "missing_certificate_control": {"status": missing_status, "control_only": True},
               "rejected_requests": negatives, "static_api_companion": static,
               "schema_control": schema, "renderer": webgpu_evidence(page)}
-    assert len(posts) == 6, posts
+    assert len(posts) == 8, posts
     assert not errors, errors
     (output / "coverage-report.json").write_text(json.dumps(result, indent=2) + "\n")
     page.close()

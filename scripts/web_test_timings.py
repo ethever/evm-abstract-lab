@@ -6,7 +6,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect
 import json
 import re
 import time
-from web_test_harness import analysis_server, measured_backend_timings, observe_webgpu, open_input, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_harness import analysis_server, measured_backend_timings, observe_webgpu, open_input, rendered_frame, select_report_namespace, settle_gesture, submit_bytecode, wait_for_report_publication, webgpu_evidence
 from web_test_inspector_helpers import INSPECTOR_TAB_POSITIONS, inspector_painted_controls, inspector_selected_tab, inspector_title_action
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, submit_rpc, visible_seconds, wait_for_job
 from web_test_hybrid import job_result_report
@@ -108,6 +108,8 @@ def timing_interactions(browser, args):
                                        job_id=job_id, publication=completed["publication"])
             backend = measured_backend_timings(report)
             assert backend == completed["timings"]
+            wait_for_report_publication(page, job_id, completed["publication"])
+            select_report_namespace(page, report, "Native")
             assert backend["queue_ns"] > 0 and backend["acquiring_ns"] > 0 and backend["pinning_ns"] > 0
             assert report["acquisition"]["rounds"] > 1, "fixture did not exercise RPC analysis reruns"
             total = visible_seconds(page, "Total wait")

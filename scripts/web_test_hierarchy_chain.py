@@ -15,6 +15,10 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
     page, canvas, errors = layout_page(browser, url)
     code, metadata = layout_fixture(fixture_name)
     report = layout_submission(page, canvas, code, output, fixture_name)
+    # Namespace activation preserves the previous Global camera. Establish the
+    # all-content Native fit required by the affine pixel measurement below.
+    canvas.click(position={"x":132,"y":110})  # Native Fit graph, with World closed.
+    page.mouse.move(2,2);settle_gesture(page)
     assert report["status"] == "Converged", report["frontiers"]
     assert len(report["cfg"]) == metadata["expected_native_states"]
     assert len(report["edges"]) == metadata["expected_original_edges"]
