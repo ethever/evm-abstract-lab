@@ -189,8 +189,14 @@ def click_control(page, canvas, label, **query):
     assert bounds is not None, "application canvas is not visible"
     assert bounds["x"] <= left < right <= bounds["x"] + bounds["width"], control
     assert bounds["y"] <= top < bottom <= bounds["y"] + bounds["height"], control
-    canvas.click(position=dict(x=(left + right) / 2 - bounds["x"],
-                              y=(top + bottom) / 2 - bounds["y"]))
+    if control["role"] == "text":
+        # An active eframe editor overlays its canvas with a real DOM input.
+        # Let browser hit-testing choose it; focus_text_control still verifies
+        # the exact native agent's focus and position before any keyboard input.
+        page.mouse.click((left + right) / 2, (top + bottom) / 2)
+    else:
+        canvas.click(position=dict(x=(left + right) / 2 - bounds["x"],
+                                  y=(top + bottom) / 2 - bounds["y"]))
     settle_gesture(page)
     return control
 
