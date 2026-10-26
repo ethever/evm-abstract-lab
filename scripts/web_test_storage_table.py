@@ -170,7 +170,9 @@ def storage_table_interactions(browser, url: str, output: Path):
         set_control(page,canvas,"Account facts in this store",True,role="section")
         # The indented symbolic tree has its own scroll area. Target the outer
         # inspector's left margin so it receives the complete wheel delta.
-        page.mouse.move(8,small_tab[3]+115)
+        scroll_region=storage_content_region(page)
+        wheel_y=min(scroll_region[1]+24,scroll_region[3]-24)
+        page.mouse.move(8,wheel_y)
         page.mouse.wheel(0,600)
         settle_gesture(page)
         # Keep the pointer in the outer scroll area while pending wheel frames
@@ -180,7 +182,7 @@ def storage_table_interactions(browser, url: str, output: Path):
         page.mouse.move(2,2)
         assert_storage_preference(scrolled,preferences[kind])
         scrolled_value=assert_storage_cell_text(narrow["rows"][-1]["value"],scrolled["rows"][-1]["value"])
-        page.mouse.move(8,small_tab[3]+115)
+        page.mouse.move(8,wheel_y)
         page.mouse.wheel(0,-600)
         settle_gesture(page)
         set_control(page,canvas,"Account facts in this store",False,role="section")
@@ -202,6 +204,7 @@ def storage_table_interactions(browser, url: str, output: Path):
                        "suffixes":suffixes,"initial":initial,"wide":wide,"narrow":narrow,
                        "slot_hover":slot_hover,"value_hover":value_hover,"scrolled":scrolled,"scroll_return":scroll_returned}
         results[kind].update(value_comparisons=value_comparisons,scrolled_value=scrolled_value)
+        results[kind].update(scroll_region=scroll_region,scroll_pointer=[8,wheel_y])
 
     # Returning from another inspector tab, workspace views, hidden/maximized
     # inspector and a new report must preserve each independently dragged width.

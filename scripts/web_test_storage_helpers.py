@@ -40,14 +40,15 @@ def storage_copy_full_slot(page, canvas, cell, expected):
     return copied
 
 
-def touch_scroll_storage(page, region):
+def touch_scroll_storage(page, region, *, swipes=3):
     """Swipe the real storage viewport; text selection must yield to scrolling."""
     left, top, right, bottom = region
     x, start, end = min(left + 80, right - 8), bottom - 25, top + 25
     assert start - end > 100, region
+    assert type(swipes) is int and swipes > 0, swipes
     session = page.context.new_cdp_session(page)
     try:
-        for _ in range(3):
+        for _ in range(swipes):
             session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [
                 {"id": 1, "x": x, "y": start, "radiusX": 3, "radiusY": 3}]})
             rendered_frame(page)

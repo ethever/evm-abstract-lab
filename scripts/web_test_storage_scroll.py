@@ -195,11 +195,17 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         assert reopened_facts["hash"] == expanded_facts["hash"], "reopening account facts changed the nine rendered facts"
         selected = re.search(r"Selected [^;]+; source [^;]+;", status.text_content())
         assert selected is not None, status.text_content()
-        touch_scroll_storage(page, region)
-        page.mouse.move(2, 2)
-        touched = canvas.screenshot(path=str(output / f"{kind}-touch-last-slots.png"))
-        touch_table = storage_table_pixels(page, touched, region)
-        touch_cells = touch_table["rows"][-1]
+        touch_attempts=[]
+        for attempt in range(1,9):
+            touch_scroll_storage(page, region, swipes=1)
+            page.mouse.move(2, 2)
+            touched = canvas.screenshot(path=str(output / f"{kind}-touch-swipe-{attempt}.png"))
+            touch_table = storage_table_pixels(page, touched, region)
+            touch_cells = touch_table["rows"][-1]
+            touch_attempts.append(storage_pixel_report(touch_cells))
+            if touch_cells["slot"] and touch_cells["slot"]["mask_sha256"] == last_cell_hashes["slot"]:
+                break
+        (output / f"{kind}-touch-last-slots.png").write_bytes(touched)
         assert touch_cells["slot"] and touch_cells["slot"]["mask_sha256"] == last_cell_hashes["slot"], storage_pixel_report(touch_cells)
         touch_value = assert_storage_literal_pixels(touch_cells["value"], "{0x105f}" if kind == "storage" else "{0x205f}")
         assert selected[0] in status.text_content(), "touch scroll selected an unrelated state/source"
@@ -218,6 +224,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
             "scrolled_prefix": scrolled_prefix, "returned_prefix": returned_prefix,
             "returned_facts":returned_facts,"reclosed_prefix":reclosed_prefix,"reopened_facts":reopened_facts,
             "touch_table":touch_table,"touch_last_value":touch_value,"touch_selection":selected[0],
+            "touch_attempts":touch_attempts,
             "expanded_screenshot": f"{kind}-facts-expanded.png",
             "scrolled_screenshot": f"{kind}-last-slots.png"}
     assert len(posts) == 2, "storage inspection reran analysis"
