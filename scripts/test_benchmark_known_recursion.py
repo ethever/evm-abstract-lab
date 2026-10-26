@@ -66,7 +66,7 @@ def minimum_result():
               "cost_version": 9, "relations": {"enabled": True, "max_constraints": 2048,
                                               "max_nodes": 16384, "max_depth": 256}}
     relation = {"closed": True, "source_current": True, "root_procedure": 0,
-                "regional_cfg": {"nodes": [{"id": 0}]},
+                "regional_cfg": {"nodes": [{"id": 0, "transfer": None}]},
                 "procedures": [{"process": {"epoch": HASH}, "semantics": "KnownProcess"}]}
     minimum = {"namespace": "Baseline", "scope": "RpcWorld", "fork": "Osaka",
                "source_snapshot": snapshot, "revision": "9007199254740998",
@@ -378,14 +378,14 @@ class HttpTests(unittest.TestCase):
     def test_unchanged_minimum_rejects_mutated_shared_control_with_new_detail(self):
         first = minimum_result()
         first["report"]["process_controls"] = [{
-            "id": 37, "epoch": HASH, "source": first["report"]["minimum"]["declared_root_source"],
+            "id": 0, "epoch": HASH, "source": first["report"]["minimum"]["declared_root_source"],
             "program": 91, "blocks": [{"successors": [None, None], "continuation": None, "boundary": True}],
             "jump_targets": []}]
         final = rich_result()
         final["report"]["process_controls"] = deepcopy(first["report"]["process_controls"])
-        final["report"]["process_controls"][0]["blocks"][0]["successors"][0] = "End"
-        # Each reply passes transport admission; the cross-publication check
-        # must reject a changed relation under the retained minimum identity.
+        final["report"]["process_controls"][0]["blocks"][0]["boundary"] = False
+        # The unused directory row keeps a well-formed boolean. Each reply
+        # passes transport admission; only its immutable content has changed.
         report.wire_report(ok(final), job_id=JOB)
         record = self.run_case(final=final, result_override=ok(final), first=first)
         self.assertTrue(record["report_delivered"])
@@ -393,20 +393,20 @@ class HttpTests(unittest.TestCase):
         self.assertIsNone(record["final_result"])
         self.assertEqual(record["runner_error_type"], "AssertionError")
 
-    def test_unchanged_minimum_allows_sparse_source_appends_and_reordering_with_detail(self):
+    def test_unchanged_minimum_allows_program_reordering_and_control_appends_with_detail(self):
         first = minimum_result()
         first["report"]["process_controls"] = [{
-            "id": 37, "epoch": HASH, "source": first["report"]["minimum"]["declared_root_source"],
+            "id": 0, "epoch": HASH, "source": first["report"]["minimum"]["declared_root_source"],
             "program": 91, "blocks": [{"successors": [None, None], "continuation": None, "boundary": True}],
             "jump_targets": []}]
         final = rich_result()
         appended = {**deepcopy(first["report"]["programs"][0]), "id": 7,
                     "code_address": "0x" + "33" * 20, "code_hash": "0x" + "44" * 32}
         final["report"]["programs"] = [appended, *deepcopy(first["report"]["programs"])]
-        control = {**deepcopy(first["report"]["process_controls"][0]), "id": 11,
+        control = {**deepcopy(first["report"]["process_controls"][0]), "id": 1,
                    "program": appended["id"], "source": {"Runtime": {
                        "source": appended["code_address"], "hash": appended["code_hash"], "fork": appended["fork"]}}}
-        final["report"]["process_controls"] = [control, *deepcopy(first["report"]["process_controls"])]
+        final["report"]["process_controls"] = [*deepcopy(first["report"]["process_controls"]), control]
         record = self.run_case(final=final, first=first)
         self.assertEqual(record["termination"], "http_report_delivered")
         self.assertEqual(record["final_result"]["publication"], final["publication"])
@@ -416,7 +416,10 @@ class HttpTests(unittest.TestCase):
         captured = json.loads((self.directory / "cached-result-gzip.json").read_bytes())["result"]["Ok"]["report"]
         for directory in ("programs", "process_controls"):
             self.assertEqual(captured[directory], final["report"][directory])
-            self.assertEqual(captured[directory][1:], first["report"][directory])
+        self.assertEqual([program["id"] for program in captured["programs"]], [7, 91])
+        self.assertEqual(captured["programs"][1:], first["report"]["programs"])
+        self.assertEqual([control["id"] for control in captured["process_controls"]], [0, 1])
+        self.assertEqual(captured["process_controls"][:-1], first["report"]["process_controls"])
 
     def test_failed_cancelled_retain_closed_model_and_honest_job_state(self):
         failure = {"Failed": {"code": "Export", "message": ENDPOINT, "details": None}}
