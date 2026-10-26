@@ -275,6 +275,7 @@ impl Inspector {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,

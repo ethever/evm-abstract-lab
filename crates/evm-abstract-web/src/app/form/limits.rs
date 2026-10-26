@@ -64,7 +64,7 @@ impl NumberInputs {
 
 impl AnalysisForm {
     pub(super) fn limits(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new("Execution budget").show(ui, |ui| {
+        framework::section(ui, "Execution budget", |ui| {
             egui::Grid::new("execution_limits")
                 .num_columns(2)
                 .show(ui, |ui| {
@@ -78,11 +78,13 @@ impl AnalysisForm {
                         self.limit_inputs.number(ui, label, value);
                     }
                 });
-            ui.checkbox(
+            framework::checkbox(
+                ui,
                 &mut self.limits.use_summaries,
                 "Reuse complete callee summaries",
             );
-            ui.checkbox(
+            framework::checkbox(
+                ui,
                 &mut self.limits.root_terminal_coverage,
                 "Prepare conservative root terminal coverage",
             );
@@ -92,10 +94,10 @@ impl AnalysisForm {
                     .color(palette::MUTED),
             );
         });
-        egui::CollapsingHeader::new("Precision").show(ui, |ui| {
+        framework::section(ui, "Precision", |ui| {
             ui.horizontal(|ui| {
                 ui.label("Numeric model");
-                egui::ComboBox::from_id_salt("numeric_model")
+                let observed_numeric_model = egui::ComboBox::from_id_salt("numeric_model")
                     .selected_text(match self.limits.numeric_model {
                         NumericModel::Product => "Product",
                         NumericModel::FiniteSet => "Finite set",
@@ -116,6 +118,13 @@ impl AnalysisForm {
                             Density::Regular,
                         );
                     });
+                controls::observe(
+                    ui,
+                    &observed_numeric_model.response,
+                    "numeric_model",
+                    "combobox",
+                    None,
+                );
             });
             egui::Grid::new("precision_limits")
                 .num_columns(2)
@@ -138,9 +147,13 @@ impl AnalysisForm {
                     .small()
                     .color(palette::MUTED),
             );
-            ui.checkbox(&mut self.limits.relations_enabled, "Local path reasoning");
+            framework::checkbox(
+                ui,
+                &mut self.limits.relations_enabled,
+                "Local path reasoning",
+            );
         });
-        egui::CollapsingHeader::new("RPC acquisition budget").show(ui, |ui| {
+        framework::section(ui, "RPC acquisition budget", |ui| {
             egui::Grid::new("rpc_limits").num_columns(2).show(ui, |ui| {
                 for (label, value) in [
                     ("Accounts", &mut self.limits.rpc_max_accounts),

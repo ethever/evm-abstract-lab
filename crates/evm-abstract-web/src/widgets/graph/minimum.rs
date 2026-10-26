@@ -24,6 +24,7 @@ pub(super) use scene::Scene;
 impl Graph {
     /// Legacy selection adapter. The canonical shell consumes the same render's
     /// typed intent through show_minimum_scoped, including directory-only picks.
+    #[cfg(test)]
     pub(crate) fn show_minimum(
         &mut self,
         ui: &mut Ui,

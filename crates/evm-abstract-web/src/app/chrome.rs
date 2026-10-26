@@ -1,12 +1,11 @@
 //! Compact workbench navigation, anchored panels and task status.
 
-use super::{View, Workspace, directory};
+use super::{View, Workspace};
 use crate::{
     controls::{self, Density},
     notation, palette,
 };
 use egui::{RichText, Ui};
-use evm_abstract_notation::Symbol;
 
 mod panels;
 mod status;
@@ -46,7 +45,7 @@ impl Workspace {
                                 controls::tab_value(ui, &mut self.view, view, title, density);
                             }
                         });
-                    controls::observe(ui, &route.response, "Workspace view", "menu", None);
+                    controls::observe(ui, &route.response, "workspace_view", "combobox", None);
                 } else {
                     for (view, title) in views {
                         let index = match view {
@@ -130,93 +129,3 @@ pub(super) fn source_heading(ui: &mut Ui, open: &mut bool) {
 
 #[cfg(test)]
 mod tests;
-
-pub(super) fn result_context(
-    ui: &mut Ui,
-    report: &crate::report::ReportView<'_>,
-    program: Option<usize>,
-    previous: bool,
-    display: &mut crate::ssa_display::SsaDisplay,
-) {
-    let source = program.and_then(|id| report.programs.iter().find(|program| program.id == id));
-    let program_label =
-        source.map_or_else(
-            || "No captured program".into(),
-            |program| {
-                format!(
-                    "{} · {:?} · {}",
-                    Symbol::Program(program.id),
-                    program.kind,
-                    directory::short(program.code_address.as_deref().unwrap_or(
-                        match program.kind {
-                            evm_abstract_protocol::CodeKind::Runtime => "Supplied input program",
-                            evm_abstract_protocol::CodeKind::Initcode => "Constructor source",
-                            _ => "No physical code account",
-                        }
-                    ))
-                )
-            },
-        );
-    let snapshot = report.metadata.snapshot.as_ref().map_or_else(
-        || "Standalone bytecode".into(),
-        |snapshot| {
-            format!(
-                "chain {} · block {} · {}",
-                snapshot.chain_id,
-                snapshot.number.as_deref().unwrap_or("unreported"),
-                directory::short(&snapshot.block_hash)
-            )
-        },
-    );
-    let label = format!(
-        "{}{} · {:?} · {snapshot}",
-        if previous { "Previous result · " } else { "" },
-        program_label,
-        report.fork
-    );
-    // Metadata retains the original small-button height rather than reserving
-    // a toolbar row above the analysis panes.
-    Density::Inline.scope(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut full = *display == crate::ssa_display::SsaDisplay::Full;
-                if controls::toggle(ui, &mut full, "SSA details", Density::Inline)
-                    .on_hover_text("Show completed stack operations, effect chains and completion annotations in SSA views")
-                    .changed()
-                {
-                    *display = if full {
-                        crate::ssa_display::SsaDisplay::Full
-                    } else {
-                        crate::ssa_display::SsaDisplay::Compact
-                    };
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(notation::widget(
-                            ui,
-                            RichText::new(label).small().color(palette::MUTED),
-                        ))
-                        .truncate(),
-                    )
-                    .on_hover_ui(|ui| {
-                        if let Some(program) = source {
-                            ui.monospace(program.code_address.as_deref().unwrap_or(match program.kind {
-                                evm_abstract_protocol::CodeKind::Runtime => "Supplied input program",
-                                evm_abstract_protocol::CodeKind::Initcode => "Constructor source",
-                                _ => "No physical code account",
-                            }));
-                            ui.monospace(&program.code_hash);
-                        }
-                        if let Some(snapshot) = &report.metadata.snapshot {
-                            ui.monospace(&snapshot.block_hash);
-                            if controls::action(ui, "Copy block hash", Density::Compact).clicked() {
-                                ui.ctx().copy_text(snapshot.block_hash.clone());
-                            }
-                        }
-                        ui.monospace(&report.metadata.fingerprint);
-                    });
-                });
-            });
-        });
-    });
-}

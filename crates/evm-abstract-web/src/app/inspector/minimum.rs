@@ -5,10 +5,10 @@ mod bytes;
 mod original;
 mod stores;
 
-use super::{
-    InspectionAction, InspectionTarget, Inspector, OriginalAccount, Tab, process, scroll,
-    summaries, value,
-};
+#[cfg(test)]
+use super::{InspectionAction, InspectionTarget};
+
+use super::{Inspector, OriginalAccount, Tab, process, scroll, summaries, value};
 use crate::{
     app::minimum::{self, Selection},
     controls::{self, Density},
@@ -71,6 +71,7 @@ impl Inspector {
         )
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn show_minimum(
         &mut self,
         ui: &mut Ui,
@@ -145,7 +146,7 @@ impl Inspector {
         Density::Compact.scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui.available_width() < 600.0 {
-                    egui::ComboBox::from_id_salt("inspector_observation_scope")
+                    let observed_inspector_observation_scope = egui::ComboBox::from_id_salt("inspector_observation_scope")
                         .width(158.0)
                         .selected_text(self.scope.label())
                         .show_ui(ui, |ui| {
@@ -153,6 +154,7 @@ impl Inspector {
                                 controls::tab_value(ui, &mut self.scope, scope, label, Density::Compact);
                             }
                         });
+                    controls::observe(ui, &observed_inspector_observation_scope.response, "inspector_observation_scope", "combobox", None);
                 } else {
                     for (scope, label) in Scope::ALL {
                         controls::tab_value(ui, &mut self.scope, scope, label, Density::Compact);

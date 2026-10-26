@@ -131,6 +131,11 @@ impl AnalysisForm {
         }
         let keyboard_submit = self.keyboard.submit(ctx);
         let size = ctx.content_rect().size();
+        let action_density = if size.x < 680.0 {
+            Density::Touch
+        } else {
+            Density::Regular
+        };
         let mut submit = false;
         let mut close = false;
         let modal = egui::Modal::new(Id::new("analysis_form"))
@@ -140,7 +145,7 @@ impl AnalysisForm {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("New analysis").strong().size(16.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = controls::action(ui, "Close", Density::Compact).clicked();
+                        close = controls::action(ui, "Close", action_density).clicked();
                     });
                 });
                 let budget = (size.y - 128.0).clamp(40.0, 620.0);
@@ -169,7 +174,7 @@ impl AnalysisForm {
                         ui,
                         self.can_submit(busy),
                         RichText::new("Analyze").strong(),
-                        Density::Regular,
+                        action_density,
                     )
                     .on_hover_text("Ctrl+Enter")
                     .clicked();
@@ -221,7 +226,7 @@ impl AnalysisForm {
 
     fn input(&mut self, ui: &mut Ui) {
         let previous_source = self.source;
-        ui.horizontal_wrapped(|ui| {
+        let source_group = ui.horizontal_wrapped(|ui| {
             controls::tab_value(
                 ui,
                 &mut self.source,
@@ -236,7 +241,7 @@ impl AnalysisForm {
                 "Bytecode",
                 Density::Regular,
             );
-            egui::ComboBox::from_id_salt("form_fork")
+            let observed_form_fork = egui::ComboBox::from_id_salt("form_fork")
                 .width(82.0)
                 .selected_text(format!("{:?}", self.fork))
                 .show_ui(ui, |ui| {
@@ -250,7 +255,15 @@ impl AnalysisForm {
                         );
                     }
                 });
+            controls::observe(
+                ui,
+                &observed_form_fork.response,
+                "form_fork",
+                "combobox",
+                None,
+            );
         });
+        controls::observe(ui, &source_group.response, "input_source", "group", None);
         if previous_source != self.source {
             let id = match self.source {
                 Source::Bytecode => "runtime_bytecode",
@@ -303,7 +316,7 @@ impl AnalysisForm {
                         BlockSelector::Number(_) => "Number",
                         BlockSelector::Hash(_) => "Hash",
                     };
-                    egui::ComboBox::from_id_salt("rpc_block_kind")
+                    let observed_rpc_block_kind = egui::ComboBox::from_id_salt("rpc_block_kind")
                         .width(80.0)
                         .selected_text(choice)
                         .show_ui(ui, |ui| {
@@ -341,6 +354,13 @@ impl AnalysisForm {
                                 self.rpc.block = BlockSelector::Hash(String::new());
                             }
                         });
+                    controls::observe(
+                        ui,
+                        &observed_rpc_block_kind.response,
+                        "rpc_block_kind",
+                        "combobox",
+                        None,
+                    );
                     match &mut self.rpc.block {
                         BlockSelector::Latest => {
                             ui.label(
@@ -371,7 +391,7 @@ impl AnalysisForm {
     }
 
     fn seed_accounts(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new("Initial accounts and storage slots").show(ui, |ui| {
+        framework::section(ui, "Initial accounts and storage slots", |ui| {
             let mut remove = None;
             for (index, account) in self.rpc.accounts.iter_mut().enumerate() {
                 ui.push_id(index, |ui| {
@@ -464,7 +484,7 @@ fn optional_text(
     hint: &str,
 ) {
     let mut enabled = value.is_some();
-    if ui.checkbox(&mut enabled, label).changed() {
+    if framework::checkbox(ui, &mut enabled, label).changed() {
         *value = enabled.then(String::new);
     }
     if let Some(value) = value {

@@ -113,6 +113,7 @@ pub(super) fn root_account(ui: &mut Ui, address: &mut String) {
                 }
             })
             .response;
+        controls::observe(ui, &response, "rpc_entry_example", "combobox", None);
         if let Some(example) = selected {
             response.on_hover_text(example.hover_text());
         }

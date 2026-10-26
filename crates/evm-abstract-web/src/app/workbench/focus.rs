@@ -61,6 +61,7 @@ impl Workspace {
         self.program = focus.source.as_ref().and_then(|source| source.program());
         self.graph.set_program_scope(self.program);
         self.account = None;
+        self.original_inspection = None;
         self.restore_adapters(focus);
     }
 

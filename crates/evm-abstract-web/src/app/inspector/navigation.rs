@@ -67,7 +67,7 @@ impl Inspector {
                                 );
                             }
                         });
-                    controls::observe(ui, &choice.response, "Inspection group", "menu", None);
+                    controls::observe(ui, &choice.response, "inspection_group", "combobox", None);
                 } else {
                     ui.label(
                         RichText::new("INSPECT")
@@ -97,7 +97,7 @@ impl Inspector {
                             }
                         }
                     });
-                controls::observe(ui, &content.response, "Inspection content", "menu", None);
+                controls::observe(ui, &content.response, "inspector_tab", "combobox", None);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     self.window_controls(ui);
                 });

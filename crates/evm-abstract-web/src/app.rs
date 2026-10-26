@@ -16,7 +16,7 @@ pub(crate) mod timing;
 mod workbench;
 
 use crate::{palette, widgets};
-use directory::{Directory, Pick};
+use directory::Directory;
 use egui::{Key, Modifiers, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{
@@ -116,6 +116,7 @@ pub struct Workspace {
     minimum_selection: minimum::Selection,
     source_cache: widgets::SourceCache,
     navigation_error: Option<model::navigation::NavigationError>,
+    original_inspection: Option<workbench::OriginalInspection>,
     // Only a validated report from an accepted server result owns this ID.
     // It remains bound to the visible report across later task generations.
     report_job_id: Option<JobId>,
@@ -133,7 +134,6 @@ pub struct Workspace {
     previous_state: Option<usize>,
     pub(crate) graph: widgets::Graph,
     layout: PaneLayout,
-    disasm_focus: Selection,
     ssa_focus: Selection,
     ssa_cache: widgets::SsaCache,
     ssa_display: crate::ssa_display::SsaDisplay,
@@ -148,6 +148,7 @@ impl Default for Workspace {
             minimum_selection: minimum::Selection::default(),
             source_cache: widgets::SourceCache::default(),
             navigation_error: None,
+            original_inspection: None,
             report_job_id: None,
             task: Task::default(),
             startup: startup::Startup::default(),
@@ -163,7 +164,6 @@ impl Default for Workspace {
             previous_state: None,
             graph: widgets::Graph::default(),
             layout: PaneLayout::default(),
-            disasm_focus: Selection::default(),
             ssa_focus: Selection::default(),
             ssa_cache: widgets::SsaCache::default(),
             ssa_display: crate::ssa_display::SsaDisplay::default(),
@@ -319,65 +319,6 @@ impl Workspace {
         command
             .or_else(|| self.pending_startup_command())
             .or_else(|| self.task.next_command(ui.input(|input| input.time)))
-    }
-
-    fn pick(&mut self, pick: Pick) {
-        let Some(report) = &self.report else {
-            return;
-        };
-        let report = &self.report_view.shown(report);
-        match pick {
-            Pick::RootInput => {
-                self.account = None;
-                self.inspector.expanded = true;
-                self.inspector.tab = inspector::Tab::Environment;
-            }
-            Pick::Program(program) => {
-                self.program = Some(program);
-                self.account = None;
-                self.selection = Selection {
-                    value: None,
-                    state: report
-                        .cfg
-                        .iter()
-                        .find(|state| state.program == Some(program))
-                        .map(|state| state.id),
-                    pc: None,
-                };
-            }
-            Pick::Account(address) => {
-                self.selection = Selection {
-                    value: None,
-                    state: report
-                        .cfg
-                        .iter()
-                        .find(|state| state.storage_address.as_deref() == Some(address.as_str()))
-                        .map(|state| state.id),
-                    pc: None,
-                };
-                self.program = self
-                    .selection
-                    .state
-                    .and_then(|id| {
-                        report
-                            .cfg
-                            .iter()
-                            .find(|state| state.id == id)
-                            .and_then(|state| state.program)
-                    })
-                    .or_else(|| {
-                        report
-                            .accounts
-                            .iter()
-                            .find(|account| account.address == address)
-                            .and_then(|account| account.program)
-                    });
-                self.account = Some(address);
-                self.inspector.expanded = true;
-                self.inspector.tab = inspector::Tab::Storage;
-            }
-        }
-        self.previous_state = self.selection.state;
     }
 
     fn sync_selection(&mut self) {
@@ -566,7 +507,7 @@ impl Workspace {
 
     /// Live status for assistive tools and real browser verification.
     pub fn accessible_status(&self) -> String {
-        let status = format!(
+        let mut status = format!(
             "{}; Route: {}; Input: {}; Sources: {}; Inspector panel: {}",
             self.accessible_task_status(),
             self.view.label(),
@@ -586,6 +527,14 @@ impl Workspace {
                 "closed"
             },
         );
+        if let Some(location) = self.report_view.navigator().current() {
+            use model::navigation::EvidenceFocus;
+            status.push_str(match location.focus.evidence {
+                EvidenceFocus::Source { .. } => "; Evidence: decoded source",
+                EvidenceFocus::Minimum(_) => "; Evidence: MAY control",
+                EvidenceFocus::Graph(_) => "; Evidence: graph state",
+            });
+        }
         let timing = self.accessible_timing();
         if timing.is_empty() {
             status

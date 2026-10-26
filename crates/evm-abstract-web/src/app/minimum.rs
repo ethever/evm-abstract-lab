@@ -151,6 +151,28 @@ pub(super) fn rich_status(report: &AnalysisReport) -> String {
 
 impl super::Workspace {
     pub(super) fn minimum_status(&self, report: &AnalysisReport, model: &MinimumModel) -> String {
+        let focus = self
+            .report_view
+            .navigator()
+            .current()
+            .map(|location| &location.focus);
+        let selected = focus.and_then(|focus| focus.minimum_selection());
+        let graph =
+            if selected.is_some() && matches!(self.view, super::View::Graph | super::View::Split) {
+                self.graph.accessible_summary()
+            } else {
+                "CFG is not active in this route".into()
+            };
+        let inspection = if self.original_inspection.is_some() {
+            format!(
+                "Inspector: {} · Original observations",
+                self.inspector.tab.label()
+            )
+        } else if focus.is_some_and(|focus| focus.context.is_none()) {
+            format!("Inspector: {} · Source only", self.inspector.tab.label())
+        } else {
+            self.inspector.minimum_summary(&self.minimum_selection)
+        };
         format!(
             "{}: Global model {:?}; {} qualified relations; {} original accounts; {} programs; {}; {}; {}; Selected MAY source: {}",
             self.task_label(),
@@ -159,10 +181,10 @@ impl super::Workspace {
             model.accounts.len(),
             report.programs.len(),
             rich_status(report),
-            self.graph.accessible_summary(),
-            self.inspector.minimum_summary(&self.minimum_selection),
-            self.minimum_selection
-                .source(model)
+            graph,
+            inspection,
+            selected
+                .and_then(|selection| selection.source(model))
                 .map_or_else(|| "none".into(), |(_, location)| location_label(location))
         )
     }

@@ -3,9 +3,7 @@ pub(crate) mod navigation;
 pub(crate) mod presentation;
 
 use super::{Selection, Workspace};
-use crate::controls::{self, Density};
-use egui::Ui;
-use evm_abstract_protocol::{AnalysisNamespace, AnalysisReport, HybridNativeBinding};
+use evm_abstract_protocol::{AnalysisNamespace, AnalysisReport};
 
 /// Local report lineage, independent of HTTP task and input revisions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,6 +30,7 @@ impl ReportViewId {
         self.generation
     }
 
+    #[cfg(test)]
     pub(crate) fn version(self) -> Option<evm_abstract_protocol::PublicationVersion> {
         self.version
     }
@@ -120,6 +119,7 @@ impl ReportViewState {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn index(&self) -> &presentation::ReportIndex {
         &self.index
     }
@@ -217,42 +217,20 @@ pub(super) enum Activation {
         publication: Option<evm_abstract_protocol::JobPublication>,
         job_id: Option<evm_abstract_protocol::JobId>,
     },
+    // Historical namespace-entry oracles use this adapter; user navigation is Focus-based.
+    #[cfg(test)]
     Namespace(AnalysisNamespace),
 }
 
 impl Workspace {
-    pub(super) fn model_selector(&mut self, ui: &mut Ui) {
-        let Some(report) = &self.report else { return };
-        let Some(hybrid) = &report.hybrid else { return };
-        let mut next = self.report_view.namespace();
-        ui.horizontal_wrapped(|ui| {
-            controls::tab_value(ui, &mut next, AnalysisNamespace::Baseline, "Global model", Density::Compact);
-            ui.add_enabled_ui(report.graph(AnalysisNamespace::Native).is_some(), |ui| {
-                controls::tab_value(ui, &mut next, AnalysisNamespace::Native, "Detailed paths", Density::Compact);
-            });
-            if next == AnalysisNamespace::Native {
-                if let HybridNativeBinding::SymbolicOwnerNamespace(binding) = &hybrid.native_coverage().detail_binding {
-                    ui.label(format!("Root ADDRESS = {} for these paths; the global model retains other addresses.", binding.namespace));
-                }
-                if hybrid.rpc.as_ref().is_some_and(|rpc| !rpc.detail_at_current_revision) {
-                    ui.label("Detailed paths retain earlier input facts.");
-                }
-            }
-        });
-        if next != self.report_view.namespace() {
-            self.select_model(next);
-        }
-    }
-
-    fn select_model(&mut self, namespace: AnalysisNamespace) {
-        self.activate_view(Activation::Namespace(namespace));
-    }
-
     /// Report arrivals and namespace changes share the same selection transition.
     /// Unchanged graph versions keep selection, caches, camera and gestures.
     pub(super) fn activate_view(&mut self, activation: Activation) {
         let Some(report) = &self.report else { return };
+        #[cfg(test)]
         let navigation = matches!(activation, Activation::Namespace(_));
+        #[cfg(not(test))]
+        let navigation = false;
         if navigation {
             self.report_view.navigator.remember_route(self.view);
         }
@@ -273,6 +251,7 @@ impl Workspace {
                     replacement,
                 )
             }
+            #[cfg(test)]
             Activation::Namespace(namespace) => (namespace, false),
         };
         if namespace == AnalysisNamespace::Baseline
@@ -308,7 +287,6 @@ impl Workspace {
                 .select_summary(minimum, super::minimum::initial_summary(minimum));
             self.program = super::minimum::source_program(report, &minimum.declared_root_source);
             self.account = None;
-            self.disasm_focus = Selection::default();
             self.ssa_focus = Selection::default();
             self.inspector.reset_report();
             self.report_view.refresh_index(report);
@@ -359,7 +337,6 @@ impl Workspace {
             .map_or(visible.metadata.root_program, |state| state.program);
         self.account = None;
         self.previous_state = self.selection.state;
-        self.disasm_focus = Selection::default();
         self.ssa_focus = Selection::default();
         self.inspector.reset_report();
         self.report_view.refresh_index(report);

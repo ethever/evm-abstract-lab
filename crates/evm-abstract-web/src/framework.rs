@@ -6,6 +6,29 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 pub use browser::start;
 
+/// Preserve the native disclosure while exposing its actual header response.
+pub(crate) fn section<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::CollapsingResponse<R> {
+    let section = egui::CollapsingHeader::new(label).show(ui, contents);
+    crate::controls::observe(
+        ui,
+        &section.header_response,
+        label,
+        "section",
+        Some(section.body_response.is_some()),
+    );
+    section
+}
+
+pub(crate) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
+    let response = ui.checkbox(value, label);
+    crate::controls::observe(ui, &response, label, "checkbox", Some(*value));
+    response
+}
+
 /// Keep pasted multi-line programs inside the input budget instead of growing
 /// the top panel until it covers the analysis panes.
 pub(crate) fn bytecode_editor(ui: &mut egui::Ui, bytecode: &mut String, height: f32) {

@@ -119,7 +119,6 @@ pub(crate) enum UnavailableReason {
     ConservativeEvidence,
     NoNativeState,
     NoSsaReceipt,
-    HistoricalReceipt,
     Unexecuted,
 }
 
@@ -131,7 +130,6 @@ impl UnavailableReason {
             Self::ConservativeEvidence => "MAY control has no Native instruction or SSA receipt",
             Self::NoNativeState => "No Native state was retained for this context",
             Self::NoSsaReceipt => "No SSA receipt was retained for this state",
-            Self::HistoricalReceipt => "The retained instruction receipt is historical",
             Self::Unexecuted => "This state has no executed instruction receipt",
         }
     }

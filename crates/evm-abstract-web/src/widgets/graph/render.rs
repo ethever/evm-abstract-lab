@@ -9,6 +9,7 @@ use edges::paint_edge_text;
 use egui::{Align2, FontId, Pos2, Rect, Sense, Ui, Vec2};
 
 impl Graph {
+    #[cfg(test)]
     pub(crate) fn show(&mut self, ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selection) {
         if let Some(NativeIntent::Select(picked) | NativeIntent::Open(picked)) =
             self.show_scoped(ui, report, selection)

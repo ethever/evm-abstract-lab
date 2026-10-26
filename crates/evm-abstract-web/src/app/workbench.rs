@@ -2,6 +2,8 @@
 //! borrow qualified evidence and emit events; the shell applies them centrally.
 
 mod focus;
+mod inspection;
+pub(super) use inspection::OriginalInspection;
 mod navigation;
 
 use super::model::navigation::{ContextFocus, Focus};
@@ -126,6 +128,24 @@ impl Workspace {
     }
 
     fn show_inspection(&mut self, ui: &mut Ui) {
+        if self
+            .original_inspection
+            .as_ref()
+            .is_some_and(|subject| subject.view != self.report_view.identity())
+        {
+            self.original_inspection = None;
+        }
+        if let (Some(subject), Some(report)) = (&self.original_inspection, &self.report) {
+            self.inspector.inspect(
+                ui,
+                inspector::InspectionTarget::Original {
+                    report,
+                    account: subject.borrowed(),
+                },
+            );
+            return;
+        }
+
         let Some(focus) = self
             .report_view
             .navigator()
@@ -207,6 +227,15 @@ impl Workspace {
             return true;
         };
         if self.view == View::Disassembly {
+            if let Some(report) = &self.report
+                && let Ok(capabilities) = self.report_view.presentation(report).capabilities(&focus)
+                && let super::model::presentation::Capability::Unavailable(reason) =
+                    capabilities.code
+            {
+                widgets::heading(ui, "CODE", "Source availability");
+                availability(ui, reason.label());
+                return true;
+            }
             let picked = self.report.as_ref().and_then(|report| {
                 self.source_cache
                     .show_context(ui, self.report_view.presentation(report), &focus)
@@ -221,7 +250,10 @@ impl Workspace {
         }
         if focus.context.is_none() {
             widgets::heading(ui, "CONTROL FLOW", "Choose an execution context");
-            ui.label("This source has decoded code. A compatible context is required to show its control evidence.");
+            availability(
+                ui,
+                "This source has decoded code. A compatible context is required to show its control evidence.",
+            );
             if crate::controls::action(ui, "Choose context", crate::controls::Density::Regular)
                 .clicked()
             {
@@ -320,7 +352,7 @@ impl Workspace {
                 Err(error) => error.to_string(),
                 _ => "No retained instruction evidence is available".into(),
             };
-            ui.label(reason);
+            availability(ui, &reason);
             if crate::controls::action(
                 ui,
                 "Choose Native context",
@@ -348,4 +380,9 @@ impl Workspace {
         }
         true
     }
+}
+
+fn availability(ui: &mut Ui, message: &str) {
+    let response = ui.label(message);
+    crate::controls::observe(ui, &response, message, "availability", None);
 }

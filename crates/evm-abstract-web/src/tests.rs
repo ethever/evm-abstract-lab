@@ -424,6 +424,7 @@ pub(crate) fn ready() -> Workspace {
     // Existing source/SSA identity and camera regressions exercise native
     // states in Compare. Product-default tests construct Workspace directly.
     workspace.graph.set_mode(widgets::GraphMode::States);
+    workspace.graph.show_ssa_content();
     report().validate().expect("consumer fixture must validate");
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
@@ -523,6 +524,7 @@ fn all_three_custom_views_paint_structural_content() {
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut workspace = ready();
+    workspace.ssa_cache.select_source_scope();
     // Panels stabilize their sizes during the first pass.
     frame(&ctx, &mut workspace, vec![]);
     let output = frame(&ctx, &mut workspace, vec![]);
@@ -554,11 +556,16 @@ fn clicking_source_row_links_native_state_and_ssa_instruction() {
     crate::notation::initialize_fonts(&ctx);
     let mut workspace = ready();
     workspace.view = View::Disassembly;
+    workspace.selection = Selection {
+        state: Some(2),
+        pc: None,
+        value: None,
+    };
     frame(&ctx, &mut workspace, vec![]);
     let output = frame(&ctx, &mut workspace, vec![]);
     let pos = painted_text(&output)
         .into_iter()
-        .find(|(text, _)| text == "000a")
+        .find(|(text, _)| text.starts_with("0x000a  "))
         .unwrap()
         .1
         + Vec2::new(8.0, 6.0);
@@ -785,6 +792,11 @@ fn horizontal_scroll_reaches_the_last_phi_argument() {
         result: Ok((report).into()),
     }));
     workspace.view = View::Ssa;
+    workspace.selection = Selection {
+        state: Some(2),
+        pc: None,
+        value: None,
+    };
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
     frame(&ctx, &mut workspace, vec![]);
@@ -868,7 +880,12 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
         .unwrap()[0]
         .1;
     let ssa_left = ssa_heading.x;
-    let pc_left = labels.iter().find(|(text, _)| text == "0000").unwrap().1.x;
+    let pc_left = labels
+        .iter()
+        .find(|(text, _)| text.starts_with("0x0000  "))
+        .unwrap()
+        .1
+        .x;
     // The inspector also labels σ0, before the source panes are painted.
     // The final standalone σ0 is the actual SSA table definition.
     let definition_left = labels.iter().rfind(|(text, _)| text == "σ0").unwrap().1.x;
@@ -910,7 +927,12 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
     }
     let output = frame(&ctx, &mut workspace, vec![]);
     let labels = painted_text(&output);
-    let selected_pc_left = labels.iter().find(|(text, _)| text == "000a").unwrap().1.x;
+    let selected_pc_left = labels
+        .iter()
+        .find(|(text, _)| text.starts_with("0x000a  "))
+        .unwrap()
+        .1
+        .x;
     assert!((selected_pc_left - pc_left).abs() < 0.1);
 }
 

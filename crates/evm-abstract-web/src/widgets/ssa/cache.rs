@@ -45,6 +45,7 @@ pub(crate) struct SsaCache {
 }
 
 impl SsaCache {
+    #[cfg(test)]
     pub(crate) fn select_source_scope(&mut self) {
         self.mode = ScopeMode::Source;
     }

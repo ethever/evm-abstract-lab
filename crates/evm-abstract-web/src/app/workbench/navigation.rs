@@ -131,46 +131,78 @@ impl Workspace {
                                 ui.monospace(&source.code_hash);
                             }
                         });
-                    let scope = match presentation.resolve_context(focus) {
-                        Ok(Some(ResolvedContext::Minimum { procedure, .. })) => {
-                            procedure.process.as_ref().map_or_else(
-                                || "Procedure bounds".to_owned(),
-                                |frame| {
-                                    format!(
-                                        "MAY · {} · {}",
-                                        owner(&frame.owner),
-                                        if frame.is_static { "static" } else { "mutable" }
-                                    )
+                    let resolved = presentation.resolve_context(focus);
+                    let scope = if matches!(focus.evidence, EvidenceFocus::Source { .. }) {
+                        "Decoded source · context separate".into()
+                    } else {
+                        match resolved {
+                            Ok(Some(ResolvedContext::Minimum { procedure, .. })) => {
+                                procedure.process.as_ref().map_or_else(
+                                    || "Procedure bounds".to_owned(),
+                                    |frame| {
+                                        format!(
+                                            "MAY · {} · {}",
+                                            owner(&frame.owner),
+                                            if frame.is_static { "static" } else { "mutable" }
+                                        )
+                                    },
+                                )
+                            }
+                            Ok(Some(ResolvedContext::Graph {
+                                state,
+                                frame,
+                                at_current_revision,
+                                ..
+                            })) => format!(
+                                "{} · {} · {}{}",
+                                if focus.view.namespace() == AnalysisNamespace::Native
+                                    && state.process.is_none()
+                                {
+                                    "Native"
+                                } else {
+                                    "MAY"
                                 },
-                            )
-                        }
-                        Ok(Some(ResolvedContext::Graph {
-                            state,
-                            frame,
-                            at_current_revision,
-                            ..
-                        })) => format!(
-                            "Native · {} · {}{}",
-                            directory::short(
-                                state.storage_address.as_deref().unwrap_or("logical owner")
+                                directory::short(
+                                    state.storage_address.as_deref().unwrap_or("logical owner")
+                                ),
+                                match state
+                                    .process
+                                    .as_ref()
+                                    .map(|process| process.is_static)
+                                    .or_else(|| frame.map(|frame| frame.is_static))
+                                {
+                                    Some(true) => "static",
+                                    Some(false) => "mutable",
+                                    None => "mode unrecorded",
+                                },
+                                if at_current_revision {
+                                    ""
+                                } else {
+                                    " · earlier input"
+                                },
                             ),
-                            if frame.is_some_and(|frame| frame.is_static) {
-                                "static"
-                            } else {
-                                "mutable"
-                            },
-                            if at_current_revision {
-                                ""
-                            } else {
-                                " · earlier input"
-                            },
-                        ),
-                        _ => "Source only · choose context".into(),
+                            _ => "Source only · choose context".into(),
+                        }
                     };
                     ui.add(
                         egui::Label::new(RichText::new(scope).small().color(palette::MUTED))
                             .truncate(),
-                    );
+                    )
+                    .on_hover_ui(|ui| {
+                        if let Ok(Some(ResolvedContext::Minimum {
+                            summary,
+                            bounds,
+                            source_status,
+                            ..
+                        })) = resolved
+                        {
+                            ui.label(format!("{:?} · {:?}", summary.relation.kind, source_status));
+                            ui.label(format!(
+                                "{} separately qualified joint outcomes",
+                                bounds.outputs.len()
+                            ));
+                        }
+                    });
                 }
                 if let Some(error) = self.navigation_error {
                     ui.colored_label(palette::WARNING, error.to_string());
@@ -194,21 +226,16 @@ impl Workspace {
                 self.navigate(intent, route);
             }
             directory::Action::Account(address) => {
-                self.account = Some(address);
-                self.inspector.select_original();
-                self.inspector.expanded = true;
+                self.account = Some(address.clone());
+                self.inspect_original(super::inspection::OriginalSubject::Address(address));
                 self.inspector.tab = inspector::Tab::Storage;
             }
             directory::Action::MinimumAccount(index) => {
-                self.minimum_selection.account = Some(index);
-                self.inspector.select_original();
-                self.inspector.expanded = true;
+                self.inspect_original(super::inspection::OriginalSubject::Minimum(index));
             }
             directory::Action::RootInput => {
                 self.account = None;
-                self.minimum_selection.account = None;
-                self.inspector.select_original();
-                self.inspector.expanded = true;
+                self.inspect_original(super::inspection::OriginalSubject::Root);
                 self.inspector.tab = inspector::Tab::Environment;
             }
         }

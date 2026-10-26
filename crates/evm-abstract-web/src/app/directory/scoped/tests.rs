@@ -24,7 +24,7 @@ fn semantic_alias_groups_keep_physical_sources_and_exact_contexts() {
     let presentation = Presentation::new(&report.model, &index, view, None);
     let focus = Focus::source(view, presentation.source(7).unwrap());
     let mut rows = Rows::default();
-    rows.prepare(presentation, &focus, None);
+    rows.prepare(presentation, &focus, None, false);
     rows.filter("");
     assert_eq!(rows.sources.len(), 2);
     assert_eq!(rows.sources[0].group, rows.sources[1].group);
@@ -99,12 +99,60 @@ fn namespace_context_picker_keeps_global_focus_until_an_exact_native_choice() {
     directory.choose_context(AnalysisNamespace::Baseline);
     directory
         .scoped
-        .prepare(presentation, &focus, directory.context_namespace);
+        .prepare(presentation, &focus, directory.context_namespace, false);
     assert!(
         directory
             .scoped
             .contexts
             .iter()
             .all(|row| row.focus.view.namespace() == AnalysisNamespace::Baseline)
+    );
+}
+
+#[test]
+fn all_contexts_reaches_a_real_programless_callee_without_choosing_it() {
+    use evm_abstract_protocol as api;
+    let report = evm_abstract_server::analyze::analyze(api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode: "5f5f5f5f5f60015af100".into(),
+            address: Some("0x0000000000000000000000000000000000000101".into()),
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    report.validate().unwrap();
+    let native = report
+        .native
+        .as_ref()
+        .expect("the finite precompile call retains Native detail");
+    let callee = native
+        .cfg
+        .iter()
+        .find(|state| state.program.is_none())
+        .expect("the actual precompile has no decoded EVM program");
+    let view = ReportViewId::fixture(1, AnalysisNamespace::Native);
+    let mut index = ReportIndex::default();
+    index.update(&report, view, None, None);
+    let presentation = Presentation::new(&report, &index, view, None);
+    let focus = presentation.entry_focus(view).unwrap();
+    let original = focus.clone();
+    let mut rows = Rows::default();
+    rows.prepare(presentation, &focus, None, false);
+    assert!(
+        rows.contexts
+            .iter()
+            .all(|row| row.focus.graph_selection().unwrap().state != Some(callee.id))
+    );
+    rows.prepare(presentation, &focus, None, true);
+    let choice = rows
+        .contexts
+        .iter()
+        .find(|row| row.focus.graph_selection().unwrap().state == Some(callee.id))
+        .expect("All contexts includes the exact retained programless context");
+    assert!(presentation.validate(&choice.focus).is_ok());
+    assert_ne!(choice.focus.context, original.context);
+    assert_eq!(
+        focus, original,
+        "listing candidates cannot change the active location"
     );
 }

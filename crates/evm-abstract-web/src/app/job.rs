@@ -188,6 +188,7 @@ impl Task {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn cancel(&mut self) -> Option<Command> {
         self.apply_intent(TaskIntent::Cancel)
     }

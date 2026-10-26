@@ -274,6 +274,14 @@ impl Graph {
         self.scene.ssa_selection = selection;
     }
 
+    /// Structural Native oracles explicitly choose the former SSA content
+    /// preference; the production entry default remains source disassembly.
+    #[cfg(test)]
+    pub(crate) fn show_ssa_content(&mut self) {
+        self.content = NodeView::Ssa;
+        self.invalidate_scene();
+    }
+
     pub(crate) fn set_mode(&mut self, mode: GraphMode) {
         if self.mode != mode {
             self.mode = mode;

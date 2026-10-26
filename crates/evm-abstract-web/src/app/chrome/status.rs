@@ -31,7 +31,10 @@ impl Workspace {
         let presentation = self.task_presentation();
         let wide = ui.available_width() > 780.0;
         let mut command = None;
-        if presentation.job_id.is_some() || presentation.report_job_id.is_some() {
+        if presentation.job_id.is_some()
+            || presentation.report_job_id.is_some()
+            || self.report.is_some()
+        {
             Density::Inline.scope(ui, |ui| {
                 for (label, id) in self.job_identities() {
                     ui.push_id(label, |ui| {

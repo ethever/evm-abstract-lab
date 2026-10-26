@@ -24,16 +24,20 @@ pub(crate) enum Action {
 
 #[derive(Default)]
 pub(super) struct Rows {
-    key: Option<(
-        PublicationIdentity,
-        ReportViewId,
-        Option<usize>,
-        Option<AnalysisNamespace>,
-    )>,
+    key: Option<RowsKey>,
     sources: Vec<Source>,
     contexts: Vec<Context>,
     entries: Vec<Entry>,
     filter: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RowsKey {
+    publication: PublicationIdentity,
+    view: ReportViewId,
+    source: Option<crate::app::model::navigation::SourceFocus>,
+    namespace: Option<AnalysisNamespace>,
+    all_contexts: bool,
 }
 
 struct Source {
@@ -115,8 +119,16 @@ impl Directory {
                 }
             });
         }
-        self.scoped
-            .prepare(presentation, focus, self.context_namespace);
+        if self.kind == Kind::Programs {
+            controls::toggle(ui, &mut self.all_contexts, "All contexts", Density::Compact)
+                .on_hover_text("Include other captured and unobserved code sources; choose an exact context before changing evidence");
+        }
+        self.scoped.prepare(
+            presentation,
+            focus,
+            self.context_namespace,
+            self.all_contexts,
+        );
         framework::line_editor(
             ui,
             "source_context_filter",
@@ -164,7 +176,7 @@ impl Rows {
                                 }
                                 Entry::Source(index) => {
                                     let source = &self.sources[index];
-                                    if ui
+                                    let response = ui
                                         .add(
                                             egui::Button::selectable(
                                                 program == Some(source.program),
@@ -172,8 +184,15 @@ impl Rows {
                                             )
                                             .truncate(),
                                         )
-                                        .on_hover_text(&source.search)
-                                        .clicked()
+                                        .on_hover_text(&source.search);
+                                    controls::observe(
+                                        ui,
+                                        &response,
+                                        &source.title,
+                                        "source",
+                                        Some(program == Some(source.program)),
+                                    );
+                                    if response.clicked()
                                         && let Some(source) = presentation.source(source.program)
                                     {
                                         action = Some(Action::Navigate(Intent::Open(
@@ -215,7 +234,7 @@ impl Rows {
                                     let context = &self.contexts[index];
                                     let selected = focus.view == context.focus.view
                                         && focus.context == context.focus.context;
-                                    if ui
+                                    let response = ui
                                         .add(
                                             egui::Button::selectable(
                                                 selected,
@@ -229,9 +248,15 @@ impl Rows {
                                             )
                                             .truncate(),
                                         )
-                                        .on_hover_text(&context.search)
-                                        .clicked()
-                                    {
+                                        .on_hover_text(&context.search);
+                                    controls::observe(
+                                        ui,
+                                        &response,
+                                        &context.title,
+                                        "context",
+                                        Some(selected),
+                                    );
+                                    if response.clicked() {
                                         action = Some(Action::Navigate(Intent::Open(
                                             context.focus.clone(),
                                         )));
@@ -259,10 +284,17 @@ impl Rows {
         presentation: Presentation<'_>,
         focus: &Focus,
         namespace: Option<AnalysisNamespace>,
+        all_contexts: bool,
     ) {
         let program = focus.source.as_ref().and_then(|source| source.program());
-        let key = (presentation.identity(), focus.view, program, namespace);
-        if self.key == Some(key) {
+        let key = RowsKey {
+            publication: presentation.identity(),
+            view: focus.view,
+            source: focus.source.clone(),
+            namespace,
+            all_contexts,
+        };
+        if self.key.as_ref() == Some(&key) {
             return;
         }
         self.sources.clear();
@@ -300,7 +332,7 @@ impl Rows {
                 });
             }
         }
-        let contexts = program.map_or_else(
+        let contexts = program.filter(|_| !all_contexts).map_or_else(
             || presentation.index().contexts(),
             |program| presentation.index().contexts_for_program(program),
         );
@@ -322,6 +354,9 @@ impl Rows {
             let Ok(target_focus) = presentation.focus_context(target) else {
                 continue;
             };
+            if !all_contexts && program.is_none() && target_focus.source != focus.source {
+                continue;
+            }
             let Ok(context) = presentation.context(target) else {
                 continue;
             };
