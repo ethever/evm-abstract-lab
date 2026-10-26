@@ -92,3 +92,5 @@ fn canonical_history_camera_survives_the_first_scoped_layout() {
 }
 
 mod interaction;
+
+mod entry_core;

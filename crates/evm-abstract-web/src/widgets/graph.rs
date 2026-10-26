@@ -205,7 +205,12 @@ impl Graph {
     /// The visible scene has actually been measured and laid out. Hidden graph
     /// tabs are never built merely to finish the result's timing measurement.
     pub(crate) fn prepared(&self) -> bool {
-        (self.scene.minimum.is_some() || (self.scene.index.is_some() && !self.scene.layout_pending))
+        (self
+            .scene
+            .minimum
+            .as_ref()
+            .is_some_and(|scene| !scene.geometry_pending)
+            || (self.scene.index.is_some() && !self.scene.layout_pending))
             && self.viewport.is_some()
     }
 
@@ -292,6 +297,9 @@ impl Graph {
         let Some(canvas) = self.painted_canvas else {
             return Vec::new();
         };
+        if let Some(scene) = &self.scene.minimum {
+            return scene.node_geometry(canvas, self.pan, self.zoom, false);
+        }
         self.scene
             .nodes
             .iter()
@@ -300,6 +308,14 @@ impl Graph {
                 Some((text.title.clone(), self.screen_rect(canvas, *world)))
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn painted_core_nodes(&self) -> Vec<(String, Rect)> {
+        let (Some(canvas), Some(scene)) = (self.painted_canvas, self.scene.minimum.as_ref()) else {
+            return Vec::new();
+        };
+        scene.node_geometry(canvas, self.pan, self.zoom, true)
     }
 
     /// Structural Native oracles explicitly choose the former SSA content
@@ -469,6 +485,26 @@ impl Graph {
 
     /// Fit a small scope when it stays readable, otherwise start at its entry.
     /// Whole-graph Fit remains explicit and may intentionally hide text at LOD.
+    fn frame_core(&mut self, size: Vec2, bounds: Rect) {
+        if !bounds.is_finite() {
+            return;
+        }
+        self.zoom = 1.0;
+        self.fitted = false;
+        self.pan = Vec2::new(
+            if bounds.width() <= size.x - 16.0 {
+                size.x * 0.5 - bounds.center().x
+            } else {
+                8.0 - bounds.left()
+            },
+            if bounds.height() <= size.y - 16.0 {
+                size.y * 0.5 - bounds.center().y
+            } else {
+                8.0 - bounds.top()
+            },
+        );
+    }
+
     fn readable_entry(&mut self, size: Vec2, bounds: Rect, anchor: Option<Rect>) {
         let Some(anchor) = anchor.filter(|rect| rect.is_finite()) else {
             return;

@@ -36,7 +36,13 @@ impl Graph {
             if !rect.intersects(canvas) {
                 continue;
             }
-            let actions = paint::actions(rect, card, self.zoom, level);
+            let actions = paint::actions_with_targets(
+                rect,
+                card,
+                !scene.target_sets[id].is_empty(),
+                self.zoom,
+                level,
+            );
             let hit = ui.interact(
                 actions.body.intersect(canvas),
                 ui.id().with(("minimum_control", scope.summary(), id)),
