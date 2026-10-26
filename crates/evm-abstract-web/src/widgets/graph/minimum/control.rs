@@ -1,20 +1,36 @@
 //! Expand actual pure-region receipts using shared source geometry. Display IDs
 //! are private; a source point always retains its regional invocation identity.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
-use crate::{app::minimum::location_label, palette};
+use crate::app::minimum::location_label;
+#[cfg(test)]
+use crate::palette;
 use egui::Color32;
-use evm_abstract_protocol::{AnalysisReport, EdgeKind, ProcessLocation, RegionalNode};
+#[cfg(test)]
+use evm_abstract_protocol::AnalysisReport;
+use evm_abstract_protocol::{EdgeKind, ProcessLocation, RegionalNode};
+
+mod adapter;
+mod evidence;
+mod projection;
+mod scope;
+pub(crate) use scope::*;
 
 pub(super) struct Card {
+    #[cfg(test)]
     pub node: usize,
+    #[cfg(test)]
     pub location: Option<ProcessLocation>,
     pub boundary: bool,
     pub title: String,
     pub caption: String,
     pub qualifier: String,
     pub hover: String,
+    pub kind: CardKind,
+    pub origins: Vec<OriginEvidence>,
+    pub target_set: Option<usize>,
 }
 
 pub(super) struct Edge {
@@ -23,6 +39,7 @@ pub(super) struct Edge {
     pub kind: EdgeKind,
     pub label: String,
     pub color: Color32,
+    pub origins: Vec<FlowOrigin>,
 }
 
 #[derive(Default)]
@@ -31,9 +48,16 @@ pub(super) struct Control {
     pub edges: Vec<Edge>,
     pub source_edges: usize,
     pub hubs: usize,
+    pub scope: Option<GraphScope>,
+    pub counts: ScopeCounts,
+    pub target_sets: Vec<TargetSet>,
+    pub anchor: Option<usize>,
+    pub hidden_set: Option<usize>,
 }
 
 impl Control {
+    /// Exhaustive receipt oracle retained for the original semantic regressions.
+    #[cfg(test)]
     pub fn new(report: &AnalysisReport, summary: usize) -> Self {
         let model = report.minimum.as_ref().unwrap();
         let cfg = &model.summaries[summary].relation.regional_cfg;
@@ -123,6 +147,7 @@ impl Control {
                                         kind: edge.kind,
                                         label: format!("MAY {:?}", edge.kind),
                                         color: palette::MUTED,
+                                        origins: Vec::new(),
                                     });
                                     result.source_edges += 1;
                                 }
@@ -144,6 +169,7 @@ impl Control {
                                     kind: EdgeKind::Jump,
                                     label: "MAY legal JUMPDEST".into(),
                                     color: palette::WARNING,
+                                    origins: Vec::new(),
                                 });
                                 result.source_edges += 1;
                             }
@@ -167,6 +193,7 @@ impl Control {
                         kind,
                         label: format!("r{} → r{target} · {kind:?}", node.id),
                         color: palette::BLUE,
+                        origins: Vec::new(),
                     });
                 }
             }
@@ -180,6 +207,7 @@ impl Control {
                         kind: EdgeKind::Call,
                         label: format!("call c{} · r{} → r{target}", call.id, call.from),
                         color: palette::PURPLE,
+                        origins: Vec::new(),
                     });
                 }
             }
@@ -206,6 +234,7 @@ impl Control {
                             } else {
                                 palette::MUTED
                             },
+                            origins: Vec::new(),
                         });
                     }
                 }
@@ -217,7 +246,7 @@ impl Control {
 
 fn card(
     node: &RegionalNode,
-    index: usize,
+    _index: usize,
     location: Option<ProcessLocation>,
     boundary: bool,
     program: Option<&evm_abstract_protocol::ProgramInfo>,
@@ -270,7 +299,9 @@ fn card(
         )
     });
     Card {
-        node: index,
+        #[cfg(test)]
+        node: _index,
+        #[cfg(test)]
         location,
         boundary,
         title: format!(
@@ -286,6 +317,12 @@ fn card(
         caption,
         qualifier,
         hover,
+        kind: point.map_or(CardKind::Receipt, |location| CardKind::Source {
+            program: program.map(|program| program.id),
+            location,
+        }),
+        origins: Vec::new(),
+        target_set: None,
     }
 }
 
