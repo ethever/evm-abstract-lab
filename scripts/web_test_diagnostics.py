@@ -6,11 +6,21 @@ from playwright.sync_api import expect
 import json
 from web_test_hybrid import assert_hybrid, oracle_graph
 from web_test_graph_helpers import symbol
-from web_test_harness import analysis_server, click_control, complete_submission, edit_control, observe_webgpu, open_input, posted_bytecode, settle_gesture, webgpu_evidence
+from web_test_harness import analysis_server, click_control, complete_submission, edit_control, observe_webgpu, open_input, posted_bytecode, select_report_context, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import inspector_diagnostics_region, select_inspector_tab
 from web_test_layout_helpers import layout_detail_regions
 from web_test_pixels import text_pixels
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, native_call_summary, submit_rpc
+
+
+def select_diagnostic(page, canvas, diagnostic):
+    """Pick one real receipt link; repeated PCs retain their own state IDs."""
+    fault = diagnostic["invalid_opcode"]["Instruction"]
+    label = (f"{symbol('σ', diagnostic['state'])} · PC 0x{diagnostic['pc']:04x}"
+             f" · InvalidOpcode · 0x{fault['opcode']:02x}")
+    if fault["mnemonic"] is not None:
+        label += f" ({fault['mnemonic']})"
+    return click_control(page, canvas, label, role="diagnostic")
 
 
 def diagnostics_interactions(browser, url: str, args):
@@ -45,6 +55,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert report["schema_version"] == 21 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         assert_hybrid(report)
+        select_inspector_tab(page, canvas, "Diagnostics")
         return oracle_graph(report, "Native")
 
     def snapshot(name, minimum_rows):
@@ -77,9 +88,8 @@ def diagnostics_interactions(browser, url: str, args):
             assert "0xef (INVALID)" not in status.text_content()
         pixels = snapshot(name, 3)
         # Receipt rows remain real links to the native state/source location.
-        row = pixels["rows"][1]
         submissions = len(posts)
-        canvas.click(position={"x": 120, "y": sum(row) / 2})
+        select_diagnostic(page, canvas, diagnostic)
         expect(status).to_contain_text(f"Selected {symbol('σ', diagnostic['state'])};")
         assert len(posts) == submissions, "diagnostic selection submitted another analysis"
         result[name] = {"diagnostic": diagnostic, "painted": pixels}
@@ -99,11 +109,10 @@ def diagnostics_interactions(browser, url: str, args):
     assert {item["pc"] for item in receipts} == {17}, receipts
     expect(status).to_contain_text("2 abstract-state diagnostic entries")
     pixels = snapshot("repeated-pc", 5)
-    for index, receipt in enumerate(receipts):
+    for receipt in receipts:
         expect(status).to_contain_text(f"{symbol('σ', receipt['state'])} · PC 0x0011")
-        row = pixels["rows"][1 + index * 2]
         submissions = len(posts)
-        canvas.click(position={"x": 120, "y": sum(row) / 2})
+        select_diagnostic(page, canvas, receipt)
         expect(status).to_contain_text(f"Selected {symbol('σ', receipt['state'])};")
         assert len(posts) == submissions
     result["repeated-pc"] = {"diagnostics": receipts, "painted": pixels, "all_state_links_work": True}
@@ -166,7 +175,7 @@ def diagnostics_interactions(browser, url: str, args):
                     assert failed["frames"][0]["stack"][-1]["constants"] == ["0x0"]
                     select_inspector_tab(child_page,child_canvas,"Diagnostics")
                     expect(child_status).to_contain_text("0 abstract-state diagnostic entries")
-                    child_canvas.click(position={"x":80,"y":159})
+                    select_report_context(child_page,full_report,"Native",state=child["id"])
                     expect(child_status).to_contain_text(f"Selected {symbol('σ',child['id'])}; source {symbol('P',source['id'])};")
                     child_canvas.screenshot(path=str(output/"diagnostics-relative-child-source.png"))
                     result["child-source-default1"] = {"source_state":child["id"],"program":source["id"],
@@ -187,8 +196,7 @@ def diagnostics_interactions(browser, url: str, args):
                     png = child_canvas.screenshot(path=str(output / "diagnostics-child.png"))
                     pixels = text_pixels(child_page, png, inspector_diagnostics_region(child_page, child_canvas))
                     assert len(pixels["rows"]) >= 3, pixels
-                    row = pixels["rows"][1]
-                    child_canvas.click(position={"x": 120, "y": sum(row) / 2})
+                    select_diagnostic(child_page, child_canvas, diagnostic)
                     expect(child_status).to_contain_text(f"Selected {symbol('σ', diagnostic['state'])}; source {symbol('P', source['id'])};")
                     result["child-source-private2"] = {"diagnostic": diagnostic, "program": source["id"], "root_pc0_opcode": 0x5f, "correct_source_jump": True}
                     (output / "diagnostics-child-analysis.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -3,7 +3,7 @@
 from playwright.sync_api import expect
 import re
 import time
-from web_test_harness import click_control, set_control, settle_gesture, ui_control, ui_controls
+from web_test_harness import click_control, set_control, ui_control, ui_controls
 
 
 INSPECTOR_GROUPS = {
@@ -100,6 +100,7 @@ def inspector_block_entry_control(page, canvas):
 def select_inspector_boundary(page, canvas, point, *, historical=False):
     """Choose a retained Native boundary without upgrading a historical exit."""
     assert point in {"before", "after"}, point
+    assert type(historical) is bool, historical
     label = "Before block · entry snapshot" if point == "before" else (
         "After block · historical exit" if historical else "After block · observed exit")
     inspector_choice(page, canvas, "inspector_boundary", label)
@@ -115,15 +116,18 @@ def select_inspector_frame(page, canvas, frame, *, active):
     assert type(active) is bool, active
     label = f"Frame {frame + 1} · {'active' if active else 'suspended caller'}"
     inspector_choice(page, canvas, "inspector_frame", label)
+    index = str(frame).translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉"))
+    expect(page.locator("#analysis-status")).to_contain_text(f"Frame f{index}")
     return ui_control(page, "inspector_frame", role="combobox")["rect"]
 
 def inspector_diagnostics_region(page, canvas):
-    """The existing default 210px dock has no observation row on Diagnostics."""
+    """Measure evidence below shared navigation inside the visible dock."""
     title = inspector_selected_tab(page, canvas, "Diagnostics")
-    # Start after the actual titlebar and its 3px item gap. This keeps the same
-    # 176px content window inside the default dock, above the status/Job ID panel.
+    # Receipt links use actual response IDs. This window independently checks
+    # painted evidence, without interpreting a text-band index as a control.
     top = title[3] + 3
-    return (8, top, 1410, top + 176)
+    return (8, top, page.viewport_size["width"] - 30,
+            min(top + 176, page.viewport_size["height"] - 30))
 
 def inspector_title_action(page, canvas, action: str, selected_tab):
     """Use the actual panel action after a drag, resize or maximize."""

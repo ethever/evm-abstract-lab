@@ -1,15 +1,14 @@
 """Inspector browser acceptance cases."""
 
 from web_test_graph_helpers import symbol
-from web_test_hybrid import assert_root_source, oracle_graph, process_control_relation, source_program
+from web_test_hybrid import assert_root_source, native_entry_context, oracle_graph, process_control_relation, source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import hashlib
 import json
 import re
-from web_test_harness import complete_submission, hide_world_directory, observe_webgpu, open_input, resize_view, select_report_namespace, settle_gesture, submit_bytecode, webgpu_evidence
-from web_test_inspector_helpers import inspector_frame_tab, inspector_selected_tab, inspector_title_action, select_inspector_tab
-from web_test_pixels import text_pixels, workspace_content_bottom
+from web_test_harness import complete_submission, focus_text_control, hide_world_directory, observe_webgpu, open_input, resize_view, select_report_context, select_report_namespace, set_control, settle_gesture, submit_bytecode, ui_control, webgpu_evidence
+from web_test_inspector_helpers import inspector_frame_tab, inspector_selected_tab, inspector_title_action, select_inspector_scope, select_inspector_tab
 
 
 def inspect_shortcut_events(page):
@@ -20,17 +19,39 @@ def inspect_shortcut_events(page):
         timeout=5000)
     return page.evaluate("window.__inspectKeyEvents")
 
-def synthetic_inspect_key(page, **changes):
-    page.evaluate("""changes => {
-        const target=document.activeElement;
-        target.dispatchEvent(new KeyboardEvent('keydown', {
-            key:'j',code:'KeyJ',bubbles:true,cancelable:true,...changes
-        }));
-        target.dispatchEvent(new KeyboardEvent('keyup', {
-            key:'j',code:'KeyJ',bubbles:true,cancelable:true,...changes,repeat:false
-        }));
-    }""", changes)
+def inspect_key(page, **modifiers):
+    keys = {"ctrlKey": "Control", "metaKey": "Meta", "shiftKey": "Shift", "altKey": "Alt"}
+    assert modifiers.keys() <= keys.keys() and all(type(value) is bool for value in modifiers.values())
+    chord = [key for name, key in keys.items() if modifiers.get(name, False)]
+    page.keyboard.press("+".join([*chord, "j"]))
     settle_gesture(page)
+
+
+def external_input_fixture(page, identifier):
+    # Root's explicit fixture exception retains the foreign-input ownership
+    # negative. This visible HTML input is not an application control; focus
+    # and keyboard events still come from actual browser pointer/key dispatch.
+    page.evaluate("""identifier => {
+        const outside=document.createElement('input');outside.id=identifier;outside.type='text';
+        Object.assign(outside.style,{position:'fixed',left:'8px',top:'8px',width:'120px',
+            height:'24px',zIndex:'2147483647'});
+        document.body.append(outside);
+    }""", identifier)
+    fixture = page.locator(f"#{identifier}")
+    fixture.click()
+    expect(fixture).to_be_focused()
+    return fixture
+
+
+def focus_inspector_value(page, canvas):
+    control = ui_control(page, "inspector_ssa_value", role="text")
+    left, top, right, bottom = control["rect"]
+    bounds = canvas.bounding_box()
+    assert bounds is not None, "application canvas is not visible"
+    canvas.dblclick(position={"x": (left + right) / 2 - bounds["x"],
+                              "y": (top + bottom) / 2 - bounds["y"]})
+    settle_gesture(page)
+    return focus_text_control(page, canvas, "inspector_ssa_value")
 
 
 def model_namespace_controls(page, canvas, report, output):
@@ -47,20 +68,29 @@ def model_namespace_controls(page, canvas, report, output):
     expect(status).to_contain_text(f"Additional condition: root ADDRESS = {coordinate}")
     page.keyboard.press("1")
     settle_gesture(page)
-    # Existing default program: the first instruction of its second source
-    # block follows the first block's four actual instructions and two headers.
+    # Select the actual second source block through its qualified Native
+    # context; the scoped Code view no longer uses a global row ordinal.
     root = source_program(report, native["metadata"]["root_program"])
+    entry = native_entry_context(report)
+    assert entry["program"] == root["id"] and entry["storage_address"] == coordinate
     second = root["blocks"][1]
-    target = next(block for block in native["cfg"] if block["program"] == root["id"] and block["basic_block"] == second["id"])
+    target, = [block for block in native["cfg"]
+               if block["program"] == root["id"] and block["basic_block"] == second["id"]]
+    target_state, = [state for state in native["states"] if state["state"] == target["id"]]
+    target_frame, = target_state["entry"]["frames"]
+    assert target["code_address"] == target_frame["code_address"] == root["code_address"]
+    assert target["storage_address"] == target_frame["storage_address"] == entry["storage_address"]
+    assert target_frame["is_static"] == native["metadata"]["environment"]["is_static"]
     assert target["id"] != baseline["cfg"][0]["id"]
-    canvas.click(position={"x": 80, "y": 134 + 22 * (len(root["blocks"][0]["instructions"]) + 2)})
+    select_report_context(page, report, "Native", state=target["id"])
     expect(status).to_contain_text(f"Selected {symbol('σ', target['id'])}; source {symbol('P', root['id'])}")
     select_inspector_tab(page, canvas, "SSA value")
     expect(status).to_contain_text("Inspector: SSA value %0")
     canvas.screenshot(path=str(output / "namespace-native-selected.png"))
     model = report["minimum"]
     assert model["namespace"] == "Baseline" and model["current"] and model["status"] == "Converged"
-    relation = next(summary["relation"] for summary in reversed(model["summaries"])
+    summary_index, relation = next((index, summary["relation"])
+                    for index, summary in reversed(list(enumerate(model["summaries"])))
                     if summary["relation"]["source_current"]
                     and summary["relation"]["root_procedure"] is not None
                     and summary["relation"]["procedures"][summary["relation"]["root_procedure"]]["process"]["source"]
@@ -71,9 +101,11 @@ def model_namespace_controls(page, canvas, report, output):
     point_label = (f"block index {point['Block']}" if type(point) is dict else {
         "Any": "unobserved code · arbitrary actions", "End": "end of source · no instruction",
         "JumpTargets": "unknown-jump hub · all legal JUMPDEST targets"}[point])
-    select_report_namespace(page, report, "Baseline")
+    select_report_context(page, report, "Baseline", summary=summary_index, procedure=relation["root_procedure"])
+    select_inspector_tab(page, canvas, "Frame", minimum=True)
+    select_inspector_scope(page, canvas, "Original observations")
     expect(status).to_contain_text(f"Selected MAY source: {point_label}")
-    expect(status).to_contain_text("Inspector: Original inputs")
+    expect(status).to_contain_text("Inspector: Frame · Original observations")
     assert "Selected σ" not in status.text_content() and "SSA value %" not in status.text_content()
     assert "Additional condition:" not in status.text_content()
     page.keyboard.press("3")
@@ -102,7 +134,7 @@ def model_namespace_controls(page, canvas, report, output):
                 process = transfer["process"]
                 if process is not None and process["control"] is not None:
                     process_control_relation(baseline, frame["process"], process["control"])
-    canvas.click(position={"x": 148, "y": 38})
+    select_report_context(page, report, "Native", state=entry["id"])
     expect(status).to_contain_text("View: Detailed paths")
     expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', root['id'])}")
     expect(status).to_contain_text(f"Additional condition: root ADDRESS = {coordinate}")
@@ -111,6 +143,8 @@ def model_namespace_controls(page, canvas, report, output):
     # Qualify that new default against Native, never a Global/old-state ID.
     definition = native["ssa"]["values"][0]["origin"]["Instruction"]
     assert definition["state"] == 0 and definition["pc"] == 0
+    assert definition["state"] == entry["id"], (definition, entry)
+    select_inspector_tab(page, canvas, "SSA value")
     expect(status).to_contain_text("Inspector: SSA value %0")
     expect(status).to_contain_text("Instruction σ₀ · pc 0x0")
     select_inspector_tab(page, canvas, "Frame")
@@ -119,7 +153,7 @@ def model_namespace_controls(page, canvas, report, output):
     settle_gesture(page)
     canvas.screenshot(path=str(output / "namespace-native-reset.png"))
     return {"native_selected_state": target["id"], "global_regional_node": root_node["id"],
-            "global_may_location": point, "returned_native_state": 0,
+            "global_may_location": point, "returned_native_state": entry["id"],
             "root_condition": coordinate, "global_has_no_ssa_selection": True,
             "native_selection_reset": True, "graph_ids_separate": True}
 
@@ -144,28 +178,26 @@ def coarse_process_controls(page, canvas, output):
     assert any(case["result"]=="Zero" for case in cases)
     assert any(isinstance(case["result"],dict) and "Address" in case["result"] for case in cases)
     select_report_namespace(page,report,"Baseline")
-    select_inspector_tab(page,canvas,"Control",minimum=True)
-    inspector_title_action(page,canvas,"Maximize",inspector_selected_tab(page,canvas,"Control",minimum=True))
+    select_inspector_tab(page,canvas,"Coverage",minimum=True)
+    select_inspector_scope(page,canvas,"Procedure input")
+    inspector_title_action(page,canvas,"Maximize",inspector_selected_tab(page,canvas,"Coverage",minimum=True))
     page.mouse.move(2,2);settle_gesture(page)
     canvas.screenshot(path=str(output/"process-global-routes.png"))
-    toolbar=inspector_selected_tab(page,canvas,"Control",minimum=True)
     # The canonical model chooses a procedure instead of expanding a rich
     # private Frame tree. Compare its qualified body below the selector.
-    route_region={"x":8,"y":toolbar[3]+74,"width":900,"height":140}
+    selector=ui_control(page,"minimum_procedure",role="combobox")
+    route_region={"x":8,"y":selector["rect"][3]+3,"width":900,"height":140}
     routes=page.screenshot(clip=route_region)
     inspected={}
 
     def choose_procedure(index):
         page.mouse.move(800,400);page.mouse.wheel(0,-5000);settle_gesture(page)
-        png=canvas.screenshot()
-        rows=text_pixels(page,png,(8,toolbar[3]+3,600,toolbar[3]+100))["rows"]
-        assert len(rows)>=3,rows
-        selector=rows[2]
-        canvas.click(position={"x":60,"y":sum(selector)/2});settle_gesture(page)
-        png=canvas.screenshot(path=str(output/f"process-procedure-{index}-menu.png"))
-        choices=text_pixels(page,png,(10,selector[1]+5,190,selector[1]+195))["rows"]
-        assert len(choices)>index,(index,choices)
-        canvas.click(position={"x":70,"y":sum(choices[index])/2})
+        assert type(index) is int and 0<=index<len(procedures),index
+        chosen=select_report_context(page,report,"Baseline",
+                                    summary=len(report["minimum"]["summaries"])-1,procedure=index)
+        assert chosen["role"]=="context" and chosen["enabled"],chosen
+        select_inspector_tab(page,canvas,"Coverage",minimum=True)
+        select_inspector_scope(page,canvas,"Procedure input")
         page.mouse.move(2,2);settle_gesture(page)
         expect(page.locator("#analysis-status")).to_contain_text(f"· procedure {index} · output None")
 
@@ -178,17 +210,16 @@ def coarse_process_controls(page, canvas, output):
         canvas.screenshot(path=str(output/f"process-{name}-returned.png"))
         assert page.screenshot(clip=route_region) == routes, f"returning from {name} lost the global body"
 
-    def open_last_control(name):
+    def open_last_control(name,label):
         page.mouse.move(800,400);page.mouse.wheel(0,5000);settle_gesture(page)
-        png=canvas.screenshot(path=str(output/f"process-{name}-closed.png"))
-        rows=text_pixels(page,png,(8,toolbar[3]+3,600,workspace_content_bottom(page,png)))["rows"]
-        assert rows, f"missing {name} control"
-        canvas.click(position={"x":110,"y":sum(rows[-1])/2})
+        canvas.screenshot(path=str(output/f"process-{name}-closed.png"))
+        control=set_control(page,canvas,label,True,role="section")
+        assert control["selected"] is True,control
         page.mouse.move(2,2);settle_gesture(page)
 
-    open_last_control("regional-control")
+    open_last_control("regional-control","Regional control flow")
     canvas.screenshot(path=str(output/"process-regional-control.png"))
-    open_last_control("calls-and-returns")
+    open_last_control("calls-and-returns","Calls and returns")
     page.mouse.move(1000,800);page.mouse.wheel(0,600);settle_gesture(page)
     canvas.screenshot(path=str(output/"process-creation-deliveries.png"))
     first=calls[0]
@@ -196,8 +227,8 @@ def coarse_process_controls(page, canvas, output):
     assert any(case["result"]=="Zero" for delivery in first["deliveries"] for case in delivery["creation"])
     assert any(isinstance(case["result"],dict) and "Address" in case["result"]
                for delivery in first["deliveries"] for case in delivery["creation"])
-    inspector_title_action(page,canvas,"Restore",inspector_selected_tab(page,canvas,"Control",minimum=True))
-    canvas.click(position={"x":148,"y":38})
+    inspector_title_action(page,canvas,"Restore",inspector_selected_tab(page,canvas,"Coverage",minimum=True))
+    select_report_namespace(page,report,"Native")
     expect(page.locator("#analysis-status")).to_contain_text("View: Detailed paths")
     expect(page.locator("#analysis-status")).to_contain_text("SSA partial")
     select_inspector_tab(page,canvas,"Diagnostics")
@@ -225,8 +256,10 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         context = browser.new_context(**options)
         page = context.new_page()
         observe_webgpu(page)
+        session = context.new_cdp_session(page)
         if platform == "mac-simulated":
-            page.add_init_script("Object.defineProperty(navigator,'platform',{get:()=> 'MacIntel'});")
+            session.send("Emulation.setUserAgentOverride", {
+                "userAgent": options["user_agent"], "platform": "MacIntel"})
         page.add_init_script("""window.__inspectKeyEvents=[];
             window.addEventListener('keydown',event=>{
                 if(event.key.toLowerCase()!=='j')return;
@@ -250,8 +283,8 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         namespace_checks = None
         if platform == "linux":
             namespace_checks = model_namespace_controls(page, canvas, initial_reply.report, output)
-        canvas.click(position={"x": 720, "y": 12})
         page.keyboard.press("3")
+        select_inspector_tab(page, canvas, "Frame")
         settle_gesture(page)
         expect(status).to_contain_text("Inspector: Frame")
         original_selection = re.search(r"Selected ([^;]+); source ([^;]+);", status.text_content()).group(0)
@@ -281,37 +314,28 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         expect(status).to_contain_text("Inspector: Frame")
 
         opposite = {"ctrlKey": True} if platform == "mac-simulated" else {"metaKey": True}
-        synthetic_inspect_key(page, **opposite)
+        inspect_key(page, **opposite)
         expect(status).to_contain_text("Inspector: Frame")
         assert not inspect_shortcut_events(page)[-1]["prevented"]
-        for extra in [{"shiftKey": True}, {"altKey": True}, opposite, {"isComposing": True}]:
-            synthetic_inspect_key(page, **accepted, **extra)
+        for extra in [{"shiftKey": True}, {"altKey": True}, opposite]:
+            inspect_key(page, **accepted, **extra)
             expect(status).to_contain_text("Inspector: Frame")
             assert not inspect_shortcut_events(page)[-1]["prevented"]
 
-        page.evaluate("document.activeElement.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}))")
-        synthetic_inspect_key(page, **accepted)
-        expect(status).to_contain_text("Inspector: Frame")
-        assert not inspect_shortcut_events(page)[-1]["prevented"]
-        page.evaluate("document.activeElement.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}))")
         page.keyboard.press(f"{modifier}+j")
         expect(status).to_contain_text("Inspector hidden")
         assert inspect_shortcut_events(page)[-1]["prevented"]
         page.keyboard.press(f"{modifier}+j")
         expect(status).to_contain_text("Inspector: Frame")
 
-        page.evaluate("""() => {
-            const outside=document.createElement('input');outside.id='outside-workbench';outside.type='text';
-            outside.style.position='fixed';outside.style.left='-1000px';
-            document.body.append(outside);outside.focus();
-        }""")
-        synthetic_inspect_key(page, **accepted)
+        outside = external_input_fixture(page, "outside-workbench")
+        inspect_key(page, **accepted)
         expect(status).to_contain_text("Inspector: Frame")
         assert not inspect_shortcut_events(page)[-1]["prevented"]
-        page.evaluate("document.getElementById('outside-workbench').remove()")
-        canvas.click(position={"x": 720, "y": 12})
-        open_input(page)
-        synthetic_inspect_key(page, **accepted)
+        outside.evaluate("element => element.remove()")
+        select_inspector_tab(page, canvas, "Frame")
+        open_input(page, mode="Bytecode")
+        inspect_key(page, **accepted)
         assert not inspect_shortcut_events(page)[-1]["prevented"]
         page.keyboard.press("Escape")
         settle_gesture(page)
@@ -354,8 +378,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         expect(status).to_contain_text(original_selection)
 
         select_inspector_tab(page, canvas, "SSA value", (returned[1] + returned[3]) / 2)
-        canvas.dblclick(position={"x": 85, "y": returned[3] + 16})
-        settle_gesture(page)
+        focus_inspector_value(page, canvas)
         assert page.evaluate("document.activeElement.tagName") == "INPUT", "SSA value editor did not own text focus"
         page.keyboard.press(f"{modifier}+a")
         page.keyboard.insert_text("1")
@@ -364,19 +387,29 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         canvas.screenshot(path=str(output / f"inspect-{platform}-text-focused.png"))
         # An external HTML input must remain outside shortcut ownership even
         # immediately after a real egui editor held the hidden text agent.
-        page.evaluate("""() => {
-            const outside=document.createElement('input');outside.id='outside-value-editor';outside.type='text';
-            outside.style.position='fixed';outside.style.left='-1000px';
-            document.body.append(outside);outside.focus();
-        }""")
-        synthetic_inspect_key(page, **accepted)
+        outside = external_input_fixture(page, "outside-value-editor")
+        inspect_key(page, **accepted)
         expect(status).to_contain_text("Inspector: SSA value %1")
         assert not inspect_shortcut_events(page)[-1]["prevented"]
-        page.evaluate("document.getElementById('outside-value-editor').remove()")
-        canvas.dblclick(position={"x": 85, "y": returned[3] + 16})
-        settle_gesture(page)
+        outside.evaluate("element => element.remove()")
+        focus_inspector_value(page, canvas)
         assert page.evaluate("document.activeElement.tagName") == "INPUT", "SSA value editor did not recover text focus"
         expect(status).to_contain_text("Inspector: SSA value %1")
+        # Chromium generates the composition lifecycle on the actual focused
+        # framework text agent. Test both a composing key and a second chord
+        # while preedit remains active, then cancel it without changing ValueId.
+        ui_control(page, "Inspect", role="toggle", selected=True, enabled=True)
+        session.send("Input.imeSetComposition", {"text": "1", "selectionStart": 0, "selectionEnd": 1})
+        settle_gesture(page)
+        inspect_key(page, **accepted)
+        expect(status).to_contain_text("Inspector: SSA value %1")
+        assert inspect_shortcut_events(page)[-1]["composing"]
+        assert not inspect_shortcut_events(page)[-1]["prevented"]
+        inspect_key(page, **accepted)
+        expect(status).to_contain_text("Inspector: SSA value %1")
+        assert not inspect_shortcut_events(page)[-1]["prevented"]
+        session.send("Input.imeSetComposition", {"text": "", "selectionStart": 0, "selectionEnd": 0})
+        settle_gesture(page)
         page.keyboard.press(f"{modifier}+j")
         expect(status).to_contain_text("Inspector hidden")
         assert inspect_shortcut_events(page)[-1]["prevented"], "text-agent shortcut leaked to the browser"
@@ -394,6 +427,7 @@ def inspector_controls_interactions(browser, url: str, output: Path):
             "namespace_controls": namespace_checks,
             "process_controls": process_checks,
             "key_events": inspect_shortcut_events(page), "renderer": webgpu_evidence(page)}
+        session.detach()
         context.close()
     (output / "inspector-controls-report.json").write_text(json.dumps(results, indent=2) + "\n")
     return results
