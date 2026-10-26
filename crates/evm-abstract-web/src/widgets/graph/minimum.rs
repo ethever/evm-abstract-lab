@@ -25,6 +25,7 @@ pub(super) use scene::{LayoutMemory, Scene};
 impl Graph {
     /// Legacy selection adapter. The canonical shell consumes the same render's
     /// typed intent through show_minimum_scoped, including directory-only picks.
+    #[cfg(test)]
     pub(crate) fn show_minimum(
         &mut self,
         ui: &mut Ui,
@@ -97,7 +98,7 @@ impl Graph {
                 }
                 if controls::action(ui, "Fit graph", Density::Compact).clicked() { self.request_fit(ui, true); }
                 if controls::action_enabled(ui, selection.node.is_some(), "Focus selected", Density::Compact).clicked() { self.focus_selection(); }
-                if ui.checkbox(&mut self.whole_scope, "Model overview").changed() {
+                if crate::framework::checkbox(ui, &mut self.whole_scope, "Model overview").changed() {
                     scope = if self.whole_scope { GraphScope::Overview { summary: selection.summary } }
                         else { GraphScope::Context { summary: selection.summary, procedure: selection.procedure,
                             anchor: selection.node.map(|node| ControlOrigin { node, location: selection.control }) } };
@@ -129,7 +130,7 @@ impl Graph {
                         .color(palette::WARNING),
                 );
             }
-            ui.menu_button("Advanced", |ui| {
+            let advanced = ui.menu_button("Advanced", |ui| {
                 ui.label(format!(
                     "{} / {} context receipts · {} other-context receipts",
                     counts.displayed_receipts,
@@ -164,6 +165,7 @@ impl Graph {
                 }
                 ui.monospace(format!("{:?}", scene.scope));
             });
+            controls::observe(ui, &advanced.response, "Advanced", "menu", None);
         });
         if model_requested && let Some(set) = model_set {
             self.scene.minimum.as_mut().unwrap().picker = Some(Picker::Targets(set));
@@ -173,6 +175,7 @@ impl Graph {
             Sense::click_and_drag(),
         );
         let canvas = response.rect;
+        crate::controls::observe(ui, &response, "CFG canvas", "graph-canvas", None);
         if canvas.size().min_elem() <= 1.0 || ui.ctx().will_discard() {
             return None;
         }

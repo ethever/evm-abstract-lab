@@ -22,7 +22,7 @@ impl Graph {
             .state
             .is_some_and(|state| self.scene.display.state_to_node.contains_key(&state));
         Density::Compact.scope(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            let group = ui.horizontal_wrapped(|ui| {
                 controls::tab_value(ui, &mut content, NodeView::Disassembly, "Disasm", Density::Compact)
                     .on_hover_text(crate::notation::widget(ui, "Decoded source instructions"));
                 controls::tab_value(ui, &mut content, NodeView::Ssa, "SSA", Density::Compact)
@@ -59,6 +59,7 @@ impl Graph {
                         .on_hover_text(crate::notation::widget(ui, TERMINATION_LEGEND));
                 }
             });
+            controls::observe(ui, &group.response, "graph_content", "group", None);
         });
         self.set_content(content, selection.state);
         let mut mode = self.mode;
@@ -71,7 +72,7 @@ impl Graph {
                     .on_hover_text(crate::notation::widget(ui, "Each program basic block appears once. Summary paths can combine different instances; choose a state for its actual SSA."));
                 controls::tab_value(ui, &mut mode, GraphMode::States, "States", Density::Compact)
                     .on_hover_text(crate::notation::widget(ui, "Original Native states in this scoped window. Overview expands the selected source across invocation contexts."));
-                ui.checkbox(&mut whole_scope, "Overview")
+                crate::framework::checkbox(ui, &mut whole_scope, "Overview")
                     .on_hover_text("Expand the selected source across invocation contexts. Cards retain independent Native instances.");
                 ui.add_enabled_ui(selection.state.is_some(), |ui| {
                     controls::tab_value(ui, &mut mode, GraphMode::Local, "Local", Density::Compact)
@@ -86,7 +87,7 @@ impl Graph {
                     ui.label(crate::notation::widget(ui, "Hops"));
                     ui.add(egui::DragValue::new(&mut hops).range(1..=4));
                 } else {
-                    egui::ComboBox::from_id_salt("cfg_program_scope")
+                    let combo = egui::ComboBox::from_id_salt("cfg_program_scope")
                         .selected_text(crate::notation::widget(ui, scope.and_then(|id| report.programs.iter().find(|program| program.id == id)).map_or("All sources".into(), |program| program_caption(program))))
                         .width(104.0)
                         .show_ui(ui, |ui| {
@@ -101,6 +102,7 @@ impl Graph {
                                 )));
                             }
                         });
+                    controls::observe(ui, &combo.response, "cfg_program_scope", "combobox", None);
                 }
                 let selected_group = selection
                     .state
@@ -241,11 +243,10 @@ impl Graph {
                                 "Code: {}\nStorage: {}\nContext: {:?}",
                                 report.code_label(block), report.storage_label(block), block.context
                             );
-                            if ui
-                                .selectable_label(selection.state == Some(state), crate::notation::widget(ui, label))
-                                .on_hover_text(crate::notation::widget(ui, tooltip))
-                                .clicked()
-                            {
+                            let response = ui.selectable_label(selection.state == Some(state), crate::notation::widget(ui, &label))
+                                .on_hover_text(crate::notation::widget(ui, tooltip));
+                            controls::observe(ui, &response, &label, "graph-instance", Some(selection.state == Some(state)));
+                            if response.clicked() {
                                 picked = Some(state);
                             }
                         }

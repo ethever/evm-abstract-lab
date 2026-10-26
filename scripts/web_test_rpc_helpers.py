@@ -8,7 +8,7 @@ from playwright.sync_api import expect
 import json
 import re
 import time
-from web_test_harness import analysis_server, complete_submission, open_input, rendered_frame, settle_gesture
+from web_test_harness import analysis_server, click_control, complete_submission, edit_control, open_input, ui_controls
 from web_test_hybrid import oracle_graph, source_program
 
 
@@ -80,19 +80,16 @@ def visible_seconds(page, label):
     return float(match[1]) / (1000 if match[2] == "ms" else 1)
 
 def open_rpc_input(page, canvas, *, from_bytecode=False):
-    open_input(page)
-    if from_bytecode:
-        canvas.click(position={"x": 465, "y": 386})
-        settle_gesture(page)
+    open_input(page, mode="Address")
 
 def select_rpc_provider(page, canvas, index: int, output: Path, name: str):
-    # Real packaged 1440x1000 RPC modal: regular controls retain the
-    # original 20-point rows and 23-point stride.
-    canvas.click(position={"x": 600, "y": 402})
-    rendered_frame(page)
+    click_control(page, canvas, "rpc_provider", role="combobox")
     canvas.screenshot(path=str(output / f"{name}-providers.png"))
-    canvas.click(position={"x": 460, "y": 428 + index * 23})
-    settle_gesture(page)
+    prefix = RPC_PROVIDERS[index]["name"] + " ("
+    choices = [control for control in ui_controls(page)
+               if control["role"] == "tab" and control["enabled"] and control["label"].startswith(prefix)]
+    assert len(choices) == 1, (prefix, choices)
+    click_control(page, canvas, choices[0]["label"], role="tab", id=choices[0]["id"])
 
 def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, providers,
                *, configure_form=None):
@@ -104,10 +101,7 @@ def submit_rpc(page, canvas, rpc, output: Path, name: str, provider_index: int, 
     provider = providers[provider_index]
     expect(page.locator("#analysis-status")).to_contain_text(
         f"RPC provider: {provider['name']} ({provider['endpoint']})")
-    canvas.click(position={"x": 600, "y": 448})
-    page.keyboard.press("Control+A")
-    page.keyboard.type(rpc.root_address, delay=3)
-    rendered_frame(page)
+    edit_control(page, canvas, "rpc_address", rpc.root_address)
     if configure_form is not None:
         configure_form()
     canvas.screenshot(path=str(output / f"{name}-input.png"))

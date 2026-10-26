@@ -9,7 +9,9 @@ mod tests;
 const DEFAULT_HEIGHT: f32 = 210.0;
 const DEFAULT_VIEWPORT_FRACTION: f32 = 0.38;
 const MIN_HEIGHT: f32 = 80.0;
-const PANE_REMAINDER: f32 = 32.0;
+// A pane needs its tab strip plus readable content on keyboard-sized viewports.
+const PANE_REMAINDER: f32 = 72.0;
+const TITLE_CONTROLS: f32 = 32.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Mode {
@@ -47,10 +49,11 @@ impl Panel {
     }
 
     fn maximum_height(available: f32) -> f32 {
-        // On short screens keep the title controls reachable; the other panes
-        // yield their remainder before the inspector drops below its minimum.
+        // The automatic/user preference survives this temporary clamp. On an
+        // exceptionally short viewport retain the inspector's title controls
+        // while reserving the other pane's tab strip and reading area.
         (available - PANE_REMAINDER)
-            .max(MIN_HEIGHT)
+            .max(TITLE_CONTROLS)
             .min(available.max(0.0))
     }
 

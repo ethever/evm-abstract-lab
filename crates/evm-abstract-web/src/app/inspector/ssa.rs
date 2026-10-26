@@ -49,7 +49,7 @@ pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selecti
         response.clone().on_hover_text(
             "Enter a final ValueId, or click a %value in SSA. Value IDs belong to this report.",
         );
-        if response.changed() || selection.value.is_none() {
+        if response.changed() {
             selection.value = Some(id);
         }
         ui.label(RichText::new("Definition and scoped facts").color(palette::MUTED));

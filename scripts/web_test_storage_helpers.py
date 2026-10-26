@@ -7,11 +7,60 @@ import json
 import time
 import zlib
 from playwright.sync_api import Error as PlaywrightError
-from web_test_harness import rendered_frame, settle_gesture
+from web_test_harness import click_control, rendered_frame, settle_gesture, ui_control
 from web_test_pixels import canvas_screenshot, save_png_crop, text_pixels
 
 
 STORAGE_SLOT_WORD = "0x1234567890abcdef234567890abcdef134567890abcdef124567890190abcdef"
+
+
+def storage_content_region(page):
+    """Start below the actual current/rollback store row, after Native scope."""
+    controls = [ui_control(page, label, role="tab")
+                for label in ["Current store", "Frame rollback store"]]
+    top = max(control["rect"][3] for control in controls) + 3
+    size = page.viewport_size
+    return (4, top, size["width"] - 24, size["height"] - 30)
+
+
+def storage_copy_full_slot(page, canvas, cell, expected):
+    """Read the clipboard after the real context-menu action on a painted slot."""
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    left, top, right, bottom = cell["bounds"]
+    page.mouse.click((left + right) / 2, (top + bottom) / 2, button="right")
+    settle_gesture(page)
+    click_control(page, canvas, "Copy full slot key", role="action")
+    deadline = time.monotonic() + 5
+    while True:
+        copied = page.evaluate("navigator.clipboard.readText()")
+        if copied == expected or time.monotonic() >= deadline:
+            break
+        page.wait_for_timeout(25)
+    assert copied == expected, (expected, copied)
+    return copied
+
+
+def touch_scroll_storage(page, region):
+    """Swipe the real storage viewport; text selection must yield to scrolling."""
+    left, top, right, bottom = region
+    x, start, end = min(left + 80, right - 8), bottom - 25, top + 25
+    assert start - end > 100, region
+    session = page.context.new_cdp_session(page)
+    try:
+        for _ in range(3):
+            session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [
+                {"id": 1, "x": x, "y": start, "radiusX": 3, "radiusY": 3}]})
+            rendered_frame(page)
+            for step in range(1, 17):
+                session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [
+                    {"id": 1, "x": x, "y": start + (end - start) * step / 16,
+                     "radiusX": 3, "radiusY": 3}]})
+                rendered_frame(page)
+            session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            settle_gesture(page)
+    finally:
+        session.detach()
+
 
 def storage_table_pixels(page, screenshot: bytes, region):
     """Find the painted divider, header and cells, without reading egui state."""
@@ -75,8 +124,7 @@ def storage_table_snapshot(page, canvas, output: Path, name: str, tab_bottom: fl
     page.mouse.move(2,2)
     settle_gesture(page)
     png=canvas.screenshot(path=str(output/f"{name}.png"))
-    size=page.viewport_size
-    table=storage_table_pixels(page,png,(4,tab_bottom+52,size["width"]-24,size["height"]-30))
+    table=storage_table_pixels(page,png,storage_content_region(page))
     assert table["header"]["slot"] and table["header"]["value"], f"Slot/Value headers are missing: {storage_pixel_report(table)}"
     assert len(table["rows"])==count, f"expected {count} body rows distinct from the header: {storage_pixel_report(table)}"
     assert all(row["slot"] and row["value"] for row in table["rows"]), storage_pixel_report(table)

@@ -33,7 +33,12 @@ impl Graph {
                             };
                             let mut label = destination_label(report, scene.scope.summary(), destination);
                             if let (Picker::Origins(_), Destination::Control(target)) = (picker, destination) { label = format!("r{} {} · {label}", target.origin.node, if target.origin.location.is_none() { "Body" } else { "MAY point" }); }
-                            if ui.add(egui::Button::new(label).truncate()).on_hover_text(details).clicked() {
+                            let response = ui.add(egui::Button::new(&label).truncate()).on_hover_text(details);
+                            crate::controls::observe(ui, &response, &label, match picker {
+                                Picker::Origins(_) => "graph-origin",
+                                Picker::Targets(_) => "graph-destination",
+                            }, None);
+                            if response.clicked() {
                                 picked = Some(match (picker, destination) { (Picker::Origins(_), Destination::Control(target)) => GraphIntent::Select(target), _ => destination_intent(scene.scope.summary(), destination) });
                             }
                         }

@@ -8,9 +8,11 @@ mod ssa;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use disassembly::SourceCache;
+#[cfg(test)]
 pub(crate) use disassembly::disassembly;
 pub(crate) use disassembly::natural_width as disassembly_width;
-pub(crate) use graph::{Graph, GraphMode};
+pub(crate) use graph::{Graph, GraphIntent, GraphMode, NativeIntent};
 #[cfg(test)]
 pub(crate) use ssa::natural_width as ssa_width;
 pub(crate) use ssa::natural_width_cached as ssa_width_cached;

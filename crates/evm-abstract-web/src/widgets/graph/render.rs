@@ -9,6 +9,7 @@ use edges::paint_edge_text;
 use egui::{Align2, FontId, Pos2, Rect, Sense, Ui, Vec2};
 
 impl Graph {
+    #[cfg(test)]
     pub(crate) fn show(&mut self, ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selection) {
         if let Some(NativeIntent::Select(picked) | NativeIntent::Open(picked)) =
             self.show_scoped(ui, report, selection)
@@ -50,6 +51,7 @@ impl Graph {
             Sense::click_and_drag(),
         );
         let canvas = response.rect;
+        crate::controls::observe(ui, &response, "CFG canvas", "graph-canvas", None);
         painter.rect_filled(canvas, 3.0, palette::BACKGROUND);
         if self.scene.nodes.is_empty()
             && let Some(index) = &self.scene.index
@@ -235,6 +237,13 @@ impl Graph {
                     &content.title,
                 )
             });
+            crate::controls::observe(
+                ui,
+                &hit,
+                &content.title,
+                "graph-node",
+                Some(selected_node == Some(id)),
+            );
             paint::node(
                 &painter,
                 rect,

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from playwright.sync_api import expect
-from web_test_graph_helpers import workspace_panes
+from web_test_graph_helpers import graph_content, graph_overview, workspace_panes, workspace_route
 from web_test_harness import observe_webgpu, rendered_frame, resize_view, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import assert_translation, graph_screenshot_metrics
@@ -20,12 +20,12 @@ def pane_interactions(browser, url: str, output: Path):
     canvas = page.locator("#evm-canvas")
     hide_inspector(page, canvas)
     for bytecode, name in [("600160020100", "short"), ("7f" + "ff" * 32 + "00", "long")]:
-        reply = submit_bytecode(page, canvas, bytecode, output / f"panes-{name}-input.png")
+        reply = submit_bytecode(page, canvas, bytecode, output / f"panes-{name}-input.png", close_directory=True)
         assert reply.status == 200
         expect(status).to_contain_text("Converged")
-        canvas.click(position={"x": 20, "y": 700})
-        page.keyboard.press("0")
-        settle_gesture(page)
+        graph_overview(page, canvas)
+        graph_content(page, canvas, "SSA")
+        workspace_route(page, "Compare")
         resize_view(page, 2560, 1000)
         current, _ = workspace_panes(page, canvas, output, f"panes-{name}-2560")
         if name == "short":

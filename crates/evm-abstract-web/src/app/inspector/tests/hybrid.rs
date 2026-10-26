@@ -37,14 +37,17 @@ fn default_coverage_panel_shows_conditioned_native_paths_without_replacing_globa
         tab: Tab::Coverage,
         ..Default::default()
     };
-    let mut selection = Selection::default();
+    let mut selection = Selection {
+        state: native.cfg.first().map(|state| state.id),
+        ..Default::default()
+    };
     let visible = rendered_at(
         &context,
         &mut time,
         vec![],
         egui::vec2(1600.0, 2000.0),
         |ui| {
-            inspector.show(ui, &(report).view(), &mut selection, None);
+            inspector.show(ui, &native, &mut selection, None);
         },
     );
     let text = visible
