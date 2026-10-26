@@ -1,14 +1,14 @@
 //! View controls and native-instance selection. The graph owns display choices;
 //! shared selection always remains an original analysis state ID.
 
-use super::{Graph, NodeView};
+use super::{Graph, NativeIntent, NodeView};
 use crate::controls::{self, Density};
 use crate::report::ReportView;
 use crate::{app::Selection, palette, widgets::GraphMode};
 use egui::{Context, RichText, Ui};
 use evm_abstract_notation::Symbol;
 
-const TERMINATION_LEGEND: &str = "CFG termination colors\nDeep green: normal end / return\nDeep purple: REVERT\nDeep red: exception\nNeutral: mixed, continuing, or no complete termination evidence\nRoot end and Frame return labels show native state counts.\nDashed amber outline: unresolved frontier / non-current coverage\nTurquoise outer outline: selected state\nAt low zoom, identity text and termination colors remain visible.";
+const TERMINATION_LEGEND: &str = "CFG termination colors\nDeep green: normal end / return\nDeep purple: REVERT\nDeep red: exception\nNeutral: mixed, continuing, or no complete termination evidence\nRoot end and Frame return labels show native state counts.\nDashed amber outline: unresolved frontier / non-current coverage\nTurquoise outer outline: selected state\nLow zoom shows geometry; zoom in for source labels and previews.";
 
 impl Graph {
     pub(super) fn controls(
@@ -22,7 +22,7 @@ impl Graph {
             .state
             .is_some_and(|state| self.scene.display.state_to_node.contains_key(&state));
         Density::Compact.scope(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            let group = ui.horizontal_wrapped(|ui| {
                 controls::tab_value(ui, &mut content, NodeView::Disassembly, "Disasm", Density::Compact)
                     .on_hover_text(crate::notation::widget(ui, "Decoded source instructions"));
                 controls::tab_value(ui, &mut content, NodeView::Ssa, "SSA", Density::Compact)
@@ -36,12 +36,16 @@ impl Graph {
                 if controls::action_enabled(ui, selected_visible, "Focus selected", Density::Compact)
                     .clicked()
                 {
-                    self.focus_pending = true;
+                    self.focus_selection();
+                }
+                if controls::action(ui, "Entry", Density::Compact).clicked() {
+                    self.entry_pending = true;
+                    self.fit_pending = false;
                 }
                 ui.label(
                     crate::notation::widget(ui, RichText::new(format!(
                         "{:.0}% · {}",
-                        self.zoom * 100.0,
+                        self.camera().0 * 100.0,
                         if self.fitted { "Fit" } else { "Manual" }
                     ))
                     .small()
@@ -55,32 +59,36 @@ impl Graph {
                         .on_hover_text(crate::notation::widget(ui, TERMINATION_LEGEND));
                 }
             });
+            controls::observe(ui, &group.response, "graph_content", "group", None);
         });
         self.set_content(content, selection.state);
         let mut mode = self.mode;
         let mut scope = self.scene.program_scope;
         let mut hops = self.neighborhood_hops;
+        let mut whole_scope = self.whole_scope;
         Density::Compact.scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 controls::tab_value(ui, &mut mode, GraphMode::Blocks, "Blocks", Density::Compact)
                     .on_hover_text(crate::notation::widget(ui, "Each program basic block appears once. Summary paths can combine different instances; choose a state for its actual SSA."));
                 controls::tab_value(ui, &mut mode, GraphMode::States, "States", Density::Compact)
-                    .on_hover_text(crate::notation::widget(ui, "Every original native analysis state and edge"));
+                    .on_hover_text(crate::notation::widget(ui, "Original Native states in this scoped window. Overview expands the selected source across invocation contexts."));
+                crate::framework::checkbox(ui, &mut whole_scope, "Overview")
+                    .on_hover_text("Expand the selected source across invocation contexts. Cards retain independent Native instances.");
                 ui.add_enabled_ui(selection.state.is_some(), |ui| {
                     controls::tab_value(ui, &mut mode, GraphMode::Local, "Local", Density::Compact)
-                        .on_hover_text(crate::notation::widget(ui, "Recorded predecessors and successors of the selected state, including calls across programs; at most 200 states"));
+                        .on_hover_text(crate::notation::widget(ui, "Recorded adjacent states. Separate invocation contexts and out-of-window targets remain navigable boundaries; Overview can show up to 200 adjacent states."));
                 });
                 if mode == GraphMode::Local {
                     ui.label(
-                        crate::notation::widget(ui, RichText::new("Cross-program neighborhood")
+                        crate::notation::widget(ui, RichText::new(if self.whole_scope { "Cross-program neighborhood" } else { "Adjacent control" })
                             .small()
                             .color(palette::MUTED)),
                     );
                     ui.label(crate::notation::widget(ui, "Hops"));
                     ui.add(egui::DragValue::new(&mut hops).range(1..=4));
                 } else {
-                    egui::ComboBox::from_id_salt("cfg_program_scope")
-                        .selected_text(crate::notation::widget(ui, scope.map_or("All programs".into(), |id| Symbol::Program(id).to_string())))
+                    let combo = egui::ComboBox::from_id_salt("cfg_program_scope")
+                        .selected_text(crate::notation::widget(ui, scope.and_then(|id| report.programs.iter().find(|program| program.id == id)).map_or("All sources".into(), |program| program_caption(program))))
                         .width(104.0)
                         .show_ui(ui, |ui| {
                             controls::tab_value(ui, &mut scope, None, "All programs", Density::Compact);
@@ -88,12 +96,13 @@ impl Graph {
                                 controls::tab_value(ui,
                                     &mut scope,
                                     Some(program.id),
-                                    format!("{} · {:?}", Symbol::Program(program.id), program.kind), Density::Compact)
+                                    program_caption(program), Density::Compact)
                                 .on_hover_text(crate::notation::widget(ui, format!(
                                     "{}\n{}", program.code_address.as_deref().unwrap_or("Constructor source"), program.code_hash
                                 )));
                             }
                         });
+                    controls::observe(ui, &combo.response, "cfg_program_scope", "combobox", None);
                 }
                 let selected_group = selection
                     .state
@@ -111,9 +120,10 @@ impl Graph {
                 if let Some(state) = selection.state {
                     ui.label(
                         crate::notation::widget(ui, RichText::new(format!(
-                            "Selected {notation_0}{}",
+                            "{}{}",
+                            self.scene.index.as_ref().and_then(|index| index.cfg(report, state)).and_then(|state| state.start_pc).map_or("Selected control".into(), |pc| format!("Selected source 0x{pc:04x}")),
                             if selected_visible { "" } else { " · outside view" }
-                        , notation_0 = Symbol::State(state)))
+                        ))
                         .small()
                         .color(palette::MUTED)),
                     );
@@ -121,9 +131,12 @@ impl Graph {
             });
         });
         self.set_mode(mode);
-        if scope != self.scene.program_scope {
-            self.scene.program_scope = scope;
+        if self.whole_scope != whole_scope {
+            self.whole_scope = whole_scope;
             self.invalidate_scene();
+        }
+        if scope != self.scene.program_scope {
+            self.set_program_scope(scope);
         }
         if hops != self.neighborhood_hops {
             self.neighborhood_hops = hops;
@@ -152,10 +165,8 @@ impl Graph {
         ctx: &Context,
         report: &ReportView<'_>,
         selection: &mut Selection,
-    ) {
-        let Some(group_id) = self.scene.instance_group else {
-            return;
-        };
+    ) -> Option<NativeIntent> {
+        let group_id = self.scene.instance_group?;
         let Some(node) = self
             .scene
             .node_positions
@@ -163,11 +174,13 @@ impl Graph {
             .and_then(|position| self.scene.display.nodes.get(*position))
         else {
             self.scene.instance_group = None;
-            return;
+            return None;
         };
         let Some(index) = &self.scene.index else {
-            return;
+            return None;
         };
+        let portal = self.scene.display.portals.get(&group_id);
+        let members = portal.map_or(node.members.as_slice(), |portal| portal.targets.as_slice());
         let mut open = true;
         let mut picked = None;
         egui::Window::new("State instances")
@@ -176,12 +189,13 @@ impl Graph {
             .default_width(460.0)
             .max_width((ctx.content_rect().width() - 24.0).max(180.0))
             .show(ctx, |ui| {
-                ui.label(crate::notation::widget(ui, format!(
+                if portal.is_some() { ui.label("Recorded destinations · choose a separate invocation"); }
+                else { ui.label(crate::notation::widget(ui, format!(
                     "{}:{} · {} state instances",
                     node.program.map_or("Native".into(), |id| Symbol::Program(id).to_string()),
                     node.basic_block.map_or_else(|| "Process control".into(), |id| Symbol::Block(id).to_string()),
                     node.members.len()
-                )));
+                ))); }
                 ui.label(
                     crate::notation::widget(ui, RichText::new("Choose an original state to view its SSA, stack and effects. This overview does not merge their execution contexts.")
                         .small()
@@ -198,10 +212,9 @@ impl Graph {
                 });
                 let query = self.scene.instance_filter.trim();
                 let selected_id = evm_abstract_notation::parse_state(query);
-                let matching = selected_id
-                    .filter(|state| self.scene.display.state_to_node.get(state) == Some(&group_id));
+                let matching = selected_id.filter(|state| members.contains(state));
                 let rows = if query.is_empty() {
-                    node.members.len()
+                    members.len()
                 } else {
                     usize::from(matching.is_some())
                 };
@@ -213,7 +226,7 @@ impl Graph {
                     .max_height((ctx.content_rect().height() * 0.45).min(360.0))
                     .show_rows(ui, 22.0, rows, |ui, range| {
                         for row in range {
-                            let state = matching.unwrap_or_else(|| node.members[row]);
+                            let state = matching.unwrap_or_else(|| members[row]);
                             let Some(block) = index.cfg(report, state) else {
                                 continue;
                             };
@@ -230,27 +243,49 @@ impl Graph {
                                 "Code: {}\nStorage: {}\nContext: {:?}",
                                 report.code_label(block), report.storage_label(block), block.context
                             );
-                            if ui
-                                .selectable_label(selection.state == Some(state), crate::notation::widget(ui, label))
-                                .on_hover_text(crate::notation::widget(ui, tooltip))
-                                .clicked()
-                            {
+                            let response = ui.selectable_label(selection.state == Some(state), crate::notation::widget(ui, &label))
+                                .on_hover_text(crate::notation::widget(ui, tooltip));
+                            controls::observe(ui, &response, &label, "graph-instance", Some(selection.state == Some(state)));
+                            if response.clicked() {
                                 picked = Some(state);
                             }
                         }
                     });
             });
+        let mut intent = None;
         if let Some(state) = picked {
-            *selection = Selection {
-                value: None,
-                state: Some(state),
-                pc: None,
-            };
+            if portal.is_some() {
+                self.open_native_state(report, selection, state);
+                intent = Some(NativeIntent::Open(*selection));
+            } else {
+                *selection = Selection {
+                    value: None,
+                    state: Some(state),
+                    pc: None,
+                };
+            }
+            if intent.is_none() {
+                intent = Some(NativeIntent::Select(*selection));
+            }
             open = false;
             ctx.request_repaint();
         }
         if !open {
             self.scene.instance_group = None;
         }
+        intent
     }
+}
+
+fn program_caption(program: &evm_abstract_protocol::ProgramInfo) -> String {
+    program.code_address.as_deref().map_or_else(
+        || format!("{:?} code", program.kind),
+        |address| {
+            if address.len() > 18 && address.is_ascii() {
+                format!("{}…{}", &address[..8], &address[address.len() - 6..])
+            } else {
+                address.into()
+            }
+        },
+    )
 }

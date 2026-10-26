@@ -11,6 +11,37 @@ impl Graph {
         if self.scene.index.is_none() {
             self.scene.index = Some(ReportIndex::new(report));
         }
+        let index = self.scene.index.as_ref().unwrap();
+        if !self.scene.scope_initialized {
+            self.scene.program_scope = selected
+                .and_then(|state| index.cfg(report, state))
+                .or_else(|| report.cfg.first())
+                .and_then(|state| state.program);
+            self.scene.scope_initialized = true;
+        }
+        let selected_context = selected.filter(|state| {
+            index
+                .cfg(report, *state)
+                .is_some_and(|state| state.program == self.scene.program_scope)
+        });
+        if self.scene.native_context.is_none() {
+            self.scene.native_context = selected_context.or_else(|| {
+                report
+                    .cfg
+                    .iter()
+                    .find(|state| state.program == self.scene.program_scope)
+                    .map(|state| state.id)
+            });
+        }
+        if !self.whole_scope
+            && let (Some(context), Some(selected)) = (self.scene.native_context, selected_context)
+            && (!super::projection::same_context(report, index, context, selected)
+                || (!self.scene.display_dirty
+                    && !self.scene.display.state_to_node.contains_key(&selected)))
+        {
+            self.scene.native_context = Some(selected);
+            self.invalidate_scene();
+        }
         if self.mode == GraphMode::Local
             && self.scene.local_center != selected
             && !self.scene.display_dirty
@@ -23,14 +54,26 @@ impl Graph {
         let Some(index) = &self.scene.index else {
             return;
         };
-        self.scene.display = super::projection::DisplayGraph::build(
-            report,
-            index,
-            self.mode,
-            self.scene.program_scope,
-            selected,
-            self.neighborhood_hops,
-        );
+        self.scene.display = if self.whole_scope {
+            super::projection::DisplayGraph::build(
+                report,
+                index,
+                self.mode,
+                self.scene.program_scope,
+                selected,
+                self.neighborhood_hops,
+            )
+        } else {
+            super::projection::DisplayGraph::scoped(
+                report,
+                index,
+                self.mode,
+                self.scene.program_scope,
+                self.scene.native_context,
+                selected,
+                self.neighborhood_hops,
+            )
+        };
         self.scene.ending_summary = index.termination_summary(
             &self
                 .scene
@@ -79,12 +122,7 @@ impl Graph {
                     .map_or(0, Vec::len);
                 let label = edge_label(edge.id, edge.kind);
                 let label = if count > 1 {
-                    format!(
-                        "{} ({count})",
-                        label
-                            .split_once(' ')
-                            .map_or(label.as_str(), |(_, kind)| kind)
-                    )
+                    format!("{label} ({count})")
                 } else {
                     label
                 };
@@ -191,6 +229,7 @@ impl Graph {
                 .map_or("All programs".into(), |id| Symbol::Program(id).to_string())
         };
         let detail = match (self.scene.detail_level, self.content) {
+            (super::paint::DetailLevel::Silhouette, _) => "overview shapes",
             (super::paint::DetailLevel::Identity, _) => "identities",
             (super::paint::DetailLevel::Preview, NodeView::Ssa) => "SSA preview",
             (super::paint::DetailLevel::Preview, NodeView::Disassembly) => "disassembly preview",

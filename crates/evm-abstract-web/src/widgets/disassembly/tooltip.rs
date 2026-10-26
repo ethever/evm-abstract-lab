@@ -2,6 +2,9 @@
 
 use evm_abstract_protocol::DisasmInstruction;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn instruction(instruction: &DisasmInstruction, executed: bool) -> String {
     let signature = if instruction.valid && instruction.opcode != 0xfe {
         format!(

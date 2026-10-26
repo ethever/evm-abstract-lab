@@ -95,7 +95,7 @@ impl RpcProviders {
                     .iter()
                     .find(|provider| provider.id == *selected)
                     .map_or_else(|| "Select an RPC provider".into(), provider_label);
-                egui::ComboBox::from_id_salt("rpc_provider")
+                let observed_rpc_provider = egui::ComboBox::from_id_salt("rpc_provider")
                     .width(ui.available_width())
                     .selected_text(&label)
                     .truncate()
@@ -115,6 +115,7 @@ impl RpcProviders {
                     })
                     .response
                     .on_hover_text(label);
+                controls::observe(ui, &observed_rpc_provider, "rpc_provider", "combobox", None);
             }
             State::Unrequested | State::Loading => {
                 ui.horizontal(|ui| {

@@ -72,7 +72,7 @@ impl Tab {
         (Self::Timing, "Timing"),
         (Self::Diagnostics, "Diagnostics"),
     ];
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         Self::ALL
             .iter()
             .find(|(tab, _)| *tab == self)
@@ -275,6 +275,7 @@ impl Inspector {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,

@@ -228,10 +228,14 @@ fn bounded_sides(desired: [f32; 2], budget: f32) -> [f32; 2] {
 /// Hidden tabs keep their independent source scroll and graph navigation state.
 pub(super) struct AnalysisPanes<'a> {
     pub(super) report: &'a ReportView<'a>,
+    pub(super) presentation: super::model::presentation::Presentation<'a>,
+    pub(super) focus: &'a super::model::navigation::Focus,
+    pub(super) source_cache: &'a mut widgets::SourceCache,
+    pub(super) source_pick: &'a mut Option<super::model::navigation::Focus>,
+    pub(super) graph_intent: &'a mut Option<widgets::NativeIntent>,
     pub(super) program: Option<usize>,
     pub(super) selection: &'a mut Selection,
     pub(super) graph: &'a mut widgets::Graph,
-    pub(super) disasm_focus: &'a mut Selection,
     pub(super) ssa_focus: &'a mut Selection,
     pub(super) ssa_cache: &'a mut widgets::SsaCache,
     pub(super) ssa_display: crate::ssa_display::SsaDisplay,
@@ -243,18 +247,14 @@ impl AnalysisPanes<'_> {
     pub(super) fn show(&mut self, ui: &mut Ui, pane: Pane) {
         match pane {
             Pane::Disassembly => {
-                widgets::disassembly(
-                    ui,
-                    self.report,
-                    self.program,
-                    self.selection,
-                    self.disasm_focus,
-                );
+                *self.source_pick =
+                    self.source_cache
+                        .show_context(ui, self.presentation, self.focus);
             }
             Pane::Graph => {
                 self.graph
                     .set_ssa_display(self.ssa_display, *self.selection);
-                self.graph.show(ui, self.report, self.selection);
+                *self.graph_intent = self.graph.show_scoped(ui, self.report, self.selection);
             }
             Pane::Ssa => widgets::ssa_cached(
                 ui,

@@ -7,7 +7,6 @@ use evm_abstract_protocol::{BlockCoverage, CfgBlock, FrameSnapshot};
 
 const MEMBERS_IN_TOOLTIP: usize = 12;
 const SHARED_SOURCE_ROWS: usize = 3;
-const COMPACT_MEMBERS: usize = 3;
 
 #[derive(Default)]
 struct CountRange {
@@ -155,15 +154,12 @@ fn active_frame<'a>(
 ) -> Option<&'a FrameSnapshot> {
     index.details(report, state)?.entry.frames.last()
 }
-fn title(node: &DisplayNode) -> String {
+fn title(report: &ReportView<'_>, index: &ReportIndex, node: &DisplayNode) -> String {
     format!(
-        "{}:{} · {} states",
-        node.program
-            .map_or("No program".into(), |program| Symbol::Program(program)
-                .to_string()),
-        node.basic_block.map_or_else(
+        "{} · {} states",
+        index.cfg(report, node.id).map_or_else(
             || "Process control".into(),
-            |id| Symbol::Block(id).to_string()
+            |block| leaf::source_identity(report, block)
         ),
         node.members.len()
     )
@@ -262,27 +258,13 @@ pub(super) fn preview(
         }
     );
     NodeText::new(
-        title(node),
+        title(report, index, node),
         detail,
         lines,
         summary.coverage(),
         summary.frontiers > 0,
     )
-    .with_identity(vec![title(node), compact_members(node)])
-}
-
-fn compact_members(node: &DisplayNode) -> String {
-    let mut text = node
-        .members
-        .iter()
-        .take(COMPACT_MEMBERS)
-        .map(|state| Symbol::State(*state).to_string())
-        .collect::<Vec<_>>()
-        .join(" · ");
-    if node.members.len() > COMPACT_MEMBERS {
-        text.push_str(&format!(" · +{}", node.members.len() - COMPACT_MEMBERS));
-    }
-    text
+    .with_identity(vec![title(report, index, node)])
 }
 
 pub(super) fn tooltip(
@@ -293,7 +275,7 @@ pub(super) fn tooltip(
 ) -> String {
     // Group-level counts were measured once for the card. Hover only formats
     // this fixed-size member sample, even for a block with thousands of states.
-    let mut lines=vec![title(node),"This card groups source locations, not machine payloads or SSA definitions. Select an instance for its exact SSA, stacks and effects.".into()];
+    let mut lines=vec![title(report, index, node),"This card groups source locations, not machine payloads or SSA definitions. Select an instance for its exact SSA, stacks and effects.".into()];
     if view == NodeView::Ssa {
         lines.push("SSA names and effects remain independent in every instance.".into());
     }

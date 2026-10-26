@@ -103,7 +103,7 @@ fn render_at_label(
         _ => None,
     });
     let text = output.shapes.iter().find_map(|item| match &item.shape {
-        Shape::Text(text) if text.galley.text() == "e₀ next" => {
+        Shape::Text(text) if text.galley.text() == "next" => {
             Some(Rect::from_min_size(text.pos, text.galley.size()))
         }
         _ => None,
@@ -223,7 +223,7 @@ fn engine_label_rectangles_keep_text_inside_without_splitting_the_path() {
                     let edge = render_at_label(zoom, density, selected, 0.0, label);
                     assert_eq!(edge.path.points.len(), 4);
                     assert_eq!(edge.line_segments, 0, "no synthetic label bridge");
-                    if zoom <= 0.35 {
+                    if zoom < 0.9 {
                         assert!(edge.text.is_none());
                         assert!(edge.mask.is_none(), "hidden text must not mask the edge");
                     } else {

@@ -1,41 +1,39 @@
 //! Screen-space CFG edges, arrows and labels.
 
-use evm_abstract_notation::Symbol;
 mod flow;
 mod geometry;
+mod viewport;
+pub(super) use viewport::has_visible_geometry;
 #[cfg(test)]
 mod tests;
 
 use super::layout::EdgeRoute;
 use crate::palette;
-use egui::{FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
+use egui::{Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use evm_abstract_protocol::EdgeKind;
 
 pub(super) const FLOW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
-pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
+pub(super) fn edge_label(_id: usize, kind: EdgeKind) -> String {
     if let EdgeKind::Process(action) = kind {
-        return format!("{} process {action:?}", Symbol::Edge(id));
+        return format!("{action:?}");
     }
-    format!(
-        "{notation_0} {}",
-        match kind {
-            EdgeKind::Process(_) => unreachable!("process label handled above"),
-            EdgeKind::ProcessControl => "MAY control",
-            EdgeKind::BranchTrue => "true",
-            EdgeKind::BranchFalse => "false",
-            EdgeKind::Jump => "jump",
-            EdgeKind::Fallthrough => "next",
-            EdgeKind::Call => "call",
-            EdgeKind::Return => "return",
-            EdgeKind::Failure => "failure",
-            EdgeKind::Revert => "revert",
-            EdgeKind::SummaryReturn => "summary return",
-            EdgeKind::SummaryRevert => "summary revert",
-            EdgeKind::SummaryFailure => "summary failure",
-        },
-        notation_0 = Symbol::Edge(id)
-    )
+    match kind {
+        EdgeKind::Process(_) => unreachable!("process label handled above"),
+        EdgeKind::ProcessControl => "MAY control",
+        EdgeKind::BranchTrue => "true",
+        EdgeKind::BranchFalse => "false",
+        EdgeKind::Jump => "jump",
+        EdgeKind::Fallthrough => "next",
+        EdgeKind::Call => "call",
+        EdgeKind::Return => "return",
+        EdgeKind::Failure => "failure",
+        EdgeKind::Revert => "revert",
+        EdgeKind::SummaryReturn => "summary return",
+        EdgeKind::SummaryRevert => "summary revert",
+        EdgeKind::SummaryFailure => "summary failure",
+    }
+    .into()
 }
 
 #[cfg(test)]
@@ -68,7 +66,44 @@ pub(super) fn paint_edge_text(
     zoom: f32,
     selected: bool,
 ) -> bool {
-    let color = match kind {
+    paint_edge_style(
+        painter,
+        route,
+        origin,
+        EdgeStyle {
+            kind,
+            label: label_text,
+            zoom,
+            selected,
+            color: None,
+        },
+    )
+}
+
+/// Conservative delivery colors carry independent currency evidence. Keep that
+/// qualification when sharing Native path/arrow/label geometry.
+pub(super) struct EdgeStyle<'a> {
+    pub kind: EdgeKind,
+    pub label: &'a str,
+    pub zoom: f32,
+    pub selected: bool,
+    pub color: Option<Color32>,
+}
+
+pub(super) fn paint_edge_style(
+    painter: &Painter,
+    route: &EdgeRoute,
+    origin: Pos2,
+    style: EdgeStyle<'_>,
+) -> bool {
+    let EdgeStyle {
+        kind,
+        label: label_text,
+        zoom,
+        selected,
+        color,
+    } = style;
+    let color = color.unwrap_or(match kind {
         EdgeKind::Process(_) => palette::PURPLE,
         EdgeKind::BranchTrue | EdgeKind::Jump => palette::ACCENT,
         EdgeKind::BranchFalse => palette::WARNING,
@@ -78,7 +113,7 @@ pub(super) fn paint_edge_text(
         | EdgeKind::SummaryFailure
         | EdgeKind::SummaryRevert => palette::ERROR,
         EdgeKind::Fallthrough | EdgeKind::ProcessControl => palette::BLUE,
-    };
+    });
     let stroke = Stroke::new(
         if selected { 1.6 } else { 1.0 },
         if selected {
@@ -112,7 +147,7 @@ pub(super) fn paint_edge_text(
     let animated = selected && flow::paint(painter, &points, color, zoom);
     // ELK jointly places the route and its annotation. The label may sit beside
     // a segment; drawing it must never add bends or break the original path.
-    if zoom > 0.35 && !label_text.is_empty() {
+    if zoom >= 0.9 && !label_text.is_empty() {
         let label = Rect::from_min_max(
             origin + route.label.min.to_vec2() * zoom,
             origin + route.label.max.to_vec2() * zoom,
@@ -121,7 +156,7 @@ pub(super) fn paint_edge_text(
         let text_color = palette::MUTED.gamma_multiply(0.8);
         let galley = painter.layout_job(crate::notation::job(
             label_text,
-            FontId::monospace(9.0 * zoom),
+            FontId::monospace(10.0 * zoom),
             text_color,
         ));
         let position = label.center() - galley.size() * 0.5;

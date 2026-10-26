@@ -126,6 +126,15 @@ impl eframe::App for BrowserApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let status_element = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id("analysis-status"));
+        crate::controls::begin_observation(
+            ui.ctx(),
+            status_element
+                .as_ref()
+                .is_some_and(|element| element.has_attribute("data-observe-controls")),
+        );
         while let Ok(result) = self.results.try_recv() {
             self.workspace.receive_message(result);
         }
@@ -153,19 +162,26 @@ impl eframe::App for BrowserApp {
         }
         // A live region also makes canvas-only loading/error states accessible
         // to assistive tools and browser smoke checks.
-        let status = format!(
+        let mut status = format!(
             "{}; {}",
             self.workspace.accessible_status(),
             self.workspace.accessible_rpc_provider_status()
         );
+        if let Some(input) = self.workspace.accessible_input_status() {
+            status.push_str("; ");
+            status.push_str(&input);
+        }
         if status != self.last_status {
-            if let Some(element) = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.get_element_by_id("analysis-status"))
-            {
+            if let Some(element) = &status_element {
                 element.set_text_content(Some(&status));
             }
             self.last_status = status;
+        }
+        if !ui.ctx().will_discard()
+            && let Some(element) = status_element
+            && let Some(controls) = crate::controls::observed(ui.ctx())
+        {
+            let _ = element.set_attribute("data-controls", &controls);
         }
     }
 }

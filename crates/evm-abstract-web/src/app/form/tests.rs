@@ -4,6 +4,8 @@ use evm_abstract_protocol as api;
 use evm_abstract_protocol::RpcProvider;
 
 mod precision;
+mod shortcut;
+mod validation;
 
 fn frame(ctx: &Context, form: &mut AnalysisForm, events: Vec<Event>) -> Option<AnalyzeRequest> {
     paint(ctx, form, events).0
@@ -20,9 +22,35 @@ fn paint(
 fn paint_sized(
     ctx: &Context,
     form: &mut AnalysisForm,
-    events: Vec<Event>,
+    mut events: Vec<Event>,
     size: Vec2,
 ) -> (Option<AnalyzeRequest>, FullOutput) {
+    // Each helper key action is a complete browser-like press/release. Tests
+    // for held-key repeat feed RawInput directly instead.
+    let releases: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let Event::Key {
+                key,
+                physical_key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            {
+                Some(Event::Key {
+                    key: *key,
+                    physical_key: *physical_key,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: *modifiers,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    events.extend(releases);
     let mut request = None;
     let mut output = ctx.run_ui(
         RawInput {

@@ -4,8 +4,8 @@ from playwright.sync_api import expect
 import hashlib
 import json
 import re
-from web_test_graph_helpers import graph_mode, symbol
-from web_test_harness import settle_gesture, webgpu_evidence
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol
+from web_test_harness import click_control, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_camera_intervals, layout_card_extent, layout_ink, node_snapshot
 from web_test_hybrid import source_instructions
@@ -15,9 +15,10 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
     page, canvas, errors = layout_page(browser, url)
     code, metadata = layout_fixture(fixture_name)
     report = layout_submission(page, canvas, code, output, fixture_name)
-    # Namespace activation preserves the previous Global camera. Establish the
-    # all-content Native fit required by the affine pixel measurement below.
-    canvas.click(position={"x":132,"y":110})  # Native Fit graph, with World closed.
+    # The original full-scene and camera proofs deliberately use all contexts.
+    # The default readable entry window has its own scoped-card semantics.
+    graph_overview(page, canvas, fit=True)
+    graph_content(page, canvas, "SSA")
     page.mouse.move(2,2);settle_gesture(page)
     assert report["status"] == "Converged", report["frontiers"]
     assert len(report["cfg"]) == metadata["expected_native_states"]
@@ -98,7 +99,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert native_scene["shown_states"] == native_scene["total_states"] == metadata["expected_native_states"]
         assert native_scene["hidden_states"] == native_scene["boundary_edges"] == 0
         canvas.screenshot(path=str(output/f"{prefix}-states-overview.png"))
-        canvas.click(position={"x":225,"y":107});settle_gesture(page)
+        click_control(page, canvas, "Focus selected", role="action")
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         native_focus = node_snapshot(page,canvas,output,f"{prefix}-states-focused")
         selected = re.search(r"Selected (σ[^;]+);",page.locator("#analysis-status").text_content())[1]
@@ -109,7 +110,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert native_ink["preview_pixels"] > 0, "native focus did not paint real SSA instructions"
         assert layout_counts(page,report,1,mode="States") == {**native_scene,"detail":"SSA preview"}
         graph_mode(page,canvas,"Blocks")
-        canvas.click(position={"x":225,"y":107});settle_gesture(page)
+        click_control(page, canvas, "Focus selected", role="action")
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         source_scene = layout_counts(page,report,1)
         assert source_scene == {**scene,"detail":"SSA preview"}

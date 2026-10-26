@@ -76,7 +76,10 @@ pub(super) fn root_account(ui: &mut Ui, address: &mut String) {
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Root account").color(palette::MUTED));
         let response = egui::ComboBox::from_id_salt("rpc_entry_example")
-            .width(240.0_f32.min(ui.available_width()))
+            // A wrapping row's available_width includes the whole next row.
+            // The nested ComboBox needs the space remaining beside this label
+            // or it can grow the centered modal beyond a narrow viewport.
+            .width(240.0_f32.min(ui.available_size_before_wrap().x).max(80.0))
             .height(300.0)
             .wrap()
             .selected_text(selected.map_or("Custom", Example::label))
@@ -110,6 +113,7 @@ pub(super) fn root_account(ui: &mut Ui, address: &mut String) {
                 }
             })
             .response;
+        controls::observe(ui, &response, "rpc_entry_example", "combobox", None);
         if let Some(example) = selected {
             response.on_hover_text(example.hover_text());
         }

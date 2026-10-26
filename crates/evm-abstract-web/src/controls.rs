@@ -12,14 +12,53 @@ use egui::{
 
 use crate::{notation, palette};
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod observations;
 #[cfg(test)]
 mod tests;
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) use observations::{begin_observation, observed};
+
+/// Optional browser evidence records real painted response bounds. Native
+/// application builds do not retain an observation buffer.
+pub(crate) fn observe(
+    ui: &Ui,
+    response: &Response,
+    label: &str,
+    role: &'static str,
+    selected: Option<bool>,
+) {
+    #[cfg(any(target_arch = "wasm32", test))]
+    {
+        if ui.is_rect_visible(response.rect) {
+            observations::record(ui.ctx(), ui.clip_rect(), response, label, role, selected);
+        }
+    }
+    #[cfg(not(any(target_arch = "wasm32", test)))]
+    let _ = (ui, response, label, role, selected);
+}
+
+/// TableBuilder owns its Ui borrow while returning real row responses. Use
+/// the enclosing viewport clip without borrowing that Ui a second time.
+pub(crate) fn observe_response(
+    response: &Response,
+    clip: egui::Rect,
+    label: &str,
+    role: &'static str,
+    selected: Option<bool>,
+) {
+    #[cfg(any(target_arch = "wasm32", test))]
+    observations::record(&response.ctx, clip, response, label, role, selected);
+    #[cfg(not(any(target_arch = "wasm32", test)))]
+    let _ = (response, clip, label, role, selected);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Density {
     Regular,
     Compact,
     Inline,
+    Touch,
 }
 
 impl Density {
@@ -28,6 +67,7 @@ impl Density {
             Self::Regular => 20.0,
             Self::Compact => 18.0,
             Self::Inline => 15.0,
+            Self::Touch => 32.0,
         }
     }
 
@@ -40,6 +80,7 @@ impl Density {
             Self::Regular => vec2(6.0, 2.0),
             Self::Compact => vec2(6.0, 1.0),
             Self::Inline => vec2(6.0, 0.0),
+            Self::Touch => vec2(6.0, 6.0),
         }
     }
 
@@ -222,6 +263,21 @@ fn show(ui: &mut Ui, id: Option<Id>, kind: Kind, label: WidgetText, density: Den
     let (auto_id, rect) = ui.allocate_space(desired);
     let response = ui.interact(rect, id.unwrap_or(auto_id), Sense::click());
     response.widget_info(|| kind.info(ui.is_enabled(), galley.text()));
+    observe(
+        ui,
+        &response,
+        galley.text(),
+        match kind {
+            Kind::Action => "action",
+            Kind::Menu => "menu",
+            Kind::Toggle(_) => "toggle",
+            Kind::Tab(_) => "tab",
+        },
+        match kind {
+            Kind::Toggle(selected) | Kind::Tab(selected) => Some(selected),
+            _ => None,
+        },
+    );
     if ui.is_rect_visible(rect) {
         let appearance = appearance(ui, &response, kind);
         ui.painter().rect(

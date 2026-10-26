@@ -91,6 +91,23 @@ impl Listeners {
                         event.ctrl_key()
                     },
                 };
+                // A Ctrl+Enter used to commit IME text must never reach the
+                // form as submission. Keep the browser's composition default;
+                // only stop the framework's keyboard listener for this chord.
+                if event.key() == "Enter"
+                    && modifiers.ctrl
+                    && !modifiers.alt
+                    && !modifiers.shift
+                    && !modifiers.mac_cmd
+                    && state.blocks_submit(
+                        target,
+                        event.is_composing() || event.key_code() == 229,
+                        event.repeat(),
+                    )
+                {
+                    event.stop_immediate_propagation();
+                    return;
+                }
                 if !event.key().eq_ignore_ascii_case("j")
                     || !inspector_chord(modifiers, ctx.os().is_mac())
                     || event.default_prevented()
