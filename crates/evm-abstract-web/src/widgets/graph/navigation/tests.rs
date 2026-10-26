@@ -112,6 +112,91 @@ fn pinch_and_modified_scroll_zoom_around_pointer_without_scroll_translation() {
 }
 
 #[test]
+fn symmetric_touch_pinch_keeps_the_gesture_center_anchored() {
+    use egui::{TouchDeviceId, TouchId};
+
+    for (factor, translation, over_node, pointer_drag) in [
+        (1.12, Vec2::ZERO, false, false),
+        (0.84, Vec2::ZERO, false, false),
+        (1.12, Vec2::ZERO, false, true),
+        (0.84, Vec2::ZERO, false, true),
+        (1.12, Vec2::new(18.0, 11.0), false, true),
+        (1.12, Vec2::ZERO, true, true),
+        (0.84, Vec2::ZERO, true, true),
+        (1.12, Vec2::new(18.0, 11.0), true, true),
+    ] {
+        let ctx = Context::default();
+        crate::notation::initialize_fonts(&ctx);
+        let mut graph = Graph::default();
+        graph.set_mode(crate::widgets::GraphMode::States);
+        frame(&ctx, &mut graph, vec![], false);
+        let (canvas, _) = frame(&ctx, &mut graph, vec![], false);
+        let center = if over_node {
+            graph
+                .screen_rect(canvas, graph.scene.placement.nodes[&0])
+                .center()
+        } else {
+            canvas.right_bottom() - Vec2::new(120.0, 90.0)
+        };
+        let radius = Vec2::new(60.0, 0.0);
+        frame(
+            &ctx,
+            &mut graph,
+            vec![Event::PointerMoved(center - radius)],
+            false,
+        );
+        let touch = |id, phase, pos| Event::Touch {
+            device_id: TouchDeviceId(0),
+            id: TouchId(id),
+            phase,
+            pos,
+            force: None,
+        };
+        let mut start = vec![
+            Event::PointerMoved(center - radius),
+            touch(0, TouchPhase::Start, center - radius),
+            touch(1, TouchPhase::Start, center + radius),
+        ];
+        if pointer_drag {
+            start.insert(
+                1,
+                Event::PointerButton {
+                    pos: center - radius,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+            );
+        }
+        frame(&ctx, &mut graph, start, false);
+        assert!(ctx.input(|input| input.multi_touch().is_some()));
+        let world = (center - canvas.min - graph.pan) / graph.zoom;
+        let zoom = graph.zoom;
+        let moved = center + translation;
+        frame(
+            &ctx,
+            &mut graph,
+            vec![
+                Event::PointerMoved(moved - radius * factor),
+                touch(0, TouchPhase::Move, moved - radius * factor),
+                touch(1, TouchPhase::Move, moved + radius * factor),
+            ],
+            false,
+        );
+        assert!(
+            (graph.zoom / zoom - factor).abs() < 0.0001,
+            "expected touch scale {factor}, actual {}",
+            graph.zoom / zoom
+        );
+        assert!(
+            ((moved - canvas.min - graph.pan) / graph.zoom - world).length() < 0.001,
+            "touch center must follow the gesture; over_node={over_node}, pointer_drag={pointer_drag}"
+        );
+        assert!(!graph.fitted);
+    }
+}
+
+#[test]
 fn scrolling_a_neighbor_pane_leaves_the_graph_camera_untouched() {
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
