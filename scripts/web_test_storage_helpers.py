@@ -41,67 +41,117 @@ def storage_copy_full_slot(page, canvas, cell, expected):
 
 
 def touch_scroll_storage(page, region, *, swipes=3, trace_path=None):
-    """Swipe the real storage viewport; text selection must yield to scrolling."""
+    """Swipe the real viewport without turning paint diagnostics into a hold."""
     left, top, right, bottom = region
     x, start, end = min(left + 80, right - 8), bottom - 25, top + 25
     assert start - end > 100, region
     assert type(swipes) is int and swipes > 0, swipes
     session = page.context.new_cdp_session(page)
     paints = []
+    host_origin = time.monotonic()
+    native_events = None
+    page.evaluate("""() => {
+        const canvas=document.querySelector('#evm-canvas');
+        const types=['pointerdown','pointermove','pointerup','pointercancel',
+                     'touchstart','touchmove','touchend','touchcancel'];
+        const events=[];
+        const record=event=>events.push({type:event.type,timeStamp:event.timeStamp,
+            observedPerformanceNow:performance.now(),trusted:event.isTrusted,
+            pointerType:event.pointerType ?? null,pointerId:event.pointerId ?? null,
+            x:event.clientX ?? null,y:event.clientY ?? null,
+            touches:event.changedTouches ? Array.from(event.changedTouches,t=>({
+                id:t.identifier,x:t.clientX,y:t.clientY})) : null});
+        for(const type of types)canvas.addEventListener(type,record,{capture:true,passive:true});
+        window.__storageTouchEventProbe={canvas,types,record,events};
+    }""")
 
     def persist():
         if trace_path is not None:
             Path(trace_path).write_text(json.dumps({"region":region,"swipes":swipes,
-                "moves_per_swipe":16,"events":paints},indent=2)+"\n")
+                "moves_per_swipe":16,"host_clock":"Python time.monotonic relative seconds",
+                "native_clock":"DOM event.timeStamp / performance.now observation only",
+                "events":paints,"native_events":native_events},indent=2)+"\n")
 
-    def dispatch_painted(phase, points, step):
-        # Move events do not update the shared key/down/up marker. Bind each
-        # real touch dispatch to two NEW native submissions: eframe may first
-        # present an already prepared frame before consuming this input.
+    def dispatch_painted(group):
+        # Start and the ORIGINAL Move1 share one consumed-paint confirmation.
+        # No browser probe, paint wait or screenshot may hold a stationary finger
+        # between their real dispatches: egui correctly interprets that as a menu.
         before = page.evaluate("window.__webgpuEvidence.submissions")
-        event={"swipe":swipe+1,"phase":phase,"step":step,"points":points,
-               "gpu_submissions_before":before,"gpu_submissions_after":None,"status":"dispatching"}
-        paints.append(event)
+        steps=[step for _,_,step in group]
+        records=[{"swipe":swipe+1,"phase":phase,"step":step,"points":points,
+                  "paint_group_steps":steps,"gpu_submissions_before":before,
+                  "gpu_submissions_after":None,"status":"queued"}
+                 for phase,points,step in group]
+        paints.extend(records)
         persist()
         try:
-            session.send("Input.dispatchTouchEvent", {"type": phase, "touchPoints": points})
-            event["status"]="dispatched"
+            for event in records:
+                event["status"]="dispatching"
+                event["host_dispatch_started_seconds"]=time.monotonic()-host_origin
+                session.send("Input.dispatchTouchEvent", {
+                    "type":event["phase"],"touchPoints":event["points"]})
+                event["host_dispatch_acked_seconds"]=time.monotonic()-host_origin
+                event["status"]="dispatched"
             persist()
+            wait_started=time.monotonic()-host_origin
             page.wait_for_function("before => window.__webgpuEvidence.submissions >= before + 2",
                                    arg=before, polling=25, timeout=5000)
             rendered_frame(page)
-            event.update(gpu_submissions_after=page.evaluate("window.__webgpuEvidence.submissions"),status="painted")
+            after=page.evaluate("window.__webgpuEvidence.submissions")
+            for event in records:
+                event.update(gpu_submissions_after=after,
+                    status="painted_group" if len(records)>1 else "painted",
+                    host_wait_started_seconds=wait_started,
+                    host_paint_confirmed_seconds=time.monotonic()-host_origin)
             persist()
-            if trace_path is not None and phase == "touchStart":
-                start_png=Path(trace_path).with_name(Path(trace_path).stem+"-start.png")
-                canvas_screenshot(page,path=str(start_png))
-                event["phase_png"]=str(start_png)
+            if trace_path is not None and len(records)>1:
+                image=Path(trace_path).with_name(Path(trace_path).stem+"-post-move1.png")
+                png_started=time.monotonic()-host_origin
+                canvas_screenshot(page,path=str(image))
+                for event in records:
+                    event.update(phase_png=str(image),phase_png_after_step=1,
+                        host_png_started_seconds=png_started,
+                        host_png_finished_seconds=time.monotonic()-host_origin)
                 persist()
         except Exception as error:
-            event.update(status="failed",error=str(error))
+            for event in records:
+                event.update(status="failed",error=str(error))
             try:
-                event["gpu_submissions_after"]=page.evaluate("window.__webgpuEvidence.submissions")
-                event["analysis_status"]=page.locator("#analysis-status").text_content()
+                after=page.evaluate("window.__webgpuEvidence.submissions")
+                for event in records:
+                    event.update(gpu_submissions_after=after,
+                        analysis_status=page.locator("#analysis-status").text_content())
                 persist()
                 if trace_path is not None:
                     canvas_screenshot(page,path=str(Path(trace_path).with_suffix(".png")))
             except Exception as capture_error:
-                event["capture_error"]=str(capture_error)
+                for event in records:event["capture_error"]=str(capture_error)
             persist()
             raise
 
     try:
         for swipe in range(swipes):
-            dispatch_painted("touchStart", [
-                {"id": 1, "x": x, "y": start, "radiusX": 3, "radiusY": 3}], 0)
-            for step in range(1, 17):
-                dispatch_painted("touchMove", [
-                    {"id": 1, "x": x, "y": start + (end - start) * step / 16,
-                     "radiusX": 3, "radiusY": 3}], step)
-            dispatch_painted("touchEnd", [], 17)
+            dispatch_painted([
+                ("touchStart",[{"id":1,"x":x,"y":start,"radiusX":3,"radiusY":3}],0),
+                ("touchMove",[{"id":1,"x":x,"y":start+(end-start)/16,
+                               "radiusX":3,"radiusY":3}],1)])
+            for step in range(2,17):
+                dispatch_painted([("touchMove",[
+                    {"id":1,"x":x,"y":start+(end-start)*step/16,
+                     "radiusX":3,"radiusY":3}],step)])
+            dispatch_painted([("touchEnd",[],17)])
             settle_gesture(page)
     finally:
-        session.detach()
+        try:
+            native_events=page.evaluate("""() => {
+                const probe=window.__storageTouchEventProbe;
+                for(const type of probe.types)probe.canvas.removeEventListener(type,probe.record,true);
+                delete window.__storageTouchEventProbe;
+                return probe.events;
+            }""")
+            persist()
+        finally:
+            session.detach()
     return paints
 
 
