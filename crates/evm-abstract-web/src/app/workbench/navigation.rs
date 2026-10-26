@@ -77,6 +77,11 @@ impl Workspace {
     }
 
     pub(super) fn navigation_bar(&mut self, ui: &mut Ui) {
+        if self.panels.compact() {
+            self.compact_navigation_bar(ui);
+            return;
+        }
+
         let mut intent = None;
         let navigator = self.report_view.navigator();
         let can_back = navigator.can_back();
@@ -100,19 +105,7 @@ impl Workspace {
                 {
                     intent = Some(Intent::Open(entry));
                 }
-                let mut full = self.ssa_display == crate::ssa_display::SsaDisplay::Full;
-                if controls::toggle(ui, &mut full, "SSA details", Density::Inline)
-                    .on_hover_text(
-                        "Show full instruction, stack and effect-chain detail in SSA views",
-                    )
-                    .changed()
-                {
-                    self.ssa_display = if full {
-                        crate::ssa_display::SsaDisplay::Full
-                    } else {
-                        crate::ssa_display::SsaDisplay::Compact
-                    };
-                }
+                self.ssa_details_control(ui, Density::Inline);
                 if let (Some(focus), Some(report)) = (&focus, &self.report) {
                     let presentation = self.report_view.presentation(report);
                     let source = focus

@@ -1,6 +1,7 @@
 //! One shell for source-only, conservative and Native publications. Renderers
 //! borrow qualified evidence and emit events; the shell applies them centrally.
 
+mod compact;
 mod focus;
 mod inspection;
 pub(super) use inspection::OriginalInspection;
@@ -19,10 +20,11 @@ pub(super) struct Preparation {
 impl Workspace {
     pub(super) fn show_workbench(&mut self, ui: &mut Ui, viewport: egui::Vec2) -> Preparation {
         self.reconcile_widget_selection();
-        if self
-            .report
-            .as_ref()
-            .is_some_and(|report| report.hybrid.is_some())
+        if !self.panels.compact()
+            && self
+                .report
+                .as_ref()
+                .is_some_and(|report| report.hybrid.is_some())
         {
             egui::Panel::top("model_scope")
                 .frame(palette::chrome_frame())

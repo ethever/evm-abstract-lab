@@ -54,11 +54,17 @@ impl Workspace {
                 }
             });
         }
-        Density::Regular.scope(ui, |ui| ui.horizontal(|ui| {
+        let compact = self.panels.compact();
+        let density = if compact {
+            Density::Inline
+        } else {
+            Density::Regular
+        };
+        density.scope(ui, |ui| ui.horizontal(|ui| {
             if presentation.cancellable && controls::action(ui, "Cancel", Density::Regular).clicked() {
                 command = self.task.apply_intent(TaskIntent::Cancel);
             }
-            if let Some(wait) = self.task.wait.summary(super::super::timing::now()) {
+            if !compact && let Some(wait) = self.task.wait.summary(super::super::timing::now()) {
                 let response = if self.report.is_some() { controls::action(ui, wait, Density::Regular) } else { ui.label(wait) };
                 if response.clicked() && self.report.is_some() {
                     self.inspector.expanded = true;
@@ -135,7 +141,8 @@ impl Workspace {
                     .on_hover_text("The visible report belongs to the previous completed task.");
             }
         }));
-        if let Some(report) = &self.report
+        if !compact
+            && let Some(report) = &self.report
             && let Some(status) = terminal_coverage::status(report)
         {
             ui.horizontal_wrapped(|ui| {
