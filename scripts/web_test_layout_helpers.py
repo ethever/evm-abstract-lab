@@ -161,7 +161,7 @@ def layout_counts(page, report, expected_groups: int | None = None, mode="Blocks
     assert scene["edges"] == edge_count and scene["native_edges"] == len(report["edges"]), scene
     status = page.locator("#analysis-status").text_content()
     assert "Layout unavailable:" not in status, status
-    match = re.search(r"; (\d+) groups; CFG detail: (identities|SSA preview)", status)
+    match = re.search(r"; (\d+) groups; CFG detail: (identities|SSA preview|overview shapes)", status)
     assert match, status
     scene.update(groups=int(match[1]), detail=match[2])
     if expected_groups is not None:
