@@ -128,8 +128,7 @@ impl eframe::App for BrowserApp {
         Some(self)
     }
 
-    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
-        self.pointer.raw_input(ctx, input);
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
         self.workspace.prepare_input(input);
     }
 

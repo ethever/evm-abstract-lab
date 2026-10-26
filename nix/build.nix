@@ -17,7 +17,14 @@ let
       cargoVendorDir
       ;
   };
-  cargoVendorDir = craneLib.vendorCargoDeps { src = sources.workspace; };
+  cargoVendorDir = import ./cargo-vendor.nix {
+    inherit craneLib;
+    src = sources.workspace;
+  };
+  cargoCommand = import ./cargo-command.nix {
+    inherit pkgs cargoVendorDir;
+    inherit (craneLib) cargo;
+  };
   common = dependencies.environment // {
     src = sources.workspace;
     inherit cargoVendorDir;
@@ -122,6 +129,7 @@ let
 in
 {
   inherit
+    cargoCommand
     common
     commonFor
     sources

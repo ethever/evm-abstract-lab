@@ -4,6 +4,7 @@
   dependencies,
   dylint,
   web,
+  cargoCommand,
 }:
 craneLib.devShell (
   dependencies.environment
@@ -15,7 +16,13 @@ craneLib.devShell (
       dependencies.nativeBuildInputs
       ++ dependencies.developmentTools
       ++ dylint.devPackages
-      ++ web.devPackages;
+      ++ web.devPackages
+      ++ [ cargoCommand ];
+    # Crane prepends its toolchain Cargo. Prefer the shared vendor-aware command
+    # for terminal and rust-analyzer subprocesses without changing user files.
+    shellHook = ''
+      export PATH="${cargoCommand}/bin:$PATH"
+    '';
     RUST_BACKTRACE = "1";
     FONTCONFIG_FILE = dependencies.fontConfig;
   }

@@ -138,6 +138,7 @@ forVariant "" build.test
 })
 // {
   cargo-bindgen-environment = import ../tests/cargo-bindgen.nix { inherit pkgs craneLib build; };
+  cargo-vendor-environment = import ../tests/cargo-vendor.nix { inherit pkgs craneLib build; };
   cargo-concurrency =
     (import ../tests/cargo-concurrency.nix { inherit pkgs craneLib; }) "cargo-concurrency"
       { inherit (build.common) prePatch; };

@@ -6,7 +6,7 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 pub use browser::start;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(test)]
 mod contact;
 
 /// Preserve the native disclosure while exposing its actual header response.
