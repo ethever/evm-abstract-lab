@@ -299,5 +299,4 @@ fn pop_valid(history: &mut Vec<Location>, presentation: &Presentation<'_>) -> Op
 }
 
 #[cfg(test)]
-#[path = "navigation/tests.rs"]
 mod tests;

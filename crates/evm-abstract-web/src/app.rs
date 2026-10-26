@@ -114,8 +114,8 @@ pub struct Workspace {
     report: Option<AnalysisReport>,
     report_view: model::ReportViewState,
     minimum_selection: minimum::Selection,
-    minimum_source: minimum::SourceCache,
-    minimum_native_requested: bool,
+    source_cache: widgets::SourceCache,
+    navigation_error: Option<model::navigation::NavigationError>,
     // Only a validated report from an accepted server result owns this ID.
     // It remains bound to the visible report across later task generations.
     report_job_id: Option<JobId>,
@@ -146,8 +146,8 @@ impl Default for Workspace {
             report: None,
             report_view: model::ReportViewState::default(),
             minimum_selection: minimum::Selection::default(),
-            minimum_source: minimum::SourceCache::default(),
-            minimum_native_requested: false,
+            source_cache: widgets::SourceCache::default(),
+            navigation_error: None,
             report_job_id: None,
             task: Task::default(),
             startup: startup::Startup::default(),
@@ -289,9 +289,6 @@ impl Workspace {
         }
         if let Some(request) = self.form.show(ui.ctx(), self.task.busy()) {
             command = Some(self.start(request));
-        }
-        if std::mem::take(&mut self.minimum_native_requested) {
-            self.activate_view(model::Activation::Namespace(AnalysisNamespace::Native));
         }
         self.sync_selection();
         if preparing_report && let Some(timing) = &mut self.report_timing {
@@ -546,6 +543,7 @@ impl Workspace {
         self.activate_view(model::Activation::Report {
             replacement,
             publication: publication.clone(),
+            job_id: report_job_id,
         });
         self.previous_report = false;
         self.report_job_id = report_job_id;

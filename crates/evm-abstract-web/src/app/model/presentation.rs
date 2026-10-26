@@ -1,13 +1,9 @@
 //! Read-only indexes over one accepted publication. Numeric rows remain in their
 //! original namespace; grouping source aliases never joins their analysis facts.
 
-#[path = "presentation/capabilities.rs"]
 mod capabilities;
-#[path = "presentation/focus.rs"]
 mod focus;
-#[path = "presentation/index.rs"]
 mod index;
-#[path = "presentation/validate.rs"]
 mod validate;
 
 use super::{ReportGeneration, ReportViewId};
@@ -164,5 +160,4 @@ pub(crate) struct Capabilities {
 }
 
 #[cfg(test)]
-#[path = "presentation/tests.rs"]
 mod tests;

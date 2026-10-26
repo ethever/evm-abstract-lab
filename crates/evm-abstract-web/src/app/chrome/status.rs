@@ -91,7 +91,7 @@ impl Workspace {
             } else if let Some(model) = &self.report {
                 let ready = matches!(presentation.model, ModelPresentation::Current { ready: true } | ModelPresentation::Previous { ready: true });
                 let full = terminal_coverage::detail_status(model);
-                let label = if wide { full.as_str() } else if ready { "Model ready" } else { "Model partial" };
+                let label = if wide { full } else if ready { "Model ready" } else { "Model partial" };
                 ui.colored_label(if ready { palette::ACCENT } else { palette::WARNING }, label).on_hover_text(full);
                 ui.add(egui::Label::new(detail_label(presentation.detail)).truncate()).on_hover_text(super::super::minimum::rich_status(model));
                 if wide {

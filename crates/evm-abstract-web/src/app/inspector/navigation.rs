@@ -53,7 +53,7 @@ impl Inspector {
                 let mut group = Group::of(self.tab);
                 let previous = group;
                 if narrow {
-                    egui::ComboBox::from_id_salt("inspection_group")
+                    let choice = egui::ComboBox::from_id_salt("inspection_group")
                         .width(72.0)
                         .selected_text(Group::ALL.iter().find(|(id, _)| *id == group).unwrap().1)
                         .show_ui(ui, |ui| {
@@ -67,6 +67,7 @@ impl Inspector {
                                 );
                             }
                         });
+                    controls::observe(ui, &choice.response, "Inspection group", "menu", None);
                 } else {
                     ui.label(
                         RichText::new("INSPECT")
@@ -80,7 +81,7 @@ impl Inspector {
                 if previous != group {
                     self.tab = group.initial();
                 }
-                egui::ComboBox::from_id_salt("inspector_tab")
+                let content = egui::ComboBox::from_id_salt("inspector_tab")
                     .width(if narrow { 88.0 } else { 116.0 })
                     .selected_text(self.tab.label())
                     .show_ui(ui, |ui| {
@@ -96,6 +97,7 @@ impl Inspector {
                             }
                         }
                     });
+                controls::observe(ui, &content.response, "Inspection content", "menu", None);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     self.window_controls(ui);
                 });

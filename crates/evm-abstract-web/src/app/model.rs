@@ -1,7 +1,5 @@
 //! Display namespaces are independent of the engine's global relation selection.
-#[path = "navigation.rs"]
 pub(crate) mod navigation;
-#[path = "presentation.rs"]
 pub(crate) mod presentation;
 
 use super::{Selection, Workspace};
