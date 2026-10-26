@@ -218,7 +218,9 @@ def assert_detail_policy(report, requested):
             assert type(applied) is int and applied == requested, (namespace, applied, requested)
     if requested == 0:
         assert graph(report, "Native") is None and hybrid["local_prefixes"] == []
-        assert coverage["detail"] == precision["detail"] == "Disabled"
+        for stage in [coverage, precision]:
+            assert stage["detail"] == "Disabled" or (
+                stage["baseline_current"] is False and stage["detail"] == "BaselinePending")
     return precision
 
 

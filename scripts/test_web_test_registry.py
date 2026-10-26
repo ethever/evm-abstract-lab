@@ -359,6 +359,25 @@ class ReportWireTests(unittest.TestCase):
             with self.subTest(requested=requested), self.assertRaises(AssertionError):
                 assert_detail_policy(self.policy_report(), requested)
 
+    def test_zero_detail_keeps_pending_global_distinct_from_disabled_detail(self):
+        from web_test_hybrid import assert_detail_policy
+        report = self.policy_report(0)
+        coverage = report["hybrid"]["coverage"]
+        coverage.update(baseline_current=False, detail="BaselinePending")
+        precision = {**coverage}
+        report["hybrid"]["precision"] = precision
+        self.assertIs(assert_detail_policy(report, 0), precision)
+        for stage_name in ["coverage", "precision"]:
+            stage = report["hybrid"][stage_name]
+            stage["baseline_current"] = True
+            with self.subTest(stage=stage_name), self.assertRaises(AssertionError):
+                assert_detail_policy(report, 0)
+            stage["baseline_current"] = False
+        for detail in ["Current", "Incomplete", "Refused"]:
+            precision["detail"] = detail
+            with self.subTest(detail=detail), self.assertRaises(AssertionError):
+                assert_detail_policy(report, 0)
+
     def test_detail_policy_rejects_bad_selected_containers_and_fake_disabled_native(self):
         from web_test_hybrid import assert_detail_policy
         for regions in [{}, "", [None, None]]:
