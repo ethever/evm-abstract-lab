@@ -41,6 +41,17 @@ fn detail_regions_reach_mocked_pinned_rpc_discovery_and_preloaded_execution() {
                     String::from_utf8_lossy(&output.stderr)
                 );
                 let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+                if discovery {
+                    assert_eq!(report["transfers"], report["hybrid"]["rpc"]["transfers"]);
+                } else {
+                    assert!(report["hybrid"]["rpc"].is_null());
+                    let latest = if report["native"].is_null() {
+                        &report["global"]
+                    } else {
+                        &report["native"]
+                    };
+                    assert_eq!(report["transfers"], latest["analysis"]["transfers"]);
+                }
                 let original = &report["hybrid"]["coverage"];
                 assert_eq!(original["requested_detail_regions"], bound);
                 assert_eq!(

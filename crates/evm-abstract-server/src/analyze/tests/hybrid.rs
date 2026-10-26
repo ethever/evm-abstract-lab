@@ -71,6 +71,10 @@ fn default_bytecode_uses_hybrid_and_concrete_small_input_selects_native() {
     assert_eq!(hybrid.coverage.chosen, api::HybridInterpretation::Native);
     assert!(hybrid.coverage.baseline_current && hybrid.coverage.detail_current);
     assert!(report.global.is_some() && report.native.is_some());
+    let global = report.global.as_ref().unwrap();
+    let native = report.native.as_ref().unwrap();
+    assert!(global.transfers > 0 && native.transfers > global.transfers);
+    assert_eq!(report.transfers, native.transfers);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
     assert!(!hybrid.local_prefixes.is_empty());
     assert!(
@@ -114,6 +118,18 @@ fn closed_global_routes_survive_partial_native_prefix_with_phases_and_frontiers(
             .any(|summary| !summary.regional_cfg.calls.is_empty())
     );
     let native = report.graph(api::AnalysisNamespace::Native).unwrap();
+    assert_eq!(
+        report.transfers,
+        source.detail().unwrap().transfers() as u64
+    );
+    assert_eq!(
+        native.transfers,
+        source.detail().unwrap().transfers() as u64
+    );
+    assert_eq!(
+        report.global.as_ref().unwrap().transfers,
+        source.baseline().transfers() as u64
+    );
     assert!(!native.frontiers.is_empty());
     assert_eq!(hybrid.local_prefixes.len(), source.local_detail().count());
     for (prefix, actual) in hybrid.local_prefixes.iter().zip(source.local_detail()) {
@@ -244,11 +260,13 @@ fn failed_baseline_spends_no_precision_and_cancelled_default_publishes_no_report
     assert_eq!(source.coverage().detail, analysis::DetailState::Disabled);
     let report = captured::project(&source, &request, &Control::default()).unwrap();
     report.validate().unwrap();
+    assert_eq!(report.transfers, source.baseline().transfers() as u64);
     assert!(report.hybrid.as_ref().unwrap().local_prefixes.is_empty());
     let mut request = api::AnalyzeRequest::default();
     request.limits.max_work = 1;
     let report = analyze(request).unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
+    assert_eq!(report.transfers, 0);
     assert!(
         report.selected_graph().unwrap().states.is_empty(),
         "one work unit must stop before state admission"
