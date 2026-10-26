@@ -1,13 +1,11 @@
 //! Canonical indexed source rows and source-only layout measurements.
 mod copy;
-#[cfg(test)]
-mod legacy;
 mod source;
+#[cfg(test)]
+mod tests;
 mod tooltip;
 
 pub(super) use copy::reference as source_reference;
-#[cfg(test)]
-pub(crate) use legacy::disassembly;
 pub(crate) use source::SourceCache;
 
 pub(super) fn location_label(location: evm_abstract_protocol::ProcessLocation) -> String {

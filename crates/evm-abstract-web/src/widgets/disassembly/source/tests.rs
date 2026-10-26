@@ -7,6 +7,47 @@ use crate::app::model::{
 use egui::{Context, RawInput};
 use evm_abstract_protocol::AnalysisNamespace;
 
+mod clipboard;
+mod hover;
+mod rows;
+mod scroll;
+
+fn render(
+    context: &Context,
+    cache: &mut SourceCache,
+    presentation: Presentation<'_>,
+    focus: &Focus,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+) -> (egui::FullOutput, Option<SourcePick>) {
+    let mut pick = None;
+    let mut output = context.run_ui(
+        RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            pick = cache.show(ui, presentation, focus);
+        },
+    );
+    output.textures_delta.clear();
+    (output, pick)
+}
+
+fn text_rect(output: &egui::FullOutput, expected: &str) -> egui::Rect {
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == expected => {
+                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+            }
+            _ => None,
+        })
+        .expect("production SourceCache painted the complete row")
+}
+
 #[test]
 fn source_picks_keep_real_block_ids_without_claiming_a_native_state() {
     let mut report = crate::tests::report();

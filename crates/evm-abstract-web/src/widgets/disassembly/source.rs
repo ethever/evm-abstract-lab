@@ -82,6 +82,21 @@ impl SourceCache {
         presentation: Presentation<'_>,
         focus: &Focus,
     ) -> Option<SourcePick> {
+        // One Code pane moves between routes and responsive tiles. Its scroll
+        // and popup identities must outlive those parent UI arrangements.
+        ui.scope_builder(
+            egui::UiBuilder::new().id(egui::Id::new("source_view")),
+            |ui| self.contents(ui, presentation, focus),
+        )
+        .inner
+    }
+
+    fn contents(
+        &mut self,
+        ui: &mut Ui,
+        presentation: Presentation<'_>,
+        focus: &Focus,
+    ) -> Option<SourcePick> {
         if let Err(error) = presentation.validate(focus) {
             crate::widgets::empty(ui, &error.to_string());
             return None;
