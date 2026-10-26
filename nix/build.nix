@@ -21,9 +21,14 @@ let
     inherit craneLib;
     src = sources.workspace;
   };
-  cargoCommand = import ./cargo-command.nix {
-    inherit pkgs cargoVendorDir;
-    inherit (craneLib) cargo;
+  developmentCargoVendorDir = import ./cargo-vendor.nix {
+    inherit craneLib;
+    src = sources.workspace;
+    extraLocks = [ (sourceRoot + "/lints/no_dyn/Cargo.lock") ];
+  };
+  developmentCargoEnvironment = import ./cargo-environment.nix {
+    inherit pkgs;
+    cargoVendorDir = developmentCargoVendorDir;
   };
   common = dependencies.environment // {
     src = sources.workspace;
@@ -129,7 +134,7 @@ let
 in
 {
   inherit
-    cargoCommand
+    developmentCargoEnvironment
     common
     commonFor
     sources

@@ -66,7 +66,7 @@ in
     };
   checks = checks // dylint.checks // web.checks;
   devShells.default = import ./shell.nix {
-    inherit (build) cargoCommand;
+    inherit (build) developmentCargoEnvironment;
     inherit
       craneLib
       dependencies

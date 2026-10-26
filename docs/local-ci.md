@@ -19,7 +19,7 @@ nix run --no-update-lock-file .#check-changes -- --base origin/main
 
 VS Code 默认测试任务为 `Nix: check affected`，`Nix: full merge gate` 用于下面的最终门禁。完整门禁会复用开发阶段已经完成且输入相同的检查。
 
-交互式 Cargo 开发同样使用项目环境，例如 `nix develop --command cargo test -p evm-abstract-web`。开发 shell 的 Cargo 命令与 Nix 构建共用固定的 vendor 源码，其中包含 egui 0.36.2 的新触点位移修正；它不修改用户的 Cargo 配置。`cargo-vendor-environment` 检查实际解析的依赖路径，Web 输入回归检查新触点、持续拖动和点击时序。独立于项目环境运行系统 Cargo 不会应用这份补丁。
+交互式 Cargo 开发同样使用项目环境，例如 `nix develop --command cargo test -p evm-abstract-web`。开发 shell 在项目专用、按 vendor 身份隔离的缓存目录中设置 `CARGO_HOME`，让 Cargo、Clippy、rust-analyzer 子进程和 Dylint 编译器适配器继承相同的依赖修正；它不修改用户的 `~/.cargo`。开发依赖集合同时覆盖应用和 lint 的锁文件，与 Nix 构建使用同一份固定的 egui 0.36.2 触点补丁。`cargo-vendor-environment` 检查真实 Cargo 子命令、Clippy 编译及独立 lint 的依赖路径；Web 输入回归检查新触点、持续拖动和点击时序。独立于项目环境运行系统 Cargo 不会应用这份补丁。
 
 ## 1. 准备最终提交
 
