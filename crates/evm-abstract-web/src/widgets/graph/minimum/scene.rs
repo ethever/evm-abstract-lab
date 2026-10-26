@@ -25,10 +25,11 @@ impl LayoutMemory {
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum SceneError {
+    // Retain concrete causes without thiserror's dynamic Error::source() path.
     #[error("{0}")]
-    Projection(#[from] ProjectionError),
+    Projection(ProjectionError),
     #[error("{0}")]
-    Layout(#[from] evm_abstract_layout::LayoutError),
+    Layout(evm_abstract_layout::LayoutError),
 }
 
 #[derive(Clone, Copy)]
@@ -83,7 +84,7 @@ impl Scene {
                 scene.control = control;
             }
             Err(error) => {
-                scene.error = Some(error.into());
+                scene.error = Some(SceneError::Projection(error));
                 return scene;
             }
         }
@@ -193,7 +194,7 @@ impl Scene {
                         }
                     }
                     Err(error) => {
-                        self.error = Some(error.into());
+                        self.error = Some(SceneError::Layout(error));
                         break 'density;
                     }
                 }
