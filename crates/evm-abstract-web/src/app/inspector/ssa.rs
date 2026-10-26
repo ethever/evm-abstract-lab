@@ -46,6 +46,7 @@ pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selecti
                 .range(0..=report.ssa.values.len() - 1)
                 .speed(1),
         );
+        crate::controls::observe(ui, &response, "inspector_ssa_value", "text", None);
         response.clone().on_hover_text(
             "Enter a final ValueId, or click a %value in SSA. Value IDs belong to this report.",
         );

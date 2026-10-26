@@ -8,7 +8,7 @@ pub(super) fn status(node: &RegionalNode, source: SummarySourceStatus) -> &'stat
 }
 
 pub(in crate::app::inspector) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) {
-    ui.collapsing("Regional control flow", |ui| {
+    crate::framework::section(ui, "Regional control flow", |ui| {
         ui.label("Summarized flow uses regional node IDs; instruction-level SSA is separate.");
         ui.label(format!(
             "{} nodes · {} calls",
@@ -28,7 +28,7 @@ pub(in crate::app::inspector) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: Su
                 );
             });
         }
-        ui.collapsing("Calls and returns", |ui| {
+        crate::framework::section(ui, "Calls and returns", |ui| {
             for call in &cfg.calls {
                 ui.push_id(("regional_call", call.id), |ui| {
                     let local_current = cfg

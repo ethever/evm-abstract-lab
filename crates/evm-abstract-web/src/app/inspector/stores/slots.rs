@@ -129,7 +129,9 @@ pub(in crate::app::inspector) fn cell(ui: &mut Ui, slot: &str) {
     // Hover the full cell, including when no glyph fits. The original key is
     // independent of the fitted display string and remains available in full.
     response.context_menu(|ui| {
-        if ui.button("Copy full slot key").clicked() {
+        let copy = ui.button("Copy full slot key");
+        crate::controls::observe(ui, &copy, "Copy full slot key", "action", None);
+        if copy.clicked() {
             ui.ctx().copy_text(slot.to_owned());
             ui.close();
         }

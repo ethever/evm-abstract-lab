@@ -61,7 +61,7 @@ pub(super) fn storage(
                     account.storage_root
                 };
                 super::symbolic::show(ui, report, root.node, "Ordered storage state");
-                egui::CollapsingHeader::new("Account facts in this store")
+                let section = egui::CollapsingHeader::new("Account facts in this store")
                     .id_salt(("storage_account_facts", address, transient))
                     .show(ui, |ui| {
                         egui::Grid::new(("storage_account_facts_grid", address, transient))
@@ -103,6 +103,13 @@ pub(super) fn storage(
                                 );
                             });
                     });
+                crate::controls::observe(
+                    ui,
+                    &section.header_response,
+                    "Account facts in this store",
+                    "section",
+                    Some(section.body_response.is_some()),
+                );
             }
             let default = account
                 .map(|account| {
@@ -361,7 +368,7 @@ pub(super) fn changes(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapsho
 }
 
 fn defaults(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapshot) {
-    ui.collapsing("Unlisted accounts and storage bases", |ui| {
+    crate::framework::section(ui, "Unlisted accounts and storage bases", |ui| {
         egui::Grid::new("store_defaults")
             .num_columns(2)
             .show(ui, |ui| {
@@ -390,19 +397,37 @@ fn defaults(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapshot) {
                         value::text(ui, "Delegation implementation", target);
                     }
                 }
-                value::text(ui, "Unlisted account creation", certainty(store.created_default));
+                value::text(
+                    ui,
+                    "Unlisted account creation",
+                    certainty(store.created_default),
+                );
                 value::text(
                     ui,
                     "Unlisted account pending destruction",
                     certainty(store.pending_destruction_default),
                 );
-                value::text(ui, "Unlisted account touch", touch_status(store.touched_default));
+                value::text(
+                    ui,
+                    "Unlisted account touch",
+                    touch_status(store.touched_default),
+                );
             });
         ui.label(
             "Storage bases are scoped by account owner when read. A shared base does not imply equal values for different owners.",
         );
-        super::symbolic::show(ui, report, store.storage_root.node, "Persistent base template");
-        super::symbolic::show(ui, report, store.transient_root.node, "Transient base template");
+        super::symbolic::show(
+            ui,
+            report,
+            store.storage_root.node,
+            "Persistent base template",
+        );
+        super::symbolic::show(
+            ui,
+            report,
+            store.transient_root.node,
+            "Transient base template",
+        );
         super::symbolic::facts(ui, &store.storage_facts, "Persistent store facts");
         super::symbolic::facts(ui, &store.transient_facts, "Transient store facts");
     });
