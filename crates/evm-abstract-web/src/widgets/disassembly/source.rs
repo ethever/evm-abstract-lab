@@ -262,6 +262,7 @@ impl SourceCache {
                     )
                     .wrap_mode(egui::TextWrapMode::Extend),
                 );
+                controls::observe(ui, &response, &label, "code-row", Some(selected));
                 if response.clicked() {
                     picked = Some(target);
                 }

@@ -534,7 +534,7 @@ fn all_three_custom_views_paint_structural_content() {
         .collect::<Vec<_>>()
         .join("\n");
     for required in [
-        "DISASSEMBLY",
+        "CODE",
         "CONTROL FLOW",
         "SSA",
         "CALLDATALOAD",
@@ -682,9 +682,7 @@ fn reanalysis_retains_previous_snapshot_and_backend_errors_remain_visible() {
     crate::notation::initialize_fonts(&ctx);
     let output = frame(&ctx, &mut workspace, vec![]);
     assert!(
-        painted_text(&output)
-            .iter()
-            .any(|(text, _)| text == "DISASSEMBLY"),
+        painted_text(&output).iter().any(|(text, _)| text == "CODE"),
         "a rejected rerun must not discard the prior immutable report"
     );
 }
@@ -868,12 +866,7 @@ fn automatic_row_focus_preserves_leading_columns_in_split_view() {
     }
     let output = frame(&ctx, &mut workspace, vec![]);
     let labels = painted_text(&output);
-    let disasm_left = labels
-        .iter()
-        .find(|(text, _)| text == "DISASSEMBLY")
-        .unwrap()
-        .1
-        .x;
+    let disasm_left = labels.iter().find(|(text, _)| text == "CODE").unwrap().1.x;
     let ssa_heading = labels
         .windows(2)
         .find(|pair| pair[0].0 == "SSA" && pair[1].0.starts_with("verified complete"))
