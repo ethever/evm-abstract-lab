@@ -30,6 +30,8 @@ mod storage;
 
 #[path = "rpc/budgets.rs"]
 mod budgets;
+#[path = "rpc/precision_policy.rs"]
+mod precision_policy;
 #[path = "rpc/relations.rs"]
 mod relations;
 

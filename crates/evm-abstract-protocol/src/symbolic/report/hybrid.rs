@@ -47,6 +47,23 @@ impl AnalysisReport {
         };
         let coverage = &hybrid.coverage;
         let precision = hybrid.native_coverage();
+        if coverage.requested_detail_regions != precision.requested_detail_regions
+            || [&self.global, &self.native]
+                .into_iter()
+                .flatten()
+                .any(|graph| {
+                    graph.metadata.limits.max_detail_regions != coverage.requested_detail_regions
+                })
+            || [coverage, precision].into_iter().any(|coverage| {
+                coverage.detail_regions.len() as u64 > coverage.requested_detail_regions
+                    || (coverage.requested_detail_regions == 0
+                        && (coverage.detail_config.is_some()
+                            || coverage.detail_revision.is_some()
+                            || coverage.local_detail_sites != 0))
+            })
+        {
+            return Err(invalid(Kind::Coverage));
+        }
         let baseline = if let Some(graph) = self.global.as_ref() {
             GlobalInput {
                 fork: graph.fork,
