@@ -47,28 +47,52 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
             .iter()
             .all(|summary| summary.closed)
     );
-    assert!(
-        report
-            .selected_graph()
-            .unwrap()
-            .abstract_summaries
-            .iter()
-            .all(|summary| summary.procedures.len() == 1
-                && summary.procedures[0].kind == api::CodeKind::AbstractEnvironment
-                && summary.procedures[0].covered_blocks.is_empty()
-                && summary.procedures[0].dependencies.is_empty())
-    );
+    let root_address = root.to_string();
     for summary in &report.selected_graph().unwrap().abstract_summaries {
-        assert!(!summary.regional_cfg.nodes.is_empty());
+        let environment = summary.root_procedure.unwrap();
+        let root_procedure = &summary.procedures[environment];
+        assert_eq!(root_procedure.kind, api::CodeKind::AbstractEnvironment);
+        assert!(root_procedure.covered_blocks.is_empty());
+        assert_eq!(
+            root_procedure.code_address.as_deref(),
+            Some("0x0000000000000000000000000000000000000201")
+        );
+        assert!(root_procedure.code_hash.is_none());
+        // The unknown static implementation can call the one captured root.
+        // Its real callback and recursive return dependency must survive export.
+        assert_eq!(summary.procedures.len(), 2);
+        let callback = 1 - environment;
+        let callback_procedure = &summary.procedures[callback];
+        assert_eq!(callback_procedure.kind, api::CodeKind::Runtime);
+        assert_eq!(
+            callback_procedure.code_address.as_deref(),
+            Some(root_address.as_str())
+        );
+        assert_eq!(callback_procedure.covered_blocks, [0, 1]);
+        assert!(root_procedure.is_static && callback_procedure.is_static);
+        assert_eq!(root_procedure.dependencies, [callback]);
+        assert_eq!(callback_procedure.dependencies, [environment]);
         for node in &summary.regional_cfg.nodes {
-            assert_eq!(node.frame.kind, api::CodeKind::AbstractEnvironment);
-            assert!(node.frame.basic_block.is_none() && node.frame.code_hash.is_none());
             let transfer = node.transfer.as_ref().unwrap();
             assert!(transfer.current && transfer.complete);
-            // The static shortcut summarizes effects/environment interactions.
-            // An empty call list is not evidence that callbacks cannot occur.
-            assert!(!transfer.visited_block);
-            assert!(transfer.calls.is_empty());
+            if node.procedure == environment {
+                assert_eq!(node.frame.kind, api::CodeKind::AbstractEnvironment);
+                assert!(node.frame.basic_block.is_none() && node.frame.code_hash.is_none());
+                assert!(!transfer.visited_block);
+                assert!(!transfer.calls.is_empty());
+                assert!(
+                    transfer
+                        .calls
+                        .iter()
+                        .all(|call| { summary.regional_cfg.calls[*call].callee == callback })
+                );
+            } else {
+                assert_eq!(node.procedure, callback);
+                assert_eq!(node.frame.kind, api::CodeKind::Runtime);
+                assert_eq!(node.frame.code_address, callback_procedure.code_address);
+                assert!(node.frame.basic_block.is_some());
+                assert!(transfer.visited_block);
+            }
         }
     }
     assert!(
