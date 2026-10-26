@@ -13,7 +13,7 @@ import urllib.request
 
 from .process import ProtectedProcess, write_json
 from .report import (job_snapshot, metrics, request_qualification, result_value,
-                     strict_json, wire_report)
+                     strict_json, wire_report, effective_request_limits)
 
 
 @lru_cache(maxsize=8)
@@ -85,11 +85,13 @@ def http(opener, directory, name, method, url, endpoint, body=None, timeout=5,
 def observe(opener, directory, base_url, endpoint, request_bytes, process, record, started, snapshot):
     """Observe publications independently of lifecycle; all requests stay owned."""
     request = strict_json(request_bytes)
+    effective_policy, applied_defaults = effective_request_limits(request["limits"])
     task_id = snapshot["id"]
     record["request_identity"] = {
         "sha256": hashlib.sha256(request_bytes).hexdigest(), "bytes": len(request_bytes),
         "input": request["input"], "fork": request["fork"], "environment": request["environment"],
-        "policy": request["limits"]}
+        "policy": request["limits"], "effective_policy": effective_policy,
+        "applied_policy_defaults": applied_defaults}
     record.update(first_closed_model=None, final_result=None, publications=[],
                   task_state=None, termination="no_terminal_observation",
                   timing_scope="External observation includes polling, capture I/O and validation; backend phases remain separate")

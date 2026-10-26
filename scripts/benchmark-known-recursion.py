@@ -19,7 +19,8 @@ import sys
 
 from benchmark_known_recursion.identity import source, cpus
 from benchmark_known_recursion.process import ProtectedProcess, available_memory, sha256, utc, write_json
-from benchmark_known_recursion.report import metrics, strict_json, NATIVE_VERSION, WIRE_VERSION
+from benchmark_known_recursion.report import (metrics, strict_json, NATIVE_VERSION, WIRE_VERSION,
+                                              effective_request_limits, cli_detail_region_request)
 from benchmark_known_recursion import workbench
 from benchmark_known_recursion import probe
 
@@ -56,6 +57,7 @@ def load_case(base, name, raw, modes):
             raise ValueError(f"{name}: RPC request digest mismatch")
         body = request.read_bytes()
         value = strict_json(body)
+        effective_request_limits(value["limits"])
         if "Hash" not in value["input"]["Rpc"]["block"]:
             raise ValueError(f"{name}: a fixed block hash is required")
         record.update(request=request, request_bytes=body, request_sha256=digest,
@@ -68,6 +70,7 @@ def load_case(base, name, raw, modes):
 def offline(binary, directory, root, guard, case, environment):
     command = ["taskset", "-c", ",".join(map(str, guard["cpus"])), str(binary), "analyze", *case["offline_arguments"]]
     record = {"command": command, "report_delivered": False,
+              "precision_policy_request": cli_detail_region_request(case["offline_arguments"]),
               "scope": "Frozen observed initial world; excludes RPC acquisition and dynamically fetched unobserved facts"}
     process = ProtectedProcess(command, directory, root, guard, environment)
     try:
@@ -83,7 +86,9 @@ def offline(binary, directory, root, guard, case, environment):
     if record["process"]["exit_code"] in (0, 2) and record["termination"] in ("normal_exit", "process_error"):
         try:
             report = strict_json(output.read_bytes())
-            record.update(metrics=metrics(report, "offline"), report_delivered=True, termination="cli_report_delivered")
+            observed = metrics(report, "offline")
+            assert observed["precision_policy"]["coverage"]["requested_detail_regions"] == record["precision_policy_request"]["max_detail_regions"]
+            record.update(metrics=observed, report_delivered=True, termination="cli_report_delivered")
         except (AssertionError, ValueError, KeyError, TypeError) as failure:
             record.update(termination="cli_invalid_report", report_error_type=type(failure).__name__)
     elif record["termination"] == "process_error":
@@ -132,11 +137,14 @@ def policy_comparisons(samples):
     output = []
     for name, mode in sorted({(s["case"], s["mode"]) for s in samples}):
         delivered = [s for s in samples if (s["case"], s["mode"]) == (name, mode) and s["report_delivered"]]
-        policies = ([s["metrics"]["graphs"][s["metrics"]["selected_view"]]["config"] for s in delivered]
-                    if mode == "offline" else [s["request_identity"]["policy"] for s in delivered])
+        policies = ([{"config": s["metrics"]["graphs"][s["metrics"]["selected_view"]]["config"],
+                      "requested_detail_regions": s["metrics"]["precision_policy"]["coverage"]["requested_detail_regions"]}
+                     for s in delivered]
+                    if mode == "offline" else [s["request_identity"]["effective_policy"] for s in delivered])
         output.append({"case": name, "mode": mode, "delivered_reports": len(delivered),
                        "observed_policy_consistent": all(p == policies[0] for p in policies) if policies else None,
-                       "scope": "Native returned config or HTTP exact submitted policy with per-publication admission; minimum has no transport-policy echo"})
+                       "policy_kind": "native-config-and-requested-cap" if mode == "offline" else "effective-rpc-limits",
+                       "scope": "Compare effective policy; exact raw RPC maps and omission-only defaults are recorded separately; minimum has no transport-policy echo"})
     return output
 
 
@@ -242,6 +250,7 @@ def main():
     environment = os.environ.copy()
     removed = {key: environment.pop(key) for key in ("LD_PRELOAD", "LD_AUDIT") if key in environment}
     evidence = {"schema": "known-recursion-benchmark-v2", "started_utc": utc(), "source_before": initial,
+                "precision_policy_contract": "D5-effective-detail-regions",
                 "consumer_formats": {"offline": {"format": "native-hybrid-report", "schema_version": NATIVE_VERSION},
                                      "rpc": {"format": "web-job-result-reply", "schema_version": WIRE_VERSION}},
                 "frozen_source_required": not arguments.allow_dirty, "preliminary": arguments.allow_dirty,

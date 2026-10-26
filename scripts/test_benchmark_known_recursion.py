@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 import gzip
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -91,7 +92,8 @@ def minimum_result():
                "global": None, "native": None,
                "hybrid": {"coverage": {"snapshot": snapshot, "baseline_revision": minimum["revision"],
                                         "baseline_current": True, "baseline_config": config,
-                                        "detail_revision": None, "detail": "Pending"}, "precision": None}}
+                                        "detail_revision": None, "detail": "Pending",
+                                        "requested_detail_regions": 1, "detail_regions": []}, "precision": None}}
     publication = {"version": VERSION, "minimum_version": VERSION, "global_version": None,
                    "native_version": None, "model_closed": True}
     return {"id": JOB, "publication": publication, "report": payload}
@@ -107,7 +109,8 @@ def rich_result():
              "ssa": {"complete": False}, "symbolic": {"nodes": []}, "stores": [],
              "byte_arrays": [{"length": word(), "cells": []}],
              "metadata": {**report._qualification(minimum), "root_program": 91,
-                          "snapshot": minimum["source_snapshot"]["Chain"], "limits": request()["limits"]}}
+                          "snapshot": minimum["source_snapshot"]["Chain"],
+                          "limits": {**request()["limits"], "max_detail_regions": 1}}}
     graph["metadata"]["environment"] = {**minimum["environment"], "calldata": 0}
     payload["global"] = graph
     payload["native"] = deepcopy(graph)
@@ -134,13 +137,29 @@ def native_result():
             "work": 800, "transfers": 18, "global": {"analysis": graph},
             "native": {"analysis": {**graph, "status": "Incomplete", "work": 300},
                        "partial_ssa": {"complete": False}},
-            "hybrid": {"coverage": {"baseline_current": True}}, "numeric_model": "product",
+            "hybrid": {"coverage": {"baseline_current": True, "requested_detail_regions": 1,
+                                    "detail_regions": [], "detail": "Incomplete"}, "precision": None},
+            "numeric_model": "product",
             "postprocessing_max_work": 2_000_000_000, "postprocessing_work": 10}
 
 
 def snapshot(state, publication=None):
     return {"id": JOB, "state": state, "publication": publication,
             "progress": {"phase": "Analyzing", "work": 42}, "timings": {"processing_ns": 123}}
+
+
+def with_detail_cap(result, cap):
+    payload = result["report"]
+    coverage = payload["hybrid"]["coverage"]
+    coverage["requested_detail_regions"] = cap
+    if cap == 0:
+        coverage.update(detail="Disabled", detail_regions=[])
+        payload["native"] = None
+        result["publication"]["native_version"] = None
+    for slot in ("global", "native"):
+        if payload[slot] is not None:
+            payload[slot]["metadata"]["limits"]["max_detail_regions"] = cap
+    return result
 
 
 class FakeResponse:
@@ -267,6 +286,78 @@ class ParserTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             report.request_qualification(invalid, request())
 
+    def test_effective_detail_limit_defaults_only_on_omission(self):
+        limits = request()["limits"]
+        before = deepcopy(limits)
+        effective, applied = report.effective_request_limits(limits)
+        self.assertEqual(limits, before)
+        self.assertEqual(effective, {**limits, "max_detail_regions": 1})
+        self.assertEqual(applied, {"max_detail_regions": 1})
+        for value in (0, 2, 2**64-1):
+            supplied = {**limits, "max_detail_regions": value}
+            self.assertEqual(report.effective_request_limits(supplied), (supplied, {}))
+        for value in (None, True, False, -1, 1.0, 1.5, "1", 2**64):
+            with self.subTest(value=value), self.assertRaises(AssertionError):
+                report.effective_request_limits({**limits, "max_detail_regions": value})
+
+    def test_d5_required_echo_cap_selected_count_and_exact_supplied_limits(self):
+        supplied = request()
+        supplied["limits"]["max_detail_regions"] = 2
+        for mutate in (
+            lambda p: p["hybrid"]["coverage"].pop("requested_detail_regions"),
+            lambda p: p["hybrid"]["coverage"].update(requested_detail_regions=1),
+            lambda p: p["hybrid"]["coverage"].update(requested_detail_regions=True),
+            lambda p: p["hybrid"]["coverage"].update(detail_regions=[{}, {}, {}]),
+            lambda p: p["global"]["metadata"]["limits"].update(max_detail_regions=1),
+            lambda p: p["native"]["metadata"]["limits"].pop("max_detail_regions"),
+            lambda p: p["native"]["metadata"]["limits"].update(max_work=1),
+            lambda p: p["native"]["metadata"]["limits"].update(use_summaries=1),
+            lambda p: p["hybrid"].update(precision={**p["hybrid"]["coverage"], "requested_detail_regions": 1}),
+        ):
+            invalid = with_detail_cap(rich_result(), 2)["report"]
+            mutate(invalid)
+            with self.assertRaises((AssertionError, KeyError)):
+                report.request_qualification(invalid, supplied)
+        early = minimum_result()["report"]  # Intermediate1975-style omission is not a D5 output.
+        early["hybrid"]["coverage"].pop("requested_detail_regions")
+        with self.assertRaises(KeyError):
+            self.parse({**minimum_result(), "report": early})
+        ignored_zero = rich_result()["report"]
+        ignored_zero["hybrid"]["coverage"].update(requested_detail_regions=0, detail="Disabled")
+        with self.assertRaises(AssertionError):
+            report.detail_region_policy(ignored_zero["hybrid"], native_present=True)
+
+    def test_native_detail_request_remains_distinct_from_selected_regions(self):
+        native = native_result()
+        native["hybrid"]["coverage"].update(requested_detail_regions=2, detail_regions=[{"source": "fixture"}])
+        observed = report.metrics(native, "offline")["precision_policy"]["coverage"]
+        self.assertEqual(observed["requested_detail_regions"], 2)
+        self.assertEqual(observed["selected_detail_region_count"], 1)
+        zero = native_result()
+        zero["native"] = None
+        zero["hybrid"]["coverage"].update(requested_detail_regions=0, detail="Disabled")
+        self.assertEqual(report.metrics(zero, "offline")["precision_policy"]["coverage"]["selected_detail_region_count"], 0)
+        for arguments, expected in (([], (1, True)), (["--max-detail-regions", "0"], (0, False)),
+                                    (["--max-detail-regions=2"], (2, False))):
+            self.assertEqual(report.cli_detail_region_request(arguments),
+                             {"max_detail_regions": expected[0], "default_applied": expected[1]})
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            (directory/"stdout.log").write_text(json.dumps(native))
+            (directory/"stderr.log").write_text("")
+            owner = type("FakeNative", (), {"finish": lambda _: {"termination": "normal_exit", "exit_code": 0}})()
+            for option, delivered in ((["--max-detail-regions", "2"], True),
+                                      (["--max-detail-regions", "0"], False), ([], False)):
+                arguments = ["--world", "capture.json", "--format", "json", *option]
+                with patch.object(benchmark, "ProtectedProcess", return_value=owner):
+                    record = benchmark.offline(Path("owned-cli"), directory, ROOT, {"cpus": [1]},
+                                               {"offline_arguments": arguments}, {})
+                self.assertEqual(record["report_delivered"], delivered)
+                self.assertEqual(record["command"][-len(arguments):], arguments)
+        native["hybrid"]["coverage"].pop("requested_detail_regions")
+        with self.assertRaises(KeyError):
+            report.metrics(native, "offline")
+
     def test_current_native_format_has_fixed_slots_and_independent_totals(self):
         native = native_result()
         graph = native["global"]["analysis"]
@@ -311,7 +402,9 @@ class HttpTests(unittest.TestCase):
         # Whitespace is deliberate: POST must replay these exact bytes.
         self.request_bytes = (" \n" + json.dumps(request(), indent=3) + "\n").encode()
 
-    def run_case(self, final_state="Completed", final=None, result_override=None, *, first=None):
+    def run_case(self, final_state="Completed", final=None, result_override=None, *, first=None, request_value=None):
+        if request_value is not None:
+            self.request_bytes = (" \n" + json.dumps(request_value, indent=3) + "\n").encode()
         first = first or minimum_result()
         final = final or rich_result()
         path = f"/api/tasks/{JOB}"
@@ -374,6 +467,49 @@ class HttpTests(unittest.TestCase):
         self.assertIn("cached-result-gzip_get_median_seconds", aggregate)
         policy = benchmark.policy_comparisons([sample])[0]
         self.assertTrue(policy["observed_policy_consistent"])
+
+    def test_d5_omitted_one_explicit_zero_and_two_preserve_request_bytes(self):
+        for explicit, cap in ((None, 1), (0, 0), (2, 2)):
+            with self.subTest(explicit=explicit):
+                supplied = request()
+                if explicit is not None:
+                    supplied["limits"]["max_detail_regions"] = explicit
+                before = deepcopy(supplied)
+                first, final = with_detail_cap(minimum_result(), cap), with_detail_cap(rich_result(), cap)
+                if cap:
+                    final["report"]["hybrid"]["coverage"]["detail_regions"] = [{
+                        "source": final["report"]["minimum"]["declared_root_source"],
+                        "code_address": ADDRESS, "code_hash": HASH}]
+                record = self.run_case(first=first, final=final, request_value=supplied)
+                identity = record["request_identity"]
+                self.assertEqual(identity["policy"], before["limits"])
+                self.assertEqual(identity["sha256"], hashlib.sha256(self.request_bytes).hexdigest())
+                self.assertEqual(identity["effective_policy"], {**before["limits"], "max_detail_regions": cap})
+                defaults = {"max_detail_regions": 1} if explicit is None else {}
+                self.assertEqual(identity["applied_policy_defaults"], defaults)
+                self.assertEqual(record["final_result"]["policy_checks"]["applied_defaults"], defaults)
+                observed = record["metrics"]["precision_policy"]["coverage"]
+                self.assertEqual(observed["requested_detail_regions"], cap)
+                self.assertEqual(observed["selected_detail_region_count"], int(cap > 0))
+                if cap == 0:
+                    self.assertEqual(observed["detail_state"], "Disabled")
+                    self.assertIsNone(record["metrics"]["graphs"]["Native"])
+                self.assertEqual(supplied, before)
+
+    def test_d5_ignored_final_option_keeps_the_first_qualified_model(self):
+        for cap in (0, 2):
+            with self.subTest(cap=cap):
+                supplied = request()
+                supplied["limits"]["max_detail_regions"] = cap
+                first = with_detail_cap(minimum_result(), cap)
+                expected = with_detail_cap(rich_result(), cap)
+                ignored = rich_result()  # Producer ignored the option and echoed its default1.
+                record = self.run_case(first=first, final=expected, result_override=ok(ignored), request_value=supplied)
+                self.assertTrue(record["report_delivered"])
+                self.assertEqual(record["delivered_publication"], first["publication"])
+                self.assertIsNone(record["final_result"])
+                self.assertEqual(record["task_state"], "Completed")
+                self.assertEqual(record["runner_error_type"], "AssertionError")
 
     def test_unchanged_minimum_rejects_mutated_shared_control_with_new_detail(self):
         first = minimum_result()
