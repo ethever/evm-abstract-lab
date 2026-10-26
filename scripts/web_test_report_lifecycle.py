@@ -6,9 +6,30 @@ from pathlib import Path
 import re
 import time
 from playwright.sync_api import expect
-from web_test_harness import click_control, edit_control, observe_webgpu, open_input, rendered_frame, select_report_namespace, settle_gesture, ui_control, webgpu_evidence
+from web_test_harness import click_control, edit_control, observe_webgpu, open_input, rendered_frame, select_report_namespace, settle_gesture, ui_control, ui_controls, webgpu_evidence
 from web_test_graph_helpers import pick_may_point, workspace_route
 from web_test_hybrid import process_control_relation, source_program
+from web_test_pixels import screenshot_metrics
+
+
+def retained_scene_pixels(page, png):
+    """Bind exact static pixels and geometry without comparing animation phase."""
+    controls = ui_controls(page)
+    plot = ui_control(page, "CFG canvas", role="graph-canvas")["rect"]
+    cards = [control for control in controls if control["enabled"] and control["role"] in {
+        "graph-node", "graph-receipts", "graph-targets"}]
+    assert any(card["role"] == "graph-node" for card in cards), controls
+    records = []
+    for card in sorted(cards, key=lambda control: (control["role"], control["id"])):
+        left, top, right, bottom = card["rect"]
+        rect = (max(left, plot[0]), max(top, plot[1]), min(right, plot[2]), min(bottom, plot[3]))
+        assert rect[0] < rect[2] and rect[1] < rect[3], (card, plot)
+        pixels = screenshot_metrics(page, png, rect)
+        records.append({"id": card["id"], "role": card["role"], "label": card["label"],
+                        "rect": card["rect"], "selected": card["selected"], "pixel_sha256": pixels["hash"]})
+    zoom = re.search(r"; Global zoom: ([0-9.]+)%", page.locator("#analysis-status").text_content())
+    assert zoom, "the retained MAY camera did not report its zoom"
+    return {"viewport": plot, "zoom": zoom[1], "cards": records}
 
 
 def process_model(report, require_hub=False):
@@ -288,6 +309,8 @@ def cancellation(context,url,rpc):
     region = {"x": 10, "y": 180, "width": 1420, "height": 240}
     before = page.screenshot(path=str(context.output / "global-camera-before-cancel.png"), clip=region)
     assert len(before) > 1000
+    before_scene = retained_scene_pixels(page, canvas.screenshot(
+        path=str(context.output / "global-scene-before-cancel.png")))
     # Use the actual canvas Cancel control and observe its real DELETE request.
     with page.expect_response(lambda response: response.request.method == "DELETE" and response.url == task_url) as cancellation:
         click_control(page, canvas, "Cancel", role="action")
@@ -299,7 +322,13 @@ def cancellation(context,url,rpc):
     page.mouse.move(2, 2)
     settle_gesture(page)
     after = page.screenshot(path=str(context.output / "global-camera-after-cancel.png"), clip=region)
-    assert before == after, "cancellation moved or repacked the retained Global scene"
+    after_scene = retained_scene_pixels(page, canvas.screenshot(
+        path=str(context.output / "global-scene-after-cancel.png")))
+    (context.output / "global-camera-retained-scene.json").write_text(
+        json.dumps({"before": before_scene, "after": after_scene,
+                    "full_crop_before_sha256": hashlib.sha256(before).hexdigest(),
+                    "full_crop_after_sha256": hashlib.sha256(after).hexdigest()}, indent=2) + "\n")
+    assert before_scene == after_scene, "cancellation moved or repainted the retained Global cards"
     retained = page.request.get(task_url + "/result").json()["result"]["Ok"]
     assert retained["publication"]["minimum_version"] == first["publication"]["minimum_version"]
     assert retained["report"]["minimum"] == first["report"]["minimum"], "cancellation changed the retained qualified minimum"
