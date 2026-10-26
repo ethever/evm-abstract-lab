@@ -175,11 +175,15 @@ fn click(
 }
 
 #[test]
-fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
+fn explicit_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
     let report = report();
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
-    let mut graph = Graph::default();
+    let mut graph = Graph {
+        content: NodeView::Ssa,
+        whole_scope: true,
+        ..Graph::default()
+    };
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
         value: None,
@@ -193,7 +197,7 @@ fn default_ssa_and_toolbar_switches_keep_native_state_content_and_selection() {
             .lines
             .iter()
             .any(|(line, _)| line.contains("%5 = φ(σ₀:%1 (e₁), σ₁:%2 (e₂))")),
-        "a fresh CFG must render SSA definitions without a toolbar click"
+        "an explicit SSA preview must retain original definitions"
     );
     click(&ctx, &mut graph, &report, &mut selection, "Disasm");
     assert_eq!(graph.content, NodeView::Disassembly);
@@ -432,7 +436,11 @@ fn manual_mode_switch_preserves_selected_node_camera_anchor_and_zoom() {
     let report = report();
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
-    let mut graph = Graph::default();
+    let mut graph = Graph {
+        content: NodeView::Ssa,
+        whole_scope: true,
+        ..Graph::default()
+    };
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
         value: None,
@@ -459,13 +467,18 @@ fn a_representation_switch_preserves_initial_fit_scale_and_canvas_anchor() {
     let report = report();
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
-    let mut graph = Graph::default();
+    let mut graph = Graph {
+        content: NodeView::Ssa,
+        whole_scope: true,
+        ..Graph::default()
+    };
     graph.set_mode(GraphMode::States);
     let mut selection = Selection {
         value: None,
         state: Some(205),
         pc: None,
     };
+    graph.queue_fit();
     let small = Vec2::new(340.0, 260.0);
     frame_at(&ctx, &mut graph, &report, &mut selection, Vec::new(), small);
     let zoom = graph.zoom;
@@ -499,7 +512,11 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
     for content in [NodeView::Disassembly, NodeView::Ssa] {
         let ctx = Context::default();
         crate::notation::initialize_fonts(&ctx);
-        let mut graph = Graph::default();
+        let mut graph = Graph {
+            content: NodeView::Ssa,
+            whole_scope: true,
+            ..Graph::default()
+        };
         graph.set_mode(GraphMode::States);
         let expected = Selection {
             value: None,
@@ -533,7 +550,7 @@ fn fit_button_centers_both_representations_without_rearranging_nodes() {
 }
 
 #[test]
-fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
+fn default_disassembly_and_explicit_ssa_preference_survive_reanalysis() {
     let report = report();
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);
@@ -542,12 +559,12 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     workspace.receive(Ok(AnalyzeReply {
         result: Ok((report.clone()).into()),
     }));
-    assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
+    assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok((report.clone()).into()),
     }));
-    assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
+    assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
     workspace.view = View::Graph;
     let run = |workspace: &mut Workspace, size: Vec2, events| {
         let mut output = ctx.run_ui(
@@ -568,8 +585,8 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     let output = run(&mut workspace, size, Vec::new());
     assert!(
         output.shapes.iter().any(|shape| matches!(&shape.shape,
-        egui::Shape::Text(text) if text.galley.text().contains("%5 = ADD %1, %2"))),
-        "default SSA must be present in the actual CFG cards after reanalysis"
+        egui::Shape::Text(text) if text.galley.text().contains("000a  ADD"))),
+        "default disassembly must be present in the actual CFG cards after reanalysis"
     );
     // A deliberate non-default choice must remain a workspace preference.
     let pos = output
@@ -577,7 +594,7 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
         .iter()
         .rev()
         .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.text() == "Disasm" => {
+            egui::Shape::Text(text) if text.galley.text() == "SSA" => {
                 Some(text.pos + Vec2::splat(4.0))
             }
             _ => None,
@@ -598,7 +615,7 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
             ],
         );
     }
-    assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
+    assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
         result: Ok((report).into()),
@@ -610,7 +627,7 @@ fn default_ssa_and_explicit_disassembly_preference_survive_reanalysis() {
     ] {
         workspace.view = view;
         run(&mut workspace, size, Vec::new());
-        assert!(workspace.accessible_status().contains("CFG nodes: Disasm;"));
+        assert!(workspace.accessible_status().contains("CFG nodes: SSA;"));
     }
 }
 

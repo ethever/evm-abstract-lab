@@ -10,11 +10,12 @@ use crate::palette;
 #[cfg(test)]
 mod tests;
 
-const COMPACT_BELOW: f32 = 0.55;
-const DETAILED_ABOVE: f32 = 0.65;
+const COMPACT_BELOW: f32 = 0.78;
+const DETAILED_ABOVE: f32 = 0.88;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DetailLevel {
+    Silhouette,
     Identity,
     Preview,
 }
@@ -30,10 +31,12 @@ pub(super) fn detail_level(ui: &Ui, zoom: f32) -> DetailLevel {
                 DetailLevel::Preview
             }
         });
-        if zoom <= COMPACT_BELOW {
-            *level = DetailLevel::Identity;
+        if zoom < 0.45 {
+            *level = DetailLevel::Silhouette;
         } else if zoom >= DETAILED_ABOVE {
             *level = DetailLevel::Preview;
+        } else if zoom <= COMPACT_BELOW || *level == DetailLevel::Silhouette {
+            *level = DetailLevel::Identity;
         }
         *level
     })
@@ -67,10 +70,11 @@ pub(super) fn node(
         Stroke::new(if selected { 1.5 } else { 1.0 }, border),
         StrokeKind::Inside,
     );
-    if content.frontier
-        || content.coverage != BlockCoverage::Current
-        || content.termination.unresolved > 0
-        || content.termination.non_current > 0
+    if rect.width().min(rect.height()) >= 12.0
+        && (content.frontier
+            || content.coverage != BlockCoverage::Current
+            || content.termination.unresolved > 0
+            || content.termination.non_current > 0)
     {
         // The inset dashed outline keeps incomplete coverage visible alongside
         // the independent outer selection/hover outline and semantic fill.
@@ -90,6 +94,9 @@ pub(super) fn node(
         ));
     }
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    if level == DetailLevel::Silhouette || rect.width() < 42.0 || rect.height() < 20.0 {
+        return;
+    }
     if level == DetailLevel::Identity {
         identity(&painter, rect, content, zoom);
         return;
@@ -130,30 +137,9 @@ fn identity_color(content: &NodeText) -> egui::Color32 {
 }
 
 fn identity(painter: &Painter, rect: Rect, content: &NodeText, zoom: f32) {
-    let nominal = (12.0 * zoom).clamp(9.0, 12.0);
-    let measured = content
-        .compact
-        .iter()
-        .map(|text| {
-            painter
-                .layout_job(crate::notation::job(
-                    text,
-                    FontId::monospace(nominal),
-                    identity_color(content),
-                ))
-                .size()
-        })
-        .fold(Vec2::ZERO, |size, row| {
-            Vec2::new(size.x.max(row.x), size.y + row.y)
-        });
-    if measured.min_elem() <= 0.0 {
-        return;
-    }
-    let available = (rect.size() - Vec2::splat(4.0 * zoom)).max(Vec2::splat(0.1));
-    let fit = (available.x / measured.x)
-        .min(available.y / measured.y)
-        .min(1.0);
-    let font = FontId::monospace(nominal * fit);
+    // Identity is a different presentation, not a font floor on a shrinking
+    // preview. Omit rows that cannot fit; each glyph stays inside this card.
+    let font = FontId::monospace(10.0);
     let rows: Vec<_> = content
         .compact
         .iter()
@@ -165,12 +151,15 @@ fn identity(painter: &Painter, rect: Rect, content: &NodeText, zoom: f32) {
             ))
         })
         .collect();
-    let height: f32 = rows.iter().map(|row| row.size().y).sum();
-    let mut top = rect.center().y - height * 0.5;
+    let available = rect.shrink((4.0 * zoom).max(2.0));
+    let mut top = available.top();
     for row in rows {
         let size = row.size();
+        if top + size.y > available.bottom() {
+            break;
+        }
         painter.galley(
-            egui::Pos2::new(rect.center().x - size.x * 0.5, top),
+            egui::Pos2::new(available.left(), top),
             row,
             identity_color(content),
         );

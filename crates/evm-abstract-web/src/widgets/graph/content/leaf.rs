@@ -33,14 +33,10 @@ pub(super) fn preview(
     let location = if abstract_environment {
         "Abstract environment".into()
     } else {
-        block.basic_block.map_or_else(
-            || "Process control".into(),
-            |id| Symbol::Block(id).to_string(),
-        )
+        source_identity(report, block)
     };
     let title = format!(
-        "{}  ·  {}{}",
-        Symbol::State(block.id),
+        "{}{}",
         location,
         if coverage == BlockCoverage::Current {
             String::new()
@@ -49,7 +45,7 @@ pub(super) fn preview(
         }
     );
     let mut detail = format!(
-        "{} · depth {}{}",
+        "Native · {} · depth {}{}",
         block.start_pc.map_or_else(
             || if abstract_environment {
                 "abstract environment"
@@ -110,8 +106,19 @@ pub(super) fn preview(
             );
         }
     }
-    NodeText::new(title, detail, lines, coverage, frontier)
-        .with_identity(vec![Symbol::State(block.id).to_string(), location])
+    NodeText::new(title, detail, lines, coverage, frontier).with_identity(vec![location])
+}
+
+pub(super) fn source_identity(report: &ReportView<'_>, block: &CfgBlock) -> String {
+    block.start_pc.map_or_else(
+        || "Process control".into(),
+        |pc| {
+            report.instructions(block).last().map_or_else(
+                || format!("0x{pc:04x}"),
+                |instruction| format!("0x{pc:04x} · {}", instruction.name),
+            )
+        },
+    )
 }
 
 fn summary_label(label: &str, source: SummarySourceStatus) -> String {

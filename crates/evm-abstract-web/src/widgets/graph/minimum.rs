@@ -1,125 +1,29 @@
-//! Canonical Global control uses regional identities, never Native machine/SSA
-//! coordinates. It shares the existing camera, gestures and layout engine.
-
-use super::{Graph, layout};
+//! Scoped conservative control. Its cards retain regional provenance; camera,
+//! gestures, LOD and edge routing follow the same rules as the Native view.
+use super::{Graph, edges, paint as lod};
 use crate::{
-    app::{
-        minimum::{self, Selection},
-        model::ReportViewId,
-    },
+    app::{minimum::Selection, model::ReportViewId},
     controls::{self, Density},
     palette,
     widgets::heading,
 };
-use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use evm_abstract_layout as geometry;
-use evm_abstract_protocol::{AnalysisReport, SummarySourceStatus};
+use egui::{Align2, FontId, Pos2, Rect, Sense, Ui, Vec2};
+use evm_abstract_protocol::AnalysisReport;
 
-mod control;
-use control::{Card, Control, Edge};
-
-pub(super) struct Scene {
-    summary: usize,
-    placement: super::Placement,
-    edges: Vec<Edge>,
-    nodes: usize,
-    cards: Vec<Card>,
-    source_edges: usize,
-    hubs: usize,
-    calls: usize,
-    deliveries: usize,
-    selected: Option<usize>,
-    error: Option<geometry::LayoutError>,
-    nodes_visible: super::Visibility,
-    edges_visible: super::Visibility,
-}
-
-impl Scene {
-    fn new(report: &AnalysisReport, summary: usize, ui: &Ui) -> Self {
-        let model = report.minimum.as_ref().unwrap();
-        let relation = &model.summaries[summary].relation;
-        let control = Control::new(report, summary);
-        let edges = control.edges;
-        let input = geometry::Input {
-            nodes: control
-                .cards
-                .iter()
-                .enumerate()
-                .map(|(id, card)| geometry::Node {
-                    id,
-                    size: geometry::Size::new(330.0, 86.0),
-                    program: None,
-                    // Private display ordering is not a Native block assertion.
-                    block: id,
-                    frame_depth: None,
-                    boundary: card.boundary,
-                })
-                .collect(),
-            edges: edges
-                .iter()
-                .enumerate()
-                .map(|(id, edge)| {
-                    let measured = ui
-                        .painter()
-                        .layout_no_wrap(edge.label.clone(), FontId::monospace(10.0), edge.color)
-                        .size();
-                    geometry::Edge {
-                        id,
-                        from: edge.from,
-                        to: edge.to,
-                        kind: layout::kind(edge.kind),
-                        label: geometry::Label {
-                            text: edge.label.clone(),
-                            size: geometry::Size::new(
-                                f64::from(measured.x + 8.0),
-                                f64::from(measured.y + 4.0),
-                            ),
-                        },
-                    }
-                })
-                .collect(),
-        };
-        let (placement, error) = match layout::scene(&input) {
-            Ok(layout) => (layout, None),
-            Err(error) => (super::Placement::default(), Some(error)),
-        };
-        let nodes_visible = super::Visibility::new(&placement.nodes);
-        let edge_bounds = placement
-            .edges
-            .iter()
-            .map(|(id, route)| {
-                let mut bounds = route.label;
-                for point in &route.path {
-                    bounds.extend_with(*point);
-                }
-                (*id, bounds)
-            })
-            .collect();
-        let edges_visible = super::Visibility::new(&edge_bounds);
-        Self {
-            summary,
-            placement,
-            nodes: relation.regional_cfg.nodes.len(),
-            cards: control.cards,
-            source_edges: control.source_edges,
-            hubs: control.hubs,
-            calls: relation.regional_cfg.calls.len(),
-            deliveries: relation
-                .regional_cfg
-                .calls
-                .iter()
-                .map(|call| call.deliveries.len())
-                .sum(),
-            edges,
-            selected: None,
-            error,
-            nodes_visible,
-            edges_visible,
-        }
-    }
-}
+pub(super) mod control;
+use control::Card;
+mod paint;
+mod picker;
+mod scene;
+use super::{ControlOrigin, GraphIntent, GraphScope, ProjectionTarget};
+use paint::paint_card;
+use picker::destination_intent;
+use scene::Picker;
+pub(super) use scene::Scene;
 
 impl Graph {
+    /// Legacy selection adapter. The canonical shell consumes the same render's
+    /// typed intent through show_minimum_scoped, including directory-only picks.
     pub(crate) fn show_minimum(
         &mut self,
         ui: &mut Ui,
@@ -127,75 +31,132 @@ impl Graph {
         identity: ReportViewId,
         selection: &mut Selection,
     ) {
+        let _ = self.show_minimum_scoped(ui, report, identity, selection);
+    }
+
+    pub(crate) fn show_minimum_scoped(
+        &mut self,
+        ui: &mut Ui,
+        report: &AnalysisReport,
+        identity: ReportViewId,
+        selection: &mut Selection,
+    ) -> Option<GraphIntent> {
         if ui.is_sizing_pass() {
-            return;
+            return None;
         }
         self.activate(identity);
-        let model = report.minimum.as_deref().unwrap();
-        let Some(summary) = model.summaries.get(selection.summary) else {
-            heading(ui, "GLOBAL CONTROL", "No procedure relation attached");
-            self.viewport = Some(ui.available_size());
-            self.scene.minimum = Some(Scene {
-                summary: selection.summary,
-                placement: super::Placement::default(),
-                edges: Vec::new(),
-                nodes: 0,
-                cards: Vec::new(),
-                source_edges: 0,
-                hubs: 0,
-                calls: 0,
-                deliveries: 0,
-                selected: None,
-                error: None,
-                nodes_visible: Default::default(),
-                edges_visible: Default::default(),
-            });
-            crate::widgets::empty(ui, "No procedure relation is attached to this observation");
-            return;
-        };
         let fit_requested = self.fit_shortcut(ui);
+        let mut scope = if self.whole_scope {
+            GraphScope::Overview {
+                summary: selection.summary,
+            }
+        } else {
+            self.scene
+                .minimum
+                .as_ref()
+                .filter(|scene| scene.contains(selection))
+                .map_or_else(
+                    || {
+                        selection.node.map_or(
+                            GraphScope::Entry {
+                                summary: selection.summary,
+                            },
+                            |node| {
+                                ProjectionTarget {
+                                    summary: selection.summary,
+                                    procedure: selection.procedure,
+                                    origin: ControlOrigin {
+                                        node,
+                                        location: selection.control,
+                                    },
+                                }
+                                .scope()
+                            },
+                        )
+                    },
+                    |scene| scene.scope,
+                )
+        };
         heading(
             ui,
-            "GLOBAL CONTROL",
-            &format!(
-                "{} regional nodes · {} calls · source-qualified MAY control",
-                summary.relation.regional_cfg.nodes.len(),
-                summary.relation.regional_cfg.calls.len()
-            ),
+            "CONTROL FLOW",
+            "Source-qualified MAY control · separate regional receipts",
         );
+        let mut entry_requested = false;
         Density::Compact.scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if controls::action(ui, "Fit graph", Density::Compact).clicked() {
-                    self.request_fit(ui, true);
+                if controls::action(ui, "Entry", Density::Compact).clicked() {
+                    entry_requested = true;
                 }
-                ui.label(format!(
-                    "{:.0}% · {}",
-                    self.zoom * 100.0,
-                    if self.fitted { "Fit" } else { "Manual" }
-                ));
-                ui.label("MAY edges · purple calls · blue output deliveries");
-            })
+                if controls::action(ui, "Fit graph", Density::Compact).clicked() { self.request_fit(ui, true); }
+                if controls::action_enabled(ui, selection.node.is_some(), "Focus selected", Density::Compact).clicked() { self.focus_selection(); }
+                if ui.checkbox(&mut self.whole_scope, "Overview").changed() {
+                    scope = if self.whole_scope { GraphScope::Overview { summary: selection.summary } }
+                        else { GraphScope::Context { summary: selection.summary, procedure: selection.procedure,
+                            anchor: selection.node.map(|node| ControlOrigin { node, location: selection.control }) } };
+                }
+                if let Some(scene) = self.scene.minimum.as_mut() && let Some(set) = scene.control.hidden_set
+                    && controls::action(ui, "Hidden control", Density::Compact).clicked() { scene.picker = Some(Picker::Targets(set)); }
+                ui.label(format!("{:.0}% · {}", self.camera().0 * 100.0, if self.fitted { "Fit" } else { "Pan / zoom" }))
+                    .on_hover_text("Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. F fits this scope; Entry restores readable scale.");
+            });
         });
         if self
             .scene
             .minimum
             .as_ref()
-            .is_none_or(|scene| scene.summary != selection.summary)
+            .is_none_or(|scene| scene.scope != scope)
         {
-            self.scene.minimum = Some(Scene::new(report, selection.summary, ui));
+            self.scene.minimum = Some(Scene::new(report, scope, ui));
+            if !self.fit_pending && !self.camera_restored {
+                self.entry_pending = true;
+            }
         }
+        let counts = self.scene.minimum.as_ref().unwrap().control.counts;
+        ui.add(egui::Label::new(egui::RichText::new(format!(
+            "{} / {} source points · {} / {} context receipts · {} other-context receipts · {} / {} unexpanded · {} folded flows",
+            counts.displayed_points, counts.total_points, counts.displayed_receipts, counts.context_receipts,
+            counts.other_context_receipts, counts.displayed_unexpanded_points, counts.unexpanded_points, counts.hidden_flows,
+        )).small().color(palette::MUTED)).truncate());
         let (response, painter) = ui.allocate_painter(
             ui.available_size().max(Vec2::splat(1.0)),
             Sense::click_and_drag(),
         );
         let canvas = response.rect;
-        self.viewport = Some(canvas.size());
-        if self.fit_pending {
-            let bounds = self.scene.minimum.as_ref().unwrap().placement.bounds;
-            self.fit_bounds(canvas.size(), bounds);
-            self.fit_pending = false;
-            self.fitted = true;
+        if canvas.size().min_elem() <= 1.0 || ui.ctx().will_discard() {
+            return None;
         }
+        self.viewport = Some(canvas.size());
+        let scene = self.scene.minimum.as_ref().unwrap();
+        let selected = scene
+            .control
+            .cards
+            .iter()
+            .position(|card| card_selected(card, selection));
+        let anchor = if self.focus_pending {
+            selected
+        } else {
+            scene.control.anchor.or(selected)
+        };
+        let anchor = anchor
+            .and_then(|id| scene.placement.nodes.get(&id))
+            .copied();
+        if self.fit_pending {
+            self.fit_bounds(canvas.size(), scene.placement.bounds);
+            self.fit_pending = false;
+            self.entry_pending = false;
+            self.fitted = true;
+        } else if self.entry_pending || self.focus_pending {
+            let bounds = if self.focus_pending {
+                anchor.unwrap_or(scene.placement.bounds)
+            } else {
+                scene.placement.bounds
+            };
+            self.readable_entry(canvas.size(), bounds, anchor);
+            self.entry_pending = false;
+        }
+        self.focus_pending = false;
+        self.camera_restored = false;
         if !fit_requested {
             self.navigate(ui, &response);
         }
@@ -206,136 +167,188 @@ impl Graph {
             painter.text(
                 canvas.center(),
                 Align2::CENTER_CENTER,
-                format!("Global layout unavailable: {error}"),
+                format!("Control scope unavailable: {error}"),
                 FontId::proportional(13.0),
                 palette::WARNING,
             );
-            return;
+            return None;
         }
         let visible = Rect::from_min_max(
             Pos2::ZERO - self.pan / self.zoom,
             Pos2::ZERO + (canvas.size() - self.pan) / self.zoom,
         )
         .expand(16.0 / self.zoom);
+        let mut animated = false;
         for id in scene.edges_visible.query(visible) {
-            let edge = &scene.edges[id];
+            let edge = &scene.control.edges[id];
             let Some(route) = scene.placement.edges.get(&id) else {
                 continue;
             };
-            let path: Vec<_> = route
-                .path
-                .iter()
-                .map(|point| canvas.min + self.pan + point.to_vec2() * self.zoom)
-                .collect();
-            if let [.., from, to] = path.as_slice() {
-                painter.add(egui::Shape::line(
-                    path.clone(),
-                    Stroke::new(1.2, edge.color),
-                ));
-                painter.arrow(*from, *to - *from, Stroke::new(1.2, edge.color));
+            let highlighted = Some(edge.from) == selected || Some(edge.to) == selected;
+            let label = self.screen_rect(canvas, route.label).intersect(canvas);
+            if self.zoom >= 0.9 && label.is_positive() {
+                ui.interact(label, ui.id().with(("control_edge", id)), Sense::hover())
+                    .on_hover_ui(|ui| {
+                        ui.label(format!("{} independent flow origins", edge.origins.len()));
+                        for origin in edge.origins.iter().take(12) {
+                            ui.label(origin.detail(report, scope.summary()));
+                        }
+                    });
             }
-            if self.zoom >= 0.25 {
-                let label = self.screen_rect(canvas, route.label);
-                painter.rect_filled(label, 2.0, palette::BACKGROUND);
-                painter.text(
-                    label.center(),
-                    Align2::CENTER_CENTER,
-                    &edge.label,
-                    FontId::monospace(10.0 * self.zoom),
-                    edge.color,
-                );
-            }
+            animated |= edges::paint_edge_style(
+                &painter,
+                route,
+                canvas.min + self.pan,
+                edges::EdgeStyle {
+                    kind: edge.kind,
+                    label: &edge.label,
+                    zoom: self.zoom,
+                    selected: highlighted,
+                    color: Some(edge.color),
+                },
+            );
         }
-        let source = minimum::source_status(model, selection.summary);
+        if animated {
+            ui.ctx().request_repaint_after(edges::FLOW_FRAME_INTERVAL);
+        }
+        let level = lod::detail_level(ui, self.zoom);
+        let mut clicked = None;
         for id in scene.nodes_visible.query(visible) {
-            let card = &scene.cards[id];
-            let node = &summary.relation.regional_cfg.nodes[card.node];
+            let card = &scene.control.cards[id];
             let Some(world) = scene.placement.nodes.get(&id) else {
                 continue;
             };
             let rect = self.screen_rect(canvas, *world);
-            if !rect.intersects(canvas) {
-                continue;
-            }
-            let selected = selection.node == Some(node.id) && selection.control == card.location;
-            let current = source == SummarySourceStatus::Current
-                && node.transfer.as_ref().is_some_and(|transfer| {
-                    transfer.current
-                        && transfer.input_revision == node.input_revision
-                        && transfer.complete
-                })
-                && !node.excluded;
-            let color = if selected {
-                palette::ACCENT
-            } else if card.boundary {
-                palette::WARNING
-            } else if current {
-                palette::BLUE
-            } else {
-                palette::MUTED
-            };
-            painter.rect_filled(
-                rect,
-                4.0,
-                if selected {
-                    palette::SELECTED
-                } else {
-                    palette::RAISED
-                },
-            );
-            painter.rect_stroke(
-                rect,
-                4.0,
-                Stroke::new(if selected { 2.0 } else { 1.0 }, color),
-                StrokeKind::Inside,
-            );
-            let at = rect.min + Vec2::splat(7.0 * self.zoom);
-            let font = FontId::monospace((12.0 * self.zoom).max(7.0));
-            painter.text(
-                at,
-                Align2::LEFT_TOP,
-                &card.title,
-                font.clone(),
-                palette::TEXT,
-            );
-            if self.zoom >= 0.25 {
-                painter.text(
-                    at + egui::vec2(0.0, 22.0 * self.zoom),
-                    Align2::LEFT_TOP,
-                    &card.caption,
-                    FontId::proportional(11.0 * self.zoom),
-                    color,
-                );
-                painter.text(
-                    at + egui::vec2(0.0, 43.0 * self.zoom),
-                    Align2::LEFT_TOP,
-                    &card.qualifier,
-                    FontId::monospace(10.0 * self.zoom),
-                    palette::MUTED,
-                );
-            }
             let hit = ui.interact(
                 rect.intersect(canvas),
-                ui.id().with(("minimum_control", selection.summary, id)),
+                ui.id().with(("minimum_control", scope.summary(), id)),
                 Sense::click(),
             );
+            hit.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Button,
+                    ui.is_enabled(),
+                    card_selected(card, selection),
+                    &card.title,
+                )
+            });
+            paint_card(
+                &painter,
+                rect,
+                card,
+                card_selected(card, selection),
+                hit.hovered() || hit.has_focus(),
+                self.zoom,
+                level,
+            );
             if hit.clicked() {
-                selection.select_node(model, node.id);
-                selection.control = card.location;
+                clicked = Some(id);
             }
-            hit.on_hover_text(format!(
-                "{}\n{}\n{}\n{}\n{}",
-                card.title,
-                card.caption,
-                card.hover,
-                crate::report::regional_status(node, source),
-                "Instruction-level SSA belongs to Detailed paths."
-            ));
+            hit.on_hover_ui(|ui| {
+                ui.label(format!(
+                    "{}\n{}\n{}\n{}",
+                    card.title, card.caption, card.qualifier, card.hover
+                ));
+                ui.collapsing("Renderer provenance", |ui| {
+                    for origin in card.origins.iter().take(12) {
+                        ui.monospace(format!("{:?}", origin.target));
+                        ui.label(format!("Current {} · complete {} · through {} · Body transferred {} · excluded {}", origin.current, origin.complete, origin.through, origin.transferred, origin.excluded));
+                    }
+                });
+            });
+        }
+        let mut intent = None;
+        if let Some(id) = clicked {
+            let scene = self.scene.minimum.as_mut().unwrap();
+            let card = &scene.control.cards[id];
+            if let Some(set) = card.target_set {
+                let entries = &scene.control.target_sets[set].entries;
+                if entries.len() == 1 {
+                    intent = Some(destination_intent(scope.summary(), entries[0].destination));
+                } else {
+                    scene.picker = Some(Picker::Targets(set));
+                }
+            } else if card.origins.len() == 1 {
+                intent = Some(GraphIntent::Select(card.origins[0].target));
+            } else if !card.origins.is_empty() {
+                scene.picker = Some(Picker::Origins(id));
+            }
+        }
+        if ui.is_enabled() {
+            intent = self.minimum_picker(ui, report).or(intent);
+        }
+        if entry_requested {
+            intent = report
+                .minimum
+                .as_ref()
+                .and_then(|model| model.summaries.get(selection.summary))
+                .and_then(|summary| {
+                    summary
+                        .relation
+                        .root_procedure
+                        .map(|procedure| (summary, procedure))
+                })
+                .and_then(|(summary, procedure)| {
+                    summary
+                        .relation
+                        .regional_cfg
+                        .nodes
+                        .iter()
+                        .find(|node| node.procedure == procedure)
+                        .map(|node| {
+                            GraphIntent::Open(ProjectionTarget {
+                                summary: selection.summary,
+                                procedure,
+                                origin: ControlOrigin {
+                                    node: node.id,
+                                    location: None,
+                                },
+                            })
+                        })
+                });
+            self.whole_scope = false;
+        }
+        if let Some(GraphIntent::Select(target) | GraphIntent::Open(target)) = intent {
+            apply_target(report, selection, target);
         }
         self.scene.minimum.as_mut().unwrap().selected = selection.node;
+        if entry_requested {
+            self.scene.minimum = None;
+        }
+        intent
     }
 
     pub(super) fn minimum_summary(&self) -> String {
-        self.scene.minimum.as_ref().map_or_else(|| "Global control: awaiting display".into(), |scene| format!("Global control: {} regional nodes; {} MAY source points; {} MAY source edges; {} expanded unknown-jump hubs; {} calls; {} output deliveries; Selected regional {}; Global zoom: {:.3}%", scene.nodes, scene.cards.len(), scene.source_edges, scene.hubs, scene.calls, scene.deliveries, scene.selected.map_or("none".into(), |id| format!("r{id}")), self.zoom * 100.0))
+        self.scene.minimum.as_ref().map_or_else(|| "Scoped control: awaiting display".into(), |scene| {
+            let counts = scene.control.counts;
+            format!("Scoped control: {:?}; {} / {} MAY source points; {} / {} context receipts; {} other-context receipts; {} portals; {} folded flows; {} / {} unexpanded points; {} calls; {} output deliveries; {} source edges; {} unknown-jump hubs; Selected regional {}; Global zoom: {:.3}%",
+                scene.scope, counts.displayed_points, counts.total_points, counts.displayed_receipts, counts.context_receipts, counts.other_context_receipts,
+                scene.control.target_sets.len(), counts.hidden_flows, counts.displayed_unexpanded_points, counts.unexpanded_points, counts.calls, counts.deliveries, scene.control.source_edges, scene.control.hubs,
+                scene.selected.map_or("none".into(), |id| format!("r{id}")), self.zoom * 100.0)
+        })
     }
 }
+
+fn card_selected(card: &Card, selection: &Selection) -> bool {
+    card.origins.iter().any(|origin| {
+        origin.target.summary == selection.summary
+            && origin.target.procedure == selection.procedure
+            && Some(origin.target.origin.node) == selection.node
+            && origin.target.origin.location == selection.control
+    })
+}
+
+fn apply_target(report: &AnalysisReport, selection: &mut Selection, target: ProjectionTarget) {
+    selection.summary = target.summary;
+    if let Some(model) = report.minimum.as_deref() {
+        selection.select_node(model, target.origin.node);
+    }
+    selection.procedure = target.procedure;
+    selection.node = Some(target.origin.node);
+    selection.control = target.origin.location;
+    selection.output = None;
+    selection.account = None;
+}
+
+#[cfg(test)]
+mod tests;
