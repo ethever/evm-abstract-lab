@@ -1,12 +1,13 @@
 //! Sparse byte observations keep their length and unspecified-byte defaults.
+use crate::report::ReportView;
 
 use super::value;
 use crate::palette;
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use evm_abstract_protocol::{AnalysisReport, ValueInfo};
+use evm_abstract_protocol::ValueInfo;
 
-pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, id: usize, title: &str) {
+pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, id: usize, title: &str) {
     let Some(bytes) = report.byte_arrays.get(id) else {
         ui.colored_label(
             palette::ERROR,

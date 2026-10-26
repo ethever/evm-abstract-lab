@@ -3,7 +3,7 @@ use super::*;
 
 const RECURSIVE: &str = "5f5f5f5f5f305af150602a5f5260205ff3";
 
-fn observation_report(bytecode: &str) -> api::AnalysisReport {
+fn observation_report(bytecode: &str) -> crate::tests::AnalysisReport {
     let mut report = crate::tests::procedure_report(bytecode);
     // Rendering fixtures control the certificate. Native certification and the
     // exact exported flag are independently tested at the engine/server seam.
@@ -33,7 +33,7 @@ fn known_call_terminal_boundary_explains_region_evidence_without_asserting_recur
         vec![],
         egui::vec2(1400.0, 1200.0),
         |ui| {
-            evidence::diagnostics(ui, &report, &mut selection);
+            evidence::diagnostics(ui, &(report).view(), &mut selection);
         },
     );
     let text = visible
@@ -55,16 +55,21 @@ fn known_call_terminal_boundary_explains_region_evidence_without_asserting_recur
 fn draw(
     context: &egui::Context,
     time: &mut f64,
-    report: &api::AnalysisReport,
+    report: &crate::tests::AnalysisReport,
     events: Vec<egui::Event>,
 ) -> Vec<(String, egui::Rect)> {
     let source = report.abstract_summaries[0].source_state;
     rendered_at(context, time, events, egui::vec2(1800.0, 16000.0), |ui| {
-        summaries::show(ui, report, Some(source));
+        summaries::show(ui, &(report).view(), Some(source));
     })
 }
 
-fn click(context: &egui::Context, time: &mut f64, report: &api::AnalysisReport, label: &str) {
+fn click(
+    context: &egui::Context,
+    time: &mut f64,
+    report: &crate::tests::AnalysisReport,
+    label: &str,
+) {
     let before = draw(context, time, report, vec![]);
     let position = before
         .iter()
@@ -100,7 +105,11 @@ fn context() -> egui::Context {
 #[test]
 fn conservative_process_shows_possible_static_control_exits_and_residual_obligations() {
     let mut report = observation_report(RECURSIVE);
-    let top = crate::tests::empty_report().metadata.environment.call_value;
+    let top = crate::tests::empty_report()
+        .metadata
+        .environment
+        .call_value
+        .clone();
     // Reuse regional identities to exercise presentation. Native action and
     // target provenance is checked by the server's process integration test.
     let summary = &mut report.abstract_summaries[0];
@@ -247,7 +256,7 @@ fn source_current_withholds_final_labels_for_a_closed_current_local_observation(
         state: Some(source),
         ..Default::default()
     };
-    let accessible = Inspector::default().accessible_summary(&report, selection);
+    let accessible = Inspector::default().accessible_summary(&(report).view(), selection);
     assert!(accessible.contains("closed for observed input · final source uncertified"));
     assert!(!accessible.contains("closed for final source") && !accessible.contains("historical"));
     let context = context();
@@ -318,7 +327,7 @@ fn source_current_distinguishes_superseded_from_uncertified_latest_and_certified
     let inspector = Inspector::default();
     assert!(
         inspector
-            .accessible_summary(&report, selection)
+            .accessible_summary(&(report).view(), selection)
             .contains("open for observed input · final source uncertified")
     );
     let latest = report.abstract_summaries.last_mut().unwrap();
@@ -333,7 +342,7 @@ fn source_current_distinguishes_superseded_from_uncertified_latest_and_certified
     assert!(text.contains("closed for final source"));
     assert!(
         inspector
-            .accessible_summary(&report, selection)
+            .accessible_summary(&(report).view(), selection)
             .contains("closed for final source")
     );
 }

@@ -1,19 +1,19 @@
 //! Inspect either graph without mixing its state IDs or dropping coarse routes.
 use super::{buffers, context, symbolic};
+use crate::report::ReportView;
 use crate::{
     app::{Selection, hybrid},
     controls::{self, Density},
     palette, widgets,
 };
 use egui::{RichText, Ui};
-use evm_abstract_protocol::{
-    AnalysisNamespace, AnalysisReport, HybridLocalScope, InstructionProgress,
-};
+use evm_abstract_protocol::{AnalysisNamespace, HybridLocalScope, InstructionProgress};
 
 pub(super) struct Detail {
     graph: widgets::Graph,
     namespace: AnalysisNamespace,
     selection: Selection,
+    identity: Option<crate::app::model::ReportViewId>,
 }
 
 impl Default for Detail {
@@ -22,23 +22,24 @@ impl Default for Detail {
             graph: widgets::Graph::default(),
             namespace: AnalysisNamespace::Native,
             selection: Selection::default(),
+            identity: None,
         }
     }
 }
 
 impl Detail {
     pub(super) fn reset(&mut self) {
-        self.graph.reset_report();
+        self.identity = None;
         self.selection = Selection::default();
     }
 
-    pub(super) fn show(&mut self, ui: &mut Ui, report: &AnalysisReport) {
+    pub(super) fn show(&mut self, ui: &mut Ui, report: &ReportView<'_>) {
         let Some(evidence) = &report.hybrid else {
             ui.label("This report contains a single native analysis.");
             return;
         };
         let precision = evidence.native_coverage();
-        ui.label(RichText::new(hybrid::summary(report).unwrap_or_default()).strong());
+        ui.label(RichText::new(hybrid::summary(report.model).unwrap_or_default()).strong());
         ui.label(if evidence.coverage.baseline_current {
             "The global model keeps all covered call, callback and creation routes. Detailed paths describe their recorded inputs; pending paths remain covered by the global model."
         } else {
@@ -76,6 +77,9 @@ impl Detail {
                 ui.label(format!("Session work {} · optional work {} / {}", rpc.work, rpc.precision_work, rpc.max_precision_work));
             }
         });
+        if report.graph(self.namespace).is_none() {
+            self.namespace = report.identity().namespace();
+        }
         let before = self.namespace;
         ui.horizontal_wrapped(|ui| {
             controls::tab_value(
@@ -95,9 +99,6 @@ impl Detail {
                 );
             });
         });
-        if self.namespace != before {
-            self.reset();
-        }
         let Some(graph) = report.graph(self.namespace) else {
             ui.label(if evidence.coverage.baseline_current {
                 "Detailed paths are not available yet. Global coverage is retained."
@@ -106,6 +107,11 @@ impl Detail {
             });
             return;
         };
+        let graph = &graph;
+        if self.namespace != before || self.identity != Some(graph.identity()) {
+            self.reset();
+            self.identity = Some(graph.identity());
+        }
         if self.namespace == AnalysisNamespace::Native && !graph.frontiers.is_empty() {
             egui::CollapsingHeader::new(format!(
                 "Pending detailed paths: {}",

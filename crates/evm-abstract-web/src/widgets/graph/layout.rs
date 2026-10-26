@@ -1,6 +1,7 @@
 //! Conversion between measured egui content and viewport-independent geometry.
 //! The private ELK graph is owned by evm-abstract-layout. This layer preserves
 //! original leaf/edge IDs and translates complete routes into painter coordinates.
+use crate::report::ReportView;
 
 #[cfg(test)]
 mod tests;
@@ -9,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{FontId, Painter, Pos2, Rect, Vec2};
 use evm_abstract_layout as geometry;
-use evm_abstract_protocol::{AnalysisReport, EdgeKind};
+use evm_abstract_protocol::EdgeKind;
 
 use super::{index::ReportIndex, projection::DisplayGraph};
 use crate::palette;
@@ -58,7 +59,7 @@ pub(super) fn fit_scale(content: Vec2, viewport: Vec2) -> f32 {
 }
 
 pub(super) fn prepare(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     display: &DisplayGraph,
     sizes: &BTreeMap<usize, Vec2>,
@@ -229,7 +230,7 @@ fn rectangle(
 }
 
 #[cfg(test)]
-pub(super) fn for_report(report: &AnalysisReport, sizes: &BTreeMap<usize, Vec2>) -> Placement {
+pub(super) fn for_report(report: &ReportView<'_>, sizes: &BTreeMap<usize, Vec2>) -> Placement {
     use egui::{Context, RawInput};
     let ctx = Context::default();
     crate::notation::initialize_fonts(&ctx);

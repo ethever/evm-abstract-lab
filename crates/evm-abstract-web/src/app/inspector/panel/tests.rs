@@ -164,7 +164,17 @@ fn long_diagnostics_do_not_grow_the_chosen_docked_height() {
     workbench.workspace.inspector.tab = Tab::Diagnostics;
     workbench.frame(vec![]);
     let height = workbench.rect("world_inspector").height();
-    workbench.workspace.report.as_mut().unwrap().diagnostics = (0..100)
+    std::sync::Arc::make_mut(
+        workbench
+            .workspace
+            .report
+            .as_mut()
+            .unwrap()
+            .native
+            .as_mut()
+            .unwrap(),
+    )
+    .diagnostics = (0..100)
         .map(|pc| evm_abstract_protocol::Diagnostic {
             precision: None,
             state: 0,
@@ -324,7 +334,7 @@ fn maximizing_and_restoring_keep_the_existing_cfg_camera() {
 fn maximizing_and_restoring_keep_the_source_reading_position() {
     let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));
     let mut report = crate::tests::report();
-    let mut block = report.disassembly[0].clone();
+    let mut block = report.model.programs[0].blocks[0].clone();
     let prototype = block.instructions[0].clone();
     block.instructions = (0..800)
         .map(|pc| {
@@ -334,12 +344,22 @@ fn maximizing_and_restoring_keep_the_source_reading_position() {
             instruction
         })
         .collect();
-    report.programs[0] =
-        crate::tests::source_program(0, report.programs[0].code_address.clone(), vec![block]);
+    report.model.programs[0] = crate::tests::source_program(
+        0,
+        report.model.programs[0].code_address.clone(),
+        vec![block],
+    );
+    for state in &mut report.cfg {
+        state.basic_block = Some(0);
+        state.start_pc = Some(0);
+    }
+    for state in &mut report.states {
+        state.entry.frames[0].basic_block = Some(0);
+    }
     workbench
         .workspace
         .receive(Ok(evm_abstract_protocol::AnalyzeReply {
-            result: Ok(report),
+            result: Ok((report).into()),
         }));
     workbench.workspace.view = View::Disassembly;
     workbench.frame(vec![]);

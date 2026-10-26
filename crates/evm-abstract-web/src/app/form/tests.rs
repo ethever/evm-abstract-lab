@@ -259,7 +259,10 @@ fn root_terminal_checkbox_submits_the_default_and_explicit_opt_out_for_both_sour
             if source == Source::Bytecode {
                 let report = evm_abstract_server::analyze::analyze(submitted).unwrap();
                 report.validate().unwrap();
-                assert_eq!(report.metadata.limits, expected.limits);
+                assert_eq!(
+                    report.selected_graph().unwrap().metadata.limits,
+                    expected.limits
+                );
                 let hybrid = report.hybrid.as_ref().unwrap();
                 assert!(!hybrid.coverage.baseline_config.root_terminal_coverage);
                 let native = report.graph(api::AnalysisNamespace::Native).unwrap();

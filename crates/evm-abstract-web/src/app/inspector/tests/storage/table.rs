@@ -37,7 +37,7 @@ fn drag(mut draw: impl FnMut(Vec<Event>), start: Pos2, end: Pos2) {
     draw(vec![]);
 }
 
-fn panel(report: &api::AnalysisReport) -> Panel<'_> {
+fn panel(report: &crate::tests::AnalysisReport) -> Panel<'_> {
     Panel {
         report,
         store: None,
@@ -569,7 +569,10 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
             state,
             entry: api::MachineSnapshot {
                 path: evm_abstract_protocol::PathRef { node: 4 },
-                frames: vec![frame(0, 0)],
+                frames: vec![api::FrameSnapshot {
+                    basic_block: Some(state),
+                    ..frame(0, 0)
+                }],
                 store: 0,
             },
             exit: None,
@@ -584,7 +587,7 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
     };
     crate::palette::configure(&workbench.context);
     workbench.workspace.receive(Ok(api::AnalyzeReply {
-        result: Ok(report.clone()),
+        result: Ok((report.clone()).into()),
     }));
     assert!(
         workbench.workspace.report.is_some(),
@@ -671,11 +674,18 @@ fn widths_survive_workbench_changes_and_column_drags_leave_panels_and_graph_stil
     report.metadata.fingerprint = format!("0x{}", "12".repeat(32));
     report.stores[0].accounts[0].storage[0].slot = format!("0x{}", "ff".repeat(32));
     report.stores[0].accounts[0].storage[0].value = word("0xd00d");
-    workbench
-        .workspace
-        .receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    workbench.workspace.receive(Ok(api::AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     workbench.workspace.account = Some(
-        workbench.workspace.report.as_ref().unwrap().accounts[0]
+        workbench
+            .workspace
+            .report
+            .as_ref()
+            .unwrap()
+            .selected_graph()
+            .unwrap()
+            .accounts[0]
             .address
             .clone(),
     );

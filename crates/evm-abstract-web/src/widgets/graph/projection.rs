@@ -1,12 +1,13 @@
 //! Display-only quotient graphs. Members always refer to separate native states;
 //! folding a source block neither combines its SSA nor proves a composite path.
+use crate::report::ReportView;
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use evm_abstract_protocol::{AnalysisReport, CfgBlock, CfgEdge, EdgeKind};
+use evm_abstract_protocol::{CfgBlock, CfgEdge, EdgeKind};
 
 use super::index::ReportIndex;
 
@@ -62,7 +63,7 @@ impl GroupKey {
 
 impl DisplayGraph {
     pub(super) fn build(
-        report: &AnalysisReport,
+        report: &ReportView<'_>,
         index: &ReportIndex,
         mode: GraphMode,
         program: Option<usize>,
@@ -136,7 +137,7 @@ impl DisplayGraph {
 }
 
 fn neighborhood(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     center: Option<usize>,
     hops: usize,

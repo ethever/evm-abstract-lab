@@ -3,10 +3,10 @@
 
 use super::{Graph, NodeView};
 use crate::controls::{self, Density};
+use crate::report::ReportView;
 use crate::{app::Selection, palette, widgets::GraphMode};
 use egui::{Context, RichText, Ui};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::AnalysisReport;
 
 const TERMINATION_LEGEND: &str = "CFG termination colors\nDeep green: normal end / return\nDeep purple: REVERT\nDeep red: exception\nNeutral: mixed, continuing, or no complete termination evidence\nRoot end and Frame return labels show native state counts.\nDashed amber outline: unresolved frontier / non-current coverage\nTurquoise outer outline: selected state\nAt low zoom, identity text and termination colors remain visible.";
 
@@ -14,13 +14,13 @@ impl Graph {
     pub(super) fn controls(
         &mut self,
         ui: &mut Ui,
-        report: &AnalysisReport,
+        report: &ReportView<'_>,
         selection: &mut Selection,
     ) {
         let mut content = self.content;
         let selected_visible = selection
             .state
-            .is_some_and(|state| self.display.state_to_node.contains_key(&state));
+            .is_some_and(|state| self.scene.display.state_to_node.contains_key(&state));
         Density::Compact.scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 controls::tab_value(ui, &mut content, NodeView::Disassembly, "Disasm", Density::Compact)
@@ -58,7 +58,7 @@ impl Graph {
         });
         self.set_content(content, selection.state);
         let mut mode = self.mode;
-        let mut scope = self.program_scope;
+        let mut scope = self.scene.program_scope;
         let mut hops = self.neighborhood_hops;
         Density::Compact.scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -84,7 +84,7 @@ impl Graph {
                         .width(104.0)
                         .show_ui(ui, |ui| {
                             controls::tab_value(ui, &mut scope, None, "All programs", Density::Compact);
-                            for program in &report.programs {
+                            for program in report.programs {
                                 controls::tab_value(ui,
                                     &mut scope,
                                     Some(program.id),
@@ -97,16 +97,16 @@ impl Graph {
                 }
                 let selected_group = selection
                     .state
-                    .and_then(|state| self.display.state_to_node.get(&state).copied());
+                    .and_then(|state| self.scene.display.state_to_node.get(&state).copied());
                 let multiple = selected_group
-                    .and_then(|id| self.node_positions.get(&id))
-                    .and_then(|position| self.display.nodes.get(*position))
+                    .and_then(|id| self.scene.node_positions.get(&id))
+                    .and_then(|position| self.scene.display.nodes.get(*position))
                     .is_some_and(|node| node.members.len() > 1);
                 if controls::action_enabled(ui, multiple, "Instances", Density::Compact)
                     .clicked()
                 {
-                    self.instance_group = selected_group;
-                    self.instance_filter.clear();
+                    self.scene.instance_group = selected_group;
+                    self.scene.instance_filter.clear();
                 }
                 if let Some(state) = selection.state {
                     ui.label(
@@ -121,8 +121,8 @@ impl Graph {
             });
         });
         self.set_mode(mode);
-        if scope != self.program_scope {
-            self.program_scope = scope;
+        if scope != self.scene.program_scope {
+            self.scene.program_scope = scope;
             self.invalidate_scene();
         }
         if hops != self.neighborhood_hops {
@@ -134,11 +134,11 @@ impl Graph {
     /// The new projection must be ready before reserving this row, so its
     /// first fit uses the same canvas bounds as subsequent frames.
     pub(super) fn view_legend(&self, ui: &mut Ui) {
-        if self.display.hidden_states > 0 || self.display.boundary_edges > 0 {
+        if self.scene.display.hidden_states > 0 || self.scene.display.boundary_edges > 0 {
             ui.label(
                 crate::notation::widget(ui, RichText::new(format!(
                     "View hides {} states · {} boundary edges",
-                    self.display.hidden_states, self.display.boundary_edges
+                    self.scene.display.hidden_states, self.scene.display.boundary_edges
                 ))
                 .small()
                 .color(palette::MUTED)),
@@ -150,21 +150,22 @@ impl Graph {
     pub(super) fn instances(
         &mut self,
         ctx: &Context,
-        report: &AnalysisReport,
+        report: &ReportView<'_>,
         selection: &mut Selection,
     ) {
-        let Some(group_id) = self.instance_group else {
+        let Some(group_id) = self.scene.instance_group else {
             return;
         };
         let Some(node) = self
+            .scene
             .node_positions
             .get(&group_id)
-            .and_then(|position| self.display.nodes.get(*position))
+            .and_then(|position| self.scene.display.nodes.get(*position))
         else {
-            self.instance_group = None;
+            self.scene.instance_group = None;
             return;
         };
-        let Some(index) = &self.index else {
+        let Some(index) = &self.scene.index else {
             return;
         };
         let mut open = true;
@@ -191,14 +192,14 @@ impl Graph {
                     crate::framework::line_editor(
                         ui,
                         "cfg_instance_search",
-                        &mut self.instance_filter,
+                        &mut self.scene.instance_filter,
                         "σ₁₂₈ or numeric state ID",
                     );
                 });
-                let query = self.instance_filter.trim();
+                let query = self.scene.instance_filter.trim();
                 let selected_id = evm_abstract_notation::parse_state(query);
                 let matching = selected_id
-                    .filter(|state| self.display.state_to_node.get(state) == Some(&group_id));
+                    .filter(|state| self.scene.display.state_to_node.get(state) == Some(&group_id));
                 let rows = if query.is_empty() {
                     node.members.len()
                 } else {
@@ -249,7 +250,7 @@ impl Graph {
             ctx.request_repaint();
         }
         if !open {
-            self.instance_group = None;
+            self.scene.instance_group = None;
         }
     }
 }

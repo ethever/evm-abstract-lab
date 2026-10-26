@@ -6,7 +6,7 @@ use crate::app::{
     inspector::{Inspector, Tab},
 };
 
-fn report() -> api::AnalysisReport {
+fn report() -> crate::tests::AnalysisReport {
     let mut report = crate::tests::report();
     report.cfg.truncate(1);
     report.ssa.blocks.truncate(1);
@@ -162,7 +162,7 @@ fn inspector_preserves_observed_and_definition_scopes_with_numeric_properties() 
         pc: Some(0),
     };
     let short = render_at(&context, vec![], Vec2::new(1400.0, 210.0), |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let short_text = texts(&short);
     for expected in [
@@ -185,10 +185,10 @@ fn inspector_preserves_observed_and_definition_scopes_with_numeric_properties() 
             .any(|(text, _)| text == "%273" || text == "ConstantFold")
     );
     render(&context, vec![], |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let output = render(&context, vec![], |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let source = texts(&output)
         .into_iter()
@@ -197,7 +197,7 @@ fn inspector_preserves_observed_and_definition_scopes_with_numeric_properties() 
         .1
         .center();
     let output = click(&context, source, |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let visible = texts(&output)
         .into_iter()
@@ -228,7 +228,7 @@ fn inspector_preserves_observed_and_definition_scopes_with_numeric_properties() 
         text == "No numeric fact was collected for this scope."
             || text == "No numeric facts were collected for this definition."
     }));
-    let summary = inspector.accessible_summary(&report, selection);
+    let summary = inspector.accessible_summary(&(report).view(), selection);
     for expected in [
         "SSA value %3",
         "Current · State σ₀",
@@ -273,14 +273,14 @@ fn availability_is_distinct_from_a_collected_top_value() {
             value: None,
         }];
         let output = render(&context, vec![], |ui| {
-            inspector.show(ui, &report, &mut selection, None)
+            inspector.show(ui, &(report).view(), &mut selection, None)
         });
         let visible = texts(&output);
         assert!(visible.iter().any(|(text, _)| text == expected));
         assert!(!visible.iter().any(|(text, _)| text == "Unrestricted"));
         assert!(
             inspector
-                .accessible_summary(&report, selection)
+                .accessible_summary(&(report).view(), selection)
                 .contains(&format!("{status:?}"))
         );
     }
@@ -293,7 +293,7 @@ fn availability_is_distinct_from_a_collected_top_value() {
     }];
     selection.value = Some(0);
     let output = render(&context, vec![], |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let visible = texts(&output);
     assert!(visible.iter().any(|(text, _)| text == "Entry"));
@@ -322,10 +322,10 @@ fn equality_navigation_keeps_reading_coordinates_and_source_navigation_uses_nati
         pc: Some(400),
     };
     render(&context, vec![], |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let output = render(&context, vec![], |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let source_details = texts(&output)
         .into_iter()
@@ -334,7 +334,7 @@ fn equality_navigation_keeps_reading_coordinates_and_source_navigation_uses_nati
         .1
         .center();
     let output = click(&context, source_details, |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let equal = texts(&output)
         .into_iter()
@@ -354,7 +354,7 @@ fn equality_navigation_keeps_reading_coordinates_and_source_navigation_uses_nati
                     modifiers: egui::Modifiers::NONE,
                 },
             ],
-            |ui| inspector.show(ui, &report, &mut selection, None),
+            |ui| inspector.show(ui, &(report).view(), &mut selection, None),
         );
     }
     assert_eq!(
@@ -368,7 +368,7 @@ fn equality_navigation_keeps_reading_coordinates_and_source_navigation_uses_nati
     );
     selection.value = Some(3);
     let output = render(&context, vec![], |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let source = texts(&output)
         .into_iter()
@@ -388,7 +388,7 @@ fn equality_navigation_keeps_reading_coordinates_and_source_navigation_uses_nati
                     modifiers: egui::Modifiers::NONE,
                 },
             ],
-            |ui| inspector.show(ui, &report, &mut selection, None),
+            |ui| inspector.show(ui, &(report).view(), &mut selection, None),
         );
     }
     assert_eq!(

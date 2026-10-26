@@ -1,6 +1,7 @@
 //! Flat, virtualized inspection of retained relationships. Exact payloads and
 //! logical ranges are summarized without recursive rendering or byte expansion.
 use super::value;
+use crate::report::ReportView;
 use crate::{notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::WideSymbol;
@@ -187,7 +188,7 @@ fn reachable(graph: &api::SymbolicGraph, root: usize) -> Vec<usize> {
     }
     seen.into_iter().collect()
 }
-pub(super) fn show(ui: &mut Ui, report: &api::AnalysisReport, root: usize, title: &str) {
+pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, root: usize, title: &str) {
     egui::CollapsingHeader::new(format!("{title} · root #{root}"))
         .id_salt(("symbolic_root",title,root))
         .show(ui,|ui| {
@@ -224,7 +225,7 @@ pub(super) fn facts(ui: &mut Ui, facts: &[api::SymbolicFact], title: &str) {
             });
     });
 }
-pub(super) fn pending(ui: &mut Ui, report: &api::AnalysisReport, id: usize) {
+pub(super) fn pending(ui: &mut Ui, report: &ReportView<'_>, id: usize) {
     let Some(machine) = report.pending_machines.get(id) else {
         ui.colored_label(palette::ERROR, "Unavailable pending state");
         return;

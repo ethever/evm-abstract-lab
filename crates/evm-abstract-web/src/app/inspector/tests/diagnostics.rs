@@ -30,7 +30,7 @@ fn invalid_opcode_canvas_and_accessibility_distinguish_all_three_causes() {
     let mut report = crate::tests::report();
     // The root source deliberately disagrees with every diagnostic. Presentation
     // must consume the receipt's opcode rather than indexing root bytecode.
-    report.programs[0].bytecode = "0x00".into();
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).bytecode = "0x00".into();
     report.frontiers.clear();
     report.diagnostics = vec![
         instruction(
@@ -64,7 +64,7 @@ fn invalid_opcode_canvas_and_accessibility_distinguish_all_three_causes() {
         &mut time,
         vec![],
         egui::vec2(1200.0, 600.0),
-        |ui| evidence::diagnostics(ui, &report, &mut selection),
+        |ui| evidence::diagnostics(ui, &(report).view(), &mut selection),
     );
     let labels: Vec<_> = text.iter().map(|(text, _)| text.as_str()).collect();
     for expected in [
@@ -85,7 +85,7 @@ fn invalid_opcode_canvas_and_accessibility_distinguish_all_three_causes() {
         ..Inspector::default()
     };
     let summary = evm_abstract_notation::normalize_subscripts(
-        &inspector.accessible_summary(&report, selection),
+        &inspector.accessible_summary(&(report).view(), selection),
     );
     for expected in [
         "0xfe (INVALID)",
@@ -123,7 +123,7 @@ fn repeated_invalid_pc_keeps_each_abstract_state_and_exact_jump() {
     let mut time = 0.0;
     let mut selection = Selection::default();
     let text = rendered(&context, &mut time, vec![], |ui| {
-        evidence::diagnostics(ui, &report, &mut selection)
+        evidence::diagnostics(ui, &(report).view(), &mut selection)
     });
     for diagnostic in &report.diagnostics {
         let position = text
@@ -133,7 +133,7 @@ fn repeated_invalid_pc_keeps_each_abstract_state_and_exact_jump() {
             .1
             .center();
         click(&context, &mut time, position, |ui| {
-            evidence::diagnostics(ui, &report, &mut selection)
+            evidence::diagnostics(ui, &(report).view(), &mut selection)
         });
         assert_eq!(
             selection,
@@ -171,7 +171,7 @@ fn delegation_entry_shows_byte_source_and_missing_reason_without_instruction_jum
     let mut time = 0.0;
     let mut selection = Selection::default();
     let text = rendered(&context, &mut time, vec![], |ui| {
-        evidence::diagnostics(ui, &report, &mut selection)
+        evidence::diagnostics(ui, &(report).view(), &mut selection)
     });
     let label = text
         .iter()
@@ -179,7 +179,7 @@ fn delegation_entry_shows_byte_source_and_missing_reason_without_instruction_jum
         .expect("captured entry byte must remain identifiable");
     assert!(label.0.contains("Delegation entry (synthetic PC 0)"));
     click(&context, &mut time, label.1.center(), |ui| {
-        evidence::diagnostics(ui, &report, &mut selection)
+        evidence::diagnostics(ui, &(report).view(), &mut selection)
     });
     assert_eq!(
         selection,
@@ -202,7 +202,7 @@ fn delegation_entry_shows_byte_source_and_missing_reason_without_instruction_jum
         &mut time,
         vec![],
         egui::vec2(1200.0, 600.0),
-        |ui| evidence::diagnostics(ui, &report, &mut selection),
+        |ui| evidence::diagnostics(ui, &(report).view(), &mut selection),
     );
     assert!(text.iter().any(|(text, _)| text == "Delegation cycle; no ordinary instruction was decoded. Opcode byte unavailable: Active account has no captured raw code."));
     assert!(!text.iter().any(|(text, _)| text.contains("PC 0x0000")

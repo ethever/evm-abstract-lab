@@ -1,5 +1,6 @@
 //! Resizable world inspector. Entry, historical exit and finalized outcomes are
 //! explicit distinct observations, never an invented per-instruction trace.
+use crate::report::ReportView;
 
 mod buffers;
 mod context;
@@ -22,7 +23,7 @@ use crate::{notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
-    AnalysisReport, ApiError, BlockCoverage, FrameSnapshot, MachineSnapshot, StoreSnapshot,
+    ApiError, BlockCoverage, FrameSnapshot, MachineSnapshot, StoreSnapshot,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -139,7 +140,7 @@ impl Inspector {
 
     pub(super) fn accessible_summary(
         &self,
-        report: &AnalysisReport,
+        report: &ReportView<'_>,
         selection: Selection,
     ) -> String {
         if !self.expanded {
@@ -159,7 +160,7 @@ impl Inspector {
         if self.tab == Tab::Coverage {
             return format!(
                 "Inspector: Coverage{mode} · {}",
-                super::hybrid::summary(report).unwrap_or_else(|| "Native analysis".into())
+                super::hybrid::summary(report.model).unwrap_or_else(|| "Native analysis".into())
             );
         }
         if self.tab == Tab::Acquisition {
@@ -175,7 +176,7 @@ impl Inspector {
             );
         }
         if self.tab == Tab::Outcomes {
-            let coverage = super::terminal_coverage::status(report)
+            let coverage = super::terminal_coverage::status(report.model)
                 .map_or(String::new(), |status| format!(" · {status}"));
             let alternatives = if report.root_terminal_coverage.is_some() {
                 " · Return alternative · Revert alternative · Failure alternative"
@@ -259,7 +260,7 @@ impl Inspector {
 
     fn machine<'a>(
         &self,
-        report: &'a AnalysisReport,
+        report: &'a ReportView<'_>,
         selection: Selection,
     ) -> Option<&'a MachineSnapshot> {
         let details = report
@@ -272,22 +273,10 @@ impl Inspector {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
-        report: &AnalysisReport,
-        selection: &mut Selection,
-        account: Option<&str>,
-    ) {
-        self.show_model(ui, report, report, selection, account);
-    }
-
-    pub(super) fn show_model(
-        &mut self,
-        ui: &mut Ui,
-        report: &AnalysisReport,
-        model: &AnalysisReport,
+        report: &ReportView<'_>,
         selection: &mut Selection,
         account: Option<&str>,
     ) {
@@ -300,7 +289,7 @@ impl Inspector {
                 .max_rect(rect),
         );
         contents.set_clip_rect(contents.clip_rect().intersect(rect));
-        self.contents(&mut contents, report, model, selection, account);
+        self.contents(&mut contents, report, selection, account);
         // Content minimums must not enlarge the user's chosen panel height.
         ui.advance_cursor_after_rect(rect);
     }
@@ -308,11 +297,11 @@ impl Inspector {
     fn contents(
         &mut self,
         ui: &mut Ui,
-        report: &AnalysisReport,
-        model: &AnalysisReport,
+        report: &ReportView<'_>,
         selection: &mut Selection,
         account: Option<&str>,
     ) {
+        let model = report.model;
         if self.last_state != selection.state {
             self.frame = None;
             self.point = Point::Entry;
@@ -388,7 +377,7 @@ impl Inspector {
             return;
         }
         if self.tab == Tab::Coverage {
-            scroll(ui, "coverage_details", |ui| self.hybrid.show(ui, model));
+            scroll(ui, "coverage_details", |ui| self.hybrid.show(ui, report));
             return;
         }
         let has_exit = report
@@ -558,7 +547,7 @@ impl Inspector {
                 context::environment(ui, report)
             }),
             Tab::Acquisition => scroll(ui, "acquisition_details", |ui| {
-                evidence::acquisition(ui, model)
+                evidence::acquisition(ui, report)
             }),
             Tab::Outcomes => self.outcomes(ui, report, selection),
             Tab::SsaValue | Tab::Timing | Tab::Diagnostics | Tab::Coverage => {
@@ -567,10 +556,10 @@ impl Inspector {
         }
     }
 
-    fn outcomes(&mut self, ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
+    fn outcomes(&mut self, ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selection) {
         scroll(ui, "outcome_details", |ui| {
             terminal::show(ui, report);
-            if super::terminal_coverage::status(report).is_some() {
+            if super::terminal_coverage::status(report.model).is_some() {
                 ui.label(RichText::new("Observed terminal outcomes").strong());
             }
             self.observed_outcomes(ui, report, selection);
@@ -580,7 +569,7 @@ impl Inspector {
     fn observed_outcomes(
         &mut self,
         ui: &mut Ui,
-        report: &AnalysisReport,
+        report: &ReportView<'_>,
         selection: &mut Selection,
     ) {
         if report.outcomes.is_empty() {

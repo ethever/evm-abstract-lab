@@ -1,5 +1,6 @@
 //! Native terminal attachments survive the wire and frontend boundaries.
 //! Fixtures use the native producer; no display code mints a certificate.
+use crate::tests::AnalysisReport;
 
 use super::super::{Command, JobOperation, Message, Selection, Workspace, inspector};
 use super::*;
@@ -26,22 +27,42 @@ fn terminal_binding_checks_the_selected_model_and_actual_numeric_limits() {
         let valid =
             evm_abstract_server::analyze::captured::native_bytecode(&request, &Default::default())
                 .unwrap();
-        let coverage = valid.root_terminal_coverage.as_ref().unwrap();
+        let coverage = valid
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .as_ref()
+            .unwrap();
         assert_eq!(
             valid.validate(),
             Ok(()),
             "{model:?}: failure data length {:?}",
-            valid.byte_arrays[coverage.outcomes[2].data].length
+            valid.selected_graph().unwrap().byte_arrays[coverage.outcomes[2].data].length
         );
-        let input = &valid.root_terminal_coverage.as_ref().unwrap().input;
+        let input = &valid
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .as_ref()
+            .unwrap()
+            .input;
         assert_eq!(input.numeric_model, model);
         assert_eq!(
             input.domain_spec.capacity,
-            valid.metadata.limits.max_constants
+            valid
+                .selected_graph()
+                .unwrap()
+                .metadata
+                .limits
+                .max_constants
         );
         for field in 0..9 {
             let mut invalid = valid.clone();
-            let input = &mut invalid.root_terminal_coverage.as_mut().unwrap().input;
+            let input = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+                .root_terminal_coverage
+                .as_mut()
+                .unwrap()
+                .input;
             match field {
                 0 => input.domain_spec.capacity += 1,
                 1 => input.domain_spec.reduction_rounds += 1,
@@ -87,16 +108,23 @@ pub(crate) fn report() -> AnalysisReport {
             .unwrap();
     report.validate().unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
-    assert!(!report.ssa.complete);
+    assert!(!report.selected_graph().unwrap().ssa.complete);
     // The gas envelope retains entry Failure even before terminal bytecode runs.
-    assert!(!report.outcomes.is_empty());
+    assert!(!report.selected_graph().unwrap().outcomes.is_empty());
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .frontiers
             .iter()
             .any(|frontier| frontier.kind == api::FrontierKind::Transfers)
     );
-    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    let coverage = report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap();
     assert_eq!(coverage.scope, api::RootTerminalScope::AllInputStates);
     assert_eq!(coverage.trigger, api::RootTerminalTrigger::Transfers);
     assert_eq!(
@@ -107,13 +135,14 @@ pub(crate) fn report() -> AnalysisReport {
             api::OutcomeKind::Failure
         ]
     );
-    let entry = &report.states[0];
+    let entry = &report.selected_graph().unwrap().states[0];
     let root = &entry.entry.frames[0];
     assert_eq!(coverage.input.saved_store, root.rollback_store);
     assert_eq!(coverage.input.initial_store, entry.entry.store);
     assert_eq!(coverage.input.program, root.program.unwrap());
-    let saved = &report.stores[root.rollback_store];
-    let api::Expression::SlotsInput(source) = &report.symbolic.nodes[saved.storage_root.node]
+    let saved = &report.selected_graph().unwrap().stores[root.rollback_store];
+    let api::Expression::SlotsInput(source) =
+        &report.selected_graph().unwrap().symbolic.nodes[saved.storage_root.node]
     else {
         panic!("expected original persistent storage source");
     };
@@ -140,22 +169,25 @@ pub(crate) fn report() -> AnalysisReport {
             .trim_start_matches('0')
     );
     assert_eq!(
-        report.symbolic.nodes[known.storage_root.node],
+        report.selected_graph().unwrap().symbolic.nodes[known.storage_root.node],
         api::Expression::SlotsInput(owner_source)
     );
     let mut pre_entry_failures = 0;
     let mut late_failures = 0;
-    for outcome in &report.outcomes {
+    for outcome in &report.selected_graph().unwrap().outcomes {
         assert_eq!(outcome.kind, api::OutcomeKind::Failure);
         assert_eq!(outcome.state, entry.state);
-        let data = &report.byte_arrays[outcome.data];
+        let data = &report.selected_graph().unwrap().byte_arrays[outcome.data];
         assert_eq!(data.length.unsigned.lower, "0x0");
         assert_eq!(data.length.unsigned.upper, "0x0");
         assert!(data.cells.is_empty());
         assert!(data.values.is_empty());
         assert!(!data.memory);
-        assert_eq!(data, &report.byte_arrays[coverage.outcomes[2].data]);
-        let store = &report.stores[outcome.store];
+        assert_eq!(
+            data,
+            &report.selected_graph().unwrap().byte_arrays[coverage.outcomes[2].data]
+        );
+        let store = &report.selected_graph().unwrap().stores[outcome.store];
         // Engine's pre-entry Failure clones the whole saved Store before any
         // sticky owner-3 touch or transaction finalization.
         if store == saved {
@@ -171,24 +203,25 @@ pub(crate) fn report() -> AnalysisReport {
             .iter()
             .find(|row| row.address == ripemd)
             .unwrap();
-        let api::Expression::SlotsIte(deletion) = &report.symbolic.nodes[cleanup.storage_root.node]
+        let api::Expression::SlotsIte(deletion) =
+            &report.selected_graph().unwrap().symbolic.nodes[cleanup.storage_root.node]
         else {
             panic!("expected owner-3 guarded cleanup");
         };
-        let guard = &report.symbolic.nodes[deletion.condition.node];
+        let guard = &report.selected_graph().unwrap().symbolic.nodes[deletion.condition.node];
         assert!(matches!(guard, api::Expression::Fresh(_)));
         assert_ne!(
             guard,
-            &report.symbolic.nodes[coverage.input.storage_source.node]
+            &report.selected_graph().unwrap().symbolic.nodes[coverage.input.storage_source.node]
         );
         let mut original = source.clone();
         original.source.namespace = "0x300".into();
         assert_eq!(
-            report.symbolic.nodes[deletion.then_state.node],
+            report.selected_graph().unwrap().symbolic.nodes[deletion.then_state.node],
             api::Expression::SlotsInput(original)
         );
         assert_eq!(
-            report.symbolic.nodes[deletion.else_state.node],
+            report.selected_graph().unwrap().symbolic.nodes[deletion.else_state.node],
             api::Expression::SlotsZero
         );
         for index in [
@@ -197,16 +230,23 @@ pub(crate) fn report() -> AnalysisReport {
             coverage.outcomes[0].data,
             coverage.outcomes[1].data,
         ] {
-            let api::Expression::View(view) =
-                &report.symbolic.nodes[report.byte_arrays[index].symbolic.node]
+            let api::Expression::View(view) = &report.selected_graph().unwrap().symbolic.nodes
+                [report.selected_graph().unwrap().byte_arrays[index]
+                    .symbolic
+                    .node]
             else {
                 panic!("expected fixture byte view");
             };
-            let api::Expression::BytesInput(input) = &report.symbolic.nodes[view.state.node] else {
+            let api::Expression::BytesInput(input) =
+                &report.selected_graph().unwrap().symbolic.nodes[view.state.node]
+            else {
                 panic!("expected independent fixture byte source");
             };
             for token in [view.length, input.source.token] {
-                assert_ne!(guard, &report.symbolic.nodes[token.node]);
+                assert_ne!(
+                    guard,
+                    &report.selected_graph().unwrap().symbolic.nodes[token.node]
+                );
             }
         }
         let mut expected = saved.clone();
@@ -252,7 +292,7 @@ pub(crate) fn report() -> AnalysisReport {
         assert_eq!(store.transient_default.unsigned.lower, "0x0");
         assert_eq!(store.transient_default.unsigned.upper, "0x0");
         assert_eq!(
-            report.symbolic.nodes[store.transient_root.node],
+            report.selected_graph().unwrap().symbolic.nodes[store.transient_root.node],
             api::Expression::SlotsZero
         );
         assert!(store.transient_facts.is_empty());
@@ -264,7 +304,7 @@ pub(crate) fn report() -> AnalysisReport {
             assert_eq!(account.transient_default.unsigned.lower, "0x0");
             assert_eq!(account.transient_default.unsigned.upper, "0x0");
             assert_eq!(
-                report.symbolic.nodes[account.transient_root.node],
+                report.selected_graph().unwrap().symbolic.nodes[account.transient_root.node],
                 api::Expression::SlotsZero
             );
         }
@@ -272,7 +312,10 @@ pub(crate) fn report() -> AnalysisReport {
     }
     assert!(pre_entry_failures > 0);
     assert!(late_failures > 0);
-    assert_eq!(pre_entry_failures + late_failures, report.outcomes.len());
+    assert_eq!(
+        pre_entry_failures + late_failures,
+        report.selected_graph().unwrap().outcomes.len()
+    );
     let wire = serde_json::to_vec(&api::AnalyzeReply {
         result: Ok(report.clone()),
     })
@@ -281,7 +324,7 @@ pub(crate) fn report() -> AnalysisReport {
     let parsed = parsed.result.unwrap();
     assert_eq!(parsed, report);
     parsed.validate().unwrap();
-    parsed
+    (parsed).into()
 }
 
 /// Exercise opaque identity width independently of the native process counter.
@@ -296,6 +339,9 @@ pub(crate) fn full_width_report() -> AnalysisReport {
         panic!("expected offline source");
     };
     snapshot.namespace = api::DecimalU64(u64::MAX);
+    let qualified = (input.snapshot.clone(), input.revision);
+    report.metadata.source_snapshot = qualified.0;
+    report.metadata.revision = qualified.1;
     let wire = serde_json::to_string(&report).unwrap().replace(
         &format!("\"scope\":\"{old_scope}\""),
         &format!("\"scope\":\"{}\"", u64::MAX),
@@ -354,8 +400,21 @@ fn explicit_off_is_quiet_and_requested_none_reports_only_incomplete_absence() {
     request.limits.root_terminal_coverage = false;
     let ordinary = evm_abstract_server::analyze::analyze(request.clone()).unwrap();
     ordinary.validate().unwrap();
-    assert!(!ordinary.metadata.limits.root_terminal_coverage);
-    assert!(ordinary.root_terminal_coverage.is_none());
+    assert!(
+        !ordinary
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .limits
+            .root_terminal_coverage
+    );
+    assert!(
+        ordinary
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .is_none()
+    );
     workspace.receive(Ok(api::AnalyzeReply {
         result: Ok(ordinary.clone()),
     }));
@@ -367,16 +426,32 @@ fn explicit_off_is_quiet_and_requested_none_reports_only_incomplete_absence() {
             .iter()
             .any(|text| text.contains("terminal coverage"))
     );
-    assert_eq!(workspace.report.as_ref().unwrap(), &ordinary);
+    assert_eq!(workspace.report.as_ref().unwrap(), &ordinary.clone());
     request.limits.root_terminal_coverage = true;
     let ordinary = evm_abstract_server::analyze::analyze(request.clone()).unwrap();
     ordinary.validate().unwrap();
-    assert!(ordinary.metadata.limits.root_terminal_coverage);
-    assert_eq!(ordinary.metadata.limits.max_work, 2_000_000_000);
+    assert!(
+        ordinary
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .limits
+            .root_terminal_coverage
+    );
+    assert_eq!(
+        ordinary.selected_graph().unwrap().metadata.limits.max_work,
+        2_000_000_000
+    );
     assert_eq!(ordinary.status, api::AnalysisStatus::Converged);
-    assert!(ordinary.ssa.complete);
-    assert!(ordinary.frontiers.is_empty());
-    assert!(ordinary.root_terminal_coverage.is_none());
+    assert!(ordinary.selected_graph().unwrap().ssa.complete);
+    assert!(ordinary.selected_graph().unwrap().frontiers.is_empty());
+    assert!(
+        ordinary
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .is_none()
+    );
     workspace.receive(Ok(api::AnalyzeReply {
         result: Ok(ordinary.clone()),
     }));
@@ -389,17 +464,38 @@ fn explicit_off_is_quiet_and_requested_none_reports_only_incomplete_absence() {
     assert!(!workspace.accessible_status().contains(COVERED));
     assert!(!workspace.accessible_status().contains("budget exhausted"));
     assert!(!workspace.accessible_status().contains("Experimental"));
-    assert_eq!(workspace.report.as_ref().unwrap(), &ordinary);
+    assert_eq!(workspace.report.as_ref().unwrap(), &ordinary.clone());
 
     request.limits.max_work = 1;
     let incomplete = evm_abstract_server::analyze::analyze(request).unwrap();
     incomplete.validate().unwrap();
-    assert!(incomplete.metadata.limits.root_terminal_coverage);
-    assert_eq!(incomplete.metadata.limits.max_work, 1);
+    assert!(
+        incomplete
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .limits
+            .root_terminal_coverage
+    );
+    assert_eq!(
+        incomplete
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .limits
+            .max_work,
+        1
+    );
     assert_eq!(incomplete.status, api::AnalysisStatus::Incomplete);
-    assert!(!incomplete.ssa.complete);
-    assert!(!incomplete.frontiers.is_empty());
-    assert!(incomplete.root_terminal_coverage.is_none());
+    assert!(!incomplete.selected_graph().unwrap().ssa.complete);
+    assert!(!incomplete.selected_graph().unwrap().frontiers.is_empty());
+    assert!(
+        incomplete
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .is_none()
+    );
     workspace.receive(Ok(api::AnalyzeReply {
         result: Ok(incomplete.clone()),
     }));
@@ -410,7 +506,7 @@ fn explicit_off_is_quiet_and_requested_none_reports_only_incomplete_absence() {
     assert!(!painted.iter().any(|text| text == COVERED));
     assert!(workspace.accessible_status().contains(NOT_ATTACHED));
     assert!(!workspace.accessible_status().contains(COVERED));
-    assert_eq!(workspace.report.as_ref().unwrap(), &incomplete);
+    assert_eq!(workspace.report.as_ref().unwrap(), &incomplete.clone());
 }
 
 #[test]
@@ -426,7 +522,7 @@ fn attached_native_relation_keeps_partial_detail_and_actual_counts_visible() {
     );
     let mut workspace = Workspace::default();
     workspace.receive(Ok(api::AnalyzeReply {
-        result: Ok(report.clone()),
+        result: Ok((report.clone()).into()),
     }));
     let context = Context::default();
     crate::palette::configure(&context);
@@ -447,27 +543,27 @@ fn attached_native_relation_keeps_partial_detail_and_actual_counts_visible() {
     let installed = workspace.report.as_ref().unwrap();
     assert_eq!(
         (
-            installed.cfg.clone(),
-            installed.ssa.clone(),
-            installed.frontiers.clone(),
-            installed.states.clone(),
-            installed.pending_machines.clone(),
-            installed.outcomes.clone()
+            installed.selected_graph().unwrap().cfg.clone(),
+            installed.selected_graph().unwrap().ssa.clone(),
+            installed.selected_graph().unwrap().frontiers.clone(),
+            installed.selected_graph().unwrap().states.clone(),
+            installed.selected_graph().unwrap().pending_machines.clone(),
+            installed.selected_graph().unwrap().outcomes.clone()
         ),
         detailed
     );
-    assert_eq!(installed, &report);
+    assert_eq!(installed, &report.clone().into());
     workspace.inspector.tab = inspector::Tab::Diagnostics;
     assert!(
         workspace
             .inspector
-            .accessible_summary(installed, workspace.selection)
+            .accessible_summary(&crate::tests::fixture_view(installed), workspace.selection)
             .contains(&format!("{} unexpanded frontiers", report.frontiers.len()))
     );
     workspace.inspector.tab = inspector::Tab::Outcomes;
     let live = workspace
         .inspector
-        .accessible_summary(installed, workspace.selection);
+        .accessible_summary(&crate::tests::fixture_view(installed), workspace.selection);
     for expected in [
         "Return alternative",
         "Revert alternative",
@@ -483,7 +579,7 @@ fn invalid_schema_bindings_and_pool_sorts_never_replace_the_visible_report() {
     let valid = report();
     let mut workspace = Workspace::default();
     workspace.receive(Ok(api::AnalyzeReply {
-        result: Ok(valid.clone()),
+        result: Ok((valid.clone()).into()),
     }));
     workspace.selection = Selection {
         state: Some(valid.cfg[0].id),
@@ -531,11 +627,11 @@ fn invalid_schema_bindings_and_pool_sorts_never_replace_the_visible_report() {
         if accepted {
             projected.validate().unwrap();
             workspace.receive(Ok(api::AnalyzeReply {
-                result: Ok(projected.clone()),
+                result: Ok((projected.clone()).into()),
             }));
-            assert_eq!(workspace.report.as_ref(), Some(&projected));
+            assert_eq!(workspace.report.as_ref(), Some(&projected.clone().into()));
             workspace.receive(Ok(api::AnalyzeReply {
-                result: Ok(valid.clone()),
+                result: Ok((valid.clone()).into()),
             }));
             workspace.selection = before_selection;
             workspace.account.clone_from(&before_account);
@@ -548,9 +644,9 @@ fn invalid_schema_bindings_and_pool_sorts_never_replace_the_visible_report() {
                 ))
             );
             workspace.receive(Ok(api::AnalyzeReply {
-                result: Ok(projected),
+                result: Ok((projected).into()),
             }));
-            assert_eq!(workspace.report.as_ref(), Some(&valid));
+            assert_eq!(workspace.report.as_ref(), Some(&valid.clone().into()));
             assert_eq!(workspace.selection, before_selection);
             assert_eq!(workspace.account, before_account);
             assert_eq!(workspace.program, before_program);
@@ -561,21 +657,24 @@ fn invalid_schema_bindings_and_pool_sorts_never_replace_the_visible_report() {
     let mut invalid_reports = vec![];
     for version in [api::SCHEMA_VERSION - 1, api::SCHEMA_VERSION + 1] {
         let mut invalid = valid.clone();
-        invalid.schema_version = version;
+        invalid.model.schema_version = version;
         invalid_reports.push(invalid);
     }
     for which in 0..8 {
         let mut invalid = valid.clone();
-        let coverage = invalid.root_terminal_coverage.as_mut().unwrap();
-        match which {
-            0 => coverage.outcomes[0].data = invalid.byte_arrays.len(),
-            1 => coverage.outcomes[1].store = invalid.stores.len(),
-            2 => coverage.input.saved_store = invalid.stores.len(),
-            3 => coverage.input.program = usize::MAX,
-            4 => coverage.input.storage_source.node = invalid.stores[0].storage_root.node,
-            5 => coverage.outcomes.swap(0, 1),
-            6 => coverage.input.config.max_work += 1,
-            _ => invalid.stores[0].transient_root.node = coverage.input.storage_source.node,
+        {
+            let graph = &mut *invalid;
+            let coverage = graph.root_terminal_coverage.as_mut().unwrap();
+            match which {
+                0 => coverage.outcomes[0].data = graph.byte_arrays.len(),
+                1 => coverage.outcomes[1].store = graph.stores.len(),
+                2 => coverage.input.saved_store = graph.stores.len(),
+                3 => coverage.input.program = usize::MAX,
+                4 => coverage.input.storage_source.node = graph.stores[0].storage_root.node,
+                5 => coverage.outcomes.swap(0, 1),
+                6 => coverage.input.config.max_work += 1,
+                _ => graph.stores[0].transient_root.node = coverage.input.storage_source.node,
+            }
         }
         assert!(
             invalid.validate().is_err(),
@@ -585,9 +684,9 @@ fn invalid_schema_bindings_and_pool_sorts_never_replace_the_visible_report() {
     }
     for invalid in invalid_reports {
         workspace.receive(Ok(api::AnalyzeReply {
-            result: Ok(invalid),
+            result: Ok((invalid).into()),
         }));
-        assert_eq!(workspace.report.as_ref().unwrap(), &valid);
+        assert_eq!(workspace.report.as_ref().unwrap(), &valid.clone().into());
         assert_eq!(workspace.selection, before_selection);
         assert_eq!(workspace.account, before_account);
         assert_eq!(workspace.program, before_program);
@@ -600,7 +699,7 @@ fn invalid_schema_bindings_and_pool_sorts_never_replace_the_visible_report() {
 fn malformed_identity_and_new_wire_fields_are_rejected_before_installation() {
     let report = full_width_report();
     let wire = serde_json::to_string(&api::AnalyzeReply {
-        result: Ok(report.clone()),
+        result: Ok((report.clone()).into()),
     })
     .unwrap();
     let mut workspace = Workspace::default();
@@ -622,7 +721,7 @@ fn malformed_identity_and_new_wire_fields_are_rejected_before_installation() {
             status: 200,
             cause,
         }));
-        assert_eq!(workspace.report.as_ref().unwrap(), &report);
+        assert_eq!(workspace.report.as_ref().unwrap(), &report.clone().into());
         assert_eq!(workspace.selection, selection);
     }
     for (needle, replacement) in [
@@ -633,7 +732,10 @@ fn malformed_identity_and_new_wire_fields_are_rejected_before_installation() {
         let source = if needle.contains("null") {
             let mut absent = report.clone();
             absent.root_terminal_coverage = None;
-            serde_json::to_string(&api::AnalyzeReply { result: Ok(absent) }).unwrap()
+            serde_json::to_string(&api::AnalyzeReply {
+                result: Ok((absent).into()),
+            })
+            .unwrap()
         } else {
             wire.clone()
         };
@@ -644,7 +746,7 @@ fn malformed_identity_and_new_wire_fields_are_rejected_before_installation() {
             status: 200,
             cause,
         }));
-        assert_eq!(workspace.report.as_ref().unwrap(), &report);
+        assert_eq!(workspace.report.as_ref().unwrap(), &report.clone().into());
         assert_eq!(workspace.selection, selection);
     }
 }
@@ -668,19 +770,23 @@ fn stale_coverage_reply_cannot_replace_a_newer_generation() {
     assert_ne!(old, current);
     let retained = crate::tests::report();
     workspace.receive(Ok(api::AnalyzeReply {
-        result: Ok(retained.clone()),
+        result: Ok((retained.clone()).into()),
     }));
     let selection = workspace.selection;
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {
         generation: old,
         id: api::JobId(u64::MAX),
-        result: Box::new(Ok(api::AnalyzeReply {
-            result: Ok(report()),
-        })),
+        result: Box::new(Ok(crate::tests::job_result(
+            api::JobId(u64::MAX),
+            api::AnalyzeReply {
+                result: Ok((report()).into()),
+            },
+        ))),
         transfer_ns: 0,
         parsing_ns: 0,
     });
-    assert_eq!(workspace.report.as_ref().unwrap(), &retained);
+    assert_eq!(workspace.report.as_ref().unwrap(), &retained.clone().into());
     assert_eq!(workspace.selection, selection);
     assert!(!workspace.accessible_status().contains(COVERED));
 }
@@ -696,6 +802,7 @@ fn inspecting_coverage_keeps_the_job_lifecycle_and_selection_unchanged() {
         operation: JobOperation::Submit,
         result: Ok(api::JobReply {
             result: Ok(api::JobSnapshot {
+                publication: Some(crate::tests::native_publication()),
                 id: api::JobId(u64::MAX),
                 state: api::JobState::Completed,
                 progress: api::AnalysisProgress::default(),
@@ -703,12 +810,16 @@ fn inspecting_coverage_keeps_the_job_lifecycle_and_selection_unchanged() {
             }),
         }),
     });
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {
         generation,
         id: api::JobId(u64::MAX),
-        result: Box::new(Ok(api::AnalyzeReply {
-            result: Ok(report()),
-        })),
+        result: Box::new(Ok(crate::tests::job_result(
+            api::JobId(u64::MAX),
+            api::AnalyzeReply {
+                result: Ok((report()).into()),
+            },
+        ))),
         transfer_ns: 0,
         parsing_ns: 0,
     });

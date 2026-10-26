@@ -7,7 +7,7 @@ fn context() -> egui::Context {
     context
 }
 
-fn report(code: &str) -> api::AnalysisReport {
+fn report(code: &str) -> crate::tests::AnalysisReport {
     let request = api::AnalyzeRequest {
         input: api::AnalysisInput::Bytecode(api::BytecodeInput {
             bytecode: code.into(),
@@ -21,7 +21,7 @@ fn report(code: &str) -> api::AnalysisReport {
     };
     let report = evm_abstract_server::analyze::analyze(request).unwrap();
     report.validate().unwrap();
-    report
+    (report).into()
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn default_coverage_panel_shows_conditioned_native_paths_without_replacing_globa
         vec![],
         egui::vec2(1600.0, 2000.0),
         |ui| {
-            inspector.show(ui, &report, &mut selection, None);
+            inspector.show(ui, &(report).view(), &mut selection, None);
         },
     );
     let text = visible
@@ -75,7 +75,7 @@ fn default_coverage_panel_shows_conditioned_native_paths_without_replacing_globa
         &mut time,
         vec![],
         egui::vec2(1600.0, 2000.0),
-        |ui| inspector.show_model(ui, global, &report, &mut selection, None),
+        |ui| inspector.show(ui, &global, &mut selection, None),
     );
     assert!(
         visible
@@ -89,11 +89,11 @@ fn default_coverage_panel_shows_conditioned_native_paths_without_replacing_globa
     );
     assert!(
         inspector
-            .accessible_summary(global, selection)
+            .accessible_summary(&global, selection)
             .contains("Original input entry")
     );
     assert!(!super::super::summaries::original_input(
-        native,
+        &native,
         Some(native.cfg[0].id)
     ));
     report.validate().unwrap();

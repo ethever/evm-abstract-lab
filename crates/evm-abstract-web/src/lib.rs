@@ -5,6 +5,7 @@ mod app;
 mod controls;
 mod notation;
 mod palette;
+mod report;
 mod ssa_display;
 mod widgets;
 

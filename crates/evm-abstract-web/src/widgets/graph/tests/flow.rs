@@ -1,7 +1,8 @@
+use crate::tests::AnalysisReport;
 use std::{collections::BTreeSet, time::Duration};
 
 use egui::{Color32, Context, FullOutput, Pos2, RawInput, Rect, Shape, Vec2, ViewportId};
-use evm_abstract_protocol::{AnalysisReport, CfgEdge, EdgeKind};
+use evm_abstract_protocol::{CfgEdge, EdgeKind};
 
 use super::{Graph, disassembly_graph, report, snapshot};
 use crate::{app::Selection, palette};
@@ -19,7 +20,7 @@ fn frame(
             time: Some(time),
             ..RawInput::default()
         },
-        |ui| graph.show(ui, report, selection),
+        |ui| graph.show(ui, &(report).view(), selection),
     );
     output.textures_delta.clear();
     output
@@ -102,7 +103,7 @@ fn selection_animates_native_incoming_outgoing_back_and_self_edges_without_relay
     selection.state = Some(7);
     let before = frame(&ctx, &mut graph, &report, &mut selection, 1.1);
     let after = frame(&ctx, &mut graph, &report, &mut selection, 1.2);
-    assert_eq!(graph.highlighted_edges, BTreeSet::from([0, 1, 2, 3]));
+    assert_eq!(graph.scene.highlighted_edges, BTreeSet::from([0, 1, 2, 3]));
     assert!(!arrows(&before).is_empty());
     assert_ne!(
         arrows(&before),
@@ -115,11 +116,11 @@ fn selection_animates_native_incoming_outgoing_back_and_self_edges_without_relay
         scene,
         "animation cannot rebuild or move the scene"
     );
-    assert!(!graph.layout_pending && !graph.display_dirty);
+    assert!(!graph.scene.layout_pending && !graph.scene.display_dirty);
 
     selection.state = Some(21);
     let switched = frame(&ctx, &mut graph, &report, &mut selection, 1.3);
-    assert_eq!(graph.highlighted_edges, BTreeSet::from([4]));
+    assert_eq!(graph.scene.highlighted_edges, BTreeSet::from([4]));
     assert!(!arrows(&switched).is_empty());
     assert_eq!(snapshot(&graph), scene);
     // The previous node's green jumping/back/self routes now have their usual
@@ -172,7 +173,7 @@ fn cleared_selection_and_offscreen_highlights_leave_the_graph_idle() {
         );
     }
     assert!(
-        !graph.highlighted_edges.is_empty(),
+        !graph.scene.highlighted_edges.is_empty(),
         "selection remains native even offscreen"
     );
     assert!(arrows(&output).is_empty());
@@ -194,7 +195,7 @@ fn cleared_selection_and_offscreen_highlights_leave_the_graph_idle() {
             2.0 + f64::from(index) * 0.1,
         );
     }
-    assert!(graph.highlighted_edges.is_empty());
+    assert!(graph.scene.highlighted_edges.is_empty());
     assert!(arrows(&output).is_empty());
     assert_eq!(
         delay(&output),

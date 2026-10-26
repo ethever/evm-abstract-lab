@@ -14,13 +14,13 @@ fn source_current_index_distinguishes_superseded_from_latest_uncertified_and_cer
     report.abstract_summaries[0].kind = Kind::KnownCall;
     report.abstract_summaries[0].source_current = false;
     assert_eq!(
-        ReportIndex::new(&report).summary_source(source, Kind::KnownCall),
+        ReportIndex::new(&(report).view()).summary_source(source, Kind::KnownCall),
         Some(Source::Uncertified)
     );
     let mut latest = report.abstract_summaries[0].clone();
     latest.kind = Kind::KnownRecursion;
     report.abstract_summaries.push(latest);
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     assert_eq!(
         index.summary_source(source, Kind::KnownCall),
         Some(Source::Historical)
@@ -30,7 +30,7 @@ fn source_current_index_distinguishes_superseded_from_latest_uncertified_and_cer
         Some(Source::Uncertified)
     );
     report.abstract_summaries.last_mut().unwrap().source_current = true;
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     assert_eq!(
         index.summary_source(source, Kind::KnownCall),
         Some(Source::Historical)
@@ -46,11 +46,11 @@ fn regional_known_call_index_never_implies_recursive_or_native_termination_evide
     use evm_abstract_protocol::ProcedureSummaryKind;
     let mut report = crate::tests::procedure_report("5f5f5f5f5f305af150602a5f5260205ff3");
     let source = report.abstract_summaries[0].source_state;
-    let original = ReportIndex::new(&report).termination_summary(&[source]);
+    let original = ReportIndex::new(&(report).view()).termination_summary(&[source]);
     for summary in &mut report.abstract_summaries {
         summary.kind = ProcedureSummaryKind::KnownCall;
     }
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     assert!(
         index
             .summary_source(source, ProcedureSummaryKind::KnownCall)
@@ -65,7 +65,7 @@ fn regional_known_call_index_never_implies_recursive_or_native_termination_evide
     for summary in &mut report.abstract_summaries {
         summary.kind = ProcedureSummaryKind::KnownRecursion;
     }
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     assert!(
         index
             .summary_source(source, ProcedureSummaryKind::KnownRecursion)
@@ -79,7 +79,7 @@ fn regional_known_call_index_never_implies_recursive_or_native_termination_evide
     for summary in &mut report.abstract_summaries {
         summary.kind = ProcedureSummaryKind::KnownProcess;
     }
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     assert!(
         index
             .summary_source(source, ProcedureSummaryKind::KnownProcess)
@@ -155,23 +155,29 @@ fn sparse_ids_resolve_original_records_and_keep_adjacency_positions() {
             detail: "test work boundary".into(),
         })
         .collect();
-    let index = ReportIndex::new(&report);
-    assert!(std::ptr::eq(index.cfg(&report, 7).unwrap(), &report.cfg[1]));
+    let index = ReportIndex::new(&(report).view());
     assert!(std::ptr::eq(
-        index.ssa(&report, 91).unwrap(),
+        index.cfg(&(report).view(), 7).unwrap(),
+        &report.cfg[1]
+    ));
+    assert!(std::ptr::eq(
+        index.ssa(&(report).view(), 91).unwrap(),
         &report.ssa.blocks[2]
     ));
     assert!(std::ptr::eq(
-        index.details(&report, 7).unwrap(),
+        index.details(&(report).view(), 7).unwrap(),
         &report.states[0]
     ));
     assert!(std::ptr::eq(
-        index.edge(&report, 42).unwrap(),
+        index.edge(&(report).view(), 42).unwrap(),
         &report.edges[1]
     ));
-    assert_eq!(index.transition(&report, 999).unwrap().stacks, [vec![9]]);
     assert_eq!(
-        index.deferred(&report, 42).unwrap().reason,
+        index.transition(&(report).view(), 999).unwrap().stacks,
+        [vec![9]]
+    );
+    assert_eq!(
+        index.deferred(&(report).view(), 42).unwrap().reason,
         DeferredReason::SourceStale
     );
     assert_eq!(index.outgoing(7), [0, 1]);
@@ -181,12 +187,12 @@ fn sparse_ids_resolve_original_records_and_keep_adjacency_positions() {
     assert_eq!(index.frontier_count(205), 1);
     assert!(index.has_frontier(205));
     assert!(!index.has_frontier(91));
-    assert!(index.cfg(&report, 0).is_none());
-    assert!(index.ssa(&report, 0).is_none());
-    assert!(index.details(&report, 91).is_none());
-    assert!(index.edge(&report, 0).is_none());
-    assert!(index.transition(&report, 42).is_none());
-    assert!(index.deferred(&report, 999).is_none());
+    assert!(index.cfg(&(report).view(), 0).is_none());
+    assert!(index.ssa(&(report).view(), 0).is_none());
+    assert!(index.details(&(report).view(), 91).is_none());
+    assert!(index.edge(&(report).view(), 0).is_none());
+    assert!(index.transition(&(report).view(), 42).is_none());
+    assert!(index.deferred(&(report).view(), 999).is_none());
     assert!(index.outgoing(12345).is_empty());
     assert!(index.incoming(12345).is_empty());
 }
@@ -211,7 +217,7 @@ fn cached_termination_summary_resolves_sparse_native_members() {
         data: 0,
         store: 0,
     }];
-    let summary = ReportIndex::new(&report).termination_summary(&[205, 7]);
+    let summary = ReportIndex::new(&(report).view()).termination_summary(&[205, 7]);
     assert_eq!(summary.members, 2);
     assert_eq!(summary.root.returns, 1);
     assert_eq!(summary.frame.returns, 1);

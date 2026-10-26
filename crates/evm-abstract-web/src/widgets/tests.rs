@@ -12,12 +12,14 @@ use crate::{
 fn workspace() -> Workspace {
     let mut report = crate::tests::report();
     report.cfg.truncate(1);
-    report.programs[0].blocks.truncate(1);
+    std::sync::Arc::make_mut(&mut report.model.programs[0])
+        .blocks
+        .truncate(1);
     report.ssa.blocks.truncate(1);
     report.edges.clear();
     let immediate = format!("0x{}", "fe".repeat(256));
-    let source = report.programs[0].blocks[0].instructions[0].clone();
-    report.programs[0].blocks[0].instructions = (0..1000)
+    let source = report.model.programs[0].blocks[0].instructions[0].clone();
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks[0].instructions = (0..1000)
         .map(|pc| {
             let mut instruction = source.clone();
             instruction.pc = pc;
@@ -36,7 +38,9 @@ fn workspace() -> Workspace {
         })
         .collect();
     let mut workspace = Workspace::default();
-    workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
+    workspace.receive(Ok(AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     workspace
 }
 

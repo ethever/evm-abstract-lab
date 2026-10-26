@@ -244,7 +244,7 @@ fn compact_source_tab_choices_survive_resizing_and_reanalysis() {
 
         workspace.initial_command();
         workspace.receive(Ok(AnalyzeReply {
-            result: Ok(crate::tests::report()),
+            result: Ok((crate::tests::report()).into()),
         }));
         let output = settled(&ctx, &mut workspace, size);
         assert!(texts(&output).iter().any(|(text, _)| text == "DISASSEMBLY"));
@@ -344,7 +344,8 @@ fn long_input_and_diagnostics_stay_bounded_in_a_short_viewport() {
     workspace.form.bytecode.bytecode = "60ff\n".repeat(500);
     workspace.inspector.expanded = true;
     workspace.inspector.tab = crate::app::inspector::Tab::Diagnostics;
-    workspace.report.as_mut().unwrap().diagnostics = (0..100)
+    std::sync::Arc::make_mut(workspace.report.as_mut().unwrap().native.as_mut().unwrap())
+        .diagnostics = (0..100)
         .map(|index| Diagnostic {
             precision: None,
             state: 0,
@@ -740,6 +741,8 @@ fn accepted_server_result_keeps_first_fit_after_fast_completion_and_rerun() {
             operation,
             result: Ok(JobReply {
                 result: Ok(JobSnapshot {
+                    publication: (state == evm_abstract_protocol::JobState::Completed)
+                        .then(crate::tests::native_publication),
                     id,
                     state,
                     progress: AnalysisProgress::default(),
@@ -769,12 +772,16 @@ fn accepted_server_result_keeps_first_fit_after_fast_completion_and_rerun() {
             JobOperation::Poll,
             JobState::Completed,
         );
+        let _ = workspace.task.next_command(f64::MAX);
         workspace.receive_message(Message::Result {
             generation,
             id,
-            result: Box::new(Ok(AnalyzeReply {
-                result: Ok(crate::tests::report()),
-            })),
+            result: Box::new(Ok(crate::tests::job_result(
+                id,
+                AnalyzeReply {
+                    result: Ok((crate::tests::report()).into()),
+                },
+            ))),
             transfer_ns: 0,
             parsing_ns: 0,
         });

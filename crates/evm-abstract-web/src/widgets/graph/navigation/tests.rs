@@ -26,7 +26,7 @@ fn frame(ctx: &Context, graph: &mut Graph, events: Vec<Event>, sidebar: bool) ->
                 });
         }
         let available = ui.available_rect_before_wrap();
-        graph.show(ui, &report(), &mut Selection::default());
+        graph.show(ui, &(report()).view(), &mut Selection::default());
         let size = graph.viewport.unwrap();
         canvas = Rect::from_min_size(available.right_bottom() - size, size);
     });
@@ -54,7 +54,7 @@ fn trackpad_scroll_pans_both_axes_without_zoom_even_over_a_node() {
         let (canvas, _) = frame(&ctx, &mut graph, vec![], false);
         let pointer = if over_node {
             graph
-                .screen_rect(canvas, graph.placement.nodes[&0])
+                .screen_rect(canvas, graph.scene.placement.nodes[&0])
                 .center()
         } else {
             canvas.right_bottom() - Vec2::splat(12.0)
