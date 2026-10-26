@@ -31,3 +31,18 @@ nix develop --no-update-lock-file -c \
 ```
 
 固定离线与 RPC acquisition 是不同输入边界。当前 CLI profile 和 HTTP 请求按[固定规模检查流程](../examples/no-smt-scale/README.md)从实际构建源码派生，保留原始 capture；新的运行输出放在仓库外。报告闭合、任务完成、取消和导出结果分别读取，完整提交门禁按[本地检查](local-ci.md)执行。
+
+## 当前 benchmark 消费边界
+
+[`benchmark-known-recursion.py`](../scripts/benchmark-known-recursion.py) 新输出声明 `known-recursion-benchmark-v2`：离线 `analyze --world --format json` 严格读取 native16 的固定 `global.analysis` / `native.analysis` 槽，HTTP 严格读取 wire21 的 `Result<JobResult, ApiError>`，核对任务 u64 ID 和五字段 publication。两种格式不能互换；旧版本输出及其声明留在仓库外，不能用当前格式重标。历史输入清单保留原字节，当前调用方需显式提供与被测源码匹配的命令和请求，不由消费端猜测或改写。
+
+HTTP 在 Running 的状态轮询首次公布模型时立即 GET `/result`。`first_closed_model` 记录首个通过版本、当前性、源目录、snapshot / revision / root、执行与数值策略以及原始 Unknown 输入检查的闭合模型；其 `artifact` 指向捕获的完整回复，保留数值输入和同一结果的 data/store 关联。`metrics.graphs.Baseline` / `Native` 为 `null` 表示没有富图，不能解释为零状态、零前沿或完成 SSA。`task_state` 始终描述任务；后续 Failed/Cancelled 不会抹掉已经收到的模型。
+
+`submit_to_usable_model_seconds` 是外部观测时间，包含轮询、捕获与解析校验开销。触发 GET 的任务状态和广告版本单独保留，结果可能在请求期间前进到更新版本。`terminal_observed_seconds`、`final_result`、`final_detail`、`final_export` 分别记录最终任务观测、结果 GET、Native 资格及富导出 outcome/backend timings；`first_model_to_terminal_seconds` 包含后续工作与观测等待，不能充当纯 Native 执行时间。`cached-result` 是终态后的同一保留模型 GET，`cached-result-gzip` 另记实际 Content-Encoding、传输字节、解压和解析时间；重复 GET 不代表 HTTP 缓存命中。
+
+原始 request 文件和 POST body 保持完全相同；最小报告没有回显 RPC transport policy，记录会明确区分已核对的执行/数值策略和原样提交的完整请求策略。私有 RPC 配置与回复/日志中的 endpoint 脱敏，HTTP 原始字节长度和哈希保留。离线 World 的耗时与 RPC acquisition 的耗时分组统计，不据此生成性能或等价性结论。源级假 HTTP/严格解析回归不启动引擎或连接 RPC：
+
+```sh
+python3 -B scripts/test_benchmark_known_recursion.py
+nix run --no-update-lock-file .#check-changes --
+```
