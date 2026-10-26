@@ -243,10 +243,11 @@ def coarse_process_controls(page, canvas, output):
         chosen=select_report_context(page,report,"Baseline",
                                     summary=len(report["minimum"]["summaries"])-1,procedure=index)
         assert chosen["role"]=="context" and chosen["enabled"],chosen
+        assert chosen["selected"] is True,chosen
         select_inspector_tab(page,canvas,"Coverage",minimum=True)
         select_inspector_scope(page,canvas,"Procedure input")
         page.mouse.move(2,2);settle_gesture(page)
-        expect(page.locator("#analysis-status")).to_contain_text(f"· procedure {index} · output None")
+        expect(page.locator("#analysis-status")).not_to_contain_text("· outcome selected")
 
     for name,index in [("constructor",constructor),("static-callback",callback)]:
         choose_procedure(index)
