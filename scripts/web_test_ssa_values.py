@@ -4,7 +4,7 @@ import base64
 from playwright.sync_api import expect
 import json
 from web_test_graph_helpers import symbol, workspace_route
-from web_test_harness import select_report_context, set_control, settle_gesture, webgpu_evidence
+from web_test_harness import click_control, edit_control, select_report_context, set_control, settle_gesture, ui_control, webgpu_evidence
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import screenshot_metrics
 from web_test_ssa_helpers import ssa_details_toggle
@@ -45,9 +45,11 @@ def ssa_values_interactions(browser, url, output):
     page.on('request',lambda request:posts.append(request.url)
             if request.method=='POST' and request.url.endswith('/api/tasks') else None)
     results={}
-    cases=[('fold','600260030100','Converged'),
+    # Exercise the independent partial receipt first. A later inspector-control
+    # failure must not conceal whether real incomplete SSA remains browsable.
+    cases=[('partial','60026003015a5f5ff0','Incomplete'),
            ('copy','345f0100','Converged'),
-           ('partial','60026003015a5f5ff0','Incomplete')]
+           ('fold','600260030100','Converged')]
     for name,code,completion in cases:
         set_control(page,canvas,'Inspect',False)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
@@ -99,8 +101,8 @@ def ssa_values_interactions(browser, url, output):
         ssa_details_toggle(page,canvas,'Compact')
         navigation=None
         if name=='fold':
-            # The selected inspector tab anchors its public ValueId editor and
-            # the first-row source button without exposing egui rectangles.
+            # The original numeric ValueId edit requires the actual native
+            # DragValue response. Never infer it from an old tab-row offset.
             png=canvas.screenshot()
             inspector=screenshot_metrics(page,png,(4,650,1436,970))
             assert inspector['bounds'],inspector
@@ -108,14 +110,20 @@ def ssa_values_interactions(browser, url, output):
             native_region=(4,selected['bounds'][3]+1,1436,450)
             native_before=screenshot_metrics(page,png,native_region)
             assert native_before['bounds'],native_before
-            canvas.dblclick(position={'x':85,'y':tab_bottom+12})
-            page.keyboard.press('Control+A');page.keyboard.insert_text('0');page.keyboard.press('Enter')
+            field=ui_control(page,'inspector_ssa_value',role='text')
+            left,top,right,bottom=field['rect']
+            bounds=canvas.bounding_box()
+            assert bounds is not None and 0<=left<right<=page.viewport_size['width'],field
+            assert 0<=top<bottom<=page.viewport_size['height'],field
+            canvas.dblclick(position={'x':(left+right)/2-bounds['x'],'y':(top+bottom)/2-bounds['y']})
+            edit_control(page,canvas,'inspector_ssa_value','0')
+            page.keyboard.press('Enter')
             page.mouse.move(2,2);settle_gesture(page)
             expect(status).to_contain_text('Inspector: SSA value %0')
             expect(status).to_contain_text('CONST 0x2')
             inspected=screenshot_metrics(page,canvas.screenshot(),native_region)
             assert inspected['bounds']==native_before['bounds'], 'inspecting another value moved the selected native instruction'
-            canvas.click(position={'x':100,'y':tab_bottom+44})
+            click_control(page,canvas,'Go to source',role='action')
             page.mouse.move(2,2);settle_gesture(page)
             source=screenshot_metrics(page,canvas.screenshot(path=str(output/'ssa-values-source-navigation.png')),native_region)
             assert source['bounds'],source
@@ -126,6 +134,7 @@ def ssa_values_interactions(browser, url, output):
         results[name]={'value':value,'original_instruction':operation,'definition_token':box,
                        'inspector':before,'navigation':navigation,
                        'cfg_states':len(report['cfg']),'frontiers':len(report['frontiers'])}
+        (output/'ssa-values-progress.json').write_text(json.dumps(results,indent=2)+'\n')
     assert len(posts)==len(cases),'value inspection or reading-mode changes reran analysis'
     assert not errors,errors
     results['renderer']=webgpu_evidence(page)
