@@ -705,7 +705,9 @@ async fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http() {
         .result
         .unwrap();
     ready.recv_timeout(Duration::from_secs(5)).unwrap();
-    let early = pool.published_result(job.id).unwrap();
+    let early = result(&client, &base, job.id).await;
+    let early_handle = pool.published_result(job.id).unwrap();
+    assert_eq!(early.publication, early_handle.publication);
     assert!(early.publication.model_closed);
     assert!(early.report.global.is_none() && early.report.native.is_none());
     drop(released);
@@ -724,10 +726,11 @@ async fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http() {
         final_report.publication.minimum_version,
         early.publication.minimum_version
     );
+    assert_eq!(final_report.report.minimum, early.report.minimum);
     assert!(final_report.report.postprocessing_work <= limit as u64);
     let final_handle = pool.published_result(job.id).unwrap();
     assert!(Arc::ptr_eq(
-        early.report.minimum.as_ref().unwrap(),
+        early_handle.report.minimum.as_ref().unwrap(),
         final_handle.report.minimum.as_ref().unwrap()
     ));
     assert_eq!(&request, &AnalyzeRequest::default());

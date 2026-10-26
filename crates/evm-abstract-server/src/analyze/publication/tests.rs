@@ -10,6 +10,8 @@ use evm_abstract::{
     resource::WorkBudget,
 };
 
+mod rpc;
+
 #[test]
 fn required_minimum_refusal_is_latched_even_when_the_payer_accepts_later_small_charges() {
     let algebra = ValueAlgebra::new(ProductAlgebra::default());
