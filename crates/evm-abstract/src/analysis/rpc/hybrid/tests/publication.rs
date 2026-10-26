@@ -15,9 +15,18 @@ use crate::{
 struct Capture {
     model: Option<ModelHandle<NumericValue>>,
     calls: usize,
+    stop: bool,
 }
 
 impl StagePublisher<NumericValue> for Capture {
+    fn checkpoint(&self) -> Result<(), crate::analysis::control::Cancelled> {
+        if self.stop {
+            Err(crate::analysis::control::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
     fn publish(&mut self, report: &HybridAnalysis<NumericValue>) {
         self.calls += 1;
         assert!(report.coverage().baseline_current);
@@ -29,6 +38,42 @@ impl StagePublisher<NumericValue> for Capture {
         assert_eq!(report.coverage().requested_detail_work, usize::MAX);
         self.model = Some(report.baseline_handle());
     }
+}
+
+#[test]
+fn required_publication_stop_prevents_optional_rpc_acquisition_and_restarts() {
+    std::thread::scope(|scope| {
+        let mut fixture = fixture("5f54565b5b00");
+        fixture
+            .storage
+            .insert((address(0x101), U256::ZERO), U256::from(4));
+        let server = Server::new(scope, fixture);
+        let algebra = ValueAlgebra::new(ProductAlgebra::default());
+        let policies = EnginePolicies::default();
+        let mut extension = NoExtension;
+        let control = Control::new(Default::default());
+        let mut publisher = Capture {
+            stop: true,
+            ..Default::default()
+        };
+        let result = analyze_rpc_hybrid_with_publisher(
+            AnalysisEngine::new(&algebra, &policies, &mut extension),
+            &server.input(),
+            entry(),
+            product_config(),
+            HybridConfig::default(),
+            &control,
+            &mut publisher,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::analysis::RpcAnalysisError::Cancelled(_))
+        ));
+        assert_eq!(publisher.calls, 1);
+        assert!(publisher.model.is_some());
+        assert_eq!(server.count("eth_getStorageAt", address(0x101)), 0);
+        assert!(!control.cancellation().is_cancelled());
+    });
 }
 
 #[test]

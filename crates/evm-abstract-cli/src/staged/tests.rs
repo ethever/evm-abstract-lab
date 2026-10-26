@@ -84,3 +84,35 @@ fn final_export_refusal_keeps_the_flushed_baseline_and_never_resets_its_payer() 
     let baseline: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(baseline["model_closed"], true);
 }
+
+#[test]
+fn first_line_refusal_stops_native_and_preserves_the_actual_writer_error() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let control = Control::default();
+    let mut output = Vec::new();
+    let mut budget = WorkBudget::new(1);
+    let mut stream = Stream::new(&mut output, &mut budget, NumericModel::Product, &control);
+    let input =
+        AnalysisInput::from_program(Program::from_hex("00").unwrap(), Default::default()).unwrap();
+    let result = AnalysisEngine::new(&algebra, &policies, &mut extension)
+        .run_hybrid_with_publisher(
+            input,
+            ExecutionConfig::default(),
+            HybridConfig::default(),
+            &control,
+            &mut stream,
+        );
+    assert!(matches!(
+        result,
+        Err(evm_abstract::analysis::cooperation::CooperationError::Cancelled)
+    ));
+    let error = stream
+        .resolve(result.map_err(crate::error::CliError::from))
+        .unwrap_err();
+    assert!(error.to_string().contains("postprocessing work exhausted"));
+    assert!(output.is_empty());
+    assert!(!control.cancellation().is_cancelled());
+    assert!(budget.used() <= 1);
+}

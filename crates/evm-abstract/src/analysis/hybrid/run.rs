@@ -242,6 +242,9 @@ where
         };
         if staged.coverage.baseline_current {
             publisher.publish(&staged);
+            publisher
+                .checkpoint()
+                .map_err(|_| CooperationError::Cancelled)?;
         }
         let HybridAnalysis {
             baseline,

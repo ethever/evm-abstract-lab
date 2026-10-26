@@ -6,7 +6,7 @@ use crate::{error::CliError, hybrid::WorldAnalysis, numeric::NumericModel};
 use evm_abstract::{
     analysis::{
         HybridAnalysis, RpcHybridCoverage, Status,
-        control::Control,
+        control::{Cancelled, Control},
         publication::{ModelHandle, StagePublisher},
     },
     domain::WordElement,
@@ -97,6 +97,13 @@ impl<'a, W: Write, N: WordElement> Stream<'a, W, N> {
         })
     }
 
+    pub(crate) fn resolve<T>(&mut self, result: Result<T, CliError>) -> Result<T, CliError> {
+        match self.error.take() {
+            Some(error) => Err(error),
+            None => result,
+        }
+    }
+
     fn emit<T: Serialize>(&mut self, publication: &T) -> Result<(), CliError> {
         self.control.checkpoint().map_err(CliError::Cancelled)?;
         // Reserve each encoded byte before allocating it. Serialization writes
@@ -115,6 +122,14 @@ impl<'a, W: Write, N: WordElement> Stream<'a, W, N> {
 }
 
 impl<W: Write, N: WordElement> StagePublisher<N> for Stream<'_, W, N> {
+    fn checkpoint(&self) -> Result<(), Cancelled> {
+        if self.error.is_some() {
+            Err(Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
     fn publish(&mut self, report: &HybridAnalysis<N>) {
         if self.baseline.is_some() || self.error.is_some() {
             return;

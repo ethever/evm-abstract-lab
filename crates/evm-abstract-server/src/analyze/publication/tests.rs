@@ -42,6 +42,7 @@ fn required_minimum_refusal_is_latched_even_when_the_payer_accepts_later_small_c
         &mut budget,
     );
     projection.publish(&model);
+    assert!(projection.checkpoint().is_err());
     let failure = projection.finish(&model).unwrap_err();
     assert_eq!(failure.code, api::ApiErrorCode::Export);
     assert!(
@@ -49,6 +50,46 @@ fn required_minimum_refusal_is_latched_even_when_the_payer_accepts_later_small_c
         "charge alone is not a required-stage refusal latch"
     );
     assert!(budget.used() < budget.limit());
+}
+
+#[test]
+fn required_minimum_abort_preserves_the_export_cause_without_user_cancellation() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let control = Control::new(Default::default());
+    let request = api::AnalyzeRequest::default();
+    let mut budget = WorkBudget::new(1);
+    let mut projection = Projection::new(
+        &request,
+        api::AnalysisScope::SingleProgram,
+        &algebra,
+        api::NumericModel::Product,
+        &control,
+        None,
+        &mut budget,
+    );
+    let result = AnalysisEngine::new(&algebra, &policies, &mut extension)
+        .run_hybrid_with_publisher(
+            AnalysisInput::from_program(Program::from_hex("00").unwrap(), Default::default())
+                .unwrap(),
+            ExecutionConfig::default(),
+            HybridConfig::default(),
+            &control,
+            &mut projection,
+        );
+    assert!(matches!(
+        result,
+        Err(evm_abstract::analysis::cooperation::CooperationError::Cancelled)
+    ));
+    let original = projection.failure.as_ref().unwrap().clone();
+    let error = projection
+        .resolve(result.map_err(crate::analyze::errors::execution))
+        .unwrap_err();
+    assert_eq!(error, original);
+    assert_eq!(error.code, api::ApiErrorCode::Export);
+    assert!(!control.cancellation().is_cancelled());
+    assert!(budget.used() <= 1);
 }
 
 #[test]

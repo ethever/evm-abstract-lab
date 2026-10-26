@@ -4,7 +4,7 @@
 //! event. Publishers may retain a handle while optional precision continues or is
 //! cancelled. A later fact restriction never changes the handle's qualification.
 
-use super::{EvmWorldAnalysis, HybridAnalysis};
+use super::{EvmWorldAnalysis, HybridAnalysis, control::Cancelled};
 use crate::domain::WordElement;
 use serde::{Serialize, Serializer};
 use std::{ops::Deref, sync::Arc};
@@ -55,6 +55,14 @@ impl<N: WordElement> Deref for ModelHandle<N> {
 pub trait StagePublisher<N: WordElement> {
     /// Publish the baseline with its exact snapshot, revision and source guards.
     fn publish(&mut self, model: &HybridAnalysis<N>);
+
+    /// Stop before optional preparation when the application cannot retain a
+    /// useful publication. The application keeps its original typed failure;
+    /// the core uses its existing control-stop channel and leaves model closure
+    /// and the caller's cancellation token unchanged.
+    fn checkpoint(&self) -> Result<(), Cancelled> {
+        Ok(())
+    }
 }
 
 /// Ordinary synchronous callers need no publication channel or export work.

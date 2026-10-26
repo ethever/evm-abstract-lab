@@ -5,7 +5,7 @@ use super::{api, report};
 use evm_abstract::{
     analysis::{
         HybridAnalysis,
-        control::Control,
+        control::{Cancelled, Control},
         progress::Phase,
         publication::{ModelHandle, StagePublisher},
     },
@@ -74,6 +74,19 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
             _ => Err(identity_error()),
         }
     }
+
+    /// A failed mandatory publication stops the core through its control
+    /// channel. Restore the actual export/channel cause before mapping that
+    /// internal stop into a public job outcome.
+    pub(super) fn resolve<T>(
+        &mut self,
+        result: Result<T, api::ApiError>,
+    ) -> Result<T, api::ApiError> {
+        match self.failure.take() {
+            Some(error) => Err(error),
+            None => result,
+        }
+    }
 }
 
 fn identity_error() -> api::ApiError {
@@ -87,6 +100,14 @@ fn identity_error() -> api::ApiError {
 }
 
 impl<D: EvmNumericAlgebra> StagePublisher<D::Element> for Projection<'_, D> {
+    fn checkpoint(&self) -> Result<(), Cancelled> {
+        if self.failure.is_some() {
+            Err(Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
     fn publish(&mut self, model: &HybridAnalysis<D::Element>) {
         if self.published.is_some() || self.failure.is_some() {
             return;

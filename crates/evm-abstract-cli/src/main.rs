@@ -349,8 +349,8 @@ fn execute_with<D: EvmNumericAlgebra>(
                 let mut stdout = io::stdout().lock();
                 let mut publisher =
                     staged::Stream::new(&mut stdout, &mut reporting, model, control);
-                let analysis =
-                    args.analyze_hybrid_with_publisher(algebra, control, &mut publisher)?;
+                let analysis = args.analyze_hybrid_with_publisher(algebra, control, &mut publisher);
+                let analysis = publisher.resolve(analysis)?;
                 let complete = analysis.status() == Status::Converged;
                 publisher.finish(&analysis)?;
                 return Ok((String::new(), complete));

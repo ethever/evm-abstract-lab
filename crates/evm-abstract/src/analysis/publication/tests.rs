@@ -15,9 +15,18 @@ struct Retain {
     model: Option<ModelHandle<NumericValue>>,
     calls: usize,
     cancel: Option<Control>,
+    stop: bool,
 }
 
 impl StagePublisher<NumericValue> for Retain {
+    fn checkpoint(&self) -> Result<(), crate::analysis::control::Cancelled> {
+        if self.stop {
+            Err(crate::analysis::control::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
     fn publish(&mut self, report: &HybridAnalysis<NumericValue>) {
         self.calls += 1;
         assert_eq!(
@@ -34,6 +43,65 @@ impl StagePublisher<NumericValue> for Retain {
             control.cancellation().cancel();
         }
     }
+}
+
+#[test]
+fn publication_stop_precedes_native_preparation_without_cancelling_the_owner() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let (world, entry) = fixtures::fixture(&[(0x101, "600160020100")]);
+    let control = Control::new(Default::default());
+    let mut publisher = Retain {
+        stop: true,
+        ..Default::default()
+    };
+    let result = AnalysisEngine::new(&algebra, &policies, &mut extension)
+        .run_hybrid_with_publisher(
+            AnalysisInput::new(world, entry).unwrap(),
+            ExecutionConfig::default(),
+            HybridConfig::default(),
+            &control,
+            &mut publisher,
+        );
+    assert!(matches!(result, Err(CooperationError::Cancelled)));
+    assert!(!control.cancellation().is_cancelled());
+    let model = publisher.model.unwrap();
+    assert_eq!(model.status(), Status::Converged);
+    assert!(model.frontiers().is_empty());
+}
+
+#[test]
+fn session_publication_stop_spends_no_optional_work_and_keeps_the_original_payer() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let (world, entry) = fixtures::fixture(&[(0x101, "600160020100")]);
+    let control = Control::default();
+    let mut session = crate::analysis::layers::AnalysisSession::new(
+        AnalysisEngine::new(&algebra, &policies, &mut extension),
+        AnalysisInput::new(world, entry).unwrap(),
+        ExecutionConfig::default(),
+    )
+    .unwrap();
+    let mut publisher = Retain {
+        stop: true,
+        ..Default::default()
+    };
+    assert!(
+        session
+            .run_hybrid_with_publisher(HybridConfig::default(), &control, &mut publisher)
+            .is_err()
+    );
+    let prior = session.work_used();
+    assert_eq!(prior, publisher.model.as_ref().unwrap().work());
+    let mut next = Retain::default();
+    let report = session
+        .run_hybrid_with_publisher(HybridConfig::default(), &control, &mut next)
+        .unwrap();
+    assert!(report.coverage().work.prior > prior);
+    assert_eq!(report.work(), session.work_used());
+    assert!(report.detail().is_some());
 }
 
 #[test]

@@ -137,6 +137,7 @@ where
         baseline.defer_detail(hybrid);
         if baseline.coverage().baseline_current {
             publisher.publish(&baseline);
+            publisher.checkpoint()?;
         }
         let initial_work = layered.work_used();
         let mut latest = None;
