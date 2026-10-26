@@ -264,7 +264,11 @@ def edit_control(page, canvas, label, text, **query):
     control = focus_text_control(page, canvas, label, **query)
     page.keyboard.press("Control+A")
     rendered_frame(page)
-    page.keyboard.insert_text(str(text))
+    replacement = str(text)
+    if replacement:
+        page.keyboard.insert_text(replacement)
+    else:
+        page.keyboard.press("Backspace")
     rendered_frame(page)
     return control
 

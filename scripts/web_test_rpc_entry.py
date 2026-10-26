@@ -4,7 +4,7 @@ from pathlib import Path
 from playwright.sync_api import expect
 import json
 import re
-from web_test_harness import click_control, complete_submission, edit_control, observe_webgpu, settle_gesture, webgpu_evidence
+from web_test_harness import click_control, complete_submission, edit_control, observe_webgpu, rendered_frame, settle_gesture, ui_control, webgpu_evidence
 from web_test_rpc_helpers import CUSTOM_ENTRY, RPC_ENTRY_EXAMPLES, RPC_PROVIDERS, automatic_rpc_entry, configured_rpc_server, open_rpc_input, select_rpc_provider
 from web_test_hybrid import graph
 
@@ -62,6 +62,14 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     click_control(page, canvas, "Custom", role="tab")
     assert submitted == expected_submissions, "choosing Custom unexpectedly submitted analysis"
     edit_control(page, canvas, "rpc_address", CUSTOM_ENTRY)
+    # Clearing must replace a nonempty draft. An empty insertText event alone
+    # does not delete the selection and could leave a valid previous address.
+    edit_control(page, canvas, "rpc_address", "")
+    ui_control(page, "Analyze", role="action", enabled=False)
+    page.keyboard.press("Control+Enter")
+    rendered_frame(page)
+    assert submitted == expected_submissions, "cleared Custom address admitted another task"
+    edit_control(page, canvas, "rpc_address", CUSTOM_ENTRY)
     canvas.screenshot(path=str(output / "entry-custom-edited.png"))
     page.keyboard.press("Escape")
     settle_gesture(page)
@@ -85,6 +93,7 @@ def entry_example_interactions(browser, url: str, output: Path, providers, rpc):
     assert submitted == expected_submissions, "Custom did not submit exactly once to the chosen provider"
     assert graph(reply.report, "Native")["metadata"]["entry_address"].lower() == CUSTOM_ENTRY.lower()
     results["custom_reopened_address"] = CUSTOM_ENTRY
+    results["cleared_custom_address_blocks_submission"] = True
     results["provider_submissions"] = [request["input"] for request in submitted]
     results["renderer"] = webgpu_evidence(page)
     page.close()
