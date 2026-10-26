@@ -132,6 +132,46 @@ fn label_rect(output: &FullOutput, label: &str) -> Rect {
 }
 
 #[test]
+fn desktop_sources_keep_their_height_beside_a_tall_docked_inspector() {
+    let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));
+    workbench.frame(vec![]);
+    workbench.drag_to_height(2000.0);
+    let preferred = workbench.rect("world_inspector").height();
+    let selected = workbench.workspace.selection;
+    let route = workbench.workspace.view;
+    workbench.click("Sources");
+    assert!(workbench.workspace.inspector.expanded);
+    assert!(!workbench.workspace.inspector.maximized());
+    let sources = workbench.rect("world_directory");
+    let inspector = workbench.rect("world_inspector");
+    assert!(
+        sources.height() > 600.0,
+        "the chooser must not inherit the graph's 72px remainder"
+    );
+    assert!(inspector.left() >= sources.right() - 1.0);
+    let filter = workbench
+        .ctx
+        .read_response(Id::new("source_context_filter"))
+        .unwrap();
+    assert!(sources.contains_rect(filter.rect));
+    assert!((inspector.height() - preferred).abs() < 2.0);
+    workbench
+        .workspace
+        .choose_context(evm_abstract_protocol::AnalysisNamespace::Native);
+    workbench.frame(vec![]);
+    let filter = workbench
+        .ctx
+        .read_response(Id::new("source_context_filter"))
+        .unwrap();
+    assert!(workbench.rect("world_directory").contains_rect(filter.rect));
+    workbench.click("Sources");
+    assert!(!workbench.workspace.directory.open);
+    assert!((workbench.rect("world_inspector").height() - preferred).abs() < 2.0);
+    assert_eq!(workbench.workspace.selection, selected);
+    assert_eq!(workbench.workspace.view, route);
+}
+
+#[test]
 fn sources_and_context_chooser_remain_reachable_after_maximize() {
     for context_choice in [false, true] {
         let mut workbench = Workbench::new(egui::vec2(1440.0, 1000.0));

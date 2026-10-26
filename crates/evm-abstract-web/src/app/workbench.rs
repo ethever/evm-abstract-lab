@@ -40,14 +40,6 @@ impl Workspace {
                 .show(ui, |ui| self.navigation_bar(ui));
         }
         let maximized = self.report.is_some() && self.inspector.maximized() && !self.form.open;
-        if self.report.is_some() && self.inspector.expanded && !maximized && !self.form.open {
-            let panel = self.inspector.docked_panel(ui, viewport.y);
-            let response = panel.show(ui, |ui| {
-                ui.set_min_height(ui.available_height());
-                self.show_inspection(ui);
-            });
-            self.inspector.remember_resize(ui, response.response.rect);
-        }
         let source_sheet = self.report.is_some()
             && self.directory.open
             && self.panels.compact()
@@ -81,6 +73,16 @@ impl Workspace {
                 }
                 ui.ctx().request_discard("source/context navigation");
             }
+        }
+        // The desktop source column owns its full reading height. A user's
+        // tall docked Inspector then consumes only the workspace to its right.
+        if self.report.is_some() && self.inspector.expanded && !maximized && !self.form.open {
+            let panel = self.inspector.docked_panel(ui, viewport.y);
+            let response = panel.show(ui, |ui| {
+                ui.set_min_height(ui.available_height());
+                self.show_inspection(ui);
+            });
+            self.inspector.remember_resize(ui, response.response.rect);
         }
         let mut ready = true;
         let mut sheet_action = None;
