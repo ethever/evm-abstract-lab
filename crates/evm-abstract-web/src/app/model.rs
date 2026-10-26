@@ -1,4 +1,9 @@
 //! Display namespaces are independent of the engine's global relation selection.
+#[path = "navigation.rs"]
+pub(crate) mod navigation;
+#[path = "presentation.rs"]
+pub(crate) mod presentation;
+
 use super::{Selection, Workspace};
 use crate::controls::{self, Density};
 use egui::Ui;
@@ -25,6 +30,14 @@ pub(crate) struct ReportViewId {
 }
 
 impl ReportViewId {
+    pub(crate) fn generation(self) -> ReportGeneration {
+        self.generation
+    }
+
+    pub(crate) fn version(self) -> Option<evm_abstract_protocol::PublicationVersion> {
+        self.version
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture(generation: u64, namespace: AnalysisNamespace) -> Self {
         Self {
@@ -91,9 +104,87 @@ impl Default for ReportViewId {
 pub(super) struct ReportViewState {
     identity: ReportViewId,
     publication: Option<evm_abstract_protocol::JobPublication>,
+    job_id: Option<evm_abstract_protocol::JobId>,
+    index: presentation::ReportIndex,
+    navigator: navigation::Navigator,
 }
 
 impl ReportViewState {
+    pub(crate) fn presentation<'a>(
+        &'a self,
+        report: &'a AnalysisReport,
+    ) -> presentation::Presentation<'a> {
+        presentation::Presentation::new(
+            report,
+            &self.index,
+            self.identity,
+            self.publication.as_ref(),
+        )
+    }
+
+    pub(crate) fn index(&self) -> &presentation::ReportIndex {
+        &self.index
+    }
+
+    pub(crate) fn navigator(&self) -> &navigation::Navigator {
+        &self.navigator
+    }
+
+    pub(crate) fn navigator_mut(&mut self) -> &mut navigation::Navigator {
+        &mut self.navigator
+    }
+
+    pub(crate) fn navigate(
+        &mut self,
+        report: &AnalysisReport,
+        intent: navigation::Intent,
+    ) -> Result<Option<navigation::Location>, navigation::NavigationError> {
+        let presentation = presentation::Presentation::new(
+            report,
+            &self.index,
+            self.identity,
+            self.publication.as_ref(),
+        );
+        let location = self.navigator.apply(&presentation, intent)?.cloned();
+        if let Some(location) = &location {
+            self.identity = location.focus.view;
+        }
+        Ok(location)
+    }
+
+    pub(crate) fn synchronize_focus(
+        &mut self,
+        report: &AnalysisReport,
+        focus: navigation::Focus,
+    ) -> Result<(), navigation::NavigationError> {
+        let presentation = presentation::Presentation::new(
+            report,
+            &self.index,
+            self.identity,
+            self.publication.as_ref(),
+        );
+        let view = focus.view;
+        self.navigator.synchronize(&presentation, focus)?;
+        self.identity = view;
+        Ok(())
+    }
+
+    fn refresh_index(&mut self, report: &AnalysisReport) {
+        self.index.update(
+            report,
+            self.identity,
+            self.publication.as_ref(),
+            self.job_id,
+        );
+        let presentation = presentation::Presentation::new(
+            report,
+            &self.index,
+            self.identity,
+            self.publication.as_ref(),
+        );
+        self.navigator.reconcile(&presentation, None);
+    }
+
     pub(super) fn publication(&self) -> Option<&evm_abstract_protocol::JobPublication> {
         self.publication.as_ref()
     }
@@ -126,6 +217,7 @@ pub(super) enum Activation {
     Report {
         replacement: bool,
         publication: Option<evm_abstract_protocol::JobPublication>,
+        job_id: Option<evm_abstract_protocol::JobId>,
     },
     Namespace(AnalysisNamespace),
 }
@@ -162,12 +254,18 @@ impl Workspace {
     /// Unchanged graph versions keep selection, caches, camera and gestures.
     pub(super) fn activate_view(&mut self, activation: Activation) {
         let Some(report) = &self.report else { return };
+        let navigation = matches!(activation, Activation::Namespace(_));
+        if navigation {
+            self.report_view.navigator.remember_route(self.view);
+        }
         let (namespace, replacement) = match activation {
             Activation::Report {
                 replacement,
                 publication,
+                job_id,
             } => {
                 self.report_view.publication = publication;
+                self.report_view.job_id = job_id;
                 (
                     if replacement || !available(report, self.report_view.namespace()) {
                         report.selected_view
@@ -199,6 +297,7 @@ impl Workspace {
                     .and_then(|publication| publication.minimum_version),
             );
             if identity == self.report_view.identity {
+                self.report_view.refresh_index(report);
                 return;
             }
             self.report_view.identity = identity;
@@ -214,12 +313,20 @@ impl Workspace {
             self.disasm_focus = Selection::default();
             self.ssa_focus = Selection::default();
             self.inspector.reset_report();
-            if replacement {
-                self.directory.open = matches!(
-                    minimum.source_snapshot,
-                    evm_abstract_protocol::RootTerminalSnapshot::Chain(_)
-                ) || minimum.accounts.len() > 1
-                    || report.programs.len() > 1;
+            self.report_view.refresh_index(report);
+            if let Ok(focus) = self.report_view.presentation(report).entry_focus(identity) {
+                self.program = focus
+                    .source
+                    .as_ref()
+                    .and_then(navigation::SourceFocus::program);
+                if navigation {
+                    let _ = self
+                        .report_view
+                        .navigate(report, navigation::Intent::Open(focus));
+                } else {
+                    let _ = self.report_view.synchronize_focus(report, focus);
+                }
+                self.report_view.navigator.remember_route(self.view);
             }
             return;
         }
@@ -238,6 +345,7 @@ impl Workspace {
         }
         identity = identity.for_namespace(namespace, self.report_view.publication.as_ref());
         if identity == self.report_view.identity {
+            self.report_view.refresh_index(report);
             return;
         }
         self.report_view.identity = identity;
@@ -256,8 +364,20 @@ impl Workspace {
         self.disasm_focus = Selection::default();
         self.ssa_focus = Selection::default();
         self.inspector.reset_report();
-        if replacement {
-            self.directory.open = visible.metadata.snapshot.is_some() || report.programs.len() > 1;
+        self.report_view.refresh_index(report);
+        if let Ok(focus) = self.report_view.presentation(report).entry_focus(identity) {
+            self.program = focus
+                .source
+                .as_ref()
+                .and_then(navigation::SourceFocus::program);
+            if navigation {
+                let _ = self
+                    .report_view
+                    .navigate(report, navigation::Intent::Open(focus));
+            } else {
+                let _ = self.report_view.synchronize_focus(report, focus);
+            }
+            self.report_view.navigator.remember_route(self.view);
         }
     }
 }
