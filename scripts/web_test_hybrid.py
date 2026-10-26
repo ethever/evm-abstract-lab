@@ -17,6 +17,10 @@ def namespace_available(report, namespace):
 
 
 def source_program(report, program_id):
+    assert type(report["programs"]) is list
+    assert type(program_id) is int and program_id >= 0, program_id
+    for item in report["programs"]:
+        assert type(item) is dict and type(item["id"]) is int
     matches = [item for item in report["programs"] if item["id"] == program_id]
     assert len(matches) == 1, (program_id, len(matches))
     return matches[0]
@@ -40,21 +44,28 @@ def assert_root_source(report, metadata):
 
 def process_control_relation(report, key, region):
     """Resolve an actual MAY receipt; no location becomes a Native PC or ID."""
+    assert type(key) is dict and type(region) is dict
+    assert type(report["process_controls"]) is list
     index = region["relation"]
     assert type(index) is int and 0 <= index < len(report["process_controls"]), index
     relation = report["process_controls"][index]
+    assert type(relation) is dict
     assert type(relation["id"]) is int and relation["id"] == index
-    assert (relation["epoch"], relation["source"], region["entry"]) == (
-        key["epoch"], key["source"], key["location"])
-    for point in [region["entry"], *region["through"], *region["boundaries"]]:
+    assert type(relation["blocks"]) is list
+    assert type(region["through"]) is list and type(region["boundaries"]) is list
+    # Validate both sides before equality: Python equates Block(False)/Block(0).
+    for point in [key["location"], region["entry"], *region["through"], *region["boundaries"]]:
         if type(point) is dict:
             assert set(point) == {"Block"}, point
             assert type(point["Block"]) is int and 0 <= point["Block"] < len(relation["blocks"]), point
         else:
-            assert point in {"JumpTargets", "End"}, point
+            assert type(point) is str and point in {"JumpTargets", "End"}, point
+    assert (relation["epoch"], relation["source"], region["entry"]) == (
+        key["epoch"], key["source"], key["location"])
     if relation["program"] is not None:
         program = source_program(report, relation["program"])
         _assert_program_source(program, relation["source"])
+        assert type(program["blocks"]) is list
         assert len(relation["blocks"]) == len(program["blocks"])
     else:
         assert "InitCode" in relation["source"]
@@ -97,6 +108,27 @@ def displayed_graph(report):
     return oracle_graph(report, report["selected_view"])
 
 
+def _assert_summary_control_receipts(report, summary):
+    """Qualify present receipts only; Rust owns topology and closure validation."""
+    assert type(summary) is dict and type(summary["regional_cfg"]) is dict
+    nodes = summary["regional_cfg"]["nodes"]
+    assert type(nodes) is list
+    for node in nodes:
+        assert type(node) is dict
+        transfer = node["transfer"]
+        if transfer is None:
+            continue
+        assert type(transfer) is dict
+        process = transfer["process"]
+        if process is None:
+            continue
+        assert type(process) is dict
+        control = process["control"]
+        if control is not None:
+            assert type(node["frame"]) is dict
+            process_control_relation(report, node["frame"]["process"], control)
+
+
 def job_result_report(envelope, *, job_id=None, publication=None):
     """Decode JobResultReply from /api/tasks/{id}/result, never AnalyzeReply."""
     assert type(envelope) is dict
@@ -127,6 +159,7 @@ def job_result_report(envelope, *, job_id=None, publication=None):
     assert type(report["schema_version"]) is int and report["schema_version"] == 21
     assert "process_controls" in report
     assert type(report["process_controls"]) is list
+    assert type(report["programs"]) is list
     minimum = report["minimum"]
     assert (identity["minimum_version"] is not None) == (minimum is not None), identity
     if minimum is not None:
@@ -134,8 +167,18 @@ def job_result_report(envelope, *, job_id=None, publication=None):
         assert minimum["namespace"] == "Baseline", minimum["namespace"]
         assert type(minimum["current"]) is bool
         assert minimum["status"] in {"Converged", "Incomplete"}
+        assert type(minimum["summaries"]) is list
+        for summary in minimum["summaries"]:
+            assert type(summary) is dict
+            _assert_summary_control_receipts(report, summary["relation"])
     assert (identity["global_version"] is not None) == (report["global"] is not None), identity
     assert (identity["native_version"] is not None) == (report["native"] is not None), identity
+    for namespace in ["global", "native"]:
+        selected = report[namespace]
+        if selected is not None:
+            assert type(selected) is dict and type(selected["abstract_summaries"]) is list
+            for summary in selected["abstract_summaries"]:
+                _assert_summary_control_receipts(report, summary)
     rich_export = report["rich_export"]
     if type(rich_export) is str:
         assert rich_export in {"NotRequested", "Complete", "Cancelled"}, rich_export

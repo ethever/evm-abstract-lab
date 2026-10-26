@@ -294,9 +294,9 @@ class ReportWireTests(unittest.TestCase):
                          {"id": 7, "blocks": [{"id": 3, "instructions": [{"pc": 5}]}]}],
             "process_controls": [],
             "global": {"status": "Converged", "metadata": {"root_program": 91},
-                       "states": [{"state": 4, "entry": "global"}]},
+                       "states": [{"state": 4, "entry": "global"}], "abstract_summaries": []},
             "native": {"status": "Incomplete", "metadata": {"root_program": 7},
-                       "states": [{"state": 4, "entry": "native"}]},
+                       "states": [{"state": 4, "entry": "native"}], "abstract_summaries": []},
         }
 
     def publication(self):
@@ -481,11 +481,136 @@ class ReportWireTests(unittest.TestCase):
         report = self.report()
         report.update({"global": None, "native": None, "rich_export": "NotRequested",
                        "minimum": {"namespace": "Baseline", "status": "Converged", "current": True,
-                                   "revision": "0"}})
+                                   "revision": "0", "summaries": []}})
         publication = {**self.publication(), "version": "9007199254740993",
                        "minimum_version": "9007199254740993", "global_version": None,
                        "native_version": None}
         return {"result": {"Ok": {"id": 42, "publication": publication, "report": report}}}
+
+    def control_publication(self, profile):
+        # Small source-derived wire fragments, not generated report captures.
+        # Only the fields consumed by this Python reference boundary are needed;
+        # numerical closure and topology remain Rust validator responsibilities.
+        envelope = (self.minimum_publication() if profile == "minimum" else
+                    {"result": {"Ok": {"id": 42, "publication": self.publication(), "report": self.report()}}})
+        report = envelope["result"]["Ok"]["report"]
+        digest, epoch = "0x" + "ab" * 32, "0x" + "cd" * 32
+        source = {"InputProgram": {"hash": digest, "fork": "Osaka"}}
+        report["programs"][0].update(code_address=None, code_hash=digest, fork="Osaka", kind="Runtime")
+        report["process_controls"] = [{
+            "id": 0, "epoch": epoch, "source": deepcopy(source), "program": 91,
+            "blocks": [{"successors": [None, None], "continuation": None, "boundary": True}],
+            "jump_targets": [],
+        }]
+        key = {"epoch": epoch, "owner": "RootNamespace", "source": source,
+               "is_static": False, "location": {"Block": 0}}
+        region = {"relation": 0, "entry": {"Block": 0}, "through": [], "boundaries": [{"Block": 0}]}
+        node = {"frame": {"process": key}, "transfer": {"process": {"control": region}}}
+        summaries = [{"regional_cfg": {"nodes": []}}, {"regional_cfg": {"nodes": [
+            {"frame": {"process": deepcopy(key)}, "transfer": None},
+            {"frame": {"process": None}, "transfer": {"process": None}}, node,
+        ]}}]
+        if profile == "minimum":
+            report["minimum"]["summaries"] = [{"relation": summary} for summary in summaries]
+        else:
+            # Native receipts must be checked even while Global is selected.
+            report[profile]["abstract_summaries"] = summaries
+        return envelope, node
+
+    def test_task_report_resolves_present_controls_in_every_summary_profile(self):
+        from web_test_hybrid import job_result_report
+        for profile in ["minimum", "global", "native"]:
+            envelope, node = self.control_publication(profile)
+            report = envelope["result"]["Ok"]["report"]
+            with self.subTest(profile=profile):
+                self.assertIs(job_result_report(envelope, job_id=42,
+                    publication=envelope["result"]["Ok"]["publication"]), report)
+                self.assertEqual(node["frame"]["process"]["location"], {"Block": 0})
+                self.assertNotIn("executed_pcs", node)
+
+    def test_task_report_allows_primitive_no_control_and_pending_transfers(self):
+        from web_test_hybrid import job_result_report
+        for profile in ["minimum", "global", "native"]:
+            envelope, node = self.control_publication(profile)
+            report = envelope["result"]["Ok"]["report"]
+            report["process_controls"] = []
+            node["frame"]["process"].update(source={"Empty": {"fork": "Osaka"}}, location="Any")
+            node["transfer"]["process"]["control"] = None
+            with self.subTest(profile=profile):
+                self.assertIs(job_result_report(envelope), report)
+
+    def test_task_report_rejects_dangling_and_misqualified_present_controls(self):
+        from web_test_hybrid import job_result_report
+        for profile in ["minimum", "global", "native"]:
+            for corruption in ["missing-row", "row-id", "row-source", "row-epoch", "key-source",
+                               "key-epoch", "key-entry", "missing-key", "program-source"]:
+                envelope, node = self.control_publication(profile)
+                report = envelope["result"]["Ok"]["report"]
+                row, key = report["process_controls"][0], node["frame"]["process"]
+                if corruption == "missing-row":
+                    report["process_controls"] = []
+                elif corruption == "row-id":
+                    row["id"] = True
+                elif corruption == "row-source":
+                    row["source"] = {"InputProgram": {"hash": "0x" + "ef" * 32, "fork": "Osaka"}}
+                elif corruption == "row-epoch":
+                    row["epoch"] = "0x" + "ef" * 32
+                elif corruption == "key-source":
+                    key["source"] = {"Runtime": {"source": "0x1", "hash": "0x" + "ab" * 32, "fork": "Osaka"}}
+                elif corruption == "key-epoch":
+                    key["epoch"] = "0x" + "ef" * 32
+                elif corruption == "key-entry":
+                    key["location"] = "End"
+                elif corruption == "missing-key":
+                    node["frame"]["process"] = None
+                else:
+                    row["program"] = 7
+                    report["programs"][1].update(code_address="0x1", code_hash="0x" + "ab" * 32,
+                                                  fork="Osaka", kind="Runtime")
+                with self.subTest(profile=profile, corruption=corruption), self.assertRaises(AssertionError):
+                    job_result_report(envelope)
+
+    def test_task_report_checks_both_location_types_before_python_equality(self):
+        from web_test_hybrid import job_result_report
+        for profile in ["minimum", "global", "native"]:
+            for field in ["key", "entry", "through", "boundaries"]:
+                for point in [{"Block": False}, {"Block": 0.0}, {"Block": -1}, {"Block": 1},
+                              {"Block": 12}, {"PC": 40}, [], False]:
+                    envelope, node = self.control_publication(profile)
+                    region = node["transfer"]["process"]["control"]
+                    if field == "key":
+                        node["frame"]["process"]["location"] = point
+                    else:
+                        region[field] = [point] if field in {"through", "boundaries"} else point
+                    with self.subTest(profile=profile, field=field, point=point), self.assertRaises(AssertionError):
+                        job_result_report(envelope)
+
+    def test_task_report_requires_lists_before_consuming_control_containers(self):
+        from web_test_hybrid import job_result_report
+        for profile in ["minimum", "global", "native"]:
+            for field in ["through", "boundaries", "programs", "blocks", "program-blocks", "summaries", "nodes"]:
+                for value in [{}, ""]:
+                    envelope, node = self.control_publication(profile)
+                    report = envelope["result"]["Ok"]["report"]
+                    if field in {"through", "boundaries"}:
+                        node["transfer"]["process"]["control"][field] = value
+                    elif field == "programs":
+                        report["programs"] = value
+                    elif field == "blocks":
+                        report["process_controls"][0]["blocks"] = value
+                    elif field == "program-blocks":
+                        report["programs"][0]["blocks"] = value
+                    elif profile == "minimum":
+                        if field == "summaries":
+                            report["minimum"]["summaries"] = value
+                        else:
+                            report["minimum"]["summaries"][-1]["relation"]["regional_cfg"]["nodes"] = value
+                    elif field == "summaries":
+                        report[profile]["abstract_summaries"] = value
+                    else:
+                        report[profile]["abstract_summaries"][-1]["regional_cfg"]["nodes"] = value
+                    with self.subTest(profile=profile, field=field, value=value), self.assertRaises(AssertionError):
+                        job_result_report(envelope)
 
     def test_minimum_publication_keeps_identity_separate_from_optional_richness(self):
         from web_test_hybrid import graph, job_result_report, namespace_available, oracle_graph
