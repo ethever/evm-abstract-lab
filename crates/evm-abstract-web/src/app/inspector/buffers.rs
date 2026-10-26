@@ -7,6 +7,35 @@ use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use evm_abstract_protocol::ValueInfo;
 
+/// Complete captured bytes are browsable without allocating one widget per byte.
+pub(super) fn exact(ui: &mut Ui, bytes: &str, id: &str) {
+    let hex = bytes.strip_prefix("0x").unwrap_or(bytes);
+    ui.label(format!("{} captured bytes", hex.len() / 2));
+    if crate::controls::action(ui, "Copy complete bytes", crate::controls::Density::Compact)
+        .clicked()
+    {
+        ui.ctx().copy_text(bytes.to_owned());
+    }
+    egui::ScrollArea::both()
+        .id_salt(id)
+        .min_scrolled_height(0.0)
+        .max_height(240.0)
+        .show_rows(
+            ui,
+            ui.text_style_height(&egui::TextStyle::Monospace).max(22.0),
+            hex.len().div_ceil(32),
+            |ui, rows| {
+                for row in rows {
+                    let start = row * 32;
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!("0x{:08x}", row * 16));
+                        ui.monospace(hex.get(start..(start + 32).min(hex.len())).unwrap_or(""));
+                    });
+                }
+            },
+        );
+}
+
 pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>, id: usize, title: &str) {
     let Some(bytes) = report.byte_arrays.get(id) else {
         ui.colored_label(
