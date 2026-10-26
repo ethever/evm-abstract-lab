@@ -8,12 +8,15 @@ use evm_abstract_protocol::{AnalysisReport, ProcessLocation};
 const PREVIEW_ROWS: usize = 4;
 pub(super) const ACTION_HEIGHT: f32 = 24.0;
 
+#[derive(Clone)]
 pub(super) struct CardText {
     pub title: String,
     pub compact_title: String,
     pub detail: String,
     pub rows: Vec<(String, Color32)>,
     pub size: Vec2,
+    pub compact: bool,
+    preview_rows: usize,
 }
 
 impl CardText {
@@ -56,6 +59,7 @@ impl CardText {
                 ));
             }
         }
+        let preview_rows = rows.len();
         if !card.origins.is_empty()
             && card
                 .origins
@@ -79,7 +83,20 @@ impl CardText {
             detail,
             rows,
             size: Vec2::new(300.0, height),
+            compact: false,
+            preview_rows,
         }
+    }
+    pub(super) fn resize(&mut self, width: f32, rows: usize, compact: bool) {
+        let trailing = self.rows.split_off(self.preview_rows);
+        self.rows.truncate(rows);
+        self.preview_rows = self.rows.len();
+        self.rows.extend(trailing);
+        self.compact = compact;
+        self.size = Vec2::new(
+            width,
+            (if compact { 64.0 } else { 72.0 }) + self.rows.len() as f32 * 14.0,
+        );
     }
 }
 

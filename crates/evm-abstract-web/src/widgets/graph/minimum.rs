@@ -3,7 +3,6 @@
 use super::{Graph, edges, paint as lod};
 use crate::{
     app::{minimum::Selection, model::ReportViewId},
-    controls::{self, Density},
     palette,
     widgets::heading,
 };
@@ -11,31 +10,20 @@ use egui::{Align2, FontId, Pos2, Rect, Sense, Ui, Vec2};
 use evm_abstract_protocol::AnalysisReport;
 
 pub(super) mod control;
-use control::{Card, GraphLevel};
+use control::{Card, GraphLevel, GraphWindow};
 mod paint;
 mod picker;
 mod scene;
 mod text;
 use super::{ControlOrigin, GraphIntent, GraphScope, ProjectionTarget};
+mod controls;
+mod geometry;
 mod interaction;
 use interaction::CardAction;
 use scene::Picker;
 pub(super) use scene::{LayoutMemory, Scene};
 
 impl Graph {
-    /// Legacy selection adapter. The canonical shell consumes the same render's
-    /// typed intent through show_minimum_scoped, including directory-only picks.
-    #[cfg(test)]
-    pub(crate) fn show_minimum(
-        &mut self,
-        ui: &mut Ui,
-        report: &AnalysisReport,
-        identity: ReportViewId,
-        selection: &mut Selection,
-    ) {
-        let _ = self.show_minimum_scoped(ui, report, identity, selection);
-    }
-
     pub(crate) fn show_minimum_scoped(
         &mut self,
         ui: &mut Ui,
@@ -56,7 +44,9 @@ impl Graph {
             self.scene
                 .minimum
                 .as_ref()
-                .filter(|scene| scene.contains(selection))
+                .filter(|scene| {
+                    scene.contains(selection) && !matches!(scene.scope, GraphScope::Overview { .. })
+                })
                 .map_or_else(
                     || {
                         selection.node.map_or(
@@ -79,7 +69,7 @@ impl Graph {
                     |scene| scene.scope,
                 )
         };
-        self.ensure_minimum_scope(report, scope, ui);
+        self.ensure_minimum_scope(report, scope, None);
         let context_caption = &self.scene.minimum.as_ref().unwrap().context_caption;
         heading(
             ui,
@@ -90,86 +80,14 @@ impl Graph {
             },
             context_caption,
         );
-        let mut entry_requested = false;
-        Density::Compact.scope(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if controls::action(ui, "Entry", Density::Compact).clicked() {
-                    entry_requested = true;
-                }
-                if controls::action(ui, "Fit graph", Density::Compact).clicked() { self.request_fit(ui, true); }
-                if controls::action_enabled(ui, selection.node.is_some(), "Focus selected", Density::Compact).clicked() { self.focus_selection(); }
-                if crate::framework::checkbox(ui, &mut self.whole_scope, "Model overview").changed() {
-                    scope = if self.whole_scope { GraphScope::Overview { summary: selection.summary } }
-                        else { GraphScope::Context { summary: selection.summary, procedure: selection.procedure,
-                            anchor: selection.node.map(|node| ControlOrigin { node, location: selection.control }) } };
-                }
-                if let Some(scene) = self.scene.minimum.as_mut() && let Some(set) = scene.control.hidden_set
-                    && controls::action(ui, "Hidden control", Density::Compact).clicked() { scene.picker = Some(Picker::Targets(set)); }
-                ui.label(format!("{:.0}% · {}", self.camera().0 * 100.0, if self.fitted { "Fit" } else { "Pan / zoom" }))
-                    .on_hover_text("Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. F fits this scope; Entry restores readable scale.");
-            });
-        });
-        self.ensure_minimum_scope(report, scope, ui);
-        let scene = self.scene.minimum.as_ref().unwrap();
-        let counts = scene.control.counts;
-        let mut model_requested = false;
-        let model_set = scene.control.model_set;
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} / {} source points in scope",
-                    counts.displayed_points, counts.total_points
-                ))
-                .small()
-                .color(palette::MUTED),
-            );
-            if counts.unexpanded_points > 0 {
-                ui.label(
-                    egui::RichText::new(format!("{} unexpanded", counts.unexpanded_points))
-                        .small()
-                        .color(palette::WARNING),
-                );
-            }
-            let advanced = ui.menu_button("Advanced", |ui| {
-                ui.label(format!(
-                    "{} / {} context receipts · {} other-context receipts",
-                    counts.displayed_receipts,
-                    counts.context_receipts,
-                    counts.other_context_receipts
-                ));
-                ui.label(format!(
-                    "{} folded flows · {} calls · {} deliveries",
-                    counts.hidden_flows, counts.calls, counts.deliveries
-                ));
-                ui.label(format!(
-                    "{} source edges · {} unknown-jump hubs",
-                    scene.control.source_edges, scene.control.hubs
-                ));
-                ui.label(format!(
-                    "{} offscreen routes deferred; pan or Fit to reveal",
-                    self.scene.deferred_edges
-                ));
-                ui.label(format!(
-                    "{} model relations summarized · {} untyped topology memberships",
-                    counts.summarized_model_relations, counts.retained_topology
-                ));
-                if controls::action_enabled(
-                    ui,
-                    model_set.is_some(),
-                    "Inspect model relations",
-                    Density::Compact,
-                )
-                .clicked()
-                {
-                    model_requested = true;
-                }
-                ui.monospace(format!("{:?}", scene.scope));
-            });
-            controls::observe(ui, &advanced.response, "Advanced", "menu", None);
-        });
-        if model_requested && let Some(set) = model_set {
-            self.scene.minimum.as_mut().unwrap().picker = Some(Picker::Targets(set));
+        let actions = self.minimum_controls(ui, scope, selection);
+        let entry_requested = actions.entry;
+        scope = actions.scope;
+        if actions.window.is_some() {
+            self.camera_restored = false;
+            self.fit_pending = false;
         }
+        self.ensure_minimum_scope(report, scope, actions.window);
         let (response, painter) = ui.allocate_painter(
             ui.available_size().max(Vec2::splat(1.0)),
             Sense::click_and_drag(),
@@ -180,6 +98,11 @@ impl Graph {
             return None;
         }
         self.viewport = Some(canvas.size());
+        #[cfg(test)]
+        {
+            self.painted_canvas = Some(canvas);
+        }
+        self.prepare_minimum_geometry(&painter, canvas.size());
         let scene = self.scene.minimum.as_ref().unwrap();
         let selected = scene
             .control
@@ -201,11 +124,17 @@ impl Graph {
             self.fitted = true;
         } else if self.entry_pending || self.focus_pending {
             let bounds = if self.focus_pending {
-                anchor.unwrap_or(scene.placement.bounds)
+                anchor.unwrap_or(scene.core_bounds)
+            } else if scene.core_bounds.is_finite() {
+                scene.core_bounds
             } else {
                 scene.placement.bounds
             };
-            self.readable_entry(canvas.size(), bounds, anchor);
+            if scene.window == GraphWindow::Entry && scene.control.level != GraphLevel::Model {
+                self.frame_core(canvas.size(), bounds);
+            } else {
+                self.readable_entry(canvas.size(), bounds, anchor);
+            }
             self.entry_pending = false;
         }
         self.focus_pending = false;
@@ -289,8 +218,8 @@ impl Graph {
             };
             let card = &scene.control.cards[id];
             if targets || card.origins.is_empty() {
-                if let Some(set) = card.target_set {
-                    scene.picker = Some(Picker::Targets(set));
+                if !scene.target_sets[id].is_empty() {
+                    scene.picker = Some(Picker::CardTargets(id));
                 }
             } else if card.origins.len() == 1 {
                 intent = Some(GraphIntent::Select(card.origins[0].target));

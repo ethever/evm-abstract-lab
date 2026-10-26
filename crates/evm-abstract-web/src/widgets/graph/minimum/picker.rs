@@ -14,29 +14,34 @@ impl Graph {
         let picker = scene.picker?;
         let rows = match picker {
             Picker::Origins(id) => scene.control.cards[id].origins.len(),
-            Picker::Targets(id) => scene.control.target_sets[id].entries.len(),
+            _ => picker_sets(scene, picker)
+                .iter()
+                .map(|id| scene.control.target_sets[*id].entries.len())
+                .sum(),
         };
         let mut open = true;
         let mut picked = None;
-        egui::Window::new(match picker { Picker::Origins(_) => "Control receipts", Picker::Targets(_) => "Control destinations" }).id(ui.id().with("control_destinations"))
+        egui::Window::new(match picker { Picker::Origins(_) => "Control receipts", _ => "Control destinations" }).id(ui.id().with("control_destinations"))
             .constrain_to(canvas).default_pos(canvas.left_top() + egui::Vec2::splat(8.0))
             .open(&mut open).default_width(460.0).max_width((ui.ctx().content_rect().width() - 24.0).max(180.0))
             .show(ui.ctx(), |ui| {
-                ui.label(match picker { Picker::Origins(_) => "Select a retained receipt. Each row keeps its own currentness and state evidence.", Picker::Targets(_) => "Open a retained destination or decoded source candidate. Source candidates carry no receipt or Native state." });
+                ui.label(match picker { Picker::Origins(_) => "Select a retained receipt. Each row keeps its own currentness and state evidence.", _ => "Open a retained destination or decoded source candidate. Source candidates carry no receipt or Native state." });
                 egui::ScrollArea::vertical().max_height((ui.ctx().content_rect().height() * 0.5).min(360.0))
                     .show_rows(ui, 24.0, rows, |ui, range| {
                         for row in range {
                             let (destination, details) = match picker {
                                 Picker::Origins(id) => { let origin = &scene.control.cards[id].origins[row];
                                     (Destination::Control(origin.target), format!("Current {} · complete {} · excluded {} · boundary {} · Body transferred {} · input {}", origin.current, origin.complete, origin.excluded, origin.boundary, origin.transferred, origin.input_revision)) },
-                                Picker::Targets(id) => { let entry = &scene.control.target_sets[id].entries[row]; (entry.destination, entry.via.detail(report, scene.scope.summary())) },
+                                _ => { let sets = picker_sets(scene, picker); let mut offset = row;
+                                    let entry = sets.iter().find_map(|set| { let entries = &scene.control.target_sets[*set].entries; if offset < entries.len() { Some(&entries[offset]) } else { offset -= entries.len(); None } }).unwrap();
+                                    (entry.destination, entry.via.detail(report, scene.scope.summary())) },
                             };
                             let mut label = destination_label(report, scene.scope.summary(), destination);
                             if let (Picker::Origins(_), Destination::Control(target)) = (picker, destination) { label = format!("r{} {} · {label}", target.origin.node, if target.origin.location.is_none() { "Body" } else { "MAY point" }); }
                             let response = ui.add(egui::Button::new(&label).truncate()).on_hover_text(details);
                             crate::controls::observe(ui, &response, &label, match picker {
                                 Picker::Origins(_) => "graph-origin",
-                                Picker::Targets(_) => "graph-destination",
+                                Picker::Targets(_) | Picker::CardTargets(_) | Picker::Incoming(_) => "graph-destination",
                             }, None);
                             if response.clicked() {
                                 picked = Some(match (picker, destination) { (Picker::Origins(_), Destination::Control(target)) => GraphIntent::Select(target), _ => destination_intent(scene.scope.summary(), destination) });
@@ -134,4 +139,22 @@ fn source_label(
             }
         )
     })
+}
+
+fn picker_sets(scene: &super::scene::Scene, picker: Picker) -> Vec<usize> {
+    match picker {
+        Picker::Origins(_) => Vec::new(),
+        Picker::Targets(id) => vec![id],
+        Picker::CardTargets(id) => scene.target_sets[id].clone(),
+        Picker::Incoming(card) => scene
+            .control
+            .frontiers
+            .iter()
+            .filter(|frontier| {
+                frontier.direction == super::control::FrontierDirection::Incoming
+                    && card.is_none_or(|card| frontier.card == card)
+            })
+            .map(|frontier| frontier.target_set)
+            .collect(),
+    }
 }

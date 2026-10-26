@@ -56,7 +56,7 @@ pub(super) fn paint_card(painter: &egui::Painter, rect: Rect, style: CardPaint<'
         return;
     }
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
-    let inset = (6.0 * zoom).max(2.0);
+    let inset = ((if text.compact { 4.0 } else { 6.0 }) * zoom).max(2.0);
     let at = rect.min + Vec2::splat(inset);
     let title = if text.size.x < 220.0 {
         &text.compact_title
@@ -77,19 +77,33 @@ pub(super) fn paint_card(painter: &egui::Painter, rect: Rect, style: CardPaint<'
         at,
         Align2::LEFT_TOP,
         title,
-        FontId::monospace(12.0 * zoom),
+        FontId::monospace(if text.compact {
+            11.0 * zoom
+        } else {
+            12.0 * zoom
+        }),
         palette::TEXT,
     );
     painter.text(
-        at + egui::vec2(0.0, 20.0 * zoom),
+        at + egui::vec2(
+            0.0,
+            if text.compact {
+                16.0 * zoom
+            } else {
+                20.0 * zoom
+            },
+        ),
         Align2::LEFT_TOP,
         &text.detail,
-        FontId::monospace(10.5 * zoom),
+        FontId::monospace(11.0 * zoom),
         color,
     );
     for (row, (line, color)) in text.rows.iter().enumerate() {
         painter.text(
-            at + egui::vec2(0.0, (38.0 + row as f32 * 14.0) * zoom),
+            at + egui::vec2(
+                0.0,
+                (if text.compact { 32.0 } else { 38.0 } + row as f32 * 14.0) * zoom,
+            ),
             Align2::LEFT_TOP,
             line,
             FontId::monospace(11.0 * zoom),
@@ -100,10 +114,19 @@ pub(super) fn paint_card(painter: &egui::Painter, rect: Rect, style: CardPaint<'
 
 /// Footer actions remain separate at readable scale. A source jump hub can
 /// select its own receipt without opening any of its possible destinations.
+#[cfg(test)]
 pub(super) fn actions(rect: Rect, card: &Card, zoom: f32, level: paint::DetailLevel) -> Actions {
-    if level != paint::DetailLevel::Preview
-        || (card.origins.is_empty() && card.target_set.is_none())
-    {
+    actions_with_targets(rect, card, card.target_set.is_some(), zoom, level)
+}
+
+pub(super) fn actions_with_targets(
+    rect: Rect,
+    card: &Card,
+    has_targets: bool,
+    zoom: f32,
+    level: paint::DetailLevel,
+) -> Actions {
+    if level != paint::DetailLevel::Preview || (card.origins.is_empty() && !has_targets) {
         return Actions {
             body: rect,
             receipts: None,
@@ -116,13 +139,13 @@ pub(super) fn actions(rect: Rect, card: &Card, zoom: f32, level: paint::DetailLe
         rect.right_bottom(),
     );
     let receipts = (!card.origins.is_empty()).then(|| {
-        if card.target_set.is_some() {
+        if has_targets {
             Rect::from_min_max(footer.min, footer.center_bottom())
         } else {
             footer
         }
     });
-    let targets = card.target_set.map(|_| {
+    let targets = has_targets.then(|| {
         if receipts.is_some() {
             Rect::from_min_max(footer.center_top(), footer.max)
         } else {

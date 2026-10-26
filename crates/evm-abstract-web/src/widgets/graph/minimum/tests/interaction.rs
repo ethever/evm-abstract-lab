@@ -138,6 +138,8 @@ fn settle_choice(
         .map(|picker| match picker {
             super::super::scene::Picker::Origins(id) => format!("origins {id}"),
             super::super::scene::Picker::Targets(id) => format!("targets {id}"),
+            super::super::scene::Picker::CardTargets(id) => format!("card targets {id}"),
+            super::super::scene::Picker::Incoming(card) => format!("incoming {card:?}"),
         });
     panic!("choice {prefix} did not become visible; picker {picker:?}; labels {labels:?}");
 }
@@ -339,7 +341,7 @@ fn narrow_scope_geometry_and_camera_survive_resize_and_return_from_a_different_w
     let mut graph = Graph::default();
     super::frame(&ctx, &mut graph, &report, &mut selection);
     let scene = graph.scene.minimum.as_ref().unwrap();
-    assert_eq!(scene.control.counts.displayed_points, 3);
+    assert_eq!(scene.control.counts.displayed_points, 2);
     assert_eq!(scene.control.counts.total_points, 600);
     let geometry = scene.placement.nodes.clone();
     let camera = graph.camera();
@@ -360,13 +362,13 @@ fn narrow_scope_geometry_and_camera_survive_resize_and_return_from_a_different_w
             .control
             .counts
             .displayed_points,
-        12
+        2
     );
     selection = original;
     graph.restore_camera(camera.0, camera.1);
     draw(&ctx, &mut graph, &report, &mut selection, Vec::new());
     let restored = graph.scene.minimum.as_ref().unwrap();
-    assert_eq!(restored.control.counts.displayed_points, 3);
+    assert_eq!(restored.control.counts.displayed_points, 2);
     assert_eq!(restored.placement.nodes, geometry);
     assert_eq!(graph.camera(), camera);
 }
