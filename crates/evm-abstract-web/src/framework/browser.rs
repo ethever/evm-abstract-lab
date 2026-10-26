@@ -153,11 +153,15 @@ impl eframe::App for BrowserApp {
         }
         // A live region also makes canvas-only loading/error states accessible
         // to assistive tools and browser smoke checks.
-        let status = format!(
+        let mut status = format!(
             "{}; {}",
             self.workspace.accessible_status(),
             self.workspace.accessible_rpc_provider_status()
         );
+        if let Some(input) = self.workspace.accessible_input_status() {
+            status.push_str("; ");
+            status.push_str(&input);
+        }
         if status != self.last_status {
             if let Some(element) = web_sys::window()
                 .and_then(|window| window.document())

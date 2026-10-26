@@ -9,7 +9,22 @@ use crate::{framework, palette};
 
 impl AnalysisForm {
     pub(super) fn environment(&mut self, ui: &mut Ui) {
+        let value = match &self.environment.call_value {
+            WordInput::Unknown => "Unknown",
+            WordInput::Concrete(_) => "Exact",
+        };
+        let calldata = match &self.environment.calldata {
+            CalldataInput::Unknown => "Unknown",
+            CalldataInput::Exact(bytes) if bytes.is_empty() || bytes == "0x" => "Exact empty",
+            CalldataInput::Exact(_) => "Exact",
+        };
+        ui.label(
+            RichText::new(format!("Call value: {value} · Calldata: {calldata}"))
+                .small()
+                .color(palette::MUTED),
+        );
         egui::CollapsingHeader::new("Transaction environment").show(ui, |ui| {
+            ui.label(RichText::new("Unknown leaves the input symbolic. Exact zero and exact empty calldata are explicit choices.").small().color(palette::MUTED));
             address(
                 ui,
                 "Caller",
