@@ -20,14 +20,37 @@ use evm_abstract::{
 };
 use std::convert::Infallible;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 enum Error {
-    #[error("{0}")]
-    Kernel(#[from] KernelError<MachineError>),
-    #[error("{0}")]
-    Stack(#[from] PublishError<FactError, MachineError>),
-    #[error("{0}")]
-    Process(#[from] PublishError<Infallible, MachineError>),
+    Kernel(KernelError<MachineError>),
+    Stack(PublishError<FactError, MachineError>),
+    Process(PublishError<Infallible, MachineError>),
+}
+// Keep concrete causes without generating a dynamic Error::source hook.
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kernel(error) => std::fmt::Display::fmt(error, f),
+            Self::Stack(error) => std::fmt::Display::fmt(error, f),
+            Self::Process(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for Error {}
+impl From<KernelError<MachineError>> for Error {
+    fn from(error: KernelError<MachineError>) -> Self {
+        Self::Kernel(error)
+    }
+}
+impl From<PublishError<FactError, MachineError>> for Error {
+    fn from(error: PublishError<FactError, MachineError>) -> Self {
+        Self::Stack(error)
+    }
+}
+impl From<PublishError<Infallible, MachineError>> for Error {
+    fn from(error: PublishError<Infallible, MachineError>) -> Self {
+        Self::Process(error)
+    }
 }
 enum Misuse {
     NativeStack,
