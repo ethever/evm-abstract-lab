@@ -71,6 +71,7 @@ def workspace_route(page, route: str):
     """Use the declared product shortcuts and verify the actual workspace route."""
     key = {"Compare": "0", "Code": "1", "CFG": "2", "SSA": "3"}[route]
     page.keyboard.press(key)
+    rendered_frame(page)
     settle_gesture(page)
     expect(page.locator("#analysis-status")).to_contain_text(
         re.compile(rf"(?:^|; )Route: {re.escape(route)}(?=;|$)"))
