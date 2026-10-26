@@ -135,6 +135,22 @@ fn hybrid(detail: usize) -> HybridConfig {
     }
 }
 
+struct FirstPublication {
+    counts: Rc<Counts>,
+    model: Option<evm_abstract::analysis::publication::ModelHandle<NumericValue>>,
+}
+impl evm_abstract::analysis::publication::StagePublisher<NumericValue> for FirstPublication {
+    fn publish(&mut self, model: &evm_abstract::analysis::HybridAnalysis<NumericValue>) {
+        assert!(self.model.is_none(), "publish the first closed model once");
+        assert!(model.coverage().baseline_current);
+        assert!(model.detail().is_none());
+        assert_eq!(self.counts.calls.get(), 0);
+        assert_eq!(self.counts.local.get(), 0);
+        assert_eq!(self.counts.shared.get(), 0);
+        self.model = Some(model.baseline_handle());
+    }
+}
+
 #[test]
 fn native_only_is_explicit_and_uses_only_detail_stores_with_one_cumulative_ledger() {
     let counts = Rc::new(Counts::default());
@@ -143,9 +159,25 @@ fn native_only_is_explicit_and_uses_only_detail_stores_with_one_cumulative_ledge
     let policies = EnginePolicies::default();
     let input = source();
     let original = input.entry().clone();
+    let mut publisher = FirstPublication {
+        counts: Rc::clone(&counts),
+        model: None,
+    };
     let result = AnalysisEngine::new(&values, &policies, &mut extension)
-        .run_hybrid(input, config(), hybrid(2_000_000), &Control::default())
+        .run_hybrid_with_publisher(
+            input,
+            config(),
+            hybrid(2_000_000),
+            &Control::default(),
+            &mut publisher,
+        )
         .unwrap();
+    assert!(
+        publisher
+            .model
+            .unwrap()
+            .same_model(&result.baseline_handle())
+    );
     assert!(result.coverage().baseline_current && result.coverage().detail_current);
     assert_eq!(result.status(), Status::Converged);
     assert_eq!(result.baseline().entry(), &original);
