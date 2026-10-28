@@ -7,6 +7,7 @@
 | 字节、栈、pc 不知道怎么读 | [00](00-start.md)、[01](01-bytecode.md) 的逐指令表 | [EVM 指令实现](#evm-指令与协议版本) |
 | 不明白为什么合并用并集 | [02](02-domain.md) 的集合实验 | [抽象解释原论文](#集合分析与-ssa-的理论) |
 | 不明白循环怎样停止 | [03](03-cfg.md) 的工作表过程 | [抽象域与固定点](#集合分析与-ssa-的理论) |
+| 不同上下文为什么让状态变多，又怎样收敛 | [05](05-sensitivity.md)、[21](21-context-and-convergence.md) 的状态身份与增长分析 | [EVM 上下文与声明式分析](#evm-上下文与声明式分析) |
 | 不明白 φ 或值的来源 | [04](04-ssa.md) 的真实输出 | [SSA 教学与支配算法](#集合分析与-ssa-的理论) |
 | 常量列不完时还怎样排除分支 | [02](02-domain.md)、[12](12-product-domains-facts.md) 的位与复制实验 | [抽象域、组件组合与保守近似](#集合分析与-ssa-的理论)；先核对每条指令实际传播哪些约束 |
 | 调用、回滚、代理结果不符合预期 | [09](09-cross-contract.md) 的帧与状态表 | [对应 CALL、返回数据或静态限制规范](#跨合约调用状态与快照) |
@@ -34,6 +35,16 @@ execution-specs 的默认分支会更新。以上 Cancun 链接用于相应规�
 | 为什么可以用摘要近似许多具体执行 | [Patrick 与 Radhia Cousot，POPL 1977](https://www.di.ens.fr/~cousot/COUSOTpapers/POPL77.shtml) | 先掌握[第 02 课](02-domain.md)的集合 join，再看抽象域、序关系与固定点 |
 | 为什么 SSA 给每个定义起唯一名字，怎样处理分支 | [Cornell CS 6120：Static Single Assignment](https://www.cs.cornell.edu/courses/cs6120/2025sp/lesson/6/) | 对照[第 04 课](04-ssa.md)的 φ；经典构建算法与本仓库块参数式构建不完全相同 |
 | 如何检查一个值的定义是否在使用之前必经 | [petgraph 0.8.3 dominators](https://docs.rs/petgraph/0.8.3/petgraph/algo/dominators/index.html) | 验证器使用 `simple_fast` 计算支配关系；先看[第 04 课](04-ssa.md)的定义与使用例子 |
+
+## EVM 上下文与声明式分析
+
+这组资料围绕 EVM 控制流、上下文划分与递归关系固定点展开。先带着[第 21 课](21-context-and-convergence.md)的状态身份和收敛问题阅读，再比较各代论文与实现。
+
+- **Gigahorse（2019）**：Neville Grech, Lexi Brent, Bernhard Scholz, Yannis Smaragdakis. *Gigahorse: Thorough, Declarative Decompilation of Smart Contracts*. ICSE 2019。[作者 PDF](https://yanniss.github.io/gigahorse-icse19.pdf) · [发表页](https://doi.org/10.1109/ICSE.2019.00120)。用于理解 EVM 数据流、控制流与声明式规则的组织方式。
+- **Elipmoc（2022）**：Neville Grech, Sifis Lagouvardos, Ilias Tsatiris, Yannis Smaragdakis. *Elipmoc: Advanced Decompilation of Ethereum Smart Contracts*. Proc. ACM Program. Lang. 6, OOPSLA1, Article 77（April 2022）。[作者 PDF](https://sifislag.github.io/assets/papers/elipmoc.pdf) · [发表页](https://doi.org/10.1145/3527321)。用于理解 transactional sensitivity 如何区分执行上下文。
+- **Shrnkr（2025）**：Sifis Lagouvardos, Yannis Bollanos, Neville Grech, Yannis Smaragdakis. *The Incredible Shrinking Context... in a Decompiler Near You*. Proc. ACM Softw. Eng. 2, ISSTA, Article ISSTA060（July 2025）。[作者 PDF](https://sifislag.github.io/assets/papers/shrnkr-full.pdf) · [发表页](https://doi.org/10.1145/3728935)。用于理解 shrinking context sensitivity 怎样主动忘掉历史；预印本始于 2024 年，此处按正式发表年份列出。
+- **Soufflé 官方资料**：[Tutorial](https://souffle-lang.github.io/tutorial) 从 facts、rules 和递归关系入门固定点；[Relations](https://souffle-lang.github.io/relations) 用于阅读关系与元组，[Profiler](https://www.souffle-lang.com/profiler) 用于观察迭代增长和规则成本。规则与取值范围仍需提供终止边界，分析精度也取决于具体建模。
+- **现行 Gigahorse 工具链源码**：[nevillegrech/gigahorse-toolchain，固定 revision `1b06cef82f0a29790e87f576eba6d6d793170d70`](https://github.com/nevillegrech/gigahorse-toolchain/tree/1b06cef82f0a29790e87f576eba6d6d793170d70)。用于核对这一版本的实际规则；各代论文的设计与该源码版本分别比较，详见第 21 课。
 
 ## 跨合约调用、状态与快照
 

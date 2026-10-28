@@ -18,9 +18,9 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| 状态分组决定哪些输入先合并。同一代码位置的不同栈高不能直接逐槽 join，保留的控制历史也可使输入分组。 | 在 [`StateKey`](../../crates/evm-abstract/src/analysis.rs) 中找块索引、入口栈高、context；再看原生 [`MachineKey`](../../crates/evm-abstract/src/analysis/machine.rs) 如何包含调用帧结构。 |
+| 状态分组决定哪些输入先合并。在当前结构化栈向量表示和准入策略中，不同长度不能直接逐槽 join，因此按栈高分组；保留的控制历史也可使输入分组。更一般的覆盖栈表示是另一种设计。 | 在 [`StateKey`](../../crates/evm-abstract/src/analysis.rs) 中找块索引、入口栈高、context；再看原生 [`MachineKey`](../../crates/evm-abstract/src/analysis/machine.rs) 如何包含调用帧结构。 |
 
-**完成产物：**画一张“σᵖᵢ → Bᵢ → pc”的对应表。追加[栈高对照实验](../05-sensitivity.md#6-四种敏感性不是同一个能力)的 [`stack-heights.hex`](../../examples/stack-heights.hex)，指出同一 pc 上两个 σᵖᵢ 为什么必须分开。
+**完成产物：**画一张“σᵖᵢ → Bᵢ → pc”的对应表。追加[栈高对照实验](../05-sensitivity.md#6-四种敏感性不是同一个能力)的 [`stack-heights.hex`](../../examples/stack-heights.hex)，指出同一 pc 上两个 σᵖᵢ 为什么在本实现中分开。
 
 <a id="worklist"></a>
 
@@ -48,7 +48,7 @@
 | --- | --- |
 | 敏感性通过暂缓合并保留区别，可以减少由不相容输入拼出的伪路径。它与单个槽的数值表示能力不同。 | 在 [`transfer.rs`](../../crates/evm-abstract/src/analysis/transfer.rs) 的跳转处理中追踪 history 更新，再看 [`StateKey`](../../crates/evm-abstract/src/analysis.rs) 如何呈现 context。 |
 
-**完成产物：**列出 helper 的每个 σᵖᵢ、入口返回地址和后继。解释 k=0 时额外的返回组合，以及[更多跳转如何挤掉旧历史](../05-sensitivity.md#5-历史如何更新又如何失忆)。k=1 改善了本例，不等于恢复全部函数边界或完整调用串。
+**完成产物：**列出 helper 的每个 σᵖᵢ、入口返回地址和后继。解释 k=0 时额外的返回组合，以及[不同来源怎样挤掉旧历史、重复来源怎样移到末尾](../05-sensitivity.md#5-历史如何更新又如何失忆)。k=0 只关闭可选的单帧历史分组，栈高与世界调用帧等结构坐标仍保留。
 
 <a id="unknown-jumps"></a>
 
@@ -69,3 +69,5 @@
 完成前两单元，就能跟踪工作表并解释重访；完成全部四单元，就能比较状态分组、候选边与未完成前沿。`Converged` 只说明当前模型与输入下的传播完成；它既不保证每条抽象路径都可具体执行，也不是合约安全结论。
 
 需要追踪值的定义，转到 [SSA](ssa.md)，尤其查看入口扩大后旧证据怎样失效；需要解释分支条件如何排除路径，转到[符号关系](relations.md)；需要真实外部调用栈，转到[调用与状态](calls-state.md)。[第 05 课的四种敏感性](../05-sensitivity.md#6-四种敏感性不是同一个能力)可作进阶对照，但有界跳转历史不能代替这些不同能力。
+
+[第 21 课：上下文与收敛](../21-context-and-convergence.md)进一步解释状态身份、状态增长与固定点，以及局部上下文等设计候选。

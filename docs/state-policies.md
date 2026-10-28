@@ -44,7 +44,7 @@ assert!(result.outcomes().iter().any(|outcome| {
 `ProjectedSummaries`。上例的另一种完整组合先清除跳转历史，再选择分组键；合并时采用有界整机表示；过程摘要进一步放宽字节、存储和别名保证。
 两种组合都必须覆盖具体执行，精度可以不同。`NoAcceleration` 只请求覆盖性合并；有限预算不足以完成闭包时，结果保留 `Incomplete` 和对应 frontier。
 
-自定义 `MachinePartition` 的关联类型 `Key` 就是执行器使用的实际键。
+自定义 [`MachinePartition`](../crates/evm-abstract/src/analysis/engine/policy/semantic.rs) 的关联类型 `Key` 就是执行器使用的实际键。
 `prepare` 和 `prepare_relative` 同时返回这个键与覆盖原输入的准备结果。
 例如，[公开客户端测试](../crates/evm-abstract/tests/state_policy/partition.rs)借用调用方的
 `Program`，在指定 PC 读取真实栈操作数，按零与非零分组，并在分组前清除历史。
@@ -68,10 +68,12 @@ assert!(result.outcomes().iter().any(|outcome| {
 重放仍重新准备实际键，并在安装后的完整输入相等时才解除对应执行义务。
 
 策略作者需要说明分区数量及收敛条件：固定程序与有界上下文下，键必须确定，且具有明确的有限范围；
-不能每次调用都分配一个新身份。`context_depth` 只约束跳转历史，不替自定义键提供其他数量界。
+不能每次调用都分配一个新身份。默认 `RecentDistinctJumps` 按最近发生次序保留不同来源，重复来源会移到末尾；`context_depth=0` 只关闭可选的单帧跳转历史，世界帧结构与 World／Procedure／Body 各层身份仍然存在。它不替其他结构坐标或自定义键提供数量界。
 同键输入的准备表示必须允许完整覆盖性准入；不兼容的代码、所有者、栈或续体应返回类型化拒绝。
 覆盖性 join 不等于 widening；后者的调度与表示共同承担收敛责任。
 有限预算可以在闭包前耗尽，此时必须保留 `Incomplete`，预算本身不构成闭包证明。
+
+历史更新的具体例子见[第 05 课](05-sensitivity.md#5-历史如何更新又如何失忆)；状态身份、增长与收敛，以及可进一步选择的设计，见[第 21 课](21-context-and-convergence.md)。
 
 键的数量界与操作费用是两个约定。`PolicyKey::key_work` 为键的完整复制、释放和比较提供保守上界；比较两个键的费用由两个上界共同覆盖。
 报价只读取已缓存或已准备的结构元数据，不能在报价时执行昂贵的 Clone/Ord。`QuotedKey` 可给调用方已有的键附加缓存报价，报价不参与键的语义相等。

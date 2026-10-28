@@ -2,6 +2,8 @@
 
 CLI 的 `analyze`、world/RPC `explain` 与 Web 默认先运行全局保守过程，再把剩余预算用于详细路径。两部分保留原始 world、caller、value、calldata 与固定快照，使用同一累计执行账本；RPC 的补读、事实细化和入口重跑也计入该账本。`cfg`、`ssa` 与单程序 `explain` 保留原生指令检查入口，Rust 的 `AnalysisEngine::run` 也继续可用。
 
+Global 与 Native 共享引擎、部分接口和累计账本，但原始 Global 的执行结果不会因此自动被 Native 采用。当前 [`hybrid/run.rs`](../crates/evm-abstract/src/analysis/hybrid/run.rs) 的 baseline 使用 `ContextInsensitive`、`MergeResumeStatus`，以及 `StructuralPartition`、`BoundedJoin`、`FeedbackAcceleration`、`KnownProcessSummaries`。Native 准备阶段复制原始 world／entry，保留原始 facts，再以 `run_metered(..., None)` 建立新的运行和过程表。
+
 全局模型保存可能的调用、静态回调、委托调用、构造过程、部署、回滚和出口。详细部分可以仍有 pending 路径。组合结果的 `status` 来自全局模型的闭合与来源资格；详细部分的 `Incomplete`、frontiers 和部分 SSA 独立保留。三个终止备选项只属于可选 native 辅助记录，不会闭合过程关系或清除这些义务。
 
 选择 Native 还要求它保持原始根绑定、`detail_current`，并通过付费的完整已知控制资格检查。如果记录或其中的过程使用 `Environment`（包括 `KnownCall` 内部的嵌套过程），组合解释继续选择 `Process` 或 `ProcessWithDetail`；未知账户借已捕获代码执行时需要的 owner／来源控制仍由 Global 关系覆盖。Native 图、frontiers 和局部前缀继续保留自己的实际资格。替换检查沿用原执行账本；无法支付这项可选检查时，已经成立的 `detail_current` 不因此失效。
@@ -10,7 +12,9 @@ Web 默认打开入口及其真实前向一跳的来源 CFG；邻域与完整来
 
 ## 控制关系怎样闭合
 
-假设 A 的已知代码调用未知地址 U，U 可以再调用 A，随后 A 返回或回退。全局模型保留 A、U 的过程节点、CALL 类动作、真实 subscriber 和返回续点；U→A 的回调继续参与同一个 Body／Resume 固定点。新增输入会更新 callee 的汇合输入，结果变化会重新投递给等待的 caller。每个 subscriber 独立持有 caller 状态及回滚检查点。
+假设 A 的已知代码调用未知地址 U，U 可以再调用 A，随后 A 返回或回退。Global 与 Native 各自在自己的相对过程系统中处理未知 CALL：环境包络、[已知代码回调](../crates/evm-abstract/src/analysis/transfer/procedure/environment.rs)、Body／Resume、subscriber 及 callee 输入、输出和依赖共同参与固定点。新增输入会更新 callee 的汇合输入，结果变化会重新投递给等待的 caller；每个 subscriber 独立持有 caller 状态及回滚检查点。同一次运行内已有的过程摘要会复用，未知 CALL 继续更新这些过程关系，无须为每次交互重新启动 Global。
+
+摘要的 `closed`／`source_current` 与输入 scope／覆盖、generation 守卫分别需要检查。[闭合摘要查询](../crates/evm-abstract/src/analysis/cooperation/query.rs)保留输出与闭合证书的依赖，并校验两者 generation；[完成调用缓存](../crates/evm-abstract/src/analysis/summary.rs)则按完整 `EvmSummaryInput` 前置条件相等复用。一份已闭合的 Global 关系可为其覆盖范围提供保守后备；要把它用于 Native 的更细输入，还需要输入覆盖与身份、来源和依赖有效性的依据。进一步的分阶段结果复用、局部精度与按需重入仍是待设计方向，见[第 21 课：上下文与收敛](21-context-and-convergence.md)。
 
 过程解释忘掉私有栈、内存和跳转历史，保留代码来源、owner 类、static 模式及 ADDRESS／CALLER／value 的汇合输入。已知代码按真实解码块选择本次能力和控制后继，只有到达的效果／调用边界才执行相应动作。`STOP; CALL` 中不可达的 CALL 不进入过程关系，PUSH 数据里的 CALL 字节也不是指令；它们不会因为出现在同一份代码中而变成任意可调用动作。
 
@@ -36,13 +40,13 @@ Return 提交子帧共享效果；Revert／Failure 使用对应的保存点。co
 | Dispatched | 已进入调用或终止分派；继续检查已安装和待处理路径 |
 | Faulted | 无效指令或栈错误 |
 
-每项的 frontier 索引属于 Native 图；没有当前前缀的待处理状态仍保留在该图的完整 frontiers 中。详细图未访问到某条边，不会删除全局模型的对应路线。增加 work 可以支付更多 native 执行、当前性检查和前缀保留。默认选择一个来源明确的代码区域保留有限跳转上下文；其他区域在实际输入与 key 准入前合并可选历史，仍可继续执行。
+每项的 frontier 索引属于 Native 图；没有当前前缀的待处理状态仍保留在该图的完整 frontiers 中。详细图未访问到某条边，不会删除全局模型的对应路线。增加 work 可以支付更多 native 执行、当前性检查和前缀保留。默认选择一份已捕获代码来源保留有限跳转上下文；其他来源在实际输入与 key 准入前清除可选历史，仍可继续执行。
 
 例如两个位置进入同一个带返回目标的子程序，选中区域的不同 history 可以让两份栈值分别汇合，从而保留各自的 Jump 目标。实际准备状态和相对位置先完成 history 处理，再交给原有 key／join 策略；owner、来源、static、caller 与 rollback 仍按原表示保留。
 
 未选中 callee 的相对准入合并可选的调用者跳转历史；caller continuation 和回滚检查点仍由各自 subscriber 保留。原始环境 calldata 与子帧独立 calldata 的来源标志仍区分私有过程身份，不能因为公开 FrameKey 相同而强行做不兼容的形状 join。细节阶段仍执行未选中的 Native 代码并支付其费用，全局过程的闭合不依赖这些详细路径全部完成。
 
-应用通过 `--max-detail-regions N` 或 HTTP `limits.max_detail_regions` 选择最多 N 个已捕获来源保留私有 Native 上下文，默认值在[应用策略](../crates/evm-abstract-protocol/src/application_defaults.rs)中声明为 1。0 跳过 Native 准备和执行；正数沿用入口优先及现有稳定来源顺序。这个数限制选中的来源，不限制调用深度，也不会捕获原本未知的代码。未选中来源可以通过当前的相对摘要交付效果，而没有外层子帧的逐指令记录。三层实际输入与 1／2／3 个来源的例子见[跨合约调用](09-cross-contract.md#默认文本怎样读)。
+应用通过 `--max-detail-regions N` 或 HTTP `limits.max_detail_regions` 选择最多 N 个已捕获来源保留私有 Native 上下文，默认值在[应用策略](../crates/evm-abstract-protocol/src/application_defaults.rs)中声明为 1。0 跳过 Native 准备和执行；正数沿用入口优先及现有稳定来源顺序。[当前选择器](../crates/evm-abstract/src/analysis/hybrid/policy.rs)按 Runtime 帧的 `code_address`／`code_hash` 选择整份来源；同一代码来源经未知交互回调再次进入时仍被选中。它没有按基本块或循环自动分配历史容量；更细的区域历史策略属于第 21 课讨论的设计候选。这个数限制选中的来源，不限制调用深度，也不会捕获原本未知的代码。未选中来源可以通过当前的相对摘要交付效果，而没有外层子帧的逐指令记录。三层实际输入与 1／2／3 个来源的例子见[跨合约调用](09-cross-contract.md#默认文本怎样读)。
 
 `hybrid.coverage.requested_detail_regions` 保存实际请求上限，`detail_regions` 保存实际选择的来源列表。RPC 补读后的 Native 资格可以在独立的 `hybrid.precision` 中；读取最新 Native 选择时使用 [`native_coverage()`](../crates/evm-abstract-protocol/src/hybrid.rs)，并保留原始 Global 的闭合与来源资格。更多来源仍消耗原来的累计执行预算，不保证 Native 完成。默认的 1 个来源及原始输入不因这个控件改变。
 
@@ -89,14 +93,11 @@ Native 可以通过当前的已知调用摘要恢复 caller，而没有在外层
 
 ## 固定输入的测量范围
 
-固定 WETH／USDC World 捕获保留原始快照和未知 caller、value、calldata，使用默认 1 个详细来源、2B 累计执行 work 与 2B 后处理 work。每个输入／预算／交付边界各采集 3 次交错样本，CLI 的中位等待时间如下；首份模型包含独立验证，普通交付包含完整输出及验证。
+比较分析策略时，先约定输入和测量边界，再分别观察结果资格、实际成本与精度：
 
-| CLI 测量边界 | WETH | USDC |
-| --- | --- | --- |
-| 默认 2B，渐进首份可用闭合模型 | 0.132 秒 | 1.047 秒 |
-| 默认 2B，普通完整交付 | 2.311 秒 | 2.682 秒 |
-| 额外 4B（总计 6B），普通完整交付 | 2.623 秒 | 12.888 秒 |
+- **固定比较条件。** 除待比较项外，固定输入、snapshot、已捕获来源、入口条件、策略与预算；记录完整源码提交和实际运行的实体二进制。策略记录应包含数值域、上下文、合并与摘要选择，使对照可以复现。
+- **分开阶段资格与累计计数。** 分别记录 Global、Native 的 status、闭合与来源资格、frontiers 和局部精度。两阶段共享执行账本，后阶段记录可已包含前阶段成本，不能把各图的 work／transfer 累计值相加；RPC 多轮重跑也按全流程累计。执行 work 与后处理 work 分别记录，逻辑 work 不等于 CPU 时间。
+- **标明实际测量边界。** 首份可用模型、完整序列化输出和真实 HTTP 交付分别记录等待时间与实际字节量，注明是否包含 RPC 等待、校验、压缩和浏览器解析。wall、CPU 与峰值 RSS 各自记录，并注明覆盖的进程与阶段；序列化成本、传输成本和浏览器等待不能相互替代。
+- **解释有限预算对照。** 在相同有限预算（bounded）下，结合状态、前沿和完成资格比较精度，再看实际等待时间、CPU 与 RSS。节点较少可能来自更早合并或尚未展开的工作，不能单凭节点数量判断更快或已经收敛；预算耗尽留下的 `Incomplete` 仍需按其前沿解释。
 
-两个捕获在声明的首份模型延迟和峰值 RSS 目标内完成。普通输出相对基线的耗时有升有降，不能据此宣称普遍加速。这两个输入从 2B 增至总计 6B，Global 的分支方向、未知跳转 hub 目标和 storage 界限没有额外精度收益。Native 的进度与状态单独报告，仍可能为 `Incomplete`；上述 CLI／固定输入测量不表示 HTTP、浏览器或任意程序的等待时间。
-
-CPU／wall／RSS、完整原生 JSON 文件、Web pooled JSON 与真实 HTTP gzip 是各自的测量边界。比较时固定输入、来源、策略和源码／实体二进制，分别记录状态、frontier、实际字节与耗时；逻辑 work 不等于 CPU 时间。完整本地门禁按 [local-ci](local-ci.md) 执行。
+测量结果应随可复现的输入、命令和对应证据交付；固定输入下的观察只适用于声明的比较范围。完整本地门禁按 [local-ci](local-ci.md) 执行。
