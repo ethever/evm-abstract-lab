@@ -197,6 +197,15 @@ def navigation(context):
         source_descendant(page, canvas, artifact, baseline["id"], operation["id"])
         selected_row(page, "decompile-ir", "o" + operation["id"] + ":")
         click_control(page, canvas, "Graphs", role="tab")
+        plots = [row["rect"] for row in observed(page, "graph-canvas")]
+        docks = {role: observed(page, role)[0]["rect"]
+                 for role in ["decompile-inspector", "decompile-status"]}
+        assert plots, "comparison graphs must paint at both viewport sizes"
+        for plot in plots:
+            for role, dock in docks.items():
+                assert (plot[2] <= dock[0] or dock[2] <= plot[0]
+                        or plot[3] <= dock[1] or dock[3] <= plot[1]), (role, plot, dock)
+        canvas.screenshot(path=str(context.output / f"late-graph-inspector-{width}.png"))
         # The origin's source-descendant list is still qualified by the late PC.
         inspector_control(page, canvas, f"Source descendant s{baseline['id']}/e{value} ", "decompile-entity-link")
         selected_row(page, "decompile-ir", "v" + value + ":")
@@ -211,7 +220,8 @@ def navigation(context):
         inspector_control(page, canvas, f"Source descendant s{final['id']}/e{op['id']} ", "decompile-entity-link")
         selected_row(page, "decompile-code", "v" + op["outputs"][0] + " =")
         canvas.screenshot(path=str(context.output / f"late-code-ir-{width}.png"))
-        timings.append({"width": width, "navigation_seconds": time.monotonic() - started})
+        timings.append({"width": width, "navigation_seconds": time.monotonic() - started,
+                        "graph_rects": plots, "dock_rects": docks})
     click_control(page, canvas, "Graphs", role="tab")
     choose_stage(page, canvas, artifact, "baseline")
     ui_control(page, "Current CFG", role="graph-canvas")
