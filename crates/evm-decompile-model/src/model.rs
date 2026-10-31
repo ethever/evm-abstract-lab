@@ -465,6 +465,42 @@ pub struct StructuredNode {
     pub kind: StructuredKind,
 }
 }
+impl StructuredNode {
+    /// First identifiable block anchor used to route generated continuations.
+    /// Conditional-only nodes have no anchor; a transfer is anchored at its source.
+    pub fn entry_block(&self, ir: &Ir) -> Option<EntityId> {
+        self.entry_block_with(|edge| ir.edge(edge).map(|edge| edge.from))
+    }
+
+    /// The same structural query with a caller-owned indexed edge-source lookup.
+    /// It interprets neither conditions nor numeric facts and creates no graph edges.
+    pub fn entry_block_with(
+        &self,
+        edge_source: impl Fn(EntityId) -> Option<EntityId>,
+    ) -> Option<EntityId> {
+        fn visit(
+            node: &StructuredNode,
+            edge_source: &impl Fn(EntityId) -> Option<EntityId>,
+        ) -> Option<EntityId> {
+            match &node.kind {
+                StructuredKind::Block { block }
+                | StructuredKind::Exit { block }
+                | StructuredKind::PartialExit { block }
+                | StructuredKind::Indirect { block, .. } => Some(*block),
+                StructuredKind::Sequence(nodes) => {
+                    nodes.iter().find_map(|node| visit(node, edge_source))
+                }
+                StructuredKind::While { header, body, .. } => {
+                    visit(header, edge_source).or_else(|| visit(body, edge_source))
+                }
+                StructuredKind::Dispatcher { entry, .. } => Some(*entry),
+                StructuredKind::Transfer { edge } => edge_source(*edge),
+                _ => None,
+            }
+        }
+        visit(self, &edge_source)
+    }
+}
 strict_record! {
 /// One explicit state-machine case with effectful operation body.
 #[derive(Clone, Debug, PartialEq, Eq)]

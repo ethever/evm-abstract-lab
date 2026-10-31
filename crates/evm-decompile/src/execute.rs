@@ -686,19 +686,7 @@ impl<'a, H: SemanticHost> Runtime<'a, H> {
 }
 /// Semantic entry lookup shared by AST execution and export control routing.
 pub(crate) fn first_block(node: &StructuredNode, ir: &Ir) -> Option<EntityId> {
-    match &node.kind {
-        StructuredKind::Block { block }
-        | StructuredKind::Exit { block }
-        | StructuredKind::PartialExit { block }
-        | StructuredKind::Indirect { block, .. } => Some(*block),
-        StructuredKind::Sequence(nodes) => nodes.iter().find_map(|n| first_block(n, ir)),
-        StructuredKind::While { header, body, .. } => {
-            first_block(header, ir).or_else(|| first_block(body, ir))
-        }
-        StructuredKind::Dispatcher { entry, .. } => Some(*entry),
-        StructuredKind::Transfer { edge } => ir.edge(*edge).map(|e| e.from),
-        _ => None,
-    }
+    node.entry_block(ir)
 }
 #[allow(clippy::too_many_arguments)]
 fn primitive(
