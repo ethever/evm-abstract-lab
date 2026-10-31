@@ -9,6 +9,9 @@ pub use browser::start;
 #[cfg(test)]
 mod contact;
 
+mod submit;
+pub(crate) use submit::SubmitKeyboard;
+
 /// Preserve the native disclosure while exposing its actual header response.
 pub(crate) fn section<R>(
     ui: &mut egui::Ui,
