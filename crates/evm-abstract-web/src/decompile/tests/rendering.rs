@@ -132,4 +132,8 @@ fn faulting_final_op_is_a_source_attributed_fault_and_jumpi_falloff_is_explicit_
     assert!(output.contains("JUMPI false continuation: end of code"));
     assert!(!output.contains("branch "));
     assert!(structured::terminator(&stage.ir.blocks[0].terminator).contains("branch "));
+    assert!(
+        structured::terminator(&stage.ir.blocks[0].terminator)
+            .contains("else evm.stop() (end of code)")
+    );
 }

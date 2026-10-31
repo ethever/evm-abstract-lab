@@ -86,7 +86,7 @@ impl Workspace {
                         "Transform inspector",
                         Density::Regular,
                     );
-                    if self.artifact.is_some() {
+                    if let Some(artifact) = &self.artifact {
                         if controls::action_enabled(
                             ui,
                             self.state.can_back(),
@@ -95,8 +95,7 @@ impl Workspace {
                         )
                         .clicked()
                         {
-                            self.state
-                                .history(self.artifact.as_ref().expect("artifact present"), false);
+                            self.state.history(artifact, false);
                         }
                         if controls::action_enabled(
                             ui,
@@ -106,8 +105,7 @@ impl Workspace {
                         )
                         .clicked()
                         {
-                            self.state
-                                .history(self.artifact.as_ref().expect("artifact present"), true);
+                            self.state.history(artifact, true);
                         }
                     }
                 });

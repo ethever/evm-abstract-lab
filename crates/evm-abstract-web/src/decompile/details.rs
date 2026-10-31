@@ -175,21 +175,18 @@ pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &
             id.0, transition.edge.0, transition.target.0
         ));
         refs.extend([transition.edge, transition.target]);
-        if let Some(edge) = index.edge(&stage.ir, transition.edge) {
-            if let Some(target) = index.block(&stage.ir, edge.to) {
-                details.lines.push(format!(
-                    "Parallel assignment ({}) = ({})",
-                    structured::values(&target.parameters),
-                    structured::values(&edge.arguments)
-                ));
-                details.lines.push(format!(
-                    "Memory m{} = m{}; effect q{} = q{}",
-                    target.memory_parameter.0,
-                    edge.memory.0,
-                    target.effect_parameter.0,
-                    edge.effect.0
-                ));
-            }
+        if let Some(edge) = index.edge(&stage.ir, transition.edge)
+            && let Some(target) = index.block(&stage.ir, edge.to)
+        {
+            details.lines.push(format!(
+                "Parallel assignment ({}) = ({})",
+                structured::values(&target.parameters),
+                structured::values(&edge.arguments)
+            ));
+            details.lines.push(format!(
+                "Memory m{} = m{}; effect q{} = q{}",
+                target.memory_parameter.0, edge.memory.0, target.effect_parameter.0, edge.effect.0
+            ));
         }
     }
     details.references = refs

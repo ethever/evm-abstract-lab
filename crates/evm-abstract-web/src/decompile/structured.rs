@@ -451,7 +451,10 @@ pub(super) fn terminator(term: &Terminator) -> String {
                 .map(|edge| format!("e{}", edge.0))
                 .collect::<Vec<_>>()
                 .join(", "),
-            else_edge.map_or_else(|| "end".into(), |edge| format!("e{}", edge.0)),
+            else_edge.map_or_else(
+                || "evm.stop() (end of code)".into(),
+                |edge| format!("e{}", edge.0)
+            ),
             if *unresolved {
                 " unresolved_target (partial);"
             } else {
