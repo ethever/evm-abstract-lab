@@ -37,10 +37,10 @@ use layout::PaneLayout;
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     /// Request serialization failed.
-    #[error("Could not encode the analysis request: {0}")]
+    #[error("Could not encode the request: {0}")]
     Encode(serde_json::Error),
     /// Response did not follow the shared protocol.
-    #[error("Invalid analysis response (HTTP {status}): {cause}")]
+    #[error("Invalid response (HTTP {status}): {cause}")]
     Decode {
         /// HTTP response status.
         status: u16,
@@ -54,7 +54,7 @@ pub enum TransportError {
         seconds: u32,
     },
     /// Browser fetch failed.
-    #[error("Cannot reach the analysis server: {message}")]
+    #[error("Cannot reach the server: {message}")]
     Browser {
         /// Browser-provided failure detail.
         message: String,
@@ -66,7 +66,7 @@ pub enum TransportError {
     #[error("Server returned a non-text response")]
     NonTextResponse,
     /// HTTP failure with an inconsistent success envelope.
-    #[error("Analysis server returned HTTP {status}")]
+    #[error("Server returned HTTP {status}")]
     Http {
         /// HTTP response status.
         status: u16,
@@ -173,12 +173,48 @@ impl Default for Workspace {
 }
 
 impl Workspace {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn input_open(&self) -> bool {
+        self.form.open
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn background_command(&mut self, context: &egui::Context) -> Option<Command> {
+        if self.task.needs_refresh() {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        self.task.next_command(context.input(|input| input.time))
+    }
+
+    /// Transfer only actual captured runtime bytes and their decoding fork.
+    /// The receiving workspace edits its own draft before explicit submission.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn captured_decompile_input(&self) -> Option<(&str, evm_abstract_protocol::Fork)> {
+        let report = self.report.as_ref()?;
+        let program = match self.report_view.navigator().current() {
+            Some(location) => location.focus.source.as_ref()?.program()?,
+            None => self.program?,
+        };
+        report
+            .programs
+            .iter()
+            .find(|source| {
+                source.id == program
+                    && matches!(
+                        source.kind,
+                        evm_abstract_protocol::CodeKind::Runtime
+                            | evm_abstract_protocol::CodeKind::Empty
+                    )
+            })
+            .map(|source| (source.bytecode.as_str(), source.fork))
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn inspector_shortcut_available(&self) -> bool {
         self.report.is_some() && !self.form.open
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn toggle_inspector(&mut self) {
         self.inspector.expanded = !self.inspector.expanded;
         if self.inspector.expanded && self.panels.compact() {

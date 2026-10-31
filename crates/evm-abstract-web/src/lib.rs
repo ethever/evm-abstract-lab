@@ -1,8 +1,12 @@
-//! Browser analysis workspace. Rendering and interaction are independent of the
-//! browser transport, and consume only the shared protocol's typed snapshot.
+//! Analysis and local decompiler workspaces in one browser application.
+//! Rendering consumes typed protocol data independently of browser transport.
 
 mod app;
+#[cfg(any(target_arch = "wasm32", test))]
+mod application;
 mod controls;
+#[cfg(any(target_arch = "wasm32", test))]
+mod decompile;
 mod graph_view;
 mod notation;
 mod palette;
