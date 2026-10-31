@@ -446,7 +446,7 @@ fn fault_context_is_visible_in_painted_graph_ir_and_selected_inspector_without_c
         normal.id = EntityId(51);
         normal.opcode = opcode;
         normal.name = name.into();
-        normal.effects = fault.effects;
+        normal.effects = fault.effects.clone();
         stage.ir.blocks[1].operations.push(normal.clone());
         let index = StageIndex::new(&stage.ir);
         let normal_text = crate::decompile::structured::operation(&normal, &stage.ir, &index);
