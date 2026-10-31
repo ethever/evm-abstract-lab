@@ -39,7 +39,7 @@ pub(crate) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui
 
 /// Keep pasted multi-line programs inside the input budget instead of growing
 /// the top panel until it covers the analysis panes.
-#[derive(Clone, Copy, Hash)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub(crate) enum BytecodeEditor {
     Analysis,
     Decompiler,
@@ -80,6 +80,9 @@ pub(crate) fn bytecode_editor(
                     .hint_text("Runtime bytecode: 0x60806040…"),
             );
             crate::controls::observe(ui, &response, "Runtime bytecode", "text", None);
+            // Opt-in evidence reads the actual buffer after native text events;
+            // it does not provide another activation or mutation path.
+            crate::controls::observe(ui, &response, bytecode, "bytecode-value", None);
         });
 }
 
