@@ -1,0 +1,710 @@
+//! Immutable byte states and bounded, zero-padded views.
+//!
+//! Copy retains the source snapshot and one range node even for a symbolic or
+//! very large length. Reads apply mathematical index checks before BV arithmetic.
+
+use super::{
+    ExprError, ExprId, ExprLimits, SourceId, StateBinding, StateError, StateLimits,
+    state::{self, Interner, StateNode},
+};
+use alloy_primitives::U256;
+use serde::Serialize;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex, OnceLock},
+};
+
+#[cfg(test)]
+mod copy_tests;
+#[cfg(test)]
+mod exact_work_tests;
+mod join;
+mod reads;
+#[cfg(any(test, feature = "test-support"))]
+mod reference;
+
+pub use super::structure::ByteStateKind;
+
+/// Cheap immutable state handle. Equality uses collision-checked interning.
+#[derive(Clone)]
+pub struct ByteStateId(Arc<StateNode<ByteStateData>>);
+
+// Byte-only metadata shares the existing allocation. Interning must hash and
+// compare exactly the original kind, excluding these derived metrics.
+// clippy.toml exempts this private memo type: handle Eq/Hash/Ord use immutable
+// ids, and graph serialization exports only kind. Cache warmth changes neither
+// identity nor export; exact_work_tests and copy_metric_tests cover both.
+struct ByteStateData {
+    kind: ByteStateKind,
+    copy_leaves: usize,
+    exact_payload_bytes: OnceLock<usize>,
+}
+impl PartialEq for ByteStateData {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+impl Eq for ByteStateData {}
+impl Hash for ByteStateData {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+    }
+}
+
+static INTERN: OnceLock<Mutex<Interner<ByteStateData>>> = OnceLock::new();
+impl ByteStateId {
+    fn intern(kind: ByteStateKind, nodes: usize, depth: usize) -> Self {
+        let copy_leaves = match &kind {
+            ByteStateKind::Ite {
+                then_state,
+                else_state,
+                ..
+            } => then_state
+                .copy_leaves()
+                .saturating_add(else_state.copy_leaves()),
+            _ => 1,
+        };
+        Self(
+            INTERN
+                .get_or_init(|| Mutex::new(Interner::default()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .intern(
+                    ByteStateData {
+                        kind,
+                        copy_leaves,
+                        exact_payload_bytes: OnceLock::new(),
+                    },
+                    nodes,
+                    depth,
+                ),
+        )
+    }
+    fn build(
+        kind: ByteStateKind,
+        children: impl IntoIterator<Item = (usize, usize)>,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        let (nodes, depth) = state::metrics(children);
+        state::check(nodes, depth, limits)?;
+        Ok(Self::intern(kind, nodes, depth))
+    }
+    /// Unbounded all-zero byte content; MSIZE is maintained by the world layer.
+    pub fn zero() -> Self {
+        Self::intern(ByteStateKind::Zero, 1, 1)
+    }
+    /// Immutable, independently identified finite source.
+    pub fn input(source: SourceId, length: ExprId) -> Self {
+        let (nodes, depth) = state::metrics([
+            (source.token().nodes(), source.token().depth()),
+            (length.nodes(), length.depth()),
+        ]);
+        Self::intern(
+            ByteStateKind::Input {
+                source,
+                length,
+                bindings: Vec::new(),
+            },
+            nodes,
+            depth,
+        )
+    }
+    /// Exact finite bytes. Shares the existing allocation; encoding is budgeted.
+    pub fn exact(bytes: Arc<[u8]>) -> Self {
+        Self::intern(ByteStateKind::Exact(bytes), 1, 1)
+    }
+    /// Initial observations bind the source array without overwriting unknown cells.
+    pub fn observed(
+        source: SourceId,
+        length: ExprId,
+        mut bindings: Vec<StateBinding>,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        bindings.sort_by_key(|binding| binding.index);
+        let children = [
+            (source.token().nodes(), source.token().depth()),
+            (length.nodes(), length.depth()),
+        ]
+        .into_iter()
+        .chain(bindings.iter().map(|b| {
+            (
+                b.value.nodes().saturating_add(b.numeric.work_size()),
+                b.value.depth(),
+            )
+        }));
+        Self::build(
+            ByteStateKind::Input {
+                source: source.clone(),
+                length: length.clone(),
+                bindings: bindings.clone(),
+            },
+            children,
+            limits,
+        )
+    }
+    /// Low eight bits are written, preserving all earlier reads.
+    pub fn write_byte(
+        &self,
+        at: ExprId,
+        value: ExprId,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = self.kind()
+        {
+            let yes = then_state.write_byte(at.clone(), value.clone(), limits)?;
+            let no = else_state.write_byte(at, value, limits)?;
+            return yes.join_guarded(&no, condition.clone(), limits);
+        }
+        let previous = match self.kind() {
+            ByteStateKind::WriteByte {
+                previous, offset, ..
+            } if *offset == at => previous,
+            _ => self,
+        };
+        if self.unchanged_write(&at, &value, 1, limits)? {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
+        if matches!(previous.kind(), ByteStateKind::Zero)
+            && value
+                .as_constant()
+                .is_some_and(|v| v & U256::from(255) == U256::ZERO)
+        {
+            state::check(previous.nodes(), previous.depth(), limits)?;
+            return Ok(previous.clone());
+        }
+        Self::build(
+            ByteStateKind::WriteByte {
+                previous: previous.clone(),
+                offset: at.clone(),
+                value: value.clone(),
+            },
+            [
+                (previous.nodes(), previous.depth()),
+                (at.nodes(), at.depth()),
+                (value.nodes(), value.depth()),
+            ],
+            limits,
+        )
+    }
+    /// Big-endian word write. A 32-byte write is one retained state node.
+    pub fn write_word(
+        &self,
+        at: ExprId,
+        value: ExprId,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = self.kind()
+        {
+            let yes = then_state.write_word(at.clone(), value.clone(), limits)?;
+            let no = else_state.write_word(at, value, limits)?;
+            return yes.join_guarded(&no, condition.clone(), limits);
+        }
+        // A complete overwrite discards older writes in the covered region.
+        // Only structural or checked concrete coverage is used here; a modular
+        // p+31 expression does not establish coverage when p might overflow.
+        let mut previous = self;
+        loop {
+            match previous.kind() {
+                ByteStateKind::WriteWord {
+                    previous: old,
+                    offset,
+                    ..
+                } if *offset == at => previous = old,
+                ByteStateKind::WriteByte {
+                    previous: old,
+                    offset,
+                    ..
+                } if *offset == at
+                    || matches!((at.as_constant(), offset.as_constant()), (Some(start), Some(byte)) if byte >= start && byte-start < U256::from(32)) =>
+                {
+                    previous = old
+                }
+                _ => break,
+            }
+        }
+        if self.unchanged_write(&at, &value, 32, limits)? {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
+        if matches!(previous.kind(), ByteStateKind::Zero) && value.as_constant() == Some(U256::ZERO)
+        {
+            state::check(previous.nodes(), previous.depth(), limits)?;
+            return Ok(previous.clone());
+        }
+        Self::build(
+            ByteStateKind::WriteWord {
+                previous: previous.clone(),
+                offset: at.clone(),
+                value: value.clone(),
+            },
+            [
+                (previous.nodes(), previous.depth()),
+                (at.nodes(), at.depth()),
+                (value.nodes(), value.depth()),
+            ],
+            limits,
+        )
+    }
+    // An identical write remains effective across disjoint writes. Clip the
+    // visible intervals at MAX: address overflow never wraps to low memory.
+    // Checking the retained graph before advancing bounds this iterative search
+    // by the caller's existing nodes/depth policy and observes cancellation.
+    fn unchanged_write(
+        &self,
+        at: &ExprId,
+        value: &ExprId,
+        width: u64,
+        limits: StateLimits,
+    ) -> Result<bool, StateError> {
+        let mut cursor = self;
+        loop {
+            let (previous, offset, old, old_width) = match cursor.kind() {
+                ByteStateKind::WriteByte {
+                    previous,
+                    offset,
+                    value,
+                } => (previous, offset, value, 1),
+                ByteStateKind::WriteWord {
+                    previous,
+                    offset,
+                    value,
+                } => (previous, offset, value, 32),
+                _ => return Ok(false),
+            };
+            if old_width == width && offset == at {
+                return Ok(old == value);
+            }
+            let (Some(start), Some(old_start)) = (at.as_constant(), offset.as_constant()) else {
+                return Ok(false);
+            };
+            let end = start.saturating_add(U256::from(width - 1));
+            let old_end = old_start.saturating_add(U256::from(old_width - 1));
+            if end >= old_start && old_end >= start {
+                return Ok(false);
+            }
+            state::check(self.nodes(), self.depth(), limits)?;
+            cursor = previous;
+        }
+    }
+    /// Copy an arbitrary logical range without traversing it.
+    pub fn copy(
+        &self,
+        dst: ExprId,
+        source: ByteView,
+        len: ExprId,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        if len.as_constant() == Some(U256::ZERO) {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
+        self.copy_canonical(dst, source.canonicalize(), len, limits)
+    }
+    // Canonicalization depends only on the immutable source view. Distributing
+    // over target branches must still check each target's own identity/history.
+    fn copy_canonical(
+        &self,
+        dst: ExprId,
+        source: ByteView,
+        len: ExprId,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        if len.as_constant() == Some(U256::ZERO) {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
+        if source.state == *self && source.offset == dst && source.length == len {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
+        if let ByteStateKind::Ite {
+            condition,
+            then_state,
+            else_state,
+        } = self.kind()
+        {
+            let yes =
+                then_state.copy_canonical(dst.clone(), source.clone(), len.clone(), limits)?;
+            let no = else_state.copy_canonical(dst, source, len, limits)?;
+            return yes.join_guarded(&no, condition.clone(), limits);
+        }
+        let previous = match self.kind() {
+            ByteStateKind::Copy {
+                previous,
+                destination,
+                source: old_source,
+                length,
+            } if *destination == dst && *length == len => {
+                if *old_source == source {
+                    state::check(self.nodes(), self.depth(), limits)?;
+                    return Ok(self.clone());
+                }
+                previous
+            }
+            _ => self,
+        };
+        let children = [
+            (previous.nodes(), previous.depth()),
+            (dst.nodes(), dst.depth()),
+            (source.nodes(), source.depth()),
+            (len.nodes(), len.depth()),
+        ];
+        Self::build(
+            ByteStateKind::Copy {
+                previous: previous.clone(),
+                destination: dst,
+                source,
+                length: len,
+            },
+            children,
+            limits,
+        )
+    }
+    /// Zero-based bounded subarray; later reads past len are zero.
+    pub fn slice(&self, at: ExprId, len: ExprId, limits: StateLimits) -> Result<Self, StateError> {
+        if len.as_constant() == Some(U256::ZERO) {
+            state::check(1, 1, limits)?;
+            return Ok(Self::zero());
+        }
+        let source = ByteView::new(self.clone(), at, len).canonicalize();
+        if source.offset.as_constant() == Some(U256::ZERO) {
+            match source.state.kind() {
+                ByteStateKind::Input { length, .. } if *length == source.length => {
+                    state::check(source.state.nodes(), source.state.depth(), limits)?;
+                    return Ok(source.state);
+                }
+                ByteStateKind::Exact(bytes)
+                    if source.length.as_constant() == Some(U256::from(bytes.len())) =>
+                {
+                    state::check(source.state.nodes(), source.state.depth(), limits)?;
+                    return Ok(source.state);
+                }
+                ByteStateKind::Slice { source: inner } if inner.length == source.length => {
+                    state::check(source.state.nodes(), source.state.depth(), limits)?;
+                    return Ok(source.state);
+                }
+                ByteStateKind::Zero => {
+                    state::check(source.state.nodes(), source.state.depth(), limits)?;
+                    return Ok(source.state);
+                }
+                _ => {}
+            }
+        }
+        let children = [(source.nodes(), source.depth())];
+        Self::build(ByteStateKind::Slice { source }, children, limits)
+    }
+    /// Paired state join using the same guard as pointers and path conditions.
+    pub fn join_guarded(
+        &self,
+        other: &Self,
+        selector: ExprId,
+        limits: StateLimits,
+    ) -> Result<Self, StateError> {
+        if self == other {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
+        if let Some(value) = selector.as_constant() {
+            let selected = if value == U256::ZERO { other } else { self };
+            state::check(selected.nodes(), selected.depth(), limits)?;
+            return Ok(selected.clone());
+        }
+        state::check(self.nodes(), self.depth(), limits)?;
+        state::check(other.nodes(), other.depth(), limits)?;
+        state::check(selector.nodes(), selector.depth(), limits)?;
+        fn branches(root: &ByteStateId) -> Option<(&ExprId, &ByteStateId, &ByteStateId)> {
+            match root.kind() {
+                ByteStateKind::Ite {
+                    condition,
+                    then_state,
+                    else_state,
+                } => Some((condition, then_state, else_state)),
+                _ => None,
+            }
+        }
+        if let Some((guard, yes, no)) = state::guarded::shared_branch(
+            self,
+            other,
+            selector.clone(),
+            branches(self),
+            branches(other),
+            limits,
+            |state| (state.nodes(), state.depth()),
+        )? {
+            return yes.join_guarded(no, guard, limits);
+        }
+        if let Some(joined) = self.join_update(other, selector.clone(), limits)? {
+            return Ok(joined);
+        }
+        Self::build(
+            ByteStateKind::Ite {
+                condition: selector.clone(),
+                then_state: self.clone(),
+                else_state: other.clone(),
+            },
+            [
+                (self.nodes(), self.depth()),
+                (other.nodes(), other.depth()),
+                (selector.nodes(), selector.depth()),
+            ],
+            limits,
+        )
+    }
+    /// Read-only node kind for flat protocol export and state inspection.
+    pub fn kind(&self) -> &ByteStateKind {
+        &self.0.kind.kind
+    }
+    /// Inspect cache initialization without warming it; for cross-crate regression tests.
+    #[cfg(feature = "test-support")]
+    pub fn cached_exact_payload_bytes(&self) -> Option<usize> {
+        self.0.kind.exact_payload_bytes.get().copied()
+    }
+
+    /// Retained Exact payload bytes, counted once per reachable byte-state id.
+    /// Scalar-expression dependencies and logical view lengths are excluded.
+    pub fn exact_payload_bytes(&self) -> usize {
+        *self.0.kind.exact_payload_bytes.get_or_init(|| {
+            // COPY and Ite children can share descendants. Only this root is
+            // cached: child totals cannot replace this single identity census.
+            let mut work = 0usize;
+            let mut seen = BTreeSet::new();
+            let mut pending = vec![self];
+            while let Some(state) = pending.pop() {
+                if !seen.insert(state.id()) {
+                    continue;
+                }
+                match state.kind() {
+                    ByteStateKind::Exact(bytes) => work = work.saturating_add(bytes.len()),
+                    ByteStateKind::WriteByte { previous, .. }
+                    | ByteStateKind::WriteWord { previous, .. } => pending.push(previous),
+                    ByteStateKind::Copy {
+                        previous, source, ..
+                    } => pending.extend([previous, &source.state]),
+                    ByteStateKind::Slice { source } => pending.push(&source.state),
+                    ByteStateKind::Ite {
+                        then_state,
+                        else_state,
+                        ..
+                    } => pending.extend([then_state, else_state]),
+                    ByteStateKind::Zero | ByteStateKind::Input { .. } => {}
+                }
+            }
+            work
+        })
+    }
+    /// Saturating non-Ite occurrences reached by COPY's top-level distribution.
+    /// Shared children count once per incoming path; update history is separate.
+    pub fn copy_leaves(&self) -> usize {
+        self.0.kind.copy_leaves
+    }
+}
+state::state_handle!(ByteStateId, bytes, state_fresh);
+
+#[cfg(test)]
+mod copy_metric_tests {
+    use super::*;
+
+    #[test]
+    fn cached_payload_preserves_the_exact_kind_hash_stream_and_equality() {
+        #[derive(Default)]
+        struct HashBytes(Vec<u8>);
+        impl Hasher for HashBytes {
+            fn finish(&self) -> u64 {
+                0
+            }
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.extend_from_slice(bytes);
+            }
+        }
+        let kind = ByteStateKind::Ite {
+            condition: ExprId::fresh().unwrap(),
+            then_state: ByteStateId::zero(),
+            else_state: ByteStateId::exact(Arc::from([1])),
+        };
+        let data = ByteStateData {
+            kind: kind.clone(),
+            copy_leaves: 2,
+            exact_payload_bytes: OnceLock::new(),
+        };
+        let other = ByteStateData {
+            kind: kind.clone(),
+            copy_leaves: usize::MAX,
+            exact_payload_bytes: OnceLock::from(usize::MAX),
+        };
+        assert!(data == other);
+        assert!(
+            data != ByteStateData {
+                kind: ByteStateKind::Zero,
+                copy_leaves: 2,
+                exact_payload_bytes: OnceLock::new(),
+            }
+        );
+        let mut original = HashBytes::default();
+        let mut cached = HashBytes::default();
+        let mut different_metric = HashBytes::default();
+        kind.hash(&mut original);
+        data.hash(&mut cached);
+        other.hash(&mut different_metric);
+        assert_eq!(original.0, cached.0);
+        assert_eq!(original.0, different_metric.0);
+        data.exact_payload_bytes.set(1).unwrap();
+        let mut initialized = HashBytes::default();
+        data.hash(&mut initialized);
+        assert!(data == other);
+        assert_eq!(original.0, initialized.0);
+    }
+
+    #[test]
+    fn copy_leaf_occurrences_saturate_without_wrapping_or_bypassing_state_limits() {
+        let mut root = ByteStateId::zero();
+        let condition = ExprId::fresh().unwrap();
+        // Private intern fixtures bypass join simplification and build's limit
+        // rejection, reaching overflow with only one allocation per level.
+        for _ in 0..=usize::BITS {
+            let expected = root.copy_leaves().saturating_add(root.copy_leaves());
+            let (nodes, depth) = state::metrics([
+                (root.nodes(), root.depth()),
+                (root.nodes(), root.depth()),
+                (condition.nodes(), condition.depth()),
+            ]);
+            root = ByteStateId::intern(
+                ByteStateKind::Ite {
+                    condition: condition.clone(),
+                    then_state: root.clone(),
+                    else_state: root,
+                },
+                nodes,
+                depth,
+            );
+            assert_eq!(root.copy_leaves(), expected);
+            assert!(root.copy_leaves() <= root.nodes());
+        }
+        assert_eq!(root.copy_leaves(), usize::MAX);
+        assert_eq!(root.copy_leaves().saturating_mul(8), usize::MAX);
+        assert_eq!(
+            state::check(
+                root.nodes(),
+                root.depth(),
+                StateLimits {
+                    max_nodes: usize::MAX,
+                    max_depth: usize::MAX
+                }
+            ),
+            Err(StateError::Limit {
+                nodes: root.nodes(),
+                depth: root.depth()
+            })
+        );
+        assert!(!crate::resource::WorkBudget::new(usize::MAX - 1).charge(root.copy_leaves()));
+    }
+}
+
+/// Bounded zero-padded content sequence, independent of its memory address.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ByteView {
+    /// Immutable backing state.
+    pub state: ByteStateId,
+    /// First backing byte, with mathematical rather than wrapping index semantics.
+    pub offset: ExprId,
+    /// Logical sequence length, including padding requested by the caller.
+    pub length: ExprId,
+}
+impl ByteView {
+    /// Capture a bounded view of an immutable state.
+    pub fn new(state: ByteStateId, offset: ExprId, length: ExprId) -> Self {
+        Self {
+            state,
+            offset,
+            length,
+        }
+    }
+    /// Preserve this view's boundary while making a further zero-padded slice.
+    pub fn slice(&self, at: ExprId, len: ExprId, limits: StateLimits) -> Result<Self, StateError> {
+        if at.as_constant() == Some(U256::ZERO) && len == self.length {
+            state::check(self.nodes(), self.depth(), limits)?;
+            return Ok(self.clone());
+        }
+        let state = self
+            .state
+            .slice(self.offset.clone(), self.length.clone(), limits)?;
+        state::check(at.nodes(), at.depth(), limits)?;
+        state::check(len.nodes(), len.depth(), limits)?;
+        let view = Self::new(state, at, len).canonicalize();
+        state::check(view.nodes(), view.depth(), limits)?;
+        Ok(view)
+    }
+    /// Recover complete-copy/slice identity without assuming arbitrary content equality.
+    pub fn canonicalize(&self) -> Self {
+        let mut view = self.clone();
+        if view.length.as_constant() == Some(U256::ZERO) {
+            return Self::new(
+                ByteStateId::zero(),
+                ExprId::constant(U256::ZERO),
+                view.length,
+            );
+        }
+        loop {
+            let next = match view.state.kind() {
+                ByteStateKind::Copy {
+                    destination,
+                    source,
+                    length,
+                    ..
+                } if view.offset == *destination
+                    && view.length == *length
+                    && *length == source.length
+                    && super::state::range_fits(destination, length) =>
+                {
+                    Some(source.clone())
+                }
+                ByteStateKind::Slice { source }
+                    if view.offset.as_constant() == Some(U256::ZERO)
+                        && view.length == source.length =>
+                {
+                    Some(source.clone())
+                }
+                _ => None,
+            };
+            match next {
+                Some(next) => view = next,
+                None => return view,
+            }
+        }
+    }
+    /// Conservative view and backing-state metadata size.
+    pub fn nodes(&self) -> usize {
+        self.state
+            .nodes()
+            .saturating_add(self.offset.nodes())
+            .saturating_add(self.length.nodes())
+    }
+    /// Dependency depth before a consuming read/hash node.
+    pub fn depth(&self) -> usize {
+        self.state
+            .depth()
+            .max(self.offset.depth())
+            .max(self.length.depth())
+    }
+    /// All runtime source, length, offset and state symbols.
+    pub fn fresh_leaves(&self) -> BTreeSet<ExprId> {
+        super::walk::view_fresh(self)
+    }
+    /// Rename view and backing-state symbols together.
+    pub fn rename_fresh(
+        &self,
+        map: &BTreeMap<ExprId, ExprId>,
+        limits: ExprLimits,
+    ) -> Result<Self, ExprError> {
+        super::walk::Renamer::new(map, limits).view(self)
+    }
+}

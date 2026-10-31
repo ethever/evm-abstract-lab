@@ -12,7 +12,7 @@ let
     "crates/evm-abstract-cli/src/numeric.rs"
     "crates/evm-abstract/src/analysis.rs"
     "crates/evm-abstract-protocol/src/lib.rs"
-    "crates/evm-abstract/src/domain/spec.rs"
+    "crates/evm-domain/src/domain/spec.rs"
     "scripts/benchmark-no-smt-scale.py"
     "scripts/test_benchmark_no_smt_scale.py"
     "scripts/generate-no-smt-scale-commands.py"

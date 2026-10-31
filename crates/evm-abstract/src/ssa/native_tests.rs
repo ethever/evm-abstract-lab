@@ -133,12 +133,10 @@ impl EvmNumericAlgebra for CustomAlgebra {
         let result = operands
             .filter(|args| crate::domain::concrete::arity(op) == Some(args.len()))
             .map_or(CustomWord::Open, |args| {
-                CustomWord::constant(crate::domain::concrete::evaluate(
-                    op,
-                    args[0],
-                    args.get(1).copied().unwrap_or(U256::ZERO),
-                    args.get(2).copied().unwrap_or(U256::ZERO),
-                ))
+                CustomWord::constant(
+                    evm_bytecode::word::evaluate(op, &args)
+                        .expect("the filter validated the pure operation"),
+                )
             });
         NumericReduction::stable(result)
     }

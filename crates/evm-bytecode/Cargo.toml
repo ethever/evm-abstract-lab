@@ -1,0 +1,27 @@
+[package]
+name                   = "evm-bytecode"
+description            = "Shared EVM runtime decoding, explicit fork rules and pure Word256 semantics"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[features]
+default      = []
+test-support = ["evm-resource/test-support"]
+
+[dependencies]
+alloy-primitives.workspace = true
+evm-resource               = { path = "../evm-resource" }
+revm-bytecode.workspace    = true
+serde.workspace            = true
+thiserror.workspace        = true
+
+[dev-dependencies]
+analysis-control     = { path = "../analysis-control" }
+evm-resource         = { path = "../evm-resource", features = ["test-support"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

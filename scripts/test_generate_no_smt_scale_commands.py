@@ -22,7 +22,7 @@ WITNESSES = {
     "crates/evm-abstract-cli/src/numeric.rs": "// Application-owned numeric model and limits.\n",
     "crates/evm-abstract/src/analysis.rs": "pub const SCHEMA_VERSION: u16 = 16;\n",
     "crates/evm-abstract-protocol/src/lib.rs": "pub const SCHEMA_VERSION: u16 = 21;\n",
-    "crates/evm-abstract/src/domain/spec.rs": "schema_version: 3, cost_version: 9,\n",
+    "crates/evm-domain/src/domain/spec.rs": "schema_version: 3, cost_version: 9,\n",
 }
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -124,7 +124,7 @@ class GeneratorTests(unittest.TestCase):
         bad_sources = [
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 15;", "native schema 16"),
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 20;", "wire schema 21"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 8,", "cost version 9"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 8,", "cost version 9"),
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 13;", "native schema 16"),
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 18;", "wire schema 21"),
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 10;", "native schema 16"),
@@ -137,16 +137,16 @@ class GeneratorTests(unittest.TestCase):
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 14;", "wire"),
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 8;", "native"),
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 13;", "wire"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 2,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 3,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 4,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 5,", "cost version 9"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 6,", "cost version 9"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 7,", "cost version 9"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 50,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 2, cost_version: 8,", "numeric policy schema 3"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 4, cost_version: 8,", "numeric policy schema 3"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 2,", "cost"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 3,", "cost"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 4,", "cost"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 5,", "cost version 9"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 6,", "cost version 9"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 7,", "cost version 9"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3, cost_version: 50,", "cost"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 3,", "cost"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 2, cost_version: 8,", "numeric policy schema 3"),
+            ("crates/evm-domain/src/domain/spec.rs", "schema_version: 4, cost_version: 8,", "numeric policy schema 3"),
         ] + [("crates/evm-abstract-cli/src/symbolic.rs", field, "solver policy")
              for field in ["smt_provider", "smt_rlimit", "embedded_smt"]]
         for name, text, error in bad_sources:

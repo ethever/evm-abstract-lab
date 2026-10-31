@@ -27,7 +27,7 @@ def generate(repository, source):
         "numeric": "crates/evm-abstract-cli/src/numeric.rs",
         "native": "crates/evm-abstract/src/analysis.rs",
         "wire": "crates/evm-abstract-protocol/src/lib.rs",
-        "cost": "crates/evm-abstract/src/domain/spec.rs",
+        "cost": "crates/evm-domain/src/domain/spec.rs",
     }
     texts = {key: (source / path).read_text() for key, path in witnesses.items()}
     for key, expected in [("native", 16), ("wire", 21)]:

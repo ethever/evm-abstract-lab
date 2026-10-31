@@ -11,6 +11,9 @@ members = [
     "crates/evm-abstract-protocol",
     "crates/evm-abstract-server",
     "crates/evm-abstract-web",
+    "crates/evm-bytecode",
+    "crates/evm-domain",
+    "crates/evm-resource",
     "crates/snapshot-state",
     "crates/symbolic-structure",
 ]
