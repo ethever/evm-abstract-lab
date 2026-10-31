@@ -35,13 +35,16 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
     let Some(postdom) = postdominators(&ir, owner) else {
         return;
     };
-    let loops = natural_loops(&ir, &dom, &postdom);
+    let Some(loops) = natural_loops(&ir, &dom, &postdom, owner) else {
+        return;
+    };
     let mut s = Structurer {
         owner,
         ir,
         loops,
         postdom,
         parents: BTreeMap::new(),
+        created_nodes: 0,
     };
     let root = if let Some(entry) = s.ir.entry {
         s.build(entry, None, None, 0, &BTreeSet::new())
@@ -51,25 +54,26 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
     let Some(root) = root else {
         return;
     };
-    if ast_depth(&root) > 20 {
+    if ast_depth(&root) > crate::MAX_STRUCTURED_WIRE_DEPTH {
         s.owner.stop(
             Completion::Limited,
             DiagnosticCode::Limit,
-            "structured AST wire nesting ceiling exceeded; prior validated stage retained",
+            "structured AST tree admission depth exceeded; prior validated stage retained",
         );
         return;
     }
     s.ir.structured = Some(StructuredProgram { root });
     let has_dispatch =
         contains_dispatcher(&s.ir.structured.as_ref().expect("constructed AST").root);
-    if s.owner.artifact.config.strategy == Strategy::Dispatcher {
-        if !s.owner.commit(StageKind::ControlFlow,s.ir.clone(),if has_dispatch{"dispatcher_lowering"}else{"natural_regions"},if has_dispatch{"residual control lowered to explicit state assignments while natural regions retain if/while"}else{"natural conditional and loop regions with explicit parameter transfers"},s.parents.clone(),Vec::new(),Vec::new()){return;}
-    }
+    if s.owner.artifact.config.strategy == Strategy::Dispatcher
+        && !s.owner.commit(StageKind::ControlFlow, s.ir.clone(), (if has_dispatch{"dispatcher_lowering"}else{"natural_regions"},if has_dispatch{"residual control lowered to explicit state assignments while natural regions retain if/while"}else{"natural conditional and loop regions with explicit parameter transfers"}), s.parents.clone(), Vec::new(), Vec::new()){return;}
     s.owner.commit(
         StageKind::Structured,
         s.ir,
-        "structure_regions",
-        "inspectable executable AST preserves primitive bodies and ordered transfers",
+        (
+            "structure_regions",
+            "inspectable executable AST preserves primitive bodies and ordered transfers",
+        ),
         s.parents,
         Vec::new(),
         Vec::new(),
@@ -95,11 +99,20 @@ fn natural_loops(
     ir: &Ir,
     dom: &BTreeMap<EntityId, BTreeSet<EntityId>>,
     postdom: &BTreeMap<EntityId, BTreeSet<EntityId>>,
-) -> BTreeMap<EntityId, Loop> {
+    owner: &mut Builder<impl FnMut(Progress)>,
+) -> Option<BTreeMap<EntityId, Loop>> {
+    let graph_work = ir
+        .blocks
+        .len()
+        .saturating_mul(ir.blocks.len().saturating_add(ir.edges.len()))
+        .max(1);
     let mut loops: BTreeMap<EntityId, Loop> = BTreeMap::new();
     for edge in &ir.edges {
         if !dom[&edge.from].contains(&edge.to) {
             continue;
+        }
+        if !owner.pay(graph_work) {
+            return None;
         }
         let header = edge.to;
         let mut nodes = BTreeSet::from([header]);
@@ -123,6 +136,9 @@ fn natural_loops(
             .extend(nodes);
     }
     loops.retain(|_, lp| {
+        if !owner.pay(graph_work) {
+            return false;
+        }
         // Terminal tails are part of the loop body: returns/reverts/STOP must
         // remain executable exits rather than forcing a dispatcher around a
         // reducible loop. Acyclic exit bridges can share a single follow.
@@ -161,13 +177,17 @@ fn natural_loops(
         for id in exits.iter().skip(1) {
             common = common.intersection(&postdom[id]).copied().collect();
         }
+        if !owner.pay(graph_work.saturating_mul(exits.len())) {
+            return false;
+        }
+        let exit_distances: Vec<_> = exits.iter().map(|exit| distances(ir, *exit)).collect();
         let follow = common
             .into_iter()
             .filter(|id| id.0 != 0 && !lp.nodes.contains(id))
             .filter_map(|id| {
-                let distance = exits
+                let distance = exit_distances
                     .iter()
-                    .map(|e| distances(ir, *e).get(&id).copied())
+                    .map(|d| d.get(&id).copied())
                     .collect::<Option<Vec<_>>>()?;
                 Some((distance.into_iter().max().unwrap_or(0), id))
             })
@@ -178,7 +198,7 @@ fn natural_loops(
         };
         for exit in exits {
             let bridge = reachable(ir, Some(exit), Some(follow));
-            if bridge.iter().any(|id| !dom[id].contains(&lp.header)) {
+            if bridge.contains(&lp.header) {
                 return false;
             }
             lp.nodes.extend(bridge);
@@ -186,12 +206,20 @@ fn natural_loops(
         lp.exit = Some(follow);
         true
     });
-    loops
+    (!owner.stopped).then_some(loops)
 }
 fn postdominators(
     ir: &Ir,
     owner: &mut Builder<impl FnMut(Progress)>,
 ) -> Option<BTreeMap<EntityId, BTreeSet<EntityId>>> {
+    if !owner.pay(
+        ir.blocks
+            .len()
+            .saturating_mul(ir.blocks.len())
+            .saturating_mul(16),
+    ) {
+        return None;
+    }
     let exit = EntityId(0);
     let mut all: BTreeSet<_> = ir.blocks.iter().map(|b| b.id).collect();
     all.insert(exit);
@@ -262,16 +290,32 @@ struct Structurer<'a, P: FnMut(Progress)> {
     loops: BTreeMap<EntityId, Loop>,
     postdom: BTreeMap<EntityId, BTreeSet<EntityId>>,
     parents: BTreeMap<EntityId, Vec<EntityId>>,
+    created_nodes: usize,
 }
 impl<P: FnMut(Progress)> Structurer<'_, P> {
     fn node(&mut self, kind: StructuredKind, mut parents: Vec<EntityId>) -> Option<StructuredNode> {
-        if !self.owner.pay(1) {
+        if self.created_nodes >= crate::MAX_STRUCTURED_WIRE_NODES {
+            self.owner.stop(
+                Completion::Limited,
+                DiagnosticCode::Limit,
+                "structured node admission bound reached; prior validated stage retained",
+            );
+            return None;
+        }
+        if !self.owner.pay(
+            self.ir
+                .blocks
+                .len()
+                .saturating_add(self.ir.edges.len())
+                .max(1),
+        ) {
             return None;
         }
         parents.extend(kind_sources(&kind));
         parents.sort();
         parents.dedup();
         let id = self.owner.id();
+        self.created_nodes += 1;
         self.parents.insert(id, parents);
         Some(StructuredNode { id, kind })
     }
@@ -325,6 +369,14 @@ impl<P: FnMut(Progress)> Structurer<'_, P> {
         depth: usize,
         path: &BTreeSet<EntityId>,
     ) -> Option<StructuredNode> {
+        if !self.owner.pay(
+            self.ir
+                .blocks
+                .len()
+                .saturating_mul(self.ir.edges.len().saturating_add(1)),
+        ) {
+            return None;
+        }
         let block = self.ir.block(start)?.clone();
         let mut visited = path.clone();
         visited.insert(start);
@@ -347,7 +399,7 @@ impl<P: FnMut(Progress)> Structurer<'_, P> {
                 if edges.len() == 1 && !unresolved && invalid_targets.is_empty() {
                     self.edge_path(edges[0], stop, lp, depth + 1, &visited)?
                 } else {
-                    self.indirect(start, &edges, unresolved, stop, lp, depth + 1, &visited)?
+                    self.indirect(start, (&edges, unresolved), stop, lp, depth + 1, &visited)?
                 }
             }
             Terminator::Branch {
@@ -366,14 +418,51 @@ impl<P: FnMut(Progress)> Structurer<'_, P> {
                 } else {
                     None
                 };
+                // A terminal true arm lets the false continuation remain a
+                // following sequence. This flattens compiler selector chains
+                // without changing the order or nesting of semantic decisions.
+                if join.is_none() && stop.is_none() && lp.is_none() {
+                    let then_branch = if simple {
+                        self.edge_path(then_edges[0], None, None, depth + 1, &visited)?
+                    } else {
+                        self.indirect(
+                            start,
+                            (&then_edges, unresolved),
+                            None,
+                            None,
+                            depth + 1,
+                            &visited,
+                        )?
+                    };
+                    let else_branch = if let Some(edge) = else_edge {
+                        self.node(StructuredKind::Transfer { edge }, vec![edge])?
+                    } else {
+                        self.node(StructuredKind::Exit { block: start }, vec![start])?
+                    };
+                    let branch = self.node(
+                        StructuredKind::If {
+                            condition,
+                            then_branch: Box::new(then_branch),
+                            else_branch: Box::new(else_branch),
+                        },
+                        vec![start, condition],
+                    )?;
+                    let tail = if let Some(edge) = else_edge {
+                        let next = self.ir.edge(edge)?.to;
+                        let follow = self.build(next, None, None, depth + 1, &visited)?;
+                        self.sequence(vec![branch, follow])?
+                    } else {
+                        branch
+                    };
+                    return self.sequence(vec![body, tail]);
+                }
                 let arm_stop = join.or(stop);
                 let then_branch = if simple {
                     self.edge_path(then_edges[0], arm_stop, lp, depth + 1, &visited)?
                 } else {
                     self.indirect(
                         start,
-                        &then_edges,
-                        unresolved,
+                        (&then_edges, unresolved),
                         arm_stop,
                         lp,
                         depth + 1,
@@ -433,13 +522,13 @@ impl<P: FnMut(Progress)> Structurer<'_, P> {
     fn indirect(
         &mut self,
         block: EntityId,
-        edges: &[EntityId],
-        unresolved: bool,
+        jump: (&[EntityId], bool),
         stop: Option<EntityId>,
         lp: Option<&Loop>,
         depth: usize,
         path: &BTreeSet<EntityId>,
     ) -> Option<StructuredNode> {
+        let (edges, unresolved) = jump;
         if edges.is_empty() {
             return self.node(
                 if unresolved {
@@ -488,26 +577,26 @@ impl<P: FnMut(Progress)> Structurer<'_, P> {
             invalid_targets,
             ..
         } = &block.terminator
+            && then_edges.len() == 1
+            && invalid_targets.is_empty()
         {
-            if then_edges.len() == 1 && invalid_targets.is_empty() {
-                let first = self.ir.edge(then_edges[0])?;
-                let second = self.ir.edge(*other)?;
-                if info.nodes.contains(&first.to) != info.nodes.contains(&second.to) {
-                    simple = Some((
-                        *condition,
-                        info.nodes.contains(&first.to),
-                        if info.nodes.contains(&first.to) {
-                            first.id
-                        } else {
-                            second.id
-                        },
-                        if info.nodes.contains(&first.to) {
-                            second.id
-                        } else {
-                            first.id
-                        },
-                    ));
-                }
+            let first = self.ir.edge(then_edges[0])?;
+            let second = self.ir.edge(*other)?;
+            if info.nodes.contains(&first.to) != info.nodes.contains(&second.to) {
+                simple = Some((
+                    *condition,
+                    info.nodes.contains(&first.to),
+                    if info.nodes.contains(&first.to) {
+                        first.id
+                    } else {
+                        second.id
+                    },
+                    if info.nodes.contains(&first.to) {
+                        second.id
+                    } else {
+                        first.id
+                    },
+                ));
             }
         }
         let (header, condition, condition_nonzero, body, exit_edge) =

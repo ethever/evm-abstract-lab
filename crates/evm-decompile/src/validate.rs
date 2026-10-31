@@ -52,12 +52,31 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
     if ir.entry.is_some_and(|id| !blocks.contains_key(&id)) {
         refs.push("entry block missing".to_owned());
     }
-    let operation_ids: BTreeSet<_> = ir
+    let operations: BTreeMap<_, _> = ir
         .blocks
         .iter()
         .flat_map(|b| &b.operations)
-        .map(|o| o.id)
+        .map(|o| (o.id, o))
         .collect();
+    let mut definitions = BTreeMap::<EntityId, usize>::new();
+    for b in &ir.blocks {
+        for id in b
+            .parameters
+            .iter()
+            .copied()
+            .chain([b.memory_parameter, b.effect_parameter])
+            .chain(b.operations.iter().flat_map(|o| {
+                o.outputs
+                    .iter()
+                    .copied()
+                    .chain(o.memory_output)
+                    .chain(o.effect_output)
+            }))
+        {
+            *definitions.entry(id).or_default() += 1;
+        }
+    }
+    let mut ownership = Vec::new();
     for v in &ir.values {
         if cancel.is_cancelled() {
             return cancelled();
@@ -70,21 +89,53 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
             | ValueKind::Memory {
                 operation: Some(operation),
             } => {
-                if !operation_ids.contains(&operation) {
+                if !operations.contains_key(&operation) {
                     refs.push(format!("definition {:?} has missing operation", v.id));
                 }
             }
             ValueKind::Parameter { block, .. }
             | ValueKind::MemoryParameter { block }
-            | ValueKind::EffectParameter { block } => {
-                if !blocks.contains_key(&block) {
-                    refs.push(format!("parameter {:?} has missing block", v.id));
-                }
+            | ValueKind::EffectParameter { block }
+                if !blocks.contains_key(&block) =>
+            {
+                refs.push(format!("parameter {:?} has missing block", v.id));
             }
             _ => {}
         }
+        let owned = match v.kind {
+            ValueKind::Operation { operation, index } => operations
+                .get(&operation)
+                .is_some_and(|o| o.outputs.get(index) == Some(&v.id)),
+            ValueKind::Memory {
+                operation: Some(operation),
+            } => operations
+                .get(&operation)
+                .is_some_and(|o| o.memory_output == Some(v.id)),
+            ValueKind::Effect {
+                operation: Some(operation),
+            } => operations
+                .get(&operation)
+                .is_some_and(|o| o.effect_output == Some(v.id)),
+            ValueKind::Parameter { block, index } => blocks
+                .get(&block)
+                .is_some_and(|b| b.parameters.get(index) == Some(&v.id)),
+            ValueKind::MemoryParameter { block } => blocks
+                .get(&block)
+                .is_some_and(|b| b.memory_parameter == v.id),
+            ValueKind::EffectParameter { block } => blocks
+                .get(&block)
+                .is_some_and(|b| b.effect_parameter == v.id),
+            _ => true,
+        };
+        if !owned || definitions.get(&v.id) != Some(&1) {
+            ownership.push(format!(
+                "definition {:?} has no unique matching owner/index",
+                v.id
+            ));
+        }
     }
     add("defined_references", refs);
+    add("ssa_definition_ownership", ownership);
     let mut cfg = Vec::new();
     let mut arity = Vec::new();
     let mut ssa = Vec::new();
@@ -95,8 +146,10 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
         if cancel.is_cancelled() {
             return cancelled();
         }
-        if b.source.is_some_and(|s| s.end_pc < s.pc) {
-            spans.push(format!("reversed block span {:?}", b.id));
+        if b.source
+            .is_some_and(|s| s.end_pc < s.pc || s.end_pc > ir.bytecode_len)
+        {
+            spans.push(format!("invalid block span {:?}", b.id));
         }
         let mut available: BTreeSet<_> = b.parameters.iter().copied().collect();
         let mut memory = b.memory_parameter;
@@ -117,8 +170,10 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
             if cancel.is_cancelled() {
                 return cancelled();
             }
-            if o.source.is_some_and(|s| s.end_pc < s.pc) {
-                spans.push(format!("reversed operation span {:?}", o.id));
+            if o.source
+                .is_some_and(|s| s.end_pc < s.pc || s.end_pc > ir.bytecode_len)
+            {
+                spans.push(format!("invalid operation span {:?}", o.id));
             }
             let fault = position + 1 == b.operations.len()
                 && matches!(b.terminator, Terminator::Trap { .. });
@@ -136,10 +191,10 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
                         ssa.push(format!("out of scope operand {input:?} at {:?}", o.id));
                     }
                 }
-                if o.effects.memory_read || o.effects.memory_write {
-                    if o.memory_input != Some(memory) {
-                        mem.push(format!("memory order mismatch at {:?}", o.id));
-                    }
+                if (o.effects.memory_read || o.effects.memory_write)
+                    && o.memory_input != Some(memory)
+                {
+                    mem.push(format!("memory order mismatch at {:?}", o.id));
                 }
             }
             for output in &o.outputs {
@@ -407,12 +462,18 @@ pub(crate) fn validate_transition(
     before: &Stage,
     after: &Stage,
     copies: &[(EntityId, EntityId)],
+    cancel: &Cancellation,
 ) -> ValidationCheck {
     let ancestry: BTreeMap<_, _> = copies.iter().map(|(a, b)| (*b, *a)).collect();
+    let old_blocks: BTreeMap<_, _> = before.ir.blocks.iter().map(|b| (b.id, b)).collect();
     let mut errors = Vec::new();
     for b in &after.ir.blocks {
+        if cancel.is_cancelled() {
+            errors.push("transition validation cancelled".to_owned());
+            break;
+        }
         let original = ancestry.get(&b.id).copied().unwrap_or(b.id);
-        let Some(old) = before.ir.block(original) else {
+        let Some(old) = old_blocks.get(&original) else {
             errors.push(format!("block {:?} has no prior body ancestry", b.id));
             continue;
         };
@@ -424,6 +485,10 @@ pub(crate) fn validate_transition(
             continue;
         }
         for (a, z) in old.operations.iter().zip(&b.operations) {
+            if cancel.is_cancelled() {
+                errors.push("transition validation cancelled".to_owned());
+                break;
+            }
             if ancestry.get(&z.id).copied().unwrap_or(z.id) != a.id
                 || a.opcode != z.opcode
                 || a.effects != z.effects

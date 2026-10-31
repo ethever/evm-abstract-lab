@@ -3,12 +3,12 @@
 //! frames. A memory fact survives a merge only when all incoming snapshots agree.
 
 use crate::{
-    Block, Completion, DiagnosticCode, Edge, EdgeKind, EntityId, FactScope, Ir, Operation, Phase,
-    Progress, Severity, SourceSpan, StageKind, Terminator, U256, Value, ValueFact, ValueKind,
-    artifact::Builder, effects::effects,
+    Block, Completion, DiagnosticCode, Edge, EdgeKind, EntityId, ExitKind, FactScope, Ir,
+    Operation, Phase, Progress, Severity, SourceSpan, StageKind, Terminator, U256, Value,
+    ValueFact, ValueKind, artifact::Builder, effects::effects,
 };
 use analysis_kernel::Worklist;
-use evm_bytecode::{Instruction, Program};
+use evm_bytecode::Program;
 use evm_domain::{DomainSpec, EvmNumericAlgebra, FiniteConstantSet, FiniteSetAlgebra};
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
@@ -79,6 +79,18 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         );
         return false;
     }
+    if owner.limits().max_structuring_depth > crate::MAX_STRUCTURING_DEPTH {
+        owner.stop(
+            Completion::Failed,
+            DiagnosticCode::Limit,
+            "max_structuring_depth exceeds the supported recursion ceiling (512)",
+        );
+        return false;
+    }
+    // Decoding is linear in the supplied bytes, including unreachable tails.
+    if !owner.pay(owner.artifact.input.runtime_bytecode.len()) {
+        return false;
+    }
     let program = match Program::decode_with_fork(
         &owner.artifact.input.runtime_bytecode,
         owner.artifact.input.fork,
@@ -124,8 +136,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
     if !owner.commit(
         StageKind::Decoded,
         source.clone(),
-        "decode",
-        "fork-aware original bytecode decoding",
+        ("decode", "fork-aware original bytecode decoding"),
         BTreeMap::new(),
         Vec::new(),
         Vec::new(),
@@ -151,6 +162,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         parents: BTreeMap::new(),
         copies: Vec::new(),
         value_index: BTreeMap::new(),
+        operation_count: count,
     };
     recovery.reindex();
     if blocks > 0 {
@@ -162,9 +174,11 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
             },
         });
         recovery.contexts.insert((0, 0), 0);
-        recovery.queue.enqueue(0);
+        if !recovery.enqueue(0) {
+            return false;
+        }
     }
-    while let Some(index) = recovery.queue.pop_front() {
+    while !recovery.queue.is_empty() {
         if recovery.owner.artifact.statistics.evaluations >= recovery.owner.limits().max_iterations
         {
             recovery.owner.stop(
@@ -174,13 +188,40 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
             );
             break;
         }
-        if !recovery.owner.pay(1) {
-            break;
-        }
+        // The shared kernel owns the FIFO selection/removal quote. Each wake
+        // separately reserves enqueue_work, including geometric queue growth.
+        let index = match recovery.queue.pop_eligible(recovery.owner, |_| true) {
+            Ok(Some(index)) => index,
+            Ok(None) => break,
+            Err(error) => {
+                if !recovery.owner.stopped {
+                    let (completion, code) = if recovery.owner.cancel.is_cancelled() {
+                        (Completion::Cancelled, DiagnosticCode::Cancelled)
+                    } else {
+                        (Completion::Limited, DiagnosticCode::Limit)
+                    };
+                    recovery.owner.stop(
+                        completion,
+                        code,
+                        &format!("recovery queue selection refused: {error:?}"),
+                    );
+                }
+                break;
+            }
+        };
         recovery.owner.artifact.statistics.evaluations += 1;
         if !recovery.transfer(index) {
             break;
         }
+    }
+    if recovery.owner.stopped {
+        return false;
+    }
+    if !recovery
+        .owner
+        .pay(crate::transform::ir_size(&recovery.ir).saturating_mul(4))
+    {
+        return false;
     }
     let reached: std::collections::BTreeSet<_> = recovery
         .states
@@ -197,6 +238,13 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         .flat_map(|b| &b.operations)
         .map(|o| o.id)
         .collect();
+    let word_outputs: std::collections::BTreeSet<_> = recovery
+        .ir
+        .blocks
+        .iter()
+        .flat_map(|b| &b.operations)
+        .flat_map(|o| o.outputs.iter().copied())
+        .collect();
     recovery.ir.values.retain(|v| match v.kind {
         ValueKind::Operation { operation, .. }
         | ValueKind::Effect {
@@ -208,35 +256,8 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         ValueKind::Parameter { block, .. }
         | ValueKind::MemoryParameter { block }
         | ValueKind::EffectParameter { block } => reached.contains(&block),
-        _ => recovery
-            .ir
-            .blocks
-            .iter()
-            .any(|b| b.operations.iter().any(|o| o.outputs.contains(&v.id))),
+        _ => word_outputs.contains(&v.id),
     });
-    // A pending block still owns its memory parameter even without instructions.
-    let memories: Vec<_> = recovery
-        .ir
-        .blocks
-        .iter()
-        .map(|b| b.memory_parameter)
-        .collect();
-    for memory in memories {
-        if !recovery.ir.values.iter().any(|v| v.id == memory) {
-            let block = recovery
-                .ir
-                .blocks
-                .iter()
-                .find(|b| b.memory_parameter == memory)
-                .expect("memory owner")
-                .id;
-            recovery.ir.values.push(Value {
-                id: memory,
-                kind: ValueKind::MemoryParameter { block },
-                fact: ValueFact::Unknown,
-            });
-        }
-    }
     for block in &recovery.ir.blocks {
         if block.terminator.is_partial() {
             recovery.owner.partial();
@@ -263,8 +284,10 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
     let adopted = recovery.owner.commit(
         StageKind::Baseline,
         recovery.ir,
-        "local_recovery",
-        "bounded stack/value/memory fixed point with explicit phi assignments",
+        (
+            "local_recovery",
+            "bounded stack/value/memory fixed point with explicit phi assignments",
+        ),
         recovery.parents,
         recovery.copies,
         Vec::new(),
@@ -388,8 +411,17 @@ struct Recovery<'a, P: FnMut(Progress)> {
     value_index: BTreeMap<EntityId, usize>,
     parents: BTreeMap<EntityId, Vec<EntityId>>,
     copies: Vec<(EntityId, EntityId)>,
+    // Includes source templates and real stack-height context copies.
+    operation_count: usize,
 }
 impl<P: FnMut(Progress)> Recovery<'_, P> {
+    fn enqueue(&mut self, index: usize) -> bool {
+        if !self.owner.pay(self.queue.enqueue_work()) {
+            return false;
+        }
+        self.queue.enqueue(index);
+        true
+    }
     fn reindex(&mut self) {
         self.value_index = self
             .ir
@@ -454,6 +486,24 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             );
             return None;
         }
+        let operations = self.templates.blocks[original].operations.len();
+        if self.operation_count.saturating_add(operations) > self.owner.limits().max_operations {
+            self.owner.stop(
+                Completion::Limited,
+                DiagnosticCode::Limit,
+                "stack-height context operation limit exceeded; prior validated stage retained",
+            );
+            return None;
+        }
+        if !self.owner.pay(
+            self.templates
+                .values
+                .len()
+                .saturating_add(operations.saturating_mul(8)),
+        ) {
+            return None;
+        }
+        self.operation_count += operations;
         let mut block = self.templates.blocks[original].clone();
         let mut map = BTreeMap::new();
         let ids: Vec<_> = std::iter::once(block.id)
@@ -562,7 +612,9 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             }
             self.ir.blocks[index].parameters = parameters;
             self.states[index] = Some(incoming);
-            self.queue.enqueue(index);
+            if !self.enqueue(index) {
+                return None;
+            }
         } else {
             let mut incoming = self.states[index].clone().expect("reached context");
             let mut changed = false;
@@ -576,7 +628,9 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             changed |= incoming.memory.merge(&state.memory);
             if changed {
                 self.states[index] = Some(incoming);
-                self.queue.enqueue(index);
+                if !self.enqueue(index) {
+                    return None;
+                }
             }
         }
         let target = self.ir.blocks[index].id;
@@ -617,14 +671,19 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         effect: EntityId,
     ) -> Option<(Vec<EntityId>, bool, Vec<U256>)> {
         let ValueFact::Constants(targets) = &target.fact else {
-            let known = self
-                .ir
+            let known: std::collections::BTreeSet<_> = self
                 .edges
                 .iter()
-                .filter(|e| e.from == self.ir.blocks[from].id && e.kind == kind)
-                .map(|e| e.id)
+                .filter(|((source, _, edge_kind), _)| *source == from && *edge_kind == kind)
+                .map(|((_, target, _), _)| self.origins[*target])
                 .collect();
-            return Some((known, true, Vec::new()));
+            // Widening the target does not retract known continuations. Their
+            // carried stack/memory must still receive this evaluation's input.
+            let mut edges = Vec::new();
+            for original in known {
+                edges.push(self.connect(from, original, kind, state, memory, effect)?);
+            }
+            return Some((edges, true, Vec::new()));
         };
         let mut edges = Vec::new();
         let mut invalid = Vec::new();
@@ -709,6 +768,27 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 );
                 terminator = Some(Terminator::Trap {
                     reason: "EVM stack underflow".to_owned(),
+                });
+                block.operations.truncate(position + 1);
+                break;
+            }
+            let next_height = if (0x80..=0x8f).contains(&code) {
+                state.stack.len() + 1
+            } else if (0x90..=0x9f).contains(&code) {
+                state.stack.len()
+            } else {
+                state.stack.len() - required + instruction.stack_io().1
+            };
+            if next_height > 1024 {
+                self.owner.diagnostic(
+                    DiagnosticCode::StackOverflow,
+                    Severity::Info,
+                    Some(op.id),
+                    op.source,
+                    "EVM stack exceeds 1024 items".to_owned(),
+                );
+                terminator = Some(Terminator::Trap {
+                    reason: "EVM stack overflow".to_owned(),
                 });
                 block.operations.truncate(position + 1);
                 break;
@@ -881,20 +961,6 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                     }
                     _ => {}
                 }
-            }
-            if state.stack.len() > 1024 {
-                self.owner.diagnostic(
-                    DiagnosticCode::StackOverflow,
-                    Severity::Info,
-                    Some(op.id),
-                    op.source,
-                    "EVM stack exceeds 1024 items".to_owned(),
-                );
-                terminator = Some(Terminator::Trap {
-                    reason: "EVM stack overflow".to_owned(),
-                });
-                block.operations.truncate(position + 1);
-                break;
             }
             if terminator.is_some() {
                 break;

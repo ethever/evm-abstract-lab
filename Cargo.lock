@@ -2718,6 +2718,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "evm-decompile"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "analysis-control",
+ "analysis-kernel",
+ "evm-bytecode",
+ "evm-decompile-model",
+ "evm-domain",
+ "evm-resource",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "evm-decompile-model"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "evm-bytecode",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "evm-domain"
 version = "0.4.0"
 dependencies = [

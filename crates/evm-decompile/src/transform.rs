@@ -12,23 +12,32 @@ pub(crate) fn simplify(owner: &mut Builder<impl FnMut(Progress)>) {
     }
     let mut ir = owner.current().ir.clone();
     if ir.fact_scope != FactScope::CompleteLocalCfg {
-        owner.commit(StageKind::Simplified,ir,"preserve_open_facts","unresolved predecessor coverage keeps numeric facts conditional; no unconditional folding",BTreeMap::new(),Vec::new(),Vec::new());
+        owner.commit(StageKind::Simplified, ir, ("preserve_open_facts","unresolved predecessor coverage keeps numeric facts conditional; no unconditional folding"), BTreeMap::new(), Vec::new(), Vec::new());
         return;
     }
     let facts: BTreeMap<_, _> = ir.values.iter().map(|v| (v.id, v.fact.clone())).collect();
+    let value_indices: BTreeMap<_, _> = ir
+        .values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v.id, i))
+        .collect();
     for b in &mut ir.blocks {
         for op in &mut b.operations {
-            if op.effects.is_pure() && evm_bytecode::word::arity(op.opcode).is_some() {
-                if let Some(word) = op
+            if !owner.pay(1) {
+                return;
+            }
+            if op.effects.is_pure()
+                && evm_bytecode::word::arity(op.opcode).is_some()
+                && let Some(word) = op
                     .outputs
                     .first()
                     .and_then(|v| facts.get(v))
                     .and_then(ValueFact::singleton)
-                {
-                    op.replacement = Some(word);
-                    if let Some(v) = ir.values.iter_mut().find(|v| op.outputs.contains(&v.id)) {
-                        v.kind = ValueKind::Constant(word);
-                    }
+            {
+                op.replacement = Some(word);
+                if let Some(output) = op.outputs.first() {
+                    ir.values[value_indices[output]].kind = ValueKind::Constant(word);
                 }
             }
         }
@@ -61,15 +70,7 @@ pub(crate) fn simplify(owner: &mut Builder<impl FnMut(Progress)>) {
         }
     }
     prune(&mut ir);
-    owner.commit(
-        StageKind::Simplified,
-        ir,
-        "pure_folding",
-        "shared numeric facts fold pure operations and decided branches; effects remain ordered",
-        BTreeMap::new(),
-        Vec::new(),
-        Vec::new(),
-    );
+    owner.commit(StageKind::Simplified, ir, ("pure_folding","shared numeric facts fold pure operations and decided branches; effects remain ordered"), BTreeMap::new(), Vec::new(), Vec::new());
 }
 pub(crate) fn ir_size(ir: &Ir) -> usize {
     let mut units = ir
@@ -174,6 +175,10 @@ pub(crate) fn dominators(
     ir: &Ir,
     owner: &mut Builder<impl FnMut(Progress)>,
 ) -> Option<BTreeMap<EntityId, BTreeSet<EntityId>>> {
+    let cells = ir.blocks.len().saturating_mul(ir.blocks.len());
+    if !owner.pay(cells.saturating_mul(16)) {
+        return None;
+    }
     let all: BTreeSet<_> = ir.blocks.iter().map(|b| b.id).collect();
     let mut dom: BTreeMap<_, _> = all
         .iter()
@@ -291,6 +296,9 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
         if owner.stopped {
             return;
         }
+        if !owner.pay(ir_size(&owner.current().ir).saturating_mul(4)) {
+            return;
+        }
         let base = owner.current().ir.clone();
         let Some(dom) = dominators(&base, owner) else {
             return;
@@ -300,8 +308,10 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
                 owner.commit(
                     StageKind::ControlFlow,
                     base,
-                    "reducible_cfg",
-                    "dominance confirms no irreducible cycle remains",
+                    (
+                        "reducible_cfg",
+                        "dominance confirms no irreducible cycle remains",
+                    ),
                     BTreeMap::new(),
                     Vec::new(),
                     Vec::new(),
@@ -325,7 +335,7 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
                 Severity::Warning,
                 None,
                 None,
-                "cyclic residual has no selectable multi-entry split; dispatcher retained"
+                "cyclic residual has no selectable multi-entry split; prior CFG retained without dispatcher fallback"
                     .to_owned(),
             );
             return;
@@ -358,6 +368,44 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
         ) {
             return;
         }
+        let selected_blocks: Vec<_> = base
+            .blocks
+            .iter()
+            .filter(|b| component.contains(&b.id) && b.id != primary)
+            .collect();
+        let planned_operations = selected_blocks
+            .iter()
+            .map(|b| b.operations.len())
+            .sum::<usize>()
+            .saturating_mul(entries.len() - 1);
+        let planned_values = selected_blocks
+            .iter()
+            .map(|b| {
+                b.parameters.len().saturating_add(2).saturating_add(
+                    b.operations
+                        .iter()
+                        .map(|o| {
+                            o.outputs.len()
+                                + usize::from(o.memory_output.is_some())
+                                + usize::from(o.effect_output.is_some())
+                        })
+                        .sum::<usize>(),
+                )
+            })
+            .sum::<usize>()
+            .saturating_mul(entries.len() - 1);
+        if base.values.len().saturating_add(planned_values) > owner.limits().max_values
+            || base
+                .blocks
+                .iter()
+                .map(|b| b.operations.len())
+                .sum::<usize>()
+                .saturating_add(planned_operations)
+                > owner.limits().max_operations
+        {
+            owner.stop(Completion::Limited,DiagnosticCode::Limit,"node split temporary value/operation identities exceed the configured limit; prior validated stage retained");
+            return;
+        }
         let mut ir = base.clone();
         let mut parents = BTreeMap::new();
         let mut copies = Vec::new();
@@ -381,6 +429,16 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
                 });
             }
         }
+        // A secondary entry may not reach every selected non-header copy
+        // before returning to the primary header. Retain only actual bodies;
+        // unreachable temporary copies have no published occurrence or clone.
+        prune(&mut ir);
+        let old_blocks: BTreeSet<_> = base.blocks.iter().map(|b| b.id).collect();
+        let retained_copies = ir
+            .blocks
+            .iter()
+            .filter(|b| !old_blocks.contains(&b.id))
+            .count();
         if ir.values.len() > owner.limits().max_values
             || ir.blocks.iter().map(|b| b.operations.len()).sum::<usize>()
                 > owner.limits().max_operations
@@ -388,8 +446,8 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
             owner.stop(Completion::Limited,DiagnosticCode::Limit,"split candidate exceeds retained value/operation limit; prior validated CFG retained");
             return;
         }
-        if !owner.commit(StageKind::ControlFlow,ir,"selective_node_split","copy non-header region and redirect secondary entries; all copied definitions and edge assignments receive fresh identities",parents,copies,redirects){return;}
-        owner.artifact.statistics.cloned_blocks += total;
+        if !owner.commit(StageKind::ControlFlow, ir, ("selective_node_split","copy non-header region and redirect secondary entries; all copied definitions and edge assignments receive fresh identities"), parents, copies, redirects){return;}
+        owner.artifact.statistics.cloned_blocks += retained_copies;
     }
 }
 fn copy_nodes(

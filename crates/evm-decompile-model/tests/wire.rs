@@ -1,3 +1,4 @@
+//! Strict named-record and flat structured-tree wire regressions.
 use evm_decompile_model::{
     Artifact, ArtifactId, Completion, Config, EntityId, Fork, Input, Ir, Limits, Progress,
     SCHEMA_VERSION, SourceMappings, SourceSpan, Stage, StageDiff, StageId, StageKind, Statistics,

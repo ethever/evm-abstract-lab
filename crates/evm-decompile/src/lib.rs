@@ -19,7 +19,10 @@ pub use analysis_control::Cancellation;
 pub use evm_bytecode::Fork;
 pub use evm_decompile_model::*;
 pub use execute::*;
-pub use render::{render_text, render_text_with_cancel};
+pub use render::{
+    TextExport, TextExportStatus, export_text, export_text_with_observer, render_text,
+    render_text_with_cancel, render_text_with_observer,
+};
 pub use validate::validate_stage;
 
 /// Recover and structure one runtime bytecode input with an explicit fork.

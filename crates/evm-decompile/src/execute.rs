@@ -42,8 +42,11 @@ pub enum ExecutionError {
     /// Host output shape disagrees with the instruction definition.
     #[error("opcode 0x{opcode:02x} returned {actual} results, expected {expected}")]
     OutputArity {
+        /// Required EVM primitive opcode.
         opcode: u8,
+        /// Required output count.
         expected: usize,
+        /// Actual host output count.
         actual: usize,
     },
     /// Concrete memory expansion refused before allocation.
@@ -107,11 +110,22 @@ pub struct SemanticObservation {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionOutcome {
     /// Terminal EVM primitive with its original arguments.
-    Exit { kind: ExitKind, values: Vec<U256> },
+    Exit {
+        /// Terminal EVM behavior.
+        kind: ExitKind,
+        /// Ordered terminal operands.
+        values: Vec<U256>,
+    },
     /// EVM exceptional halt (not a recovery failure).
-    Exceptional { reason: String },
+    Exceptional {
+        /// Concrete explanation.
+        reason: String,
+    },
     /// Recovery has no represented continuation for this concrete target.
-    PartialJump { target: Option<U256> },
+    PartialJump {
+        /// Runtime jump-target word.
+        target: Option<U256>,
+    },
     /// Concrete instruction step ceiling was reached.
     StepLimit,
 }
@@ -548,10 +562,10 @@ impl<'a, H: SemanticHost> Runtime<'a, H> {
             StructuredKind::Sequence(nodes) => {
                 let mut escaped = None;
                 for node in nodes {
-                    if let Some(target) = escaped.take() {
-                        if first_block(node, self.ir) != Some(target) {
-                            return Ok(Flow::Escaped(target));
-                        }
+                    if let Some(target) = escaped.take()
+                        && first_block(node, self.ir) != Some(target)
+                    {
+                        return Ok(Flow::Escaped(target));
                     }
                     match self.syntax(node)? {
                         Flow::Normal => {}
@@ -592,13 +606,13 @@ impl<'a, H: SemanticHost> Runtime<'a, H> {
                         Flow::Normal => {}
                         other => return Ok(other),
                     }
-                    if let Some(id) = condition {
-                        if (self.value(*id)? != U256::ZERO) != *condition_nonzero {
-                            if let Some(edge) = exit_edge {
-                                self.transfer(*edge)?;
-                            }
-                            return Ok(Flow::Normal);
+                    if let Some(id) = condition
+                        && (self.value(*id)? != U256::ZERO) != *condition_nonzero
+                    {
+                        if let Some(edge) = exit_edge {
+                            self.transfer(*edge)?;
                         }
+                        return Ok(Flow::Normal);
                     }
                     match self.syntax(body)? {
                         Flow::Normal | Flow::Continue => {}
@@ -737,11 +751,13 @@ pub struct ExternalResponse {
     pub result: U256,
     /// Buffer replacing RETURNDATA (also copied to CALL's output range).
     pub return_data: Vec<u8>,
-    /// Host-visible writes performed by the external execution.
+    /// Child writes committed only when the call/create result succeeds.
     pub storage_writes: BTreeMap<U256, U256>,
 }
-/// Inspectable concrete host for fixtures. Application hosts may implement their
-/// own world primitives; recovery itself never constructs this concrete state.
+/// Inspectable primitive host for fixtures. State records effects before the
+/// enclosing frame commits or rolls back; callers interpret the returned exit.
+/// Application hosts own world primitives and frame lifecycle. Recovery itself
+/// never constructs this concrete state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryHost {
     /// Runtime bytes used by CODECOPY.
@@ -893,7 +909,7 @@ impl SemanticHost for MemoryHost {
                 self.return_data = response.return_data;
                 let copied = len.min(self.return_data.len());
                 self.memory[off..off + copied].copy_from_slice(&self.return_data[..copied]);
-                if p.opcode != 0xfa {
+                if p.opcode != 0xfa && response.result != U256::ZERO {
                     self.storage.extend(response.storage_writes);
                 }
                 out.push(response.result);
@@ -904,8 +920,12 @@ impl SemanticHost for MemoryHost {
                     .responses
                     .pop_front()
                     .ok_or(ExecutionError::UnsupportedPrimitive(p.opcode))?;
-                self.return_data = response.return_data;
-                self.storage.extend(response.storage_writes);
+                if response.result != U256::ZERO {
+                    self.storage.extend(response.storage_writes);
+                    self.return_data.clear();
+                } else {
+                    self.return_data = response.return_data;
+                }
                 out.push(response.result);
             }
             0xf3 | 0xfd => {
