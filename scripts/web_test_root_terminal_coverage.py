@@ -650,7 +650,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert json.loads(submitted.value.request.post_data) == expected_request
         current_id = _decimal_identity(str(submitted.value.json()["result"]["Ok"]["id"]))
         try:
-            expect(status).to_contain_text("Unsupported response schema 16; expected 21", timeout=60000)
+            expect(status).to_contain_text("Unsupported response schema 16; expected 22", timeout=60000)
         finally:
             canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
         after_status = status.text_content()
@@ -662,7 +662,7 @@ def _schema_control(page, canvas, output, expected_request):
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert intercepted == [True], intercepted
         assert len(posts) == 1 and json.loads(posts[0]) == expected_request, posts
-        assert after_status.startswith("Error: Unsupported response schema 16; expected 21; "), after_status
+        assert after_status.startswith("Error: Unsupported response schema 16; expected 22; "), after_status
         current_ids = re.findall(r"(?:^|; )Current Job ID: ([^;]+)(?=;|$)", after_status)
         retained_ids = re.findall(r"(?:^|; )Result Job ID: ([^;]+)(?=;|$)", after_status)
         assert len(current_ids) == len(retained_ids) == 1, after_status
