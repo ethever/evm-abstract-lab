@@ -445,31 +445,13 @@ impl Graph {
     }
 
     pub(crate) fn zoom_at(&mut self, pointer: Vec2, factor: f32) {
-        if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() <= f32::EPSILON {
-            return;
+        if crate::graph_view::zoom_at(&mut self.zoom, &mut self.pan, pointer, factor) {
+            self.fitted = false;
         }
-        let old = self.zoom;
-        // Fit can legitimately make a large graph smaller than 8%. An
-        // arbitrary lower clamp would turn its next zoom-out into zoom-in.
-        let zoom = (old * factor).min(2.5);
-        let ratio = zoom / old;
-        if zoom <= 0.0 || !ratio.is_finite() || ratio <= 0.0 {
-            return;
-        }
-        let pan = pointer - (pointer - self.pan) * ratio;
-        if !pan.is_finite() {
-            return;
-        }
-        self.fitted = false;
-        self.zoom = zoom;
-        self.pan = pan;
     }
 
     fn screen_rect(&self, canvas: Rect, world: Rect) -> Rect {
-        Rect::from_min_size(
-            canvas.min + self.pan + world.min.to_vec2() * self.zoom,
-            world.size() * self.zoom,
-        )
+        crate::graph_view::screen_rect(canvas, world, self.pan, self.zoom)
     }
 
     fn fit(&mut self, size: Vec2) {

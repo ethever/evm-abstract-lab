@@ -3,6 +3,7 @@
 
 mod app;
 mod controls;
+mod graph_view;
 mod notation;
 mod palette;
 mod report;
