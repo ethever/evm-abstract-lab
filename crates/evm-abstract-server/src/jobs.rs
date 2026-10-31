@@ -4,11 +4,13 @@
 //! analysis, own mutable task state, or hold an execution lock while waiting.
 
 mod actor;
+mod task;
 
 use evm_abstract::analysis::control::Control;
 use evm_abstract_protocol::{
-    AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode, ErrorDetails, JobId, JobPublication,
-    JobSnapshot, WorkerErrorKind, WorkerFailure,
+    AnalysisReport, AnalyzeRequest, ApiError, ApiErrorCode, DecompileArtifact,
+    DecompileJobSnapshot, DecompileRequest, ErrorDetails, JobId, JobPublication, JobSnapshot,
+    PublicationVersion, WorkerErrorKind, WorkerFailure,
 };
 use std::{
     io,
@@ -76,6 +78,16 @@ pub trait Executor: Clone + Send + 'static {
     ) -> Result<AnalysisReport, ApiError> {
         self.execute(request, control)
     }
+
+    /// Run an independent local decompilation on the same bounded worker slots.
+    fn decompile(
+        &self,
+        request: DecompileRequest,
+        control: &Control,
+        progress: &crate::decompile::Observer,
+    ) -> Result<DecompileArtifact, ApiError> {
+        crate::decompile::run(request, control, progress)
+    }
 }
 
 /// Worker-owned channel for at most a baseline and a final publication.
@@ -121,6 +133,17 @@ pub struct PublishedResult {
     pub publication: JobPublication,
     /// Immutable source-qualified report.
     pub report: Arc<AnalysisReport>,
+}
+
+/// Immutable decompiler result; its stages do not use native state identities.
+#[derive(Debug)]
+pub struct PublishedDecompileResult {
+    /// Originating task in the common scheduler.
+    pub id: JobId,
+    /// Network publication version, independent of IR stages.
+    pub publication: PublicationVersion,
+    /// Independent transformation artifact.
+    pub artifact: Arc<DecompileArtifact>,
 }
 
 #[derive(Clone)]
@@ -238,6 +261,25 @@ impl Pool {
     /// Admit a configured input or return a validation/queue-capacity failure.
     pub fn submit(&self, request: AnalyzeRequest) -> Result<JobSnapshot, ApiError> {
         self.providers.validate_request(&request)?;
+        match self.submit_task(task::Request::Analysis(Box::new(request)))? {
+            task::Snapshot::Analysis(snapshot) => Ok(snapshot),
+            task::Snapshot::Decompile(_) => Err(task_type_error()),
+        }
+    }
+
+    /// Admit local bytecode recovery without creating an execution world.
+    pub fn submit_decompile(
+        &self,
+        request: DecompileRequest,
+    ) -> Result<DecompileJobSnapshot, ApiError> {
+        crate::decompile::validate(&request)?;
+        match self.submit_task(task::Request::Decompile(Box::new(request)))? {
+            task::Snapshot::Decompile(snapshot) => Ok(snapshot),
+            task::Snapshot::Analysis(_) => Err(task_type_error()),
+        }
+    }
+
+    fn submit_task(&self, request: task::Request) -> Result<task::Snapshot, ApiError> {
         let (reply, result) = mpsc::sync_channel(1);
         self.send(actor::Command::Submit {
             request: Box::new(request),
@@ -248,16 +290,50 @@ impl Pool {
 
     /// Read a small status snapshot without copying the report.
     pub fn status(&self, id: JobId) -> Result<JobSnapshot, ApiError> {
+        match self.task_status(id, task::Kind::Analysis, false)? {
+            task::Snapshot::Analysis(snapshot) => Ok(snapshot),
+            task::Snapshot::Decompile(_) => Err(task_type_error()),
+        }
+    }
+
+    /// Read local recovery/structuring progress without cloning its artifact.
+    pub fn decompile_status(&self, id: JobId) -> Result<DecompileJobSnapshot, ApiError> {
+        match self.task_status(id, task::Kind::Decompile, false)? {
+            task::Snapshot::Decompile(snapshot) => Ok(snapshot),
+            task::Snapshot::Analysis(_) => Err(task_type_error()),
+        }
+    }
+
+    fn task_status(
+        &self,
+        id: JobId,
+        kind: task::Kind,
+        cancel: bool,
+    ) -> Result<task::Snapshot, ApiError> {
         let (reply, result) = mpsc::sync_channel(1);
-        self.send(actor::Command::Status { id, reply })?;
+        let command = if cancel {
+            actor::Command::Cancel { id, kind, reply }
+        } else {
+            actor::Command::Status { id, kind, reply }
+        };
+        self.send(command)?;
         result.recv().map_err(|_| channel_error())?
     }
 
     /// Request cooperative cancellation; terminal acknowledgement follows cleanup.
     pub fn cancel(&self, id: JobId) -> Result<JobSnapshot, ApiError> {
-        let (reply, result) = mpsc::sync_channel(1);
-        self.send(actor::Command::Cancel { id, reply })?;
-        result.recv().map_err(|_| channel_error())?
+        match self.task_status(id, task::Kind::Analysis, true)? {
+            task::Snapshot::Analysis(snapshot) => Ok(snapshot),
+            task::Snapshot::Decompile(_) => Err(task_type_error()),
+        }
+    }
+
+    /// Request cancellation; terminal acknowledgment follows worker cleanup.
+    pub fn cancel_decompile(&self, id: JobId) -> Result<DecompileJobSnapshot, ApiError> {
+        match self.task_status(id, task::Kind::Decompile, true)? {
+            task::Snapshot::Decompile(snapshot) => Ok(snapshot),
+            task::Snapshot::Analysis(_) => Err(task_type_error()),
+        }
     }
 
     /// Borrow the latest immutable report, including while optional work runs.
@@ -267,8 +343,23 @@ impl Pool {
 
     /// Read publication identity and report atomically; cancellation retains it.
     pub fn published_result(&self, id: JobId) -> Result<PublishedResult, ApiError> {
+        match self.task_result(id, task::Kind::Analysis)? {
+            task::Published::Analysis(result) => Ok(result),
+            task::Published::Decompile(_) => Err(task_type_error()),
+        }
+    }
+
+    /// Read the exact immutable decompiler publication.
+    pub fn decompile_result(&self, id: JobId) -> Result<PublishedDecompileResult, ApiError> {
+        match self.task_result(id, task::Kind::Decompile)? {
+            task::Published::Decompile(result) => Ok(result),
+            task::Published::Analysis(_) => Err(task_type_error()),
+        }
+    }
+
+    fn task_result(&self, id: JobId, kind: task::Kind) -> Result<task::Published, ApiError> {
         let (reply, result) = mpsc::sync_channel(1);
-        self.send(actor::Command::Result { id, reply })?;
+        self.send(actor::Command::Result { id, kind, reply })?;
         result.recv().map_err(|_| channel_error())?
     }
 
@@ -313,5 +404,12 @@ fn channel_error() -> ApiError {
     worker_error(
         WorkerErrorKind::Channel,
         "analysis coordinator is unavailable",
+    )
+}
+
+fn task_type_error() -> ApiError {
+    worker_error(
+        WorkerErrorKind::Protocol,
+        "task response has the wrong kind",
     )
 }

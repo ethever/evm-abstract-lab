@@ -58,7 +58,7 @@ fn regional_evidence_survives_the_actual_pooled_reply_encoder() {
     let parsed = parsed.report;
     parsed.validate().unwrap();
     assert_eq!(parsed, source);
-    assert_eq!(parsed.schema_version, 21);
+    assert_eq!(parsed.schema_version, 22);
     // These are compact pooled reply bytes, before HTTP compression/framing.
     assert!(bytes.starts_with(b"{\"result\":{\"Ok\":"));
 }

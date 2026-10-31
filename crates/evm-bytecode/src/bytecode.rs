@@ -222,6 +222,29 @@ impl From<Eip7702DecodeError> for DecodeError {
     }
 }
 
+/// Parse hexadecimal bytes without interpreting their EVM format or fork.
+/// Whitespace and the existing lowercase `0x` prefix follow Program's input rules.
+/// This lets consumers enforce their own decode budget and retain typed failures.
+pub fn parse_hex(input: &str) -> Result<Vec<u8>, DecodeError> {
+    let compact: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    let digits = compact.strip_prefix("0x").unwrap_or(&compact);
+    if !digits.len().is_multiple_of(2) {
+        return Err(DecodeError::OddHexLength(digits.len()));
+    }
+    let mut bytes = Vec::with_capacity(digits.len() / 2);
+    let mut high = None;
+    for (index, character) in digits.chars().enumerate() {
+        let digit = character
+            .to_digit(16)
+            .ok_or(DecodeError::InvalidHex { index, character })? as u8;
+        match high.take() {
+            None => high = Some(digit),
+            Some(first) => bytes.push((first << 4) | digit),
+        }
+    }
+    Ok(bytes)
+}
+
 impl Program {
     /// 接受可含空白、可带 `0x` 前缀的十六进制 runtime bytecode，默认 Osaka。
     pub fn from_hex(input: &str) -> Result<Self, DecodeError> {
@@ -230,22 +253,7 @@ impl Program {
 
     /// 用明确的规则集解码。选择版本后，后续分析不会再次单独选择版本。
     pub fn from_hex_with_fork(input: &str, fork: Fork) -> Result<Self, DecodeError> {
-        let compact: String = input.chars().filter(|c| !c.is_whitespace()).collect();
-        let digits = compact.strip_prefix("0x").unwrap_or(&compact);
-        if !digits.len().is_multiple_of(2) {
-            return Err(DecodeError::OddHexLength(digits.len()));
-        }
-        let mut bytes = Vec::with_capacity(digits.len() / 2);
-        let mut high = None;
-        for (index, character) in digits.chars().enumerate() {
-            let digit = character
-                .to_digit(16)
-                .ok_or(DecodeError::InvalidHex { index, character })? as u8;
-            match high.take() {
-                None => high = Some(digit),
-                Some(first) => bytes.push((first << 4) | digit),
-            }
-        }
+        let bytes = parse_hex(input)?;
         Self::decode_with_fork(&bytes, fork)
     }
 

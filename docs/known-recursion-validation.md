@@ -34,7 +34,7 @@ nix develop --no-update-lock-file -c \
 
 ## 当前 benchmark 消费边界
 
-[`benchmark-known-recursion.py`](../scripts/benchmark-known-recursion.py) 新输出声明 `known-recursion-benchmark-v2`：离线 `analyze --world --format json` 严格读取 native16 的固定 `global.analysis` / `native.analysis` 槽，HTTP 严格读取 wire21 的 `Result<JobResult, ApiError>`，核对任务 u64 ID 和五字段 publication。两种格式不能互换；旧版本输出及其声明留在仓库外，不能用当前格式重标。历史输入清单保留原字节，当前调用方需显式提供与被测源码匹配的命令和请求，不由消费端猜测或改写。
+[`benchmark-known-recursion.py`](../scripts/benchmark-known-recursion.py) 新输出声明 `known-recursion-benchmark-v2`：离线 `analyze --world --format json` 严格读取 native16 的固定 `global.analysis` / `native.analysis` 槽，HTTP 严格读取 wire22 的 `Result<JobResult, ApiError>`，核对任务 u64 ID 和五字段 publication。两种格式不能互换；旧版本输出及其声明留在仓库外，不能用当前格式重标。历史输入清单保留原字节，当前调用方需显式提供与被测源码匹配的命令和请求，不由消费端猜测或改写。
 
 HTTP 在 Running 的状态轮询首次公布模型时立即 GET `/result`。`first_closed_model` 记录首个通过版本、当前性、源目录、snapshot / revision / root、执行与数值策略以及原始 Unknown 输入检查的闭合模型；其 `artifact` 指向捕获的完整回复，保留数值输入和同一结果的 data/store 关联。`metrics.graphs.Baseline` / `Native` 为 `null` 表示没有富图，不能解释为零状态、零前沿或完成 SSA。`task_state` 始终描述任务；后续 Failed/Cancelled 不会抹掉已经收到的模型。
 

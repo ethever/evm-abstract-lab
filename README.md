@@ -61,6 +61,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 [第 21 课：上下文与收敛](docs/21-context-and-convergence.md)进一步解释状态身份、状态增长与收敛，并讨论局部上下文和分阶段复用等设计候选。
 
+[本地反编译与转换追踪](docs/decompilation.md)介绍独立的 `decompile` 入口、结构化策略、阶段对照和来源调试，以及它与执行分析共用的基础层。
+
 [代码与初始事实分层](docs/18-layered-analysis.md)介绍如何先只提供代码，再向同一快照注入观察并继续分析。可检查的数学性质及其与生产代码的对应边界见[形式化证明](docs/proofs/README.md)。
 
 要用 Rust 组合自己的数值域或独立分析组件，读[公开 Trait 协作指南](docs/trait-cooperation.md)。它从可运行的离线客户端开始，说明强类型事实、自动依赖调度、代际收缩和生产 EVM 反馈怎样共用同一个内核与工作预算。

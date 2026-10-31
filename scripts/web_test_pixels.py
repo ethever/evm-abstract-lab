@@ -228,8 +228,11 @@ def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=Fals
             const ox1=fourSides?Math.max(...positions.right):x1,oy1=fourSides?Math.max(...positions.bottom):y1;
             // Card outlines have rounded corners. A canvas clip at the straight
             // header separator can mimic four sides, but lacks these cutouts.
+            // Only this connected card owns its cutouts: an isolated matching
+            // palette pixel outside it is not evidence that its corner is filled.
+            const component=queue.subarray(0,write);
             const roundedCorners=fourSides && [[ox0,oy0],[ox1,oy0],[ox0,oy1],[ox1,oy1]].every(([x,y])=>
-                x>=0 && x<width && y>=0 && y<height && !outline(x,y) && fillAt[y*width+x]<0);
+                x>=0 && x<width && y>=0 && y<height && !outline(x,y) && !component.includes(y*width+x));
             const complete=fourSides && roundedCorners;
             // Tiny selected fills can have fewer than 30 exact-color pixels
             // and an outer height below eight pixels. Keep ordinary cutoffs;

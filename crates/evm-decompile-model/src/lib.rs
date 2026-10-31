@@ -2,9 +2,8 @@
 /// Current immutable artifact wire schema.
 pub const SCHEMA_VERSION: u32 = 1;
 
-// Declare each input schema once while restricting Deserialize to a map. The
-// derived field decoder owns strict unknown/missing-field diagnostics; a JSON
-// positional array can never bypass that public input contract.
+// Declare each record once, retaining explicit null separately from absence.
+// Enum payload adapters use these same object-only field/duplicate checks.
 macro_rules! strict_record {
     ($(#[$meta:meta])* pub struct $name:ident $(<$parameter:ident = $default:ty>)? { $($(#[$field_meta:meta])* pub $field:ident : $ty:ty),* $(,)? }) => {
         $(#[$meta])*
@@ -38,17 +37,8 @@ macro_rules! strict_record {
     }
 }
 
-// Even an Option field is required in the wire record; only its value may be
-// null. Serde's default Option behavior would silently admit a missing field.
-fn required_field<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    T::deserialize(deserializer)
-}
-
 mod artifact;
+mod codec;
 mod model;
 mod structured;
 pub use alloy_primitives::U256;

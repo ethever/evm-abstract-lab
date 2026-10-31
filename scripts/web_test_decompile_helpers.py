@@ -36,7 +36,7 @@ def prepare(page, canvas, bytecode, strategy="Dispatcher", fork=None):
     controls = ui_controls(page)
     if not any(control["label"] == "Runtime bytecode" and control["enabled"] for control in controls):
         click_control(page, canvas, "Edit bytecode", role="action")
-    edit_control(page, canvas, "Runtime bytecode", bytecode, role="text")
+    edit_control(page, canvas, "Runtime bytecode", bytecode)
     click_control(page, canvas, strategy, role="tab")
     if fork is not None:
         click_control(page, canvas, "EVM fork", role="combobox")

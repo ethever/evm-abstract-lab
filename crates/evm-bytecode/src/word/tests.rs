@@ -32,7 +32,7 @@ fn every_opcode_and_wrong_arity_is_checked_before_numeric_work() {
 
 #[test]
 fn pop_order_and_full_width_modular_intermediates_match_evm_rules() {
-    let word: fn(u64) -> U256 = U256::from;
+    let word = |value: u64| U256::from(value);
     for (op, operands, expected) in [
         (opcode::SUB, vec![word(2), word(3)], U256::MAX),
         (opcode::DIV, vec![word(7), word(2)], word(3)),

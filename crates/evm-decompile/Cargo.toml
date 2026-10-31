@@ -8,15 +8,15 @@ license.workspace      = true
 repository.workspace   = true
 
 [dependencies]
-evm-decompile-model = { path = "../evm-decompile-model" }
-analysis-control = { path = "../analysis-control" }
-analysis-kernel = { path = "../analysis-kernel" }
-evm-bytecode = { path = "../evm-bytecode" }
-evm-domain = { path = "../evm-domain" }
-evm-resource = { path = "../evm-resource" }
+evm-decompile-model        = { path = "../evm-decompile-model" }
+analysis-control           = { path = "../analysis-control" }
+analysis-kernel            = { path = "../analysis-kernel" }
+evm-bytecode               = { path = "../evm-bytecode" }
+evm-domain                 = { path = "../evm-domain" }
+evm-resource               = { path = "../evm-resource" }
 alloy-primitives.workspace = true
-serde.workspace = true
-thiserror.workspace = true
+serde.workspace            = true
+thiserror.workspace        = true
 
 [dev-dependencies]
 serde_json.workspace = true
