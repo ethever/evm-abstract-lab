@@ -54,7 +54,7 @@ def run(context):
     descendants = observed(page, "decompile-entity-link", "Source descendant")
     assert descendants, "an original instruction has no navigable descendants"
     selected = next((item for item in descendants if f"s{artifact['current_stage']}/" in item["label"]), descendants[0])
-    click_control(page, canvas, selected["label"], role="decompile-entity-link", id=selected["id"])
+    inspector_control(page, canvas, selected["label"], "decompile-entity-link")
     expect(status).to_contain_text("Selected entity: " + artifact["id"] + "/stage:")
     inspector_control(page, canvas, "Original ", "decompile-origin")
     expect(status).to_contain_text("Route: Original bytecode")
