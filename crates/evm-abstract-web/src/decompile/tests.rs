@@ -8,8 +8,8 @@ use crate::JobOperation;
 use evm_abstract_protocol::{
     self as api,
     decompile_model::{
-        Artifact, Completion, EntityId, EntityRef, SourceSpan, StageId, Strategy, StructuredKind,
-        StructuredNode, StructuredProgram, ValidationStatus,
+        Artifact, Completion, Effects, EntityId, EntityRef, ExitKind, SourceSpan, StageId,
+        Strategy, StructuredKind, StructuredNode, StructuredProgram, Terminator, ValidationStatus,
     },
 };
 
@@ -325,5 +325,92 @@ fn ast_rendering_keeps_effects_and_both_structured_control_forms() {
         lines
             .iter()
             .any(|line| line.entity == EntityId(4) && line.text.contains("evm.sstore"))
+    );
+}
+
+#[test]
+fn structured_terminal_primitives_appear_once_after_prior_effects() {
+    let mut artifact = fixture::artifact(Strategy::Dispatcher);
+    let stage = &mut artifact.stages[1];
+    stage.ir.structured = Some(StructuredProgram {
+        root: StructuredNode {
+            id: EntityId(40),
+            kind: StructuredKind::Sequence(vec![
+                StructuredNode {
+                    id: EntityId(41),
+                    kind: StructuredKind::Block { block: EntityId(1) },
+                },
+                StructuredNode {
+                    id: EntityId(42),
+                    kind: StructuredKind::Exit { block: EntityId(1) },
+                },
+            ]),
+        },
+    });
+    let nonterminal = stage.ir.blocks[0].operations.clone();
+    for (kind, opcode, name, primitive, inputs) in [
+        (ExitKind::Stop, 0x00, "STOP", "evm.stop(", vec![]),
+        (
+            ExitKind::Return,
+            0xf3,
+            "RETURN",
+            "evm.return(",
+            vec![EntityId(3), EntityId(3)],
+        ),
+        (
+            ExitKind::Revert,
+            0xfd,
+            "REVERT",
+            "evm.revert(",
+            vec![EntityId(3), EntityId(3)],
+        ),
+        (
+            ExitKind::SelfDestruct,
+            0xff,
+            "SELFDESTRUCT",
+            "evm.selfdestruct(",
+            vec![EntityId(3)],
+        ),
+        (ExitKind::EndOfCode, 0x00, "STOP", "evm.stop(", vec![]),
+    ] {
+        let block = &mut stage.ir.blocks[0];
+        block.operations.clone_from(&nonterminal);
+        if kind != ExitKind::EndOfCode {
+            let mut terminal = nonterminal[0].clone();
+            terminal.id = EntityId(50);
+            terminal.opcode = opcode;
+            terminal.name = name.into();
+            terminal.inputs.clone_from(&inputs);
+            terminal.effects = Effects {
+                terminate: true,
+                ..Effects::default()
+            };
+            block.operations.push(terminal);
+        }
+        block.terminator = Terminator::Exit {
+            kind,
+            values: inputs,
+        };
+        let text = super::structured::lines(stage)
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text.matches(primitive).count(), 1, "{text}");
+        assert!(text.find("evm.sstore(").unwrap() < text.find(primitive).unwrap());
+        assert!(!text.contains("Exit {"), "{text}");
+        if kind == ExitKind::EndOfCode {
+            assert!(text.contains("end of code"));
+        }
+    }
+    assert_eq!(
+        super::structured::terminator(&Terminator::Pending),
+        "partial_exit(\"recovery pending\");"
+    );
+    assert_eq!(
+        super::structured::terminator(&Terminator::Trap {
+            reason: "invalid opcode".into()
+        }),
+        "exception(\"invalid opcode\");"
     );
 }

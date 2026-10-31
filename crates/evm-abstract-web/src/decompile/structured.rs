@@ -2,7 +2,7 @@
 //! Formatting does not recover control flow or create transformation history.
 
 use evm_abstract_protocol::decompile_model::{
-    EntityId, Ir, Operation, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
+    EntityId, ExitKind, Ir, Operation, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
 };
 
 pub(super) struct Line {
@@ -221,6 +221,11 @@ fn body(node: EntityId, block: EntityId, ir: &Ir, indent: usize, output: &mut Ve
         ),
     );
     for op in &block.operations {
+        // The typed AST owns control transfers and termination. Their original
+        // instructions remain in the IR view and provenance index.
+        if op.effects.terminate || matches!(op.opcode, 0x50 | 0x56 | 0x57 | 0x5b | 0x80..=0x9f) {
+            continue;
+        }
         emit(output, op.id, indent, operation(op, ir));
     }
 }
@@ -368,11 +373,16 @@ pub(super) fn terminator(term: &Terminator) -> String {
                 " exceptional_invalid_target;"
             }
         ),
-        Terminator::Exit { kind, values: args } => format!(
-            "evm.{}({});",
-            format!("{kind:?}").to_ascii_lowercase(),
-            values(args)
-        ),
+        Terminator::Exit { kind, values: args } => {
+            let name = match kind {
+                ExitKind::Stop => "stop",
+                ExitKind::Return => "return",
+                ExitKind::Revert => "revert",
+                ExitKind::SelfDestruct => "selfdestruct",
+                ExitKind::EndOfCode => return "evm.stop(); // end of code".into(),
+            };
+            format!("evm.{name}({});", values(args))
+        }
         Terminator::Trap { reason } => format!("exception({reason:?});"),
     }
 }
