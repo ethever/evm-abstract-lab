@@ -7,8 +7,8 @@ use evm_abstract_protocol::{
         EdgeRedirect, Effects, EntityId, EntityRef, ExitKind, FactScope, Fork, Input, Ir, Limits,
         Operation, Origin, Progress, Record, SCHEMA_VERSION, SourceMappings, SourceSpan, Stage,
         StageId, StageKind, Statistics, Strategy, StructuredKind, StructuredNode,
-        StructuredProgram, TransformEvent, U256, Validation, ValidationCheck, ValidationStatus,
-        Value, ValueFact, ValueKind, records,
+        StructuredProgram, Terminator, TransformEvent, U256, Validation, ValidationCheck,
+        ValidationStatus, Value, ValueFact, ValueKind, records,
     },
 };
 
@@ -23,7 +23,7 @@ pub(super) fn passed() -> Validation {
     }
 }
 
-pub(super) fn artifact(strategy: Strategy) -> Artifact {
+pub(in crate::decompile) fn artifact(strategy: Strategy) -> Artifact {
     let op = Operation {
         id: EntityId(2),
         source: Some(SourceSpan { pc: 0, end_pc: 2 }),
@@ -336,7 +336,7 @@ pub(super) fn artifact(strategy: Strategy) -> Artifact {
     }
 }
 
-pub(super) fn version(value: u64) -> api::PublicationVersion {
+pub(in crate::decompile) fn version(value: u64) -> api::PublicationVersion {
     api::PublicationVersion(api::DecimalU64(value))
 }
 
@@ -355,4 +355,133 @@ pub(super) fn snapshot(
             publication,
         }),
     }
+}
+
+/// UI scale fixture with an actual PUSH1/POP byte stream and distinct values.
+/// Browser regressions obtain its semantic stages from the real service.
+pub(in crate::decompile) fn large(count: usize) -> Artifact {
+    let mut artifact = artifact(Strategy::Dispatcher);
+    artifact.id = ArtifactId(format!("presentation-push-stream-{count}"));
+    artifact.input.runtime_bytecode.clear();
+    let mut ir = artifact.stages[0].ir.clone();
+    ir.blocks.truncate(1);
+    ir.edges.clear();
+    ir.values.retain(|value| matches!(value.id.0, 5 | 12));
+    ir.blocks[0].operations.clear();
+    for position in 0..count {
+        let pc = position * 3;
+        artifact
+            .input
+            .runtime_bytecode
+            .extend([0x60, (position % 256) as u8, 0x50]);
+        let value = EntityId(100_000 + position as u64);
+        ir.values.push(Value {
+            id: value,
+            kind: ValueKind::Constant(U256::from(position % 256)),
+            fact: ValueFact::Constants(vec![U256::from(position % 256)]),
+        });
+        for (offset, opcode, name, inputs, outputs, source) in [
+            (
+                0,
+                0x60,
+                "PUSH1",
+                vec![],
+                vec![value],
+                SourceSpan { pc, end_pc: pc + 2 },
+            ),
+            (
+                1,
+                0x50,
+                "POP",
+                vec![value],
+                vec![],
+                SourceSpan {
+                    pc: pc + 2,
+                    end_pc: pc + 3,
+                },
+            ),
+        ] {
+            ir.blocks[0].operations.push(Operation {
+                id: EntityId(1000 + position as u64 * 2 + offset),
+                source: Some(source),
+                opcode,
+                name: name.into(),
+                inputs,
+                outputs,
+                effects: Effects::default(),
+                memory_input: None,
+                memory_output: None,
+                effect_input: None,
+                effect_output: None,
+                replacement: None,
+            });
+        }
+    }
+    artifact.input.runtime_bytecode.push(0x00);
+    ir.bytecode_len = artifact.input.runtime_bytecode.len();
+    ir.blocks[0].source = Some(SourceSpan {
+        pc: 0,
+        end_pc: ir.bytecode_len,
+    });
+    ir.blocks[0].terminator = Terminator::Exit {
+        kind: ExitKind::Stop,
+        values: vec![],
+    };
+    artifact.stages = (0..3)
+        .map(|position| Stage {
+            id: StageId(position),
+            parent: (position > 0).then(|| StageId(position - 1)),
+            kind: [
+                StageKind::Decoded,
+                StageKind::Baseline,
+                StageKind::Structured,
+            ][position as usize],
+            validation: passed(),
+            ir: ir.clone(),
+        })
+        .collect();
+    artifact.stages[2].ir.structured = Some(StructuredProgram {
+        root: StructuredNode {
+            id: EntityId(30),
+            kind: StructuredKind::Sequence(vec![
+                StructuredNode {
+                    id: EntityId(31),
+                    kind: StructuredKind::Block { block: EntityId(1) },
+                },
+                StructuredNode {
+                    id: EntityId(32),
+                    kind: StructuredKind::Exit { block: EntityId(1) },
+                },
+            ]),
+        },
+    });
+    artifact.current_stage = Some(StageId(2));
+    artifact.events.clear();
+    artifact.mappings.origins.clear();
+    for stage in &artifact.stages {
+        for (entity, record) in records(&stage.ir) {
+            let source = match record {
+                Record::Operation(op) => op.source.into_iter().collect(),
+                Record::Value(value) if value.id.0 >= 100_000 => {
+                    let pc = (value.id.0 as usize - 100_000) * 3;
+                    vec![SourceSpan { pc, end_pc: pc + 2 }]
+                }
+                _ => vec![SourceSpan {
+                    pc: 0,
+                    end_pc: ir.bytecode_len,
+                }],
+            };
+            artifact.mappings.origins.push(Origin {
+                entity: EntityRef {
+                    stage: stage.id,
+                    entity,
+                },
+                source,
+                parents: vec![],
+                introduced_by: 0,
+                reason: "Presentation fixture for immutable source and row coordinates".into(),
+            });
+        }
+    }
+    artifact
 }

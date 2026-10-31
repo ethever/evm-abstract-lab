@@ -1,6 +1,8 @@
 //! Readable, selectable presentation of the server's actual structured AST.
 //! Formatting does not recover control flow or create transformation history.
 
+use super::index::StageIndex;
+
 use evm_abstract_protocol::decompile_model::{
     EntityId, ExitKind, Ir, Operation, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
 };
@@ -39,10 +41,15 @@ pub(super) fn visit(node: &StructuredNode, visitor: &mut impl FnMut(&StructuredN
     }
 }
 
+#[cfg(test)]
 pub(super) fn lines(stage: &Stage) -> Vec<Line> {
+    lines_indexed(stage, &StageIndex::new(&stage.ir))
+}
+
+pub(super) fn lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
     let mut output = Vec::new();
     if let Some(program) = &stage.ir.structured {
-        render(&program.root, &stage.ir, 0, &mut output);
+        render(&program.root, &stage.ir, index, 0, &mut output);
     }
     output
 }
@@ -55,15 +62,27 @@ fn emit(output: &mut Vec<Line>, entity: EntityId, indent: usize, text: impl Into
     });
 }
 
-fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>) {
+fn render(
+    node: &StructuredNode,
+    ir: &Ir,
+    index: &StageIndex,
+    indent: usize,
+    output: &mut Vec<Line>,
+) {
     match &node.kind {
         StructuredKind::Sequence(nodes) => {
+            emit(
+                output,
+                node.id,
+                indent,
+                format!("// sequence ast{} · {} children", node.id.0, nodes.len()),
+            );
             for child in nodes {
-                render(child, ir, indent, output);
+                render(child, ir, index, indent, output);
             }
         }
-        StructuredKind::Block { block } => body(node.id, *block, ir, indent, output),
-        StructuredKind::Transfer { edge } => transfer(node.id, *edge, ir, indent, output),
+        StructuredKind::Block { block } => body(node.id, *block, ir, index, indent, output),
+        StructuredKind::Transfer { edge } => transfer(node.id, *edge, ir, index, indent, output),
         StructuredKind::If {
             condition,
             then_branch,
@@ -75,9 +94,9 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
                 indent,
                 format!("if ({} != 0) {{", value(*condition)),
             );
-            render(then_branch, ir, indent + 1, output);
+            render(then_branch, ir, index, indent + 1, output);
             emit(output, node.id, indent, "} else {");
-            render(else_branch, ir, indent + 1, output);
+            render(else_branch, ir, index, indent + 1, output);
             emit(output, node.id, indent, "}");
         }
         StructuredKind::While {
@@ -88,7 +107,7 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
             exit_edge,
         } => {
             emit(output, node.id, indent, "while (true) {");
-            render(header, ir, indent + 1, output);
+            render(header, ir, index, indent + 1, output);
             if let Some(condition) = condition {
                 emit(
                     output,
@@ -101,19 +120,28 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
                     ),
                 );
                 if let Some(edge) = exit_edge {
-                    transfer(node.id, *edge, ir, indent + 2, output);
+                    transfer(node.id, *edge, ir, index, indent + 2, output);
                 }
                 emit(output, node.id, indent + 2, "break;");
                 emit(output, node.id, indent + 1, "}");
             }
-            render(body, ir, indent + 1, output);
+            render(body, ir, index, indent + 1, output);
             emit(output, node.id, indent, "}");
         }
         StructuredKind::Break => emit(output, node.id, indent, "break;"),
         StructuredKind::Continue => emit(output, node.id, indent, "continue;"),
         StructuredKind::Exit { block } | StructuredKind::PartialExit { block } => {
-            if let Some(block) = ir.block(*block) {
-                emit(output, node.id, indent, terminator(&block.terminator));
+            if let Some(block) = index.block(ir, *block) {
+                let text = match &block.terminator {
+                    // Exit is a terminal AST occurrence. A JUMPI with no
+                    // false edge ends code on that false continuation; raw IR
+                    // and dispatcher decisions keep their full branch text.
+                    Terminator::Branch {
+                        else_edge: None, ..
+                    } => "evm.stop(); // JUMPI false continuation: end of code".into(),
+                    term => terminator(term),
+                };
+                emit(output, node.id, indent, text);
             } else {
                 emit(
                     output,
@@ -141,7 +169,7 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
                     indent + 1,
                     format!("target 0x{:x}: {{", arm.target_pc),
                 );
-                render(&arm.body, ir, indent + 2, output);
+                render(&arm.body, ir, index, indent + 2, output);
                 emit(output, node.id, indent + 1, "}");
             }
             if *unresolved {
@@ -150,6 +178,13 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
                     node.id,
                     indent + 1,
                     "unresolved_target: partial_exit;",
+                );
+            } else {
+                emit(
+                    output,
+                    node.id,
+                    indent + 1,
+                    "otherwise: exception(\"invalid jump destination\");",
                 );
             }
             emit(output, node.id, indent, "}");
@@ -175,8 +210,8 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
                     indent + 2,
                     format!("case b{}: {{", case.block.0),
                 );
-                body(node.id, case.block, ir, indent + 3, output);
-                if let Some(block) = ir.block(case.block) {
+                body(node.id, case.block, ir, index, indent + 3, output);
+                if let Some(block) = index.block(ir, case.block) {
                     emit(output, block.id, indent + 3, terminator(&block.terminator));
                 }
                 for transition in &case.transitions {
@@ -186,7 +221,14 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
                         indent + 3,
                         format!("on e{}: {{", transition.edge.0),
                     );
-                    transfer(transition.id, transition.edge, ir, indent + 4, output);
+                    transfer(
+                        transition.id,
+                        transition.edge,
+                        ir,
+                        index,
+                        indent + 4,
+                        output,
+                    );
                     emit(
                         output,
                         transition.id,
@@ -203,8 +245,15 @@ fn render(node: &StructuredNode, ir: &Ir, indent: usize, output: &mut Vec<Line>)
     }
 }
 
-fn body(node: EntityId, block: EntityId, ir: &Ir, indent: usize, output: &mut Vec<Line>) {
-    let Some(block) = ir.block(block) else {
+fn body(
+    node: EntityId,
+    block: EntityId,
+    ir: &Ir,
+    index: &StageIndex,
+    indent: usize,
+    output: &mut Vec<Line>,
+) {
+    let Some(block) = index.block(ir, block) else {
         return;
     };
     emit(
@@ -220,21 +269,43 @@ fn body(node: EntityId, block: EntityId, ir: &Ir, indent: usize, output: &mut Ve
             ))
         ),
     );
-    for op in &block.operations {
+    for (position, op) in block.operations.iter().enumerate() {
+        if position + 1 == block.operations.len()
+            && let Terminator::Trap { reason } = &block.terminator
+        {
+            let location = op.source.map_or_else(
+                || "generated instruction".into(),
+                |span| format!("source 0x{:04x}", span.pc),
+            );
+            emit(
+                output,
+                op.id,
+                indent,
+                format!("// fault o{} {} at {location}: {reason}", op.id.0, op.name),
+            );
+            continue;
+        }
         // The typed AST owns control transfers and termination. Their original
         // instructions remain in the IR view and provenance index.
         if op.effects.terminate || matches!(op.opcode, 0x50 | 0x56 | 0x57 | 0x5b | 0x80..=0x9f) {
             continue;
         }
-        emit(output, op.id, indent, operation(op, ir));
+        emit(output, op.id, indent, operation(op, ir, index));
     }
 }
 
-fn transfer(node: EntityId, edge: EntityId, ir: &Ir, indent: usize, output: &mut Vec<Line>) {
-    let Some(edge) = ir.edge(edge) else {
+fn transfer(
+    node: EntityId,
+    edge: EntityId,
+    ir: &Ir,
+    index: &StageIndex,
+    indent: usize,
+    output: &mut Vec<Line>,
+) {
+    let Some(edge) = index.edge(ir, edge) else {
         return;
     };
-    let Some(target) = ir.block(edge.to) else {
+    let Some(target) = index.block(ir, edge.to) else {
         return;
     };
     if !target.parameters.is_empty() {
@@ -273,6 +344,25 @@ fn transfer(node: EntityId, edge: EntityId, ir: &Ir, indent: usize, output: &mut
 pub(super) fn value(id: EntityId) -> String {
     format!("v{}", id.0)
 }
+
+pub(super) fn decoded_operation(op: &Operation, bytecode: &[u8]) -> String {
+    let Some(span) = op.source else {
+        return format!(
+            "Original {} · source location unavailable; unrecovered",
+            op.name
+        );
+    };
+    let bytes = bytecode
+        .get(span.pc..span.end_pc)
+        .unwrap_or_default()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(
+        "Source 0x{:04x}: {} {bytes} · unrecovered operands/results",
+        span.pc, op.name
+    )
+}
 pub(super) fn values(ids: &[EntityId]) -> String {
     ids.iter()
         .map(|id| value(*id))
@@ -280,13 +370,13 @@ pub(super) fn values(ids: &[EntityId]) -> String {
         .join(", ")
 }
 
-pub(super) fn operation(op: &Operation, ir: &Ir) -> String {
+pub(super) fn operation(op: &Operation, ir: &Ir, index: &StageIndex) -> String {
     let expression = if let Some(replacement) = op.replacement {
         format!("{replacement:#x}")
     } else if op.opcode == 0x5f || (0x60..=0x7f).contains(&op.opcode) {
         op.outputs
             .first()
-            .and_then(|id| ir.value(*id))
+            .and_then(|id| index.value(ir, *id))
             .and_then(|value| match value.kind {
                 ValueKind::Constant(word) => Some(format!("{word:#x}")),
                 _ => None,

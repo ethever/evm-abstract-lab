@@ -1,11 +1,11 @@
 //! Virtual rows retain every IR entity while formatting only the visible range.
 
 use super::{
-    super::{diff::Differences, model::ViewState, structured},
+    super::{diff::Differences, index::StageIndex, model::ViewState, rows, structured},
     entity_line, stage_label,
 };
 use egui::Ui;
-use evm_abstract_protocol::decompile_model::{Artifact, EntityId, EntityRef, Stage};
+use evm_abstract_protocol::decompile_model::{Artifact, EntityId, EntityRef, Stage, StageKind};
 
 enum Row {
     Block(usize),
@@ -33,6 +33,7 @@ impl Ir {
         before: bool,
     ) {
         let title = if before { "Before IR" } else { "Current IR" };
+        let index = state.index.stage(stage.id);
         let identity = egui::Id::new((&artifact.id.0, stage.id.0, title));
         if self.identity != Some(identity) {
             self.identity = Some(identity);
@@ -52,28 +53,33 @@ impl Ir {
             self.rows.extend((0..stage.ir.values.len()).map(Row::Value));
         }
         ui.strong(format!("{title} · {}", stage_label(stage)));
+        if stage.kind == StageKind::Decoded {
+            ui.label(
+                "Original disassembly and unrecovered placeholders; no recovered SSA in this stage",
+            );
+        }
         ui.label(format!(
             "Facts: {:?} · original bytes: {}",
             stage.ir.fact_scope, stage.ir.bytecode_len
         ));
         let mut scroll = egui::ScrollArea::both().id_salt(identity);
-        if state.entity_navigation
+        if !before
+            && state.entity_navigation
             && let Some(selected) = state.selected_in(artifact, stage.id)
             && let Some(position) = self
                 .rows
                 .iter()
                 .position(|row| row.entity(stage) == Some(selected))
         {
-            scroll = scroll.vertical_scroll_offset(position as f32 * 22.0);
-            state.entity_navigation = false;
+            scroll = scroll.vertical_scroll_offset(rows::offset(ui, position));
         }
-        scroll.show_rows(ui, 22.0, self.rows.len(), |ui, range| {
+        scroll.show_rows(ui, rows::HEIGHT, self.rows.len(), |ui, range| {
             for position in range {
-                ui.push_id(position, |ui| {
+                rows::row(ui, position, |ui| {
                     let row = &self.rows[position];
-                    let text = row.text(stage);
+                    let text = row.text(stage, &index, &artifact.input.runtime_bytecode);
                     if let Some(entity) = row.entity(stage) {
-                        entity_line(
+                        let visible = entity_line(
                             ui,
                             artifact,
                             state,
@@ -85,6 +91,12 @@ impl Ir {
                             "decompile-ir",
                             &differences.markers(entity, before),
                         );
+                        if !before
+                            && visible
+                            && state.selected_in(artifact, stage.id) == Some(entity)
+                        {
+                            state.entity_navigation = false;
+                        }
                     } else {
                         ui.strong(text);
                     }
@@ -106,7 +118,31 @@ impl Row {
             Self::Heading(_) => None,
         }
     }
-    fn text(&self, stage: &Stage) -> String {
+    fn text(&self, stage: &Stage, index: &StageIndex, bytecode: &[u8]) -> String {
+        if stage.kind == StageKind::Decoded {
+            return match *self {
+                Self::Operation(block, operation) => structured::decoded_operation(
+                    &stage.ir.blocks[block].operations[operation],
+                    bytecode,
+                ),
+                Self::Block(position) => format!(
+                    "Decoded block b{} · recovery unavailable",
+                    stage.ir.blocks[position].id.0
+                ),
+                Self::Value(position) => format!(
+                    "Unrecovered placeholder e{} · {:?}",
+                    stage.ir.values[position].id.0, stage.ir.values[position].fact
+                ),
+                Self::Terminator(_) => {
+                    "Recovery pending; decoded instructions do not establish a continuation".into()
+                }
+                Self::Heading(_) => "Original decode metadata (not recovered SSA)".into(),
+                Self::Edge(position) => format!(
+                    "Decoded edge e{} · not a recovered SSA transfer",
+                    stage.ir.edges[position].id.0
+                ),
+            };
+        }
         match *self {
             Self::Block(index) => {
                 let block = &stage.ir.blocks[index];
@@ -120,7 +156,11 @@ impl Row {
             }
             Self::Operation(block, operation) => {
                 let op = &stage.ir.blocks[block].operations[operation];
-                format!("  o{}: {}", op.id.0, structured::operation(op, &stage.ir))
+                format!(
+                    "  o{}: {}",
+                    op.id.0,
+                    structured::operation(op, &stage.ir, index)
+                )
             }
             Self::Terminator(index) => format!(
                 "  {}",

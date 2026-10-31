@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{graph_view, palette};
 use egui::Ui;
-use evm_abstract_protocol::decompile_model::{Artifact, EdgeKind, EntityRef, Stage};
+use evm_abstract_protocol::decompile_model::{Artifact, EdgeKind, EntityRef, Stage, StageKind};
 use std::collections::BTreeMap;
 
 #[derive(Default)]
@@ -28,6 +28,7 @@ impl Graph {
         before: bool,
     ) {
         let title = if before { "Before CFG" } else { "Current CFG" };
+        let index = state.index.stage(stage.id);
         let identity = egui::Id::new((
             &artifact.id.0,
             stage.id.0,
@@ -37,14 +38,17 @@ impl Graph {
         ));
         if self.identity != Some(identity) {
             self.identity = Some(identity);
-            self.content = build(stage, differences, before);
+            self.content = build(
+                stage,
+                &index,
+                differences,
+                before,
+                &artifact.input.runtime_bytecode,
+            );
         }
-        let selected =
-            state.selected_in(artifact, stage.id).and_then(|id| {
-                stage.ir.blocks.iter().position(|block| {
-                    block.id == id || block.operations.iter().any(|op| op.id == id)
-                })
-            });
+        let selected = state
+            .selected_in(artifact, stage.id)
+            .and_then(|id| index.containing_block(id));
         if state.entity_navigation && selected.is_some() {
             self.canvas.focus_selected();
             state.entity_navigation = false;
@@ -68,7 +72,13 @@ impl Graph {
     }
 }
 
-fn build(stage: &Stage, differences: &Differences, before: bool) -> graph_view::Scene {
+pub(super) fn build(
+    stage: &Stage,
+    index: &super::super::index::StageIndex,
+    differences: &Differences,
+    before: bool,
+    bytecode: &[u8],
+) -> graph_view::Scene {
     let positions: BTreeMap<_, _> = stage
         .ir
         .blocks
@@ -95,9 +105,20 @@ fn build(stage: &Stage, differences: &Differences, before: bool) -> graph_view::
                 lines: block
                     .operations
                     .iter()
-                    .map(|op| structured::operation(op, &stage.ir))
-                    .chain(std::iter::once(structured::terminator(&block.terminator)))
+                    .take(graph_view::PREVIEW_LINES)
+                    .map(|op| {
+                        if stage.kind == StageKind::Decoded {
+                            structured::decoded_operation(op, bytecode)
+                        } else {
+                            structured::operation(op, &stage.ir, index)
+                        }
+                    })
+                    .chain(std::iter::once_with(|| {
+                        structured::terminator(&block.terminator)
+                    }))
+                    .take(graph_view::PREVIEW_LINES)
                     .collect(),
+                total_lines: block.operations.len() + 1,
                 markers: differences.markers(block.id, before),
                 boundary: block.terminator.is_partial(),
             })

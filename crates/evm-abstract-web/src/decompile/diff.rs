@@ -40,6 +40,8 @@ impl Marker {
 pub(super) struct Differences {
     pub before: BTreeMap<EntityId, BTreeSet<Marker>>,
     pub after: BTreeMap<EntityId, BTreeSet<Marker>>,
+    pub rows: Vec<(bool, EntityId)>,
+    summary: String,
 }
 
 impl Differences {
@@ -100,6 +102,13 @@ impl Differences {
                 }
             }
         }
+        result.rows = result
+            .before
+            .keys()
+            .map(|id| (true, *id))
+            .chain(result.after.keys().map(|id| (false, *id)))
+            .collect();
+        result.summary = result.counts();
         result
     }
 
@@ -113,6 +122,10 @@ impl Differences {
     }
 
     pub fn summary(&self) -> String {
+        self.summary.clone()
+    }
+
+    fn counts(&self) -> String {
         [
             Marker::New,
             Marker::Copied,

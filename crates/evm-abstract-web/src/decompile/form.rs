@@ -121,6 +121,11 @@ impl Form {
                     budget(ui, "Operation limit", &mut self.limits.max_operations);
                     budget(ui, "Clone limit", &mut self.limits.max_cloned_blocks);
                     budget(ui, "History limit", &mut self.limits.max_history_entities);
+                    budget(
+                        ui,
+                        "Recovery iteration limit",
+                        &mut self.limits.max_iterations,
+                    );
                 });
             });
             if let Some(error) = self.validation() {

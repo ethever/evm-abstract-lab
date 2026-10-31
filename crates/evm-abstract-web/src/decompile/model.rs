@@ -39,6 +39,7 @@ pub(super) enum EntityKind {
 pub(super) struct Index {
     pub entities: BTreeMap<EntityRef, EntityKind>,
     origins: BTreeMap<EntityRef, usize>,
+    stages: BTreeMap<StageId, Rc<super::index::StageIndex>>,
 }
 
 impl Index {
@@ -55,6 +56,9 @@ impl Index {
             ..Self::default()
         };
         for stage in &artifact.stages {
+            index
+                .stages
+                .insert(stage.id, Rc::new(super::index::StageIndex::new(&stage.ir)));
             let mut add = |entity, kind| {
                 index.entities.insert(
                     EntityRef {
@@ -100,6 +104,10 @@ impl Index {
         self.entities.contains_key(&at)
     }
 
+    pub fn stage(&self, id: StageId) -> Rc<super::index::StageIndex> {
+        Rc::clone(self.stages.get(&id).expect("indexed immutable stage"))
+    }
+
     pub fn origin<'a>(
         &self,
         artifact: &'a Artifact,
@@ -123,6 +131,8 @@ pub(super) struct ViewState {
     pub compare_navigation: bool,
     source_descendants: Option<(usize, Rc<Vec<EntityRef>>)>,
     entity_descendants: Option<(EntityRef, Rc<Vec<EntityRef>>)>,
+    details: Option<(EntityRef, Rc<super::details::Details>)>,
+    event_created: Option<(u64, Rc<Vec<EntityId>>)>,
     history: Vec<Selection>,
     cursor: usize,
 }
@@ -148,6 +158,8 @@ impl ViewState {
         self.compare_navigation = false;
         self.source_descendants = None;
         self.entity_descendants = None;
+        self.details = None;
+        self.event_created = None;
         self.history.clear();
         self.cursor = 0;
         if let Some(stage) = self.current.and_then(|id| artifact.stage(id))
@@ -207,6 +219,8 @@ impl ViewState {
             return false;
         }
         self.set_stage(artifact, at.stage);
+        self.source_navigation = false;
+        self.compare_navigation = false;
         self.entity_navigation = true;
         true
     }
@@ -267,6 +281,7 @@ impl ViewState {
                 self.source_descendants(artifact, pc);
             }
             self.entity_navigation = true;
+            self.source_navigation = false;
         }
     }
 
@@ -282,6 +297,7 @@ impl ViewState {
     }
 
     pub fn select_source(&mut self, artifact: &Artifact, pc: usize) {
+        self.entity_navigation = false;
         self.source_pc = Some(pc);
         self.selected = None;
         self.source_descendants(artifact, pc);
@@ -326,6 +342,51 @@ impl ViewState {
             .as_ref()
             .filter(|(old, _)| *old == pc)
             .map(|(_, rows)| rows.len())
+    }
+
+    pub fn details(&mut self, artifact: &Artifact, at: EntityRef) -> Rc<super::details::Details> {
+        if self.details.as_ref().is_none_or(|(old, _)| *old != at) {
+            let stage = artifact.stage(at.stage).expect("selected stage exists");
+            let details = super::details::build(
+                stage,
+                &self.index.stage(at.stage),
+                at.entity,
+                &artifact.input.runtime_bytecode,
+            );
+            self.details = Some((at, Rc::new(details)));
+        }
+        Rc::clone(&self.details.as_ref().expect("prepared details").1)
+    }
+
+    pub fn new_entities(
+        &mut self,
+        event: &evm_abstract_protocol::decompile_model::TransformEvent,
+    ) -> Rc<Vec<EntityId>> {
+        if self
+            .event_created
+            .as_ref()
+            .is_none_or(|(old, _)| *old != event.id)
+        {
+            let copied: BTreeSet<_> = event.clones.iter().map(|copy| copy.copy.entity).collect();
+            self.event_created = Some((
+                event.id,
+                Rc::new(
+                    event
+                        .created
+                        .iter()
+                        .filter(|id| !copied.contains(id))
+                        .copied()
+                        .collect(),
+                ),
+            ));
+        }
+        Rc::clone(
+            &self
+                .event_created
+                .as_ref()
+                .expect("prepared new entities")
+                .1,
+        )
     }
 }
 

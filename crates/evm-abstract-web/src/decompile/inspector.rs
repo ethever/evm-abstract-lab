@@ -1,14 +1,14 @@
 //! Actual entity, source, clone and transform evidence from the core artifact.
 
-use super::{model::ViewState, structured, views::stage_label};
+use super::{model::ViewState, rows, views::stage_label};
 use crate::{
     controls::{self, Density},
     framework, palette,
 };
 use egui::{RichText, Ui};
-use evm_abstract_protocol::decompile_model::{
-    Artifact, EntityRef, Stage, TransformEvent, Validation,
-};
+use evm_abstract_protocol::decompile_model::{Artifact, EntityRef, TransformEvent, Validation};
+#[cfg(test)]
+mod tests;
 
 pub(super) fn show(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState) {
     ui.strong("Transform inspector");
@@ -27,23 +27,45 @@ pub(super) fn show(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState) {
                     selected.entity.0,
                     state.index.entities.get(&selected)
                 ));
-                if let Some(stage) = artifact.stage(selected.stage) {
-                    entity_details(ui, stage, selected);
+                let details = state.details(artifact, selected);
+                for text in &details.lines {
+                    let response = ui.label(text);
+                    controls::observe(ui, &response, text, "decompile-entity-detail", None);
                 }
+                framework::section(ui, "Entity references", |ui| {
+                    links(ui, artifact, state, &details.references, "Reference")
+                });
                 if let Some(origin) = state.index.origin(artifact, selected) {
                     ui.label(format!("Introduction: {}", origin.reason));
                     if origin.source.is_empty() {
                         ui.label("Generated entity · no original instruction PC");
                     }
-                    for span in &origin.source {
-                        let label = format!("Original 0x{:04x}..0x{:04x}", span.pc, span.end_pc);
-                        let response = controls::action(ui, &label, Density::Regular);
-                        controls::observe(ui, &response, &label, "decompile-origin", None);
-                        if response.clicked() {
-                            state.select_source(artifact, span.pc);
-                            state.source_navigation = true;
-                        }
-                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt(("original_spans", selected.stage.0, selected.entity.0))
+                        .max_height(100.0)
+                        .show_rows(ui, rows::HEIGHT, origin.source.len(), |ui, range| {
+                            for position in range {
+                                rows::row(ui, position, |ui| {
+                                    let span = origin.source[position];
+                                    let label = format!(
+                                        "Original 0x{:04x}..0x{:04x}",
+                                        span.pc, span.end_pc
+                                    );
+                                    let response = controls::action(ui, &label, Density::Regular);
+                                    controls::observe(
+                                        ui,
+                                        &response,
+                                        &label,
+                                        "decompile-origin",
+                                        None,
+                                    );
+                                    if response.clicked() {
+                                        state.select_source(artifact, span.pc);
+                                        state.source_navigation = true;
+                                    }
+                                });
+                            }
+                        });
                     framework::section(ui, "Parent occurrences", |ui| {
                         links(ui, artifact, state, &origin.parents, "Parent");
                     });
@@ -65,24 +87,36 @@ pub(super) fn show(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState) {
             }
             ui.separator();
             framework::section(ui, "Transformation history", |ui| {
-                for event in &artifact.events {
-                    let label = format!(
-                        "Transform {}: {} · {:?}",
-                        event.id, event.rule, event.validation.status
-                    );
-                    let response =
-                        controls::tab(ui, state.event == Some(event.id), &label, Density::Regular);
-                    controls::observe(
-                        ui,
-                        &response,
-                        &label,
-                        "decompile-transform",
-                        Some(state.event == Some(event.id)),
-                    );
-                    if response.clicked() {
-                        state.event = Some(event.id);
-                    }
-                }
+                egui::ScrollArea::vertical()
+                    .id_salt("transform_history")
+                    .max_height(160.0)
+                    .show_rows(ui, rows::HEIGHT, artifact.events.len(), |ui, range| {
+                        for position in range {
+                            rows::row(ui, position, |ui| {
+                                let event = &artifact.events[position];
+                                let label = format!(
+                                    "Transform {}: {} · {:?}",
+                                    event.id, event.rule, event.validation.status
+                                );
+                                let response = controls::tab(
+                                    ui,
+                                    state.event == Some(event.id),
+                                    &label,
+                                    Density::Regular,
+                                );
+                                controls::observe(
+                                    ui,
+                                    &response,
+                                    &label,
+                                    "decompile-transform",
+                                    Some(state.event == Some(event.id)),
+                                );
+                                if response.clicked() {
+                                    state.event = Some(event.id);
+                                }
+                            });
+                        }
+                    });
             });
             if let Some(event) = state
                 .event
@@ -103,72 +137,55 @@ pub(super) fn show(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState) {
                     if artifact.diagnostics.is_empty() {
                         ui.label("No recovery or transformation diagnostics");
                     }
-                    for diagnostic in &artifact.diagnostics {
-                        let text = format!(
-                            "{:?} · {:?}{}: {}",
-                            diagnostic.severity,
-                            diagnostic.code,
-                            diagnostic.source.map_or_else(String::new, |source| format!(
-                                " at 0x{:04x}",
-                                source.pc
-                            )),
-                            diagnostic.message
+                    egui::ScrollArea::vertical()
+                        .id_salt("decompile_diagnostics")
+                        .max_height(160.0)
+                        .show_rows(
+                            ui,
+                            rows::HEIGHT,
+                            artifact.diagnostics.len() * 2,
+                            |ui, range| {
+                                for position in range {
+                                    rows::row(ui, position, |ui| {
+                                        let diagnostic = &artifact.diagnostics[position / 2];
+                                        if position % 2 == 0 {
+                                            let text = format!(
+                                                "{:?} · {:?}: {}",
+                                                diagnostic.severity,
+                                                diagnostic.code,
+                                                diagnostic.message
+                                            );
+                                            let response = ui
+                                                .add(
+                                                    egui::Label::new(&text)
+                                                        .wrap_mode(egui::TextWrapMode::Extend),
+                                                )
+                                                .on_hover_text(&text);
+                                            controls::observe(
+                                                ui,
+                                                &response,
+                                                &text,
+                                                "decompile-diagnostic",
+                                                None,
+                                            );
+                                        } else if let (Some(stage), Some(entity)) =
+                                            (diagnostic.stage, diagnostic.entity)
+                                        {
+                                            link(
+                                                ui,
+                                                artifact,
+                                                state,
+                                                EntityRef { stage, entity },
+                                                "Diagnostic entity",
+                                            );
+                                        }
+                                    });
+                                }
+                            },
                         );
-                        let response = ui.label(&text);
-                        controls::observe(ui, &response, &text, "decompile-diagnostic", None);
-                        if let (Some(stage), Some(entity)) = (diagnostic.stage, diagnostic.entity) {
-                            link(
-                                ui,
-                                artifact,
-                                state,
-                                EntityRef { stage, entity },
-                                "Diagnostic entity",
-                            );
-                        }
-                    }
                 },
             );
         });
-}
-
-fn entity_details(ui: &mut Ui, stage: &Stage, selected: EntityRef) {
-    if let Some(block) = stage.ir.block(selected.entity) {
-        ui.label(format!(
-            "Block b{} · {} operations · memory input m{} · effect input q{}",
-            block.id.0,
-            block.operations.len(),
-            block.memory_parameter.0,
-            block.effect_parameter.0
-        ));
-        ui.monospace(structured::terminator(&block.terminator));
-    } else if let Some(operation) = stage
-        .ir
-        .blocks
-        .iter()
-        .flat_map(|block| &block.operations)
-        .find(|operation| operation.id == selected.entity)
-    {
-        ui.monospace(structured::operation(operation, &stage.ir));
-        framework::section(ui, "Primitive effects", |ui| {
-            ui.monospace(format!("{:#?}", operation.effects));
-        });
-    } else if let Some(value) = stage.ir.value(selected.entity) {
-        ui.monospace(format!(
-            "{:?}\nFact: {:?}\nScope: {:?}",
-            value.kind, value.fact, stage.ir.fact_scope
-        ));
-    } else if let Some(edge) = stage.ir.edge(selected.entity) {
-        ui.monospace(format!(
-            "e{}: b{} → b{} · {:?}\nArguments: ({})\nMemory: m{} · effect q{}",
-            edge.id.0,
-            edge.from.0,
-            edge.to.0,
-            edge.kind,
-            structured::values(&edge.arguments),
-            edge.memory.0,
-            edge.effect.0
-        ));
-    }
 }
 
 fn link(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState, at: EntityRef, prefix: &str) {
@@ -195,9 +212,9 @@ fn links(
     egui::ScrollArea::vertical()
         .id_salt(("entity_links", prefix))
         .max_height(160.0)
-        .show_rows(ui, 22.0, references.len(), |ui, range| {
+        .show_rows(ui, rows::HEIGHT, references.len(), |ui, range| {
             for position in range {
-                ui.push_id(position, |ui| {
+                rows::row(ui, position, |ui| {
                     link(ui, artifact, state, references[position], prefix)
                 });
             }
@@ -250,76 +267,94 @@ fn transform(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState, event: &Tr
     });
     if !event.clones.is_empty() {
         framework::section(ui, "Copied entities", |ui| {
-            for copy in &event.clones {
-                ui.colored_label(
-                    palette::PURPLE,
-                    format!(
-                        "Copied s{}/e{} → s{}/e{}",
-                        copy.original.stage.0,
-                        copy.original.entity.0,
-                        copy.copy.stage.0,
-                        copy.copy.entity.0
-                    ),
-                );
-                link(ui, artifact, state, copy.original, "Copy original");
-                link(ui, artifact, state, copy.copy, "Copy descendant");
-            }
+            egui::ScrollArea::vertical()
+                .id_salt(("event_clones", event.id))
+                .max_height(180.0)
+                .show_rows(ui, rows::HEIGHT, event.clones.len() * 3, |ui, range| {
+                    for position in range {
+                        rows::row(ui, position, |ui| {
+                            let copy = &event.clones[position / 3];
+                            match position % 3 {
+                                0 => {
+                                    ui.colored_label(
+                                        palette::PURPLE,
+                                        format!(
+                                            "Copied s{}/e{} → s{}/e{}",
+                                            copy.original.stage.0,
+                                            copy.original.entity.0,
+                                            copy.copy.stage.0,
+                                            copy.copy.entity.0
+                                        ),
+                                    );
+                                }
+                                1 => link(ui, artifact, state, copy.original, "Copy original"),
+                                _ => link(ui, artifact, state, copy.copy, "Copy descendant"),
+                            }
+                        });
+                    }
+                });
         });
     }
     if !event.redirects.is_empty() {
         framework::section(ui, "Redirected edges", |ui| {
-            for redirect in &event.redirects {
-                ui.colored_label(
-                    palette::WARNING,
-                    format!(
-                        "Redirected e{}: b{} → b{}",
-                        redirect.edge.0, redirect.before.0, redirect.after.0
-                    ),
-                );
-                link(
-                    ui,
-                    artifact,
-                    state,
-                    EntityRef {
-                        stage: event.to_stage,
-                        entity: redirect.edge,
-                    },
-                    "Redirected edge",
-                );
-            }
+            egui::ScrollArea::vertical()
+                .id_salt(("event_redirects", event.id))
+                .max_height(160.0)
+                .show_rows(ui, rows::HEIGHT, event.redirects.len() * 2, |ui, range| {
+                    for position in range {
+                        rows::row(ui, position, |ui| {
+                            let redirect = &event.redirects[position / 2];
+                            if position % 2 == 0 {
+                                ui.colored_label(
+                                    palette::WARNING,
+                                    format!(
+                                        "Redirected e{}: b{} → b{}",
+                                        redirect.edge.0, redirect.before.0, redirect.after.0
+                                    ),
+                                );
+                            } else {
+                                link(
+                                    ui,
+                                    artifact,
+                                    state,
+                                    EntityRef {
+                                        stage: event.to_stage,
+                                        entity: redirect.edge,
+                                    },
+                                    "Redirected edge",
+                                );
+                            }
+                        });
+                    }
+                });
         });
     }
+    let created = state.new_entities(event);
     framework::section(ui, "New and removed entities", |ui| {
-        for entity in event
-            .created
-            .iter()
-            .filter(|id| !event.clones.iter().any(|copy| copy.copy.entity == **id))
-        {
-            link(
-                ui,
-                artifact,
-                state,
-                EntityRef {
-                    stage: event.to_stage,
-                    entity: *entity,
-                },
-                "New",
-            );
-        }
-        if let Some(stage) = event.from_stage {
-            for entity in &event.deleted {
-                link(
-                    ui,
-                    artifact,
-                    state,
-                    EntityRef {
-                        stage,
-                        entity: *entity,
-                    },
-                    "Removed",
-                );
-            }
-        }
+        let removed = if event.from_stage.is_some() {
+            event.deleted.len()
+        } else {
+            0
+        };
+        egui::ScrollArea::vertical()
+            .id_salt(("event_entities", event.id))
+            .max_height(160.0)
+            .show_rows(ui, rows::HEIGHT, created.len() + removed, |ui, range| {
+                for position in range {
+                    rows::row(ui, position, |ui| {
+                        let (stage, entity, prefix) = if position < created.len() {
+                            (event.to_stage, created[position], "New")
+                        } else {
+                            (
+                                event.from_stage.expect("removed stage"),
+                                event.deleted[position - created.len()],
+                                "Removed",
+                            )
+                        };
+                        link(ui, artifact, state, EntityRef { stage, entity }, prefix);
+                    });
+                }
+            });
     });
 }
 

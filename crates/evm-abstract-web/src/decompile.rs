@@ -1,10 +1,13 @@
 //! Independent local decompiler product workspace. The core owns every
 //! semantic stage, transformation and origin; this layer owns presentation.
 
+mod details;
 mod diff;
 mod form;
+mod index;
 mod inspector;
 mod model;
+mod rows;
 mod structured;
 mod task;
 mod views;

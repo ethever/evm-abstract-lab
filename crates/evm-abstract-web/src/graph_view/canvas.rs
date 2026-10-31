@@ -11,6 +11,7 @@ pub(crate) struct Card {
     pub key: usize,
     pub title: String,
     pub lines: Vec<String>,
+    pub total_lines: usize,
     pub markers: Vec<(String, Color32)>,
     pub boundary: bool,
 }
@@ -267,7 +268,7 @@ impl Canvas {
                     at.y += 16.0 * self.zoom;
                 }
                 if self.zoom >= 0.65 {
-                    for line in card.lines.iter().take(6) {
+                    for line in &card.lines {
                         clipped.text(
                             at,
                             Align2::LEFT_TOP,
@@ -277,11 +278,14 @@ impl Canvas {
                         );
                         at.y += 16.0 * self.zoom;
                     }
-                    if card.lines.len() > 6 {
+                    if card.total_lines > card.lines.len() {
                         clipped.text(
                             at,
                             Align2::LEFT_TOP,
-                            format!("… {} more lines; select for full IR", card.lines.len() - 6),
+                            format!(
+                                "… {} more lines; open IR for the full body",
+                                card.total_lines - card.lines.len()
+                            ),
                             FontId::monospace(10.0 * self.zoom),
                             palette::MUTED,
                         );
@@ -311,7 +315,7 @@ fn measure(ui: &Ui, content: &Scene) -> geometry::Input {
         .iter()
         .map(|card| {
             let width = std::iter::once(card.title.as_str())
-                .chain(card.lines.iter().take(6).map(String::as_str))
+                .chain(card.lines.iter().map(String::as_str))
                 .chain(card.markers.iter().map(|(label, _)| label.as_str()))
                 .map(|line| {
                     ui.painter()
@@ -326,9 +330,9 @@ fn measure(ui: &Ui, content: &Scene) -> geometry::Input {
                 id: card.key,
                 size: geometry::Size::new(
                     f64::from(width),
-                    (42 + (card.lines.len().min(6)
+                    (42 + (card.lines.len()
                         + card.markers.len()
-                        + usize::from(card.lines.len() > 6))
+                        + usize::from(card.total_lines > card.lines.len()))
                         * 16) as f64,
                 ),
                 program: None,
