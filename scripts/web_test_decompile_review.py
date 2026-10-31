@@ -77,6 +77,19 @@ def recovery(context):
             assert "evm.add(" not in text and "evm.sstore(" not in text, text
             fault = next(row for row in code_rows if "fault o" in row["label"])
             click_control(page, canvas, fault["label"], role="decompile-code", id=fault["id"])
+            detail = inspector_control(page, canvas, "Raw IR o", "decompile-entity-detail")
+            assert "fault o" in detail["label"] and "not completed" in detail["label"] and "raw opcode" in detail["label"]
+            assert "evm.add(" not in detail["label"] and "evm.sstore(" not in detail["label"]
+            click_control(page, canvas, "IR", role="tab")
+            selected_row(page, "decompile-ir", "fault o")
+            click_control(page, canvas, "Graphs", role="tab")
+            plot = ui_control(page, "Current CFG", role="graph-canvas")["rect"]
+            preview = [row for row in observed(page, "graph-preview")
+                       if "fault o" in row["label"] and "not completed" in row["label"]
+                       and plot[0] <= row["rect"][0] < row["rect"][2] <= plot[2]
+                       and plot[1] <= row["rect"][1] < row["rect"][3] <= plot[3]]
+            assert preview, "current graph did not paint the fault occurrence"
+            canvas.screenshot(path=str(context.output / (name + "-graph-ir-inspector-fault.png")))
             inspector_control(page, canvas, "Original ", "decompile-origin")
             selected_row(page, "decompile-source", mnemonic)
         canvas.screenshot(path=str(context.output / f"{name}-semantic-content.png"))

@@ -102,22 +102,7 @@ pub(super) fn build(
                         |span| format!("source 0x{:04x}", span.pc)
                     )
                 ),
-                lines: block
-                    .operations
-                    .iter()
-                    .take(graph_view::PREVIEW_LINES)
-                    .map(|op| {
-                        if stage.kind == StageKind::Decoded {
-                            structured::decoded_operation(op, bytecode)
-                        } else {
-                            structured::operation(op, &stage.ir, index)
-                        }
-                    })
-                    .chain(std::iter::once_with(|| {
-                        structured::terminator(&block.terminator)
-                    }))
-                    .take(graph_view::PREVIEW_LINES)
-                    .collect(),
+                lines: preview(block, stage, index, bytecode),
                 total_lines: block.operations.len() + 1,
                 markers: differences.markers(block.id, before),
                 boundary: block.terminator.is_partial(),
@@ -154,4 +139,44 @@ pub(super) fn build(
             })
             .collect(),
     }
+}
+
+fn preview(
+    block: &evm_abstract_protocol::decompile_model::Block,
+    stage: &Stage,
+    index: &super::super::index::StageIndex,
+    bytecode: &[u8],
+) -> Vec<String> {
+    let tail_fault = stage.kind != StageKind::Decoded
+        && matches!(
+            block.terminator,
+            evm_abstract_protocol::decompile_model::Terminator::Trap { .. }
+        )
+        && block.operations.len() > graph_view::PREVIEW_LINES;
+    let count = graph_view::PREVIEW_LINES - usize::from(tail_fault);
+    let mut lines: Vec<_> = block
+        .operations
+        .iter()
+        .take(count)
+        .map(|op| {
+            if stage.kind == StageKind::Decoded {
+                structured::decoded_operation(op, bytecode)
+            } else {
+                structured::operation(op, &stage.ir, index)
+            }
+        })
+        .collect();
+    if tail_fault {
+        lines.push(format!(
+            "… final: {}",
+            structured::operation(
+                block.operations.last().expect("nonempty fault block"),
+                &stage.ir,
+                index
+            )
+        ));
+    } else if lines.len() < graph_view::PREVIEW_LINES {
+        lines.push(structured::terminator(&block.terminator));
+    }
+    lines
 }

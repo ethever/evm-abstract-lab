@@ -279,19 +279,13 @@ fn body(
             ))
         ),
     );
-    for (position, op) in block.operations.iter().enumerate() {
-        if position + 1 == block.operations.len()
-            && let Terminator::Trap { reason } = &block.terminator
-        {
-            let location = op.source.map_or_else(
-                || "generated instruction".into(),
-                |span| format!("source 0x{:04x}", span.pc),
-            );
+    for op in &block.operations {
+        if let Some(reason) = fault_reason(op, ir, index) {
             emit(
                 output,
                 op.id,
                 indent,
-                format!("// fault o{} {} at {location}: {reason}", op.id.0, op.name),
+                format!("// {}", fault_marker(op, reason)),
             );
             continue;
         }
@@ -380,7 +374,39 @@ pub(super) fn values(ids: &[EntityId]) -> String {
         .join(", ")
 }
 
+/// A fault belongs to the indexed occurrence's owning block, never its PC.
+pub(super) fn fault_reason<'a>(op: &Operation, ir: &'a Ir, index: &StageIndex) -> Option<&'a str> {
+    let block = ir.blocks.get(index.containing_block(op.id)?)?;
+    if block.operations.last().is_none_or(|last| last.id != op.id) {
+        return None;
+    }
+    match &block.terminator {
+        Terminator::Trap { reason } => Some(reason),
+        _ => None,
+    }
+}
+
+fn fault_marker(op: &Operation, reason: &str) -> String {
+    let location = op.source.map_or_else(
+        || "generated instruction".into(),
+        |span| format!("source 0x{:04x}", span.pc),
+    );
+    format!(
+        "fault o{} {} at {location}: {reason} (not completed)",
+        op.id.0, op.name
+    )
+}
+
 pub(super) fn operation(op: &Operation, ir: &Ir, index: &StageIndex) -> String {
+    if let Some(reason) = fault_reason(op, ir, index) {
+        return format!(
+            "{}; raw opcode 0x{:02x}; inputs ({}) outputs ({})",
+            fault_marker(op, reason),
+            op.opcode,
+            values(&op.inputs),
+            values(&op.outputs)
+        );
+    }
     let expression = if let Some(replacement) = op.replacement {
         format!("{replacement:#x}")
     } else if op.opcode == 0x5f || (0x60..=0x7f).contains(&op.opcode) {
