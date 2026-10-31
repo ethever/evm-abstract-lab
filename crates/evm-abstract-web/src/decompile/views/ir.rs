@@ -58,10 +58,14 @@ impl Ir {
                 "Original disassembly and unrecovered placeholders; no recovered SSA in this stage",
             );
         }
-        ui.label(format!(
-            "Facts: {:?} · original bytes: {}",
-            stage.ir.fact_scope, stage.ir.bytecode_len
-        ));
+        if stage.kind == StageKind::Decoded {
+            ui.label(format!("Original bytes: {}", stage.ir.bytecode_len));
+        } else {
+            ui.label(format!(
+                "Facts: {:?} · original bytes: {}",
+                stage.ir.fact_scope, stage.ir.bytecode_len
+            ));
+        }
         let mut scroll = egui::ScrollArea::both().id_salt(identity);
         if !before
             && state.entity_navigation

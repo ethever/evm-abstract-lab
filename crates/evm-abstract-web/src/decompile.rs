@@ -322,7 +322,13 @@ impl Workspace {
                     "; Current stage: {} {:?}; Validation: {:?}",
                     stage.id.0, stage.kind, stage.validation.status
                 ));
-                status.push_str(&format!("; Fact scope: {:?}", stage.ir.fact_scope));
+                status.push_str(&if stage.kind
+                    == evm_abstract_protocol::decompile_model::StageKind::Decoded
+                {
+                    "; Fact scope: not recovered (Decoded)".into()
+                } else {
+                    format!("; Fact scope: {:?}", stage.ir.fact_scope)
+                });
             }
             if let Some(stage) = self.state.before.and_then(|id| artifact.stage(id)) {
                 status.push_str(&format!("; Before stage: {} {:?}", stage.id.0, stage.kind));

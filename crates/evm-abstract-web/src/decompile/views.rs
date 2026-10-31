@@ -136,7 +136,11 @@ impl Views {
                 );
             }
             if let Some(stage) = state.current.and_then(|id| artifact.stage(id)) {
-                ui.label(format!("Facts: {:?}", stage.ir.fact_scope));
+                ui.label(if stage.kind == StageKind::Decoded {
+                    "Recovery unavailable".into()
+                } else {
+                    format!("Facts: {:?}", stage.ir.fact_scope)
+                });
             }
         });
         ui.horizontal_wrapped(|ui| {
@@ -209,7 +213,15 @@ impl Views {
             return;
         };
         if stage.kind == StageKind::Decoded {
-            ui.label("Recovery unavailable for this stage. Showing original disassembly; recovered SSA is not available.");
+            let message = "Recovery unavailable for this stage. Showing original disassembly; recovered SSA is not available.";
+            let response = ui.label(message);
+            controls::observe(
+                ui,
+                &response,
+                message,
+                "decompile-recovery-unavailable",
+                None,
+            );
             self.source.show(ui, artifact, state);
             return;
         }
