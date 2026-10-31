@@ -112,7 +112,7 @@ jq '.states[] | select(.key.basic_block_index == 2)
 
 `entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 保存 `nonzero:true` 和一份 flat expression graph：`root` 指向 `nodes` 中的 Operation，opcode 20 即 EQ，`args` 是常量 1 与 Input(CallValue) 的本图索引。Input 还带 scope，图带 identity_scope。输入表达式仍表示原来的 v，数值层证明它在这个状态里只能为 1；不能把不同图中的同一个索引当成同一节点，也不会为每条分支伪造新交易。
 
-结果 JSON 的 `schema_version` 见[原生格式常量](../crates/evm-abstract/src/analysis.rs)；`domain_spec.schema_version` 与 `cost_version` 见[域策略定义](../crates/evm-abstract/src/domain/spec.rs)。原始字节码的输入记录在 `.environment`，world 分析的原始输入记录在 `.global.analysis.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
+结果 JSON 的 `schema_version` 见[原生格式常量](../crates/evm-abstract/src/analysis.rs)；`domain_spec.schema_version` 与 `cost_version` 见[域策略定义](../crates/evm-domain/src/domain/spec.rs)。原始字节码的输入记录在 `.environment`，world 分析的原始输入记录在 `.global.analysis.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
 
 当前[原生格式](../crates/evm-abstract/src/analysis.rs)和独立的 [Web 协议](../crates/evm-abstract-protocol/src/lib.rs)延续此前的移除：provider / `rlimit` 与 solver 结果不再导出。数值事实错误继续保留为带参数的 `ScalarFactError`；配置、约束容量、事实容量和表达式界限仍类型化传输。新 reduction reason `WorkLimit`、`Cancelled`、`KernelFailure` 分别表示共享工作额度不足、取消和 kernel 失败，与局部调度额度 `RoundLimit` 区分。费用版本 6 更新共享 kernel、规则和独立数值查询的收费，跨费用版本的原始 work 不是相同单位；历史测量保留原版本。旧 solver/provider/model 结果不再属于当前协议。
 
@@ -286,10 +286,10 @@ CLI 不再接受 `--smt.provider`、`--smt.rlimit`，Web 不再提供 solver 下
 
 ## 源码与验证入口
 
-- [`symbolic.rs`](../crates/evm-abstract/src/domain/symbolic.rs)：作用域、结构表达式、fresh 叶、规范化和节点边界。
-- [`relational.rs`](../crates/evm-abstract/src/domain/relational.rs)：保证导入、assume、共同保证 join、相关性与查询结果；整机 join/widening 另在 machine 层。
+- [`symbolic.rs`](../crates/evm-domain/src/domain/symbolic.rs)：作用域、结构表达式、fresh 叶、规范化和节点边界。
+- [`relational.rs`](../crates/evm-domain/src/domain/relational.rs)：保证导入、assume、共同保证 join、相关性与查询结果；整机 join/widening 另在 machine 层。
 - [`transfer/relations.rs`](../crates/evm-abstract/src/analysis/transfer/relations.rs)：分支假设与回写数值。
 - [`summary/replay.rs`](../crates/evm-abstract/src/analysis/summary/replay.rs)：资格检查后的 fresh 重命名和 caller 前缀恢复。
-- [`relational/tests.rs`](../crates/evm-abstract/src/domain/relational/tests.rs)、[`symbolic/tests.rs`](../crates/evm-abstract/src/domain/symbolic/tests.rs)、[`tests/relations.rs`](../crates/evm-abstract/tests/relations.rs)：Word256 语义、作用域、预算、矛盾分支、内存和摘要回归。
+- [`relational/tests.rs`](../crates/evm-domain/src/domain/relational/tests.rs)、[`symbolic/tests.rs`](../crates/evm-domain/src/domain/symbolic/tests.rs)、[`tests/relations.rs`](../crates/evm-abstract/tests/relations.rs)：Word256 语义、作用域、预算、矛盾分支、内存和摘要回归。
 
 这些测试覆盖当前实现，不代表任意 EVM 程序都能精确恢复路径。判断一次结果时仍需同时读取输入、数值策略、关系预算、status 和 frontiers。

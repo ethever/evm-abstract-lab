@@ -12,6 +12,9 @@ default = []
 imbl    = ["snapshot-state/imbl"]
 
 [dependencies]
+evm-bytecode = { path = "../evm-bytecode" }
+evm-domain = { path = "../evm-domain" }
+evm-resource = { path = "../evm-resource" }
 analysis-kernel = { path = "../analysis-kernel" }
 evm-abstract-notation = { path = "../evm-abstract-notation" }
 snapshot-state = { path = "../snapshot-state" }
@@ -26,9 +29,6 @@ serde_json.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 tower.workspace = true
-num-bigint.workspace = true
-num-integer.workspace = true
-num-traits.workspace = true
 analysis-control = { path = "../analysis-control" }
 revm-precompile = { version = "=43.0.3", default-features = false, features = [
     "std",
@@ -36,6 +36,8 @@ revm-precompile = { version = "=43.0.3", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+evm-domain         = { path = "../evm-domain", features = ["test-support"] }
+evm-resource       = { path = "../evm-resource", features = ["test-support"] }
 proptest.workspace = true
 revm               = { version = "=43.0.3", default-features = false, features = ["std"] }
 

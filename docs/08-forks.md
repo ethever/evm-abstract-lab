@@ -109,7 +109,7 @@ nix run . -- explain --hex 5f351e00 --numeric-model finite-set --max-constants 2
 
 这段代码先读取未知 calldata word，再计算 CLZ，结果完整保留从 `0x0` 到 `0x100` 的 257 个候选。容量接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；超过容量时必须放弃整个列表，不能删掉部分合法结果。容量不是预分配数量，也不能决定实际工作。执行状态与候选集合须分别检查，预算中断的实验见[第 06 课](06-boundaries.md#实验-b预算用尽传播尚未完成)。默认 product 在常量组件为 Top 时仍可由区间和固定位组件保存约束，见[第 02 课](02-domain.md#4-transfer在摘要上执行指令)。
 
-实现复用 U256 的 `leading_zeros()`。启用规则见 [`fork.rs`](../crates/evm-abstract/src/fork.rs)，解码见 [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs)，抽象数值计算见 [`domain.rs`](../crates/evm-abstract/src/domain.rs)。SSA 使用指令的输入/输出元数据连接定义，不需要另写一份 CLZ 数值语义。
+实现复用 U256 的 `leading_zeros()`。启用规则见 [`fork.rs`](../crates/evm-bytecode/src/fork.rs)，解码见 [`bytecode.rs`](../crates/evm-bytecode/src/bytecode.rs)，抽象数值计算见 [`domain.rs`](../crates/evm-domain/src/domain.rs)。SSA 使用指令的输入/输出元数据连接定义，不需要另写一份 CLZ 数值语义。
 
 ## 4. EIP-7702：账户的 code 可能是委托标记
 
