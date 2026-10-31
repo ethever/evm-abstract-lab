@@ -42,6 +42,7 @@ pub(crate) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui
 #[derive(Clone, Copy, Debug, Hash)]
 pub(crate) enum BytecodeEditor {
     Analysis,
+    #[cfg(any(target_arch = "wasm32", test))]
     Decompiler,
 }
 
@@ -52,6 +53,7 @@ impl BytecodeEditor {
 
     /// Explicit replacement starts a new edit session. Ordinary close/reopen
     /// preserves this editor's cursor and undo history.
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn replace(self, context: &egui::Context) {
         egui::text_edit::TextEditState::default().store(context, self.id());
     }
