@@ -163,7 +163,7 @@ def inspector_control(page, canvas, prefix, role):
     settle_control_geometry(page)
     for direction in [-1, 1]:
         for _ in range(64):
-            minimum_height = 16 if role in {"decompile-entity-link", "decompile-origin", "decompile-transform", "action"} else 1
+            minimum_height = 16 if role in {"decompile-entity-link", "decompile-origin", "decompile-transform", "action"} else 15
             matches = [control for control in observed(page, role, prefix)
                        if control["rect"][3] - control["rect"][1] >= minimum_height]
             if matches:

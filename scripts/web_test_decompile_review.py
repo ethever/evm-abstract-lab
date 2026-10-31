@@ -265,8 +265,8 @@ def editing(context):
     draft(b + "00")
     click_control(page, canvas, "Analysis", role="tab")
     open_input(page, mode="Bytecode")
-    # open_input already establishes real agent focus. A second immediate
-    # click selects the word and adds a cursor-only Undo state.
+    # open_input already establishes focus; avoid another selection-changing
+    # activation before the exact single Undo/Redo assertions.
     page.keyboard.press("Control+z")
     rendered_frame(page)
     draft(a)
