@@ -1,10 +1,13 @@
 """Real decompiler HTTP publications and painted control interactions."""
 
 import json
+import re
 import time
 from playwright.sync_api import expect
 from web_test_harness import (capture_console_errors, click_control, edit_control,
-                              observe_webgpu, rendered_frame, ui_controls)
+                              observe_webgpu, rendered_frame, ui_control, ui_controls,
+                              focus_text_control, set_control, settle_gesture,
+                              settle_control_geometry)
 
 
 BRANCH = "5f35600a576001600d565b60025b60030100"
@@ -15,6 +18,7 @@ IRREDUCIBLE = "5f356008576011565b60016000556011565b5f3560085700"
 
 def open_decompiler(context, url=None):
     page = context.browser.new_page(viewport={"width": 1920, "height": 1080})
+    page.decompile_output = context.output
     observe_webgpu(page)
     capture_console_errors(page)
     with page.expect_response(lambda response: response.request.method == "POST"
@@ -36,7 +40,20 @@ def prepare(page, canvas, bytecode, strategy="Dispatcher", fork=None):
     controls = ui_controls(page)
     if not any(control["label"] == "Runtime bytecode" and control["enabled"] for control in controls):
         click_control(page, canvas, "Edit bytecode", role="action")
-    edit_control(page, canvas, "Runtime bytecode", bytecode)
+    if any(character in bytecode for character in "\n\r\t"):
+        # Chromium's single-line text agent sanitizes insertText newlines.
+        # A real paste reaches egui's multiline Paste event without that loss.
+        focus_text_control(page, canvas, "Runtime bytecode")
+        page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+        page.evaluate("text => navigator.clipboard.writeText(text)", bytecode)
+        page.keyboard.press("Control+A")
+        rendered_frame(page)
+        page.keyboard.press("Control+V")
+        rendered_frame(page)
+    else:
+        edit_control(page, canvas, "Runtime bytecode", bytecode)
+    record_input(page, "draft-before-submit", expected_draft=bytecode)
+    ui_control(page, bytecode, role="bytecode-value")
     click_control(page, canvas, strategy, role="tab")
     if fork is not None:
         click_control(page, canvas, "EVM fork", role="combobox")
@@ -97,23 +114,103 @@ def observed(page, role, prefix=None):
 
 def inspector_control(page, canvas, prefix, role):
     """Scroll the real inspector, without inventing an alternate activation path."""
+    def scroll(direction, inner=False):
+        def geometry():
+            return [(control["label"], control["role"], control["rect"])
+                    for control in ui_controls(page) if control["enabled"]]
+        previous = geometry()
+        controls = observed(page, "decompile-entity-link", "Source descendant") if inner else []
+        panel = observed(page, "decompile-inspector")[0]["rect"]
+        if controls:
+            first, last = controls[0]["rect"], controls[-1]["rect"]
+            point = [(first[0] + first[2]) / 2, (first[1] + last[3]) / 2]
+            distance = max(25, (last[3] - first[1]) * 0.6)
+        else:
+            # Wheel over a real disclosure header in the OUTER document;
+            # the panel border/scrollbar may sit outside its wheel viewport.
+            headers = [control for control in observed(page, "section")
+                       if panel[0] <= control["rect"][0] < control["rect"][2] <= panel[2]
+                       and panel[1] <= control["rect"][1] < control["rect"][3] <= panel[3]
+                       and control["rect"][3] - control["rect"][1] >= 16]
+            area = headers[0]["rect"] if headers else panel
+            point = [(area[0] + area[2]) / 2, (area[1] + area[3]) / 2]
+            distance = 200
+        before = page.evaluate("window.__webgpuEvidence.submissions")
+        page.mouse.move(*point)
+        page.wait_for_function("before => window.__webgpuEvidence.submissions > before", arg=before, polling=25)
+        record_input(page, "before-inspector-scroll", direction=direction, inner=inner, point=point)
+        # Overlap virtual-list windows:200px skips complete rows in a160px
+        # viewport, especially a target first observed as a clipped final row.
+        page.mouse.wheel(0, direction * distance)
+        settle_gesture(page)
+        settle_control_geometry(page)
+        record_input(page, "after-inspector-scroll", direction=direction, inner=inner, point=point)
+        return geometry() != previous
+
+    if role == "decompile-transform":
+        for direction in [-1, 1]:
+            for _ in range(16):
+                sections = observed(page, "section", "Transformation history")
+                if sections:
+                    set_control(page, canvas, "Transformation history", True, role="section")
+                    break
+                if not scroll(direction):
+                    break
+            if sections:
+                break
+
+    settle_gesture(page)
+    settle_control_geometry(page)
     for direction in [-1, 1]:
-        for _ in range(16):
-            matches = observed(page, role, prefix)
+        for _ in range(64):
+            minimum_height = 16 if role in {"decompile-entity-link", "decompile-origin", "decompile-transform", "action"} else 1
+            matches = [control for control in observed(page, role, prefix)
+                       if control["rect"][3] - control["rect"][1] >= minimum_height]
             if matches:
                 item = matches[0]
+                if role == "decompile-entity-detail":
+                    # Ordinary native labels are15px high and need no click.
+                    record_input(page, "inspector-detail-visible", target=item)
+                    return item
+                # Wheel smoothing and accepted geometry must settle BEFORE
+                # press, not after a click using a stale virtual-row rectangle.
+                point = [(item["rect"][0] + item["rect"][2]) / 2,
+                         (item["rect"][1] + item["rect"][3]) / 2]
+                before = page.evaluate("window.__webgpuEvidence.submissions")
+                page.mouse.move(*point)
+                page.wait_for_function("before => window.__webgpuEvidence.submissions > before", arg=before, polling=25)
+                record_input(page, "before-inspector-click", target=item, point=point)
                 click_control(page, canvas, item["label"], role=role, id=item["id"])
+                record_input(page, "after-inspector-click", target=item, point=point)
+                reference = re.search(r" s(\d+)/e(\d+) ", item["label"])
+                if role == "decompile-entity-link" and reference:
+                    stage_id, entity_id = reference.groups()
+                    expect(page.locator("#analysis-status")).to_contain_text(f"/stage:{stage_id}/entity:{entity_id}")
                 return item
-            inner = observed(page, "decompile-entity-link", "Source descendant") if prefix.startswith("Source descendant") else []
-            panel = observed(page, "decompile-inspector")[0]["rect"]
-            if inner:
-                first, last = inner[0]["rect"], inner[-1]["rect"]
-                page.mouse.move((first[0] + first[2]) / 2, (first[1] + last[3]) / 2)
-            else:
-                page.mouse.move(panel[2] - 8, (panel[1] + panel[3]) / 2)
-            page.mouse.wheel(0, direction * 250)
-            rendered_frame(page)
+            if not scroll(direction, prefix.startswith("Source descendant")):
+                break
+    record_input(page, "inspector-target-missing", prefix=prefix, role=role)
+    page.locator("#evm-canvas").screenshot(path=str(page.decompile_output / "missing-inspector-target.png"))
     raise AssertionError(f"inspector never rendered {role} {prefix!r}")
+
+
+def record_input(page, event, **fields):
+    """Read-only evidence of actual controls, focus, buffers and paint frames."""
+    output = getattr(page, "decompile_output", None)
+    if output is None:
+        return
+    state = page.evaluate("""() => {
+        const status = document.querySelector('#analysis-status');
+        const active = document.activeElement;
+        return {status: status?.textContent, controls: JSON.parse(status?.getAttribute('data-controls') || '[]'),
+            active: active ? {tag: active.tagName, id: active.id, value: active.value,
+                rect: [active.getBoundingClientRect().x, active.getBoundingClientRect().y,
+                       active.getBoundingClientRect().width, active.getBoundingClientRect().height]} : null,
+            frames: window.__webgpuEvidence?.submissions, input_frame: window.__webTestInputFrame,
+            last_wheel: window.__webTestLastWheel, now: performance.now()};
+    }""")
+    with (output / "interaction-evidence.jsonl").open("a") as stream:
+        stream.write(json.dumps({"event": event, **fields, "state": state}) + "\n")
 
 
 def contains_ast(node, kind):
