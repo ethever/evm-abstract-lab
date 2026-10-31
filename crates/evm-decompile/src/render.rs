@@ -1,7 +1,7 @@
 //! Human-readable output is a view of typed syntax, never the semantic owner.
 use crate::{
-    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, Ir, Operation, StageKind,
-    StructuredKind, StructuredNode, Terminator, Value, ValueKind,
+    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, Operation, StageKind, StructuredKind,
+    StructuredNode, Terminator, Value, ValueKind,
 };
 use evm_resource::{ResourceError, WorkBudget};
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,7 +75,6 @@ fn export_scoped(artifact: &Artifact, max_work: usize, observer: impl FnMut(usiz
         status: TextExportStatus::Complete,
         loops: Vec::new(),
         next_block: None,
-        source_ir: artifact.current().map(|stage| &stage.ir),
     };
     let stage = artifact.current();
     if stage.is_none() {
@@ -196,7 +195,6 @@ struct RenderIndex<'a, P: FnMut(usize)> {
     status: TextExportStatus,
     loops: Vec<LoopControl>,
     next_block: Option<EntityId>,
-    source_ir: Option<&'a Ir>,
 }
 #[derive(Clone, Copy)]
 struct LoopControl {
@@ -253,8 +251,7 @@ impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
         self.edges.get(&id).copied()
     }
     fn first_block(&self, node: &StructuredNode) -> Option<EntityId> {
-        self.source_ir
-            .and_then(|ir| crate::execute::first_block(node, ir))
+        node.entry_block_with(|edge| self.edge(edge).map(|edge| edge.from))
     }
 }
 fn indent(out: &mut String, depth: usize) {
