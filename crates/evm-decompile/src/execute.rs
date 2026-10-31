@@ -684,7 +684,8 @@ impl<'a, H: SemanticHost> Runtime<'a, H> {
         }
     }
 }
-fn first_block(node: &StructuredNode, ir: &Ir) -> Option<EntityId> {
+/// Semantic entry lookup shared by AST execution and export control routing.
+pub(crate) fn first_block(node: &StructuredNode, ir: &Ir) -> Option<EntityId> {
     match &node.kind {
         StructuredKind::Block { block }
         | StructuredKind::Exit { block }

@@ -1,10 +1,10 @@
 //! Human-readable output is a view of typed syntax, never the semantic owner.
 use crate::{
-    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, Operation, StructuredKind,
-    StructuredNode, Terminator, Value, ValueKind,
+    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, Ir, Operation, StageKind,
+    StructuredKind, StructuredNode, Terminator, Value, ValueKind,
 };
-use evm_resource::WorkBudget;
-use std::collections::BTreeMap;
+use evm_resource::{ResourceError, WorkBudget};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 /// Completion of one text export, independently of bytecode recovery coverage.
@@ -57,35 +57,47 @@ pub fn export_text_with_observer(
     max_work: usize,
     observer: impl FnMut(usize),
 ) -> TextExport {
+    analysis_control::with_cancellation(cancel, || export_scoped(artifact, max_work, observer))
+}
+
+fn export_scoped(artifact: &Artifact, max_work: usize, observer: impl FnMut(usize)) -> TextExport {
     let mut out = format!(
         "// fork={} strategy={:?} recovery={:?}\n",
         artifact.input.fork, artifact.config.strategy, artifact.completion
     );
-    let Some(stage) = artifact.current() else {
-        out.push_str("// no validated stage\n");
-        let status = if cancel.is_cancelled() {
-            out.push_str("// export cancelled\n");
-            TextExportStatus::Cancelled
-        } else {
-            TextExportStatus::Complete
-        };
-        return TextExport {
-            text: out,
-            status,
-            work: 0,
-        };
-    };
     let mut index = RenderIndex {
         values: BTreeMap::new(),
         blocks: BTreeMap::new(),
         edges: BTreeMap::new(),
         budget: WorkBudget::new(max_work),
         observer,
-        cancel,
         stopped: false,
         status: TextExportStatus::Complete,
+        loops: Vec::new(),
+        next_block: None,
+        source_ir: artifact.current().map(|stage| &stage.ir),
     };
+    let stage = artifact.current();
+    if stage.is_none() {
+        out.push_str("// no validated stage; local recovery unavailable\n");
+    }
+    diagnostics(&mut out, artifact, &mut index);
+    let Some(stage) = stage else {
+        return index.finish(out);
+    };
+    if index.stopped {
+        return index.finish(out);
+    }
     if !index.pay(crate::transform::ir_size(&stage.ir).saturating_mul(4)) {
+        return index.finish(out);
+    }
+    if stage.kind == StageKind::Decoded {
+        source_disassembly(
+            &mut out,
+            &stage.ir.blocks,
+            &artifact.input.runtime_bytecode,
+            &mut index,
+        );
         return index.finish(out);
     }
     index.values = stage.ir.values.iter().map(|v| (v.id, v)).collect();
@@ -103,10 +115,74 @@ pub fn export_text_with_observer(
             if index.stopped {
                 break;
             }
-            control(&mut out, block, &mut index, 1, false);
+            control(&mut out, block, &mut index, 1, None);
         }
     }
     index.finish(out)
+}
+
+fn diagnostics(
+    out: &mut String,
+    artifact: &Artifact,
+    index: &mut RenderIndex<'_, impl FnMut(usize)>,
+) {
+    for diagnostic in &artifact.diagnostics {
+        if !index.pay(diagnostic.message.len().saturating_mul(2).saturating_add(1)) {
+            return;
+        }
+        let _ = write!(out, "// {:?} {:?}", diagnostic.severity, diagnostic.code);
+        if let Some(source) = diagnostic.source {
+            let _ = write!(out, " at 0x{:04x}", source.pc);
+        }
+        out.push_str(":\n");
+        for line in diagnostic.message.lines() {
+            let _ = writeln!(out, "//   {line}");
+        }
+    }
+}
+
+fn source_disassembly(
+    out: &mut String,
+    blocks: &[Block],
+    bytes: &[u8],
+    index: &mut RenderIndex<'_, impl FnMut(usize)>,
+) {
+    // Decoded definitions are stable source placeholders. Their missing inputs
+    // and Bottom facts must never be presented as recovered SSA computations.
+    out.push_str("// decoded source only; stack/value recovery unavailable\ndisassembly:\n");
+    for block in blocks {
+        for op in &block.operations {
+            let raw = op
+                .source
+                .and_then(|span| bytes.get(span.pc..span.end_pc))
+                .unwrap_or_default();
+            if !index.pay(
+                raw.len()
+                    .saturating_mul(4)
+                    .saturating_add(op.name.len())
+                    .saturating_add(1),
+            ) {
+                return;
+            }
+            if let Some(source) = op.source {
+                let _ = write!(out, "0x{:04x}: ", source.pc);
+            } else {
+                out.push_str("<unlocated>: ");
+            }
+            out.push_str(&op.name);
+            if (0x60..=0x7f).contains(&op.opcode) && raw.len() > 1 {
+                out.push_str(" 0x");
+                for byte in &raw[1..] {
+                    let _ = write!(out, "{byte:02x}");
+                }
+            }
+            out.push_str(" // bytes ");
+            for byte in raw {
+                let _ = write!(out, "{byte:02x}");
+            }
+            let _ = writeln!(out, "; unrecovered; op{}", op.id.0);
+        }
+    }
 }
 // One export owns its own work ledger. Indexed lookups keep a large recovered
 // graph from turning each rendered operand into another whole-value scan.
@@ -116,21 +192,33 @@ struct RenderIndex<'a, P: FnMut(usize)> {
     edges: BTreeMap<EntityId, &'a Edge>,
     budget: WorkBudget,
     observer: P,
-    cancel: &'a Cancellation,
     stopped: bool,
     status: TextExportStatus,
+    loops: Vec<LoopControl>,
+    next_block: Option<EntityId>,
+    source_ir: Option<&'a Ir>,
+}
+#[derive(Clone, Copy)]
+struct LoopControl {
+    node: EntityId,
+    entry: Option<EntityId>,
+}
+struct DispatchControl {
+    node: EntityId,
+    cases: BTreeSet<EntityId>,
+    continuation: Option<EntityId>,
+    outer: Option<LoopControl>,
 }
 impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
     fn pay(&mut self, work: usize) -> bool {
         if self.stopped {
             return false;
         }
-        if self.cancel.is_cancelled() || !self.budget.charge(work) {
+        if let Err(error) = evm_resource::pay(&mut self.budget, work) {
             self.stopped = true;
-            self.status = if self.cancel.is_cancelled() {
-                TextExportStatus::Cancelled
-            } else {
-                TextExportStatus::Limited
+            self.status = match error {
+                ResourceError::Cancelled => TextExportStatus::Cancelled,
+                ResourceError::Work => TextExportStatus::Limited,
             };
             return false;
         }
@@ -138,8 +226,13 @@ impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
         true
     }
     fn finish(mut self, mut text: String) -> TextExport {
-        if self.status == TextExportStatus::Complete && self.cancel.is_cancelled() {
-            self.status = TextExportStatus::Cancelled;
+        if self.status == TextExportStatus::Complete
+            && let Err(error) = evm_resource::checkpoint(&self.budget)
+        {
+            self.status = match error {
+                ResourceError::Cancelled => TextExportStatus::Cancelled,
+                ResourceError::Work => TextExportStatus::Limited,
+            };
         }
         if self.status != TextExportStatus::Complete {
             text.push_str("// export cancelled or work limit exhausted\n");
@@ -158,6 +251,10 @@ impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
     }
     fn edge(&self, id: EntityId) -> Option<&'a Edge> {
         self.edges.get(&id).copied()
+    }
+    fn first_block(&self, node: &StructuredNode) -> Option<EntityId> {
+        self.source_ir
+            .and_then(|ir| crate::execute::first_block(node, ir))
     }
 }
 fn indent(out: &mut String, depth: usize) {
@@ -296,12 +393,18 @@ fn syntax(
     }
     match &n.kind {
         StructuredKind::Sequence(v) => {
-            for n in v {
+            let outer_next = ir.next_block;
+            for (position, n) in v.iter().enumerate() {
+                ir.next_block = v
+                    .get(position + 1)
+                    .map(|next| ir.first_block(next))
+                    .unwrap_or(outer_next);
                 syntax(out, n, ir, depth);
                 if ir.stopped {
                     break;
                 }
             }
+            ir.next_block = outer_next;
         }
         StructuredKind::Block { block } => {
             if let Some(b) = ir.block(*block) {
@@ -333,7 +436,7 @@ fn syntax(
             exit_edge,
         } => {
             indent(out, depth);
-            out.push_str("while (true) {\n");
+            let _ = writeln!(out, "'loop{}: while (true) {{", n.id.0);
             syntax(out, header, ir, depth + 1);
             if let Some(condition) = condition {
                 indent(out, depth + 1);
@@ -351,7 +454,12 @@ fn syntax(
                 indent(out, depth + 1);
                 out.push_str("}\n");
             }
+            let outer_next = ir.next_block.take();
+            let entry = ir.first_block(header).or_else(|| ir.first_block(body));
+            ir.loops.push(LoopControl { node: n.id, entry });
             syntax(out, body, ir, depth + 1);
+            ir.loops.pop();
+            ir.next_block = outer_next;
             indent(out, depth);
             out.push_str("}\n");
         }
@@ -365,7 +473,7 @@ fn syntax(
         }
         StructuredKind::Exit { block } => {
             if let Some(b) = ir.block(*block) {
-                control(out, b, ir, depth, false);
+                control(out, b, ir, depth, None);
             }
         }
         StructuredKind::PartialExit { block } => {
@@ -403,12 +511,21 @@ fn syntax(
             out.push_str("}\n");
         }
         StructuredKind::Dispatcher { entry, cases } => {
+            if !ir.pay(cases.len().saturating_mul(2)) {
+                return;
+            }
+            let dispatch = DispatchControl {
+                node: n.id,
+                cases: cases.iter().map(|case| case.block).collect(),
+                continuation: ir.next_block,
+                outer: ir.loops.last().copied(),
+            };
             indent(out, depth);
-            let _ = writeln!(out, "state = b{};", entry.0);
+            let _ = writeln!(out, "state_d{} = b{};", n.id.0, entry.0);
             indent(out, depth);
-            out.push_str("while (true) {\n");
+            let _ = writeln!(out, "'dispatch{}: while (true) {{", n.id.0);
             indent(out, depth + 1);
-            out.push_str("match state {\n");
+            let _ = writeln!(out, "match state_d{} {{", n.id.0);
             for c in cases {
                 if !ir.pay(1 + c.transitions.len()) {
                     break;
@@ -417,7 +534,7 @@ fn syntax(
                 let _ = writeln!(out, "b{} => {{", c.block.0);
                 if let Some(b) = ir.block(c.block) {
                     body(out, b, ir, depth + 3);
-                    control(out, b, ir, depth + 3, true);
+                    control(out, b, ir, depth + 3, Some(&dispatch));
                 }
                 indent(out, depth + 2);
                 out.push_str("}\n");
@@ -446,13 +563,36 @@ fn edge_control(
     id: EntityId,
     ir: &mut RenderIndex<'_, impl FnMut(usize)>,
     depth: usize,
-    state: bool,
+    dispatch: Option<&DispatchControl>,
 ) {
     transfer(out, id, ir, depth);
     if let Some(edge) = ir.edge(id) {
         indent(out, depth);
-        if state {
-            let _ = writeln!(out, "state = b{}; continue; // edge{}", edge.to.0, id.0);
+        if let Some(dispatch) = dispatch {
+            // An external target yields Flow::Escaped in the AST runner. Keep
+            // its phi transfer, then resume a following region or natural loop.
+            let action = if dispatch.cases.contains(&edge.to) {
+                format!("continue 'dispatch{};", dispatch.node.0)
+            } else if Some(edge.to) == dispatch.continuation {
+                format!("break 'dispatch{};", dispatch.node.0)
+            } else if let Some(outer) = dispatch.outer {
+                format!(
+                    "{} 'loop{};",
+                    if Some(edge.to) == outer.entry {
+                        "continue"
+                    } else {
+                        "break"
+                    },
+                    outer.node.0
+                )
+            } else {
+                format!("break 'dispatch{};", dispatch.node.0)
+            };
+            let _ = writeln!(
+                out,
+                "state_d{} = b{}; {action} // edge{}",
+                dispatch.node.0, edge.to.0, id.0
+            );
         } else {
             let _ = writeln!(out, "goto b{}; // edge{}", edge.to.0, id.0);
         }
@@ -465,7 +605,7 @@ fn jump_control(
     jump: (&[EntityId], bool),
     ir: &mut RenderIndex<'_, impl FnMut(usize)>,
     depth: usize,
-    state: bool,
+    dispatch: Option<&DispatchControl>,
 ) {
     let (edges, unresolved) = jump;
     indent(out, depth);
@@ -492,7 +632,7 @@ fn jump_control(
         {
             indent(out, depth + 1);
             let _ = writeln!(out, "0x{:x} => {{", span.pc);
-            edge_control(out, *id, ir, depth + 2, state);
+            edge_control(out, *id, ir, depth + 2, dispatch);
             indent(out, depth + 1);
             out.push_str("}\n");
         }
@@ -516,7 +656,7 @@ fn control(
     block: &Block,
     ir: &mut RenderIndex<'_, impl FnMut(usize)>,
     depth: usize,
-    state: bool,
+    dispatch: Option<&DispatchControl>,
 ) {
     if !ir.pay(1) {
         return;
@@ -562,13 +702,13 @@ fn control(
             indent(out, depth);
             let _ = writeln!(out, "partial_recovery(b{});", block.id.0);
         }
-        Terminator::Fallthrough { edge } => edge_control(out, *edge, ir, depth, state),
+        Terminator::Fallthrough { edge } => edge_control(out, *edge, ir, depth, dispatch),
         Terminator::Jump {
             target,
             edges,
             unresolved,
             ..
-        } => jump_control(out, *target, (edges, *unresolved), ir, depth, state),
+        } => jump_control(out, *target, (edges, *unresolved), ir, depth, dispatch),
         Terminator::Branch {
             condition,
             target,
@@ -585,12 +725,12 @@ fn control(
                 (then_edges, *unresolved),
                 ir,
                 depth + 1,
-                state,
+                dispatch,
             );
             indent(out, depth);
             out.push_str("} else {\n");
             if let Some(edge) = else_edge {
-                edge_control(out, *edge, ir, depth + 1, state);
+                edge_control(out, *edge, ir, depth + 1, dispatch);
             } else {
                 indent(out, depth + 1);
                 out.push_str("stop(); // end of runtime\n");

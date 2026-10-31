@@ -397,7 +397,7 @@ fn structured_text_prints_one_terminal_and_readable_partial_and_fault_exits() {
     let mut config = Config::default();
     config.limits.max_iterations = 0;
     let source_only = decompile(&Input::new(vec![0x60, 9, 0x00], Fork::Osaka), &config);
-    assert!(render_text(&source_only).contains("0x9"));
+    assert!(render_text(&source_only).contains("PUSH1 0x09"));
 }
 #[test]
 fn backedge_phi_assignments_are_simultaneous_for_loop_swaps() {
@@ -443,6 +443,60 @@ fn dispatcher_is_a_real_state_machine_only_for_residual_control() {
             MemoryHost::new(&input, calldata(value)),
         );
         assert!(counts(&a.current().unwrap().ir.structured.as_ref().unwrap().root).2 > 0);
+        let mut dispatches = Vec::new();
+        fn collect<'a>(
+            node: &'a StructuredNode,
+            out: &mut Vec<(evm_decompile::EntityId, &'a [evm_decompile::DispatchCase])>,
+        ) {
+            match &node.kind {
+                StructuredKind::Dispatcher { cases, .. } => out.push((node.id, cases)),
+                StructuredKind::Sequence(nodes) => {
+                    for node in nodes {
+                        collect(node, out);
+                    }
+                }
+                StructuredKind::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    collect(then_branch, out);
+                    collect(else_branch, out);
+                }
+                StructuredKind::While { header, body, .. } => {
+                    collect(header, out);
+                    collect(body, out);
+                }
+                StructuredKind::Indirect { arms, .. } => {
+                    for arm in arms {
+                        collect(&arm.body, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        collect(
+            &a.current().unwrap().ir.structured.as_ref().unwrap().root,
+            &mut dispatches,
+        );
+        let text = render_text(&a);
+        let mut escaped = 0;
+        for (id, cases) in dispatches {
+            for transition in cases.iter().flat_map(|case| &case.transitions) {
+                if !cases.iter().any(|case| case.block == transition.target) {
+                    let exit = format!(
+                        "state_d{} = b{}; break 'dispatch{}; // edge{}",
+                        id.0, transition.target.0, id.0, transition.edge.0
+                    );
+                    assert!(text.contains(&exit), "{text}");
+                    escaped += 1;
+                }
+            }
+        }
+        assert!(
+            escaped > 0,
+            "the irreducible fixture must exercise region exits"
+        );
         let event = a
             .events
             .iter()
