@@ -42,7 +42,7 @@ pub(crate) enum Message {
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Error {
     #[error("{0}")]
-    Transport(#[from] TransportError),
+    Transport(TransportError),
     #[error("{code:?}: {message}", code = .0.code, message = .0.message)]
     Api(ApiError),
     #[error("Task response identity mismatch: expected {expected}, received {received}")]
@@ -56,6 +56,14 @@ pub(super) enum Error {
         completion: evm_abstract_protocol::decompile_model::Completion,
         message: String,
     },
+}
+
+// Keep the concrete transport/cause accessible for typed inspection. An
+// automatic #[from] also generates erased Error::source forwarding.
+impl From<TransportError> for Error {
+    fn from(error: TransportError) -> Self {
+        Self::Transport(error)
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

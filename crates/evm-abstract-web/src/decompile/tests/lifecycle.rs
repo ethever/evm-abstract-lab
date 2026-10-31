@@ -103,3 +103,22 @@ fn temporary_transport_failure_keeps_polling_and_missing_task_keeps_an_inflight_
     assert!(!workspace.task.needs_refresh());
     assert!(workspace.task.error.is_some());
 }
+
+#[test]
+fn transport_wrapping_preserves_concrete_decode_context_and_exact_display() {
+    let cause = serde_json::from_str::<api::DecompileJobReply>("not-json").unwrap_err();
+    let position = (cause.line(), cause.column());
+    let category = cause.classify();
+    let transport = crate::TransportError::Decode { status: 502, cause };
+    let expected = transport.to_string();
+    let error: crate::decompile::task::Error = transport.into();
+    assert_eq!(error.to_string(), expected);
+    let crate::decompile::task::Error::Transport(crate::TransportError::Decode { status, cause }) =
+        error
+    else {
+        panic!("transport error must remain concrete");
+    };
+    assert_eq!(status, 502);
+    assert_eq!((cause.line(), cause.column()), position);
+    assert_eq!(cause.classify(), category);
+}
