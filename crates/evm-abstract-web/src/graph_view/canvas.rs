@@ -268,14 +268,23 @@ impl Canvas {
                     at.y += 16.0 * self.zoom;
                 }
                 if self.zoom >= 0.65 {
-                    for line in &card.lines {
-                        clipped.text(
+                    for (line_index, line) in card.lines.iter().enumerate() {
+                        let text_rect = clipped.text(
                             at,
                             Align2::LEFT_TOP,
                             line,
                             FontId::monospace(11.0 * self.zoom),
                             palette::MUTED,
                         );
+                        let shown = text_rect.intersect(clipped.clip_rect());
+                        if shown.is_positive() {
+                            let preview = ui.interact(
+                                shown,
+                                identity.with((card.key, "preview", line_index)),
+                                Sense::hover(),
+                            );
+                            controls::observe(ui, &preview, line, "graph-preview", None);
+                        }
                         at.y += 16.0 * self.zoom;
                     }
                     if card.total_lines > card.lines.len() {

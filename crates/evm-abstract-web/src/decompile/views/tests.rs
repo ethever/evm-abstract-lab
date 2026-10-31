@@ -403,3 +403,190 @@ fn if_and_while_descendants_open_the_guard_and_semantic_fields() {
         }));
     }
 }
+
+#[test]
+fn fault_context_is_visible_in_painted_graph_ir_and_selected_inspector_without_completing_the_op() {
+    use evm_abstract_protocol::decompile_model::{
+        Effects, Terminator, Value, ValueFact, ValueKind,
+    };
+    for (opcode, name) in [(0x01, "ADD"), (0x55, "SSTORE")] {
+        let mut artifact = fixture::artifact(evm_abstract_protocol::DecompileStrategy::Dispatcher);
+        let stage = &mut artifact.stages[1];
+        let successful = stage.ir.blocks[0].operations[0].clone();
+        let mut fault = successful.clone();
+        fault.id = EntityId(50);
+        fault.opcode = opcode;
+        fault.name = name.into();
+        fault.inputs.clear();
+        fault.outputs = if opcode == 0x01 {
+            vec![EntityId(70)]
+        } else {
+            vec![]
+        };
+        fault.effects = Effects {
+            storage_write: opcode == 0x55,
+            ..Effects::default()
+        };
+        stage.ir.blocks[0].operations.push(fault.clone());
+        stage.ir.blocks[0].terminator = Terminator::Trap {
+            reason: "stack underflow".into(),
+        };
+        if opcode == 0x01 {
+            stage.ir.values.push(Value {
+                id: EntityId(70),
+                kind: ValueKind::Operation {
+                    operation: fault.id,
+                    index: 0,
+                },
+                fact: ValueFact::Bottom,
+            });
+        }
+        // Same source PC in another context must remain a normal operation.
+        let mut normal = successful.clone();
+        normal.id = EntityId(51);
+        normal.opcode = opcode;
+        normal.name = name.into();
+        normal.effects = fault.effects;
+        stage.ir.blocks[1].operations.push(normal.clone());
+        let index = StageIndex::new(&stage.ir);
+        let normal_text = crate::decompile::structured::operation(&normal, &stage.ir, &index);
+        assert!(
+            normal_text.contains(&format!("evm.{}(", name.to_lowercase()))
+                && !normal_text.contains("fault")
+        );
+        assert_eq!(stage.ir.blocks[0].operations[0], successful);
+        let ctx = Context::default();
+        crate::palette::configure(&ctx);
+        let mut state = ViewState::default();
+        state.install(
+            &artifact,
+            Publication {
+                job: JobId(1),
+                version: fixture::version(1),
+            },
+        );
+        let at = EntityRef {
+            stage: StageId(1),
+            entity: fault.id,
+        };
+        assert!(state.select(&artifact, at));
+        let mut graph = graph::Graph::default();
+        let mut painted = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0))),
+                ..RawInput::default()
+            },
+            |ui| {
+                controls::begin_observation(ui.ctx(), true);
+                graph.show(
+                    ui,
+                    &artifact,
+                    &artifact.stages[1],
+                    &mut state,
+                    &Differences::default(),
+                    false,
+                );
+            },
+        );
+        painted.textures_delta.clear();
+        let graph_controls: Vec<serde_json::Value> =
+            serde_json::from_str(&controls::observed(&ctx).unwrap()).unwrap();
+        let preview = graph_controls
+            .iter()
+            .find(|control| {
+                control["role"] == "graph-preview"
+                    && control["label"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&format!("fault o50 {name}"))
+            })
+            .unwrap_or_else(|| panic!("fault was not actually painted: {graph_controls:?}"));
+        let label = preview["label"].as_str().unwrap();
+        assert!(
+            label.contains("source 0x0002")
+                && label.contains("not completed")
+                && label.contains("raw opcode")
+        );
+        assert!(!label.contains("evm.add(") && !label.contains("evm.sstore("));
+        assert!(graph_controls.iter().any(|control| {
+            control["role"] == "graph-preview"
+                && control["label"]
+                    .as_str()
+                    .unwrap()
+                    .contains("evm.sstore(v3, v3)")
+        }));
+        let mut views = Views {
+            route: Route::Ir,
+            ..Views::default()
+        };
+        let visible = frame(
+            &ctx,
+            &mut views,
+            &artifact,
+            &mut state,
+            Vec2::new(1440.0, 900.0),
+        );
+        selected_visible(
+            &visible,
+            "decompile-ir",
+            &format!("fault o50 {name}"),
+            900.0,
+        );
+        let mut inspected = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0))),
+                ..RawInput::default()
+            },
+            |ui| {
+                controls::begin_observation(ui.ctx(), true);
+                crate::decompile::inspector::show(ui, &artifact, &mut state);
+            },
+        );
+        inspected.textures_delta.clear();
+        let details: Vec<serde_json::Value> =
+            serde_json::from_str(&controls::observed(&ctx).unwrap()).unwrap();
+        assert!(details.iter().any(|control| {
+            control["role"] == "decompile-entity-detail"
+                && control["label"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("fault o50 {name} at source 0x0002"))
+        }));
+        assert!(details.iter().any(|control| {
+            control["role"] == "decompile-entity-detail"
+                && control["label"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Declared primitive effects (not completed)")
+        }));
+        assert_eq!(artifact.stages[1].ir.blocks[0].operations[1], fault);
+    }
+}
+
+#[test]
+fn bounded_graph_preview_exposes_a_late_fault_without_formatting_the_whole_body() {
+    let mut artifact = fixture::large(1500);
+    artifact.stages[1].ir.blocks[0].terminator =
+        evm_abstract_protocol::decompile_model::Terminator::Trap {
+            reason: "retained final fault".into(),
+        };
+    let stage = &artifact.stages[1];
+    let index = StageIndex::new(&stage.ir);
+    let scene = graph::build(
+        stage,
+        &index,
+        &Differences::default(),
+        false,
+        &artifact.input.runtime_bytecode,
+    );
+    assert_eq!(scene.cards[0].lines.len(), crate::graph_view::PREVIEW_LINES);
+    let last = stage.ir.blocks[0].operations.last().unwrap();
+    assert!(
+        scene.cards[0]
+            .lines
+            .last()
+            .unwrap()
+            .contains(&format!("fault o{}", last.id.0))
+    );
+    assert!(index.value_reads.get() <= crate::graph_view::PREVIEW_LINES);
+}

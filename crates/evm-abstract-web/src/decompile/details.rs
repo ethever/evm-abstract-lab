@@ -58,9 +58,15 @@ pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &
             id.0,
             structured::operation(op, &stage.ir, index)
         ));
-        details
-            .lines
-            .push(format!("Primitive effects: {:?}", op.effects));
+        details.lines.push(format!(
+            "{}: {:?}",
+            if structured::fault_reason(op, &stage.ir, index).is_some() {
+                "Declared primitive effects (not completed)"
+            } else {
+                "Primitive effects"
+            },
+            op.effects
+        ));
         refs.extend(op.inputs.iter().chain(&op.outputs).copied());
         refs.extend(
             [
