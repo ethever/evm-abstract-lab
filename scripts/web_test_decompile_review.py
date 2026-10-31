@@ -36,6 +36,16 @@ def source_descendant(page, canvas, artifact, at_stage, entity, pc=None):
 def recovery(context):
     page, canvas, _, _ = open_decompiler(context)
     artifacts = []
+    for name, draft, expected in [
+        ("prefix-lower", "0x600160020100", "0x600160020100"),
+        ("prefix-upper-space", " \n0X60 01\t60 02 01 00 ", "0x600160020100"),
+        ("unprefixed-space", "60 01\n60 02 01 00", "600160020100"),
+    ]:
+        artifact, request = submit(context, page, canvas, draft, name)
+        assert request["bytecode"] == expected and artifact["input"]["runtime_bytecode"] == list(bytes.fromhex("600160020100"))
+        click_control(page, canvas, "Edit bytecode", role="action")
+        ui_control(page, draft, role="bytecode-value")
+        artifacts.append(artifact["id"])
     for name, code in [("mixed-targets", "5f35600a576001600d565b600f5b565b00"),
                        ("known-targets", "5f35600a576011600d565b600f5b565b005b00"),
                        ("unknown-target", "5f3556"),
@@ -133,6 +143,31 @@ def navigation(context):
                 selected_row(page, "decompile-code", "sequence ast" + sequence["id"])
         canvas.screenshot(path=str(context.output / f"typed-{name}-selected.png"))
 
+    # Same effectful A/B cycle and common end as core's irreducible fixture.
+    # The join at PC48 is outside the residual dispatch case set.
+    common_end = "5f3561001b575b5f54600101805f556004901061001b57610030565b5f54600101805f556004901061000657610030565b00"
+    escaping, _ = submit(context, page, canvas, common_end, "dispatcher-common-end")
+    current = stage(escaping, "structured")
+    candidate = next((node, transition) for node in current["ir"]["structured"]["nodes"]
+                     if "dispatcher" in node["kind"]
+                     for case in node["kind"]["dispatcher"]["cases"]
+                     for transition in case["transitions"]
+                     if transition["target"] not in {case["block"] for case in node["kind"]["dispatcher"]["cases"]})
+    dispatcher, external = candidate
+    target = next(block for block in current["ir"]["blocks"] if block["id"] == external["target"])
+    assert target["source"]["pc"] == 48
+    source_descendant(page, canvas, escaping, current["id"], external["id"])
+    selected_row(page, "decompile-code", f"= b{external['target']}; break 'dispatch{dispatcher['id']};")
+    selected_row(page, "decompile-code", "memory token on e" + external["edge"])
+    selected_row(page, "decompile-code", "effect token on e" + external["edge"])
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    click_control(page, canvas, "Copy structured text", role="action")
+    page.wait_for_function("() => navigator.clipboard.readText().then(text => text.includes(\"break 'dispatch\"))")
+    copied_text = page.evaluate("navigator.clipboard.readText()")
+    assert "if (" in copied_text and "match v" in copied_text and "is active" not in copied_text
+    assert copied_text.rfind("evm.stop();") > copied_text.find(f"break 'dispatch{dispatcher['id']}")
+    canvas.screenshot(path=str(context.output / "dispatcher-common-end-scoped-exit.png"))
+
     code = "".join(f"60{index % 256:02x}50" for index in range(1300)) + "00"
     artifact, _ = submit(context, page, canvas, code, "large-push-stream")
     baseline = stage(artifact, "baseline")
@@ -165,7 +200,7 @@ def navigation(context):
     choose_stage(page, canvas, artifact, "baseline")
     ui_control(page, "Current CFG", role="graph-canvas")
     canvas.screenshot(path=str(context.output / "large-bounded-graph-preview.png"))
-    result = {"large_artifact": artifact["id"], "late_pc": pc, "timings": timings, "renderer": webgpu_evidence(page)}
+    result = {"large_artifact": artifact["id"], "dispatcher_escape": escaping["id"], "late_pc": pc, "timings": timings, "renderer": webgpu_evidence(page)}
     page.close()
     return result
 
