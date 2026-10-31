@@ -134,7 +134,7 @@ impl ValueFact {
     }
 }
 /// Definition identity; facts never substitute for identity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValueKind {
     /// Original PUSH or a validated pure fold.
@@ -305,7 +305,7 @@ pub enum ExitKind {
     EndOfCode,
 }
 /// Explicit semantic transfer, including unknown and exceptional targets.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Terminator {
     /// Only decoded or interrupted frontiers may remain pending.
@@ -524,8 +524,8 @@ pub struct DispatchTransition {
 }
 }
 /// Structural control. All primitives remain in referenced operation bodies.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StructuredKind<N = StructuredNode> {
     /// Ordered syntax children.
     Sequence(Vec<N>),
@@ -553,14 +553,12 @@ pub enum StructuredKind<N = StructuredNode> {
         /// Executed before each loop test.
         header: Box<N>,
         /// Condition word; nonzero selects the true arm.
-        #[serde(deserialize_with = "crate::required_field")]
         condition: Option<EntityId>,
         /// Whether nonzero continues this loop.
         condition_nonzero: bool,
         /// Executable region body.
         body: Box<N>,
         /// Parameter transfer when the loop test exits.
-        #[serde(deserialize_with = "crate::required_field")]
         exit_edge: Option<EntityId>,
     },
     /// Leave the nearest natural loop after an explicit transfer.
