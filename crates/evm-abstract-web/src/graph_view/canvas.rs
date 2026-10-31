@@ -140,7 +140,9 @@ impl Canvas {
             Sense::click_and_drag(),
         );
         controls::observe(ui, &response, title, "graph-canvas", None);
-        let canvas = response.rect;
+        // Pixel-rounded allocation can extend past the parent's last half
+        // pixel. Camera geometry must use the viewport that is really painted.
+        let canvas = painter.clip_rect();
         if let Some(previous) = self.viewport_size.replace(canvas.size()) {
             // Preserve the viewed world center and manual zoom through dock/
             // viewport resize, instead of retaining a now off-screen pan.

@@ -840,7 +840,13 @@ fn window_resize_keeps_graphs_visible_without_changing_their_zoom() {
         Vec2::new(900.0, 620.0),
     ));
     for ((old_center, old_size), (new_center, new_size)) in before.into_iter().zip(after) {
-        assert!((new_center - old_center).length() < 0.01);
-        assert!((new_size - old_size).length() < 0.01);
+        assert!(
+            (new_center - old_center).length() < 0.01,
+            "canvas-relative block center {old_center:?} -> {new_center:?}"
+        );
+        assert!(
+            (new_size - old_size).length() < 0.01,
+            "painted block size {old_size:?} -> {new_size:?}"
+        );
     }
 }
