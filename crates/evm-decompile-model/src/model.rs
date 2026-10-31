@@ -3,7 +3,7 @@
 use crate::{Fork, U256};
 use serde::{Deserialize, Serialize};
 
-/// Stable bytecode+fork namespace, encoded as a full keccak256 digest.
+/// Stable bytecode+fork+configuration+schema namespace as full keccak256.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ArtifactId(pub String);
 /// Stable identity of an entity inside one artifact namespace.
@@ -12,35 +12,43 @@ pub struct EntityId(#[serde(with = "crate::decimal_id")] pub u64);
 /// Immutable stage identity inside an artifact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StageId(pub u32);
+strict_record! {
 /// An entity occurrence in a particular immutable snapshot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EntityRef {
     /// Snapshot containing the occurrence.
     pub stage: StageId,
     /// Stable artifact-local entity.
     pub entity: EntityId,
 }
+}
+strict_record! {
 /// Half-open original bytecode range; synthetic control never invents a PC.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceSpan {
     /// First original byte offset.
     pub pc: usize,
     /// End offset, clamped to the supplied bytecode for truncated PUSH.
     pub end_pc: usize,
 }
+}
+strict_record! {
 /// Offline input; adapters resolve addresses before entering the library.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     /// Ordinary EVM runtime bytes.
     pub runtime_bytecode: Vec<u8>,
     /// Explicit supported rules.
-    #[serde(deserialize_with = "crate::deserialize_fork")]
     pub fork: Fork,
+}
 }
 impl Input {
     /// Capture runtime bytecode and its explicit fork.
     pub fn new(runtime_bytecode: Vec<u8>, fork: Fork) -> Self {
-        Self { runtime_bytecode, fork }
+        Self {
+            runtime_bytecode,
+            fork,
+        }
     }
 }
 /// Treatment of known irreducible control flow, independently of recovery gaps.
@@ -53,14 +61,15 @@ pub enum Strategy {
     /// Split selected nodes and remap operations, values and edges first.
     CodeDuplication,
 }
+strict_record! {
 /// Frozen limits of a single independent attempt. No limit preallocates storage.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Reject larger inputs before decode.
     pub max_bytecode_bytes: usize,
     /// Maximum decoded blocks.
     pub max_blocks: usize,
-    /// Maximum decoded operations, including unreachable instructions.
+    /// Maximum source and copied operations, including unreachable instructions.
     pub max_operations: usize,
     /// Maximum allocated word and memory identities.
     pub max_values: usize,
@@ -72,25 +81,37 @@ pub struct Limits {
     pub max_constant_set: usize,
     /// Maximum real block copies across node splitting.
     pub max_cloned_blocks: usize,
-    /// Recursion ceiling for structural region construction.
+    /// Recursion ceiling for region construction, at most MAX_STRUCTURING_DEPTH.
     pub max_structuring_depth: usize,
+    /// Maximum retained stage/entity/provenance occurrences across history.
+    pub max_history_entities: usize,
+}
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_bytecode_bytes: 100_000, max_blocks: 8_192, max_operations: 100_000,
-            max_values: 500_000, max_work: 100_000_000, max_iterations: 100_000,
-            max_constant_set: 8, max_cloned_blocks: 2_048, max_structuring_depth: 128,
+            max_bytecode_bytes: 100_000,
+            max_blocks: 8_192,
+            max_operations: 100_000,
+            max_values: 500_000,
+            max_work: 100_000_000,
+            max_iterations: 100_000,
+            max_constant_set: 8,
+            max_cloned_blocks: 2_048,
+            max_structuring_depth: 128,
+            max_history_entities: 2_000_000,
         }
     }
 }
+strict_record! {
 /// Frozen per-artifact policy.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Config {
     /// Irreducible control strategy (dispatcher by default).
     pub strategy: Strategy,
     /// Work and retained-entity ceilings.
     pub limits: Limits,
+}
 }
 /// A finite upper approximation, with pending bottom separate from unknown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +127,10 @@ pub enum ValueFact {
 impl ValueFact {
     /// A proved exact word.
     pub fn singleton(&self) -> Option<U256> {
-        match self { Self::Constants(v) if v.len() == 1 => Some(v[0]), _ => None }
+        match self {
+            Self::Constants(v) if v.len() == 1 => Some(v[0]),
+            _ => None,
+        }
     }
 }
 /// Definition identity; facts never substitute for identity.
@@ -116,16 +140,43 @@ pub enum ValueKind {
     /// Original PUSH or a validated pure fold.
     Constant(U256),
     /// One result slot of one operation.
-    Operation { operation: EntityId, index: usize },
+    Operation {
+        /// Producing operation identity.
+        operation: EntityId,
+        /// Result or parameter position.
+        index: usize,
+    },
     /// Simultaneously assigned block-entry stack slot, bottom to top.
-    Parameter { block: EntityId, index: usize },
+    Parameter {
+        /// Referenced semantic block.
+        block: EntityId,
+        /// Result or parameter position.
+        index: usize,
+    },
     /// Ordered memory snapshot after a writer, or initial zero memory.
-    Memory { operation: Option<EntityId> },
+    Memory {
+        /// Producing operation identity.
+        operation: Option<EntityId>,
+    },
     /// Phi-like memory input.
-    MemoryParameter { block: EntityId },
+    MemoryParameter {
+        /// Referenced semantic block.
+        block: EntityId,
+    },
+    /// Ordered snapshot of all observable primitive effects.
+    Effect {
+        /// Producing operation identity.
+        operation: Option<EntityId>,
+    },
+    /// Phi-like incoming effect sequence.
+    EffectParameter {
+        /// Referenced semantic block.
+        block: EntityId,
+    },
 }
+strict_record! {
 /// One stable definition and its final local numeric upper approximation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Value {
     /// Stable definition ID.
     pub id: EntityId,
@@ -134,8 +185,10 @@ pub struct Value {
     /// Locally proved possibilities.
     pub fact: ValueFact,
 }
+}
+strict_record! {
 /// Conservative observable primitive effects. Reads are never silently cached.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Effects {
     /// Reads local memory.
     pub memory_read: bool,
@@ -166,12 +219,16 @@ pub struct Effects {
     /// Halts this execution.
     pub terminate: bool,
 }
+}
 impl Effects {
     /// Whether the operation has no observable or state-dependent effects.
-    pub fn is_pure(&self) -> bool { *self == Self::default() }
+    pub fn is_pure(&self) -> bool {
+        *self == Self::default()
+    }
 }
+strict_record! {
 /// An original instruction or a real copied instruction, in execution order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Operation {
     /// Independent operation identity.
     pub id: EntityId,
@@ -193,13 +250,28 @@ pub struct Operation {
     pub memory_output: Option<EntityId>,
     /// Validated exact pure simplification; original opcode and inputs remain.
     pub replacement: Option<U256>,
+    /// Previous ordered observable effect, separate from memory aliasing.
+    pub effect_input: Option<EntityId>,
+    /// New ordered observable effect when this primitive is state-dependent.
+    pub effect_output: Option<EntityId>,
+}
 }
 /// Kind of represented control-flow edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EdgeKind { Fallthrough, Jump, True, False }
+pub enum EdgeKind {
+    /// Sequential control transfer.
+    Fallthrough,
+    /// Unconditional dynamic jump.
+    Jump,
+    /// Nonzero conditional edge.
+    True,
+    /// Zero-condition fallthrough.
+    False,
+}
+strict_record! {
 /// Simultaneous stack and memory assignment along one control-flow edge.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edge {
     /// Stable edge identity.
     pub id: EntityId,
@@ -213,11 +285,25 @@ pub struct Edge {
     pub arguments: Vec<EntityId>,
     /// Destination memory argument.
     pub memory: EntityId,
+    /// Final observable effect sequence passed to the destination.
+    pub effect: EntityId,
+}
 }
 /// Observable terminal primitive result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ExitKind { Stop, Return, Revert, SelfDestruct, EndOfCode }
+pub enum ExitKind {
+    /// Normal STOP termination.
+    Stop,
+    /// RETURN termination.
+    Return,
+    /// REVERT termination.
+    Revert,
+    /// SELFDESTRUCT termination.
+    SelfDestruct,
+    /// Implicit STOP at the bytecode boundary.
+    EndOfCode,
+}
 /// Explicit semantic transfer, including unknown and exceptional targets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -225,18 +311,48 @@ pub enum Terminator {
     /// Only decoded or interrupted frontiers may remain pending.
     Pending,
     /// Unconditional edge, including a simplified known branch.
-    Fallthrough { edge: EntityId },
+    Fallthrough {
+        /// Referenced simultaneous parameter transfer.
+        edge: EntityId,
+    },
     /// Target alternatives; invalid targets are exceptional, unresolved is partial.
-    Jump { target: EntityId, edges: Vec<EntityId>, unresolved: bool, invalid_targets: Vec<U256> },
+    Jump {
+        /// Runtime jump-target word.
+        target: EntityId,
+        /// Known target alternatives.
+        edges: Vec<EntityId>,
+        /// Whether an explicit unknown target remains.
+        unresolved: bool,
+        /// Proved non-JUMPDEST exceptional targets.
+        invalid_targets: Vec<U256>,
+    },
     /// EVM nonzero conditional jump, with an independent fallthrough.
     Branch {
-        condition: EntityId, target: EntityId, then_edges: Vec<EntityId>,
-        else_edge: Option<EntityId>, unresolved: bool, invalid_targets: Vec<U256>,
+        /// Condition word; nonzero selects the true arm.
+        condition: EntityId,
+        /// Runtime jump-target word.
+        target: EntityId,
+        /// Known edges for a nonzero condition.
+        then_edges: Vec<EntityId>,
+        /// False fallthrough, absent for end of code.
+        else_edge: Option<EntityId>,
+        /// Whether an explicit unknown target remains.
+        unresolved: bool,
+        /// Proved non-JUMPDEST exceptional targets.
+        invalid_targets: Vec<U256>,
     },
     /// Normal or revert termination.
-    Exit { kind: ExitKind, values: Vec<EntityId> },
+    Exit {
+        /// Terminal EVM behavior.
+        kind: ExitKind,
+        /// Ordered terminal operands.
+        values: Vec<EntityId>,
+    },
     /// Exceptional halt, including invalid opcodes and stack faults.
-    Trap { reason: String },
+    Trap {
+        /// Concrete explanation.
+        reason: String,
+    },
 }
 impl Terminator {
     /// All represented known edges, without hiding unresolved alternatives.
@@ -244,17 +360,33 @@ impl Terminator {
         match self {
             Self::Fallthrough { edge } => vec![*edge],
             Self::Jump { edges, .. } => edges.clone(),
-            Self::Branch { then_edges, else_edge, .. } => then_edges.iter().copied().chain(*else_edge).collect(),
+            Self::Branch {
+                then_edges,
+                else_edge,
+                ..
+            } => then_edges.iter().copied().chain(*else_edge).collect(),
             _ => Vec::new(),
         }
     }
     /// May execution escape to a target not recovered in the graph?
     pub fn is_partial(&self) -> bool {
-        matches!(self, Self::Pending | Self::Jump { unresolved: true, .. } | Self::Branch { unresolved: true, .. })
+        matches!(
+            self,
+            Self::Pending
+                | Self::Jump {
+                    unresolved: true,
+                    ..
+                }
+                | Self::Branch {
+                    unresolved: true,
+                    ..
+                }
+        )
     }
 }
+strict_record! {
 /// Immutable block body with explicit phi-like entry assignments.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     /// Independent block identity.
     pub id: EntityId,
@@ -264,14 +396,33 @@ pub struct Block {
     pub parameters: Vec<EntityId>,
     /// Memory entry definition.
     pub memory_parameter: EntityId,
+    /// Incoming observable effect sequence.
+    pub effect_parameter: EntityId,
     /// Instruction order, including external effects.
     pub operations: Vec<Operation>,
     /// Terminal control transfer.
     pub terminator: Terminator,
 }
+}
+/// Scope under which recovered numeric facts and predecessor sets hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactScope {
+    /// Facts apply only to executions before taking an explicit partial exit.
+    #[default]
+    /// RecoveredPaths state.
+    RecoveredPaths,
+    /// Local recovery has no unresolved predecessor frontier.
+    CompleteLocalCfg,
+}
+strict_record! {
 /// Semantic graph and optional actual structured representation.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ir {
+    /// Original input length, including unreachable bytes and PUSH padding boundaries.
+    pub bytecode_len: usize,
+    /// Explicit qualification of numeric facts in open recovery.
+    pub fact_scope: FactScope,
     /// Runtime entry block, absent for empty bytecode.
     pub entry: Option<EntityId>,
     /// Retained instruction bodies.
@@ -283,37 +434,50 @@ pub struct Ir {
     /// Executable structured lowering, never assembled from display text.
     pub structured: Option<StructuredProgram>,
 }
+}
 impl Ir {
     /// Find a block by artifact-local identity.
-    pub fn block(&self, id: EntityId) -> Option<&Block> { self.blocks.iter().find(|b| b.id == id) }
+    pub fn block(&self, id: EntityId) -> Option<&Block> {
+        self.blocks.iter().find(|b| b.id == id)
+    }
     /// Find a definition by artifact-local identity.
-    pub fn value(&self, id: EntityId) -> Option<&Value> { self.values.iter().find(|v| v.id == id) }
+    pub fn value(&self, id: EntityId) -> Option<&Value> {
+        self.values.iter().find(|v| v.id == id)
+    }
     /// Find a transfer by artifact-local identity.
-    pub fn edge(&self, id: EntityId) -> Option<&Edge> { self.edges.iter().find(|e| e.id == id) }
+    pub fn edge(&self, id: EntityId) -> Option<&Edge> {
+        self.edges.iter().find(|e| e.id == id)
+    }
 }
 /// Owned executable structured root.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StructuredProgram { /// Actual AST root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructuredProgram {
+    /// Actual AST root.
     pub root: StructuredNode,
 }
+strict_record! {
 /// Every AST node has a separate identity and transformation origin.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructuredNode {
     /// Independent syntax entity identity.
     pub id: EntityId,
     /// Typed semantics.
     pub kind: StructuredKind,
 }
+}
+strict_record! {
 /// One explicit state-machine case with effectful operation body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DispatchCase {
     /// Source IR block body.
     pub block: EntityId,
     /// Explicit state assignments on known exits from the case.
     pub transitions: Vec<DispatchTransition>,
 }
+}
+strict_record! {
 /// A traceable synthetic state assignment derived from an original edge.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DispatchTransition {
     /// Synthetic assignment identity.
     pub id: EntityId,
@@ -322,43 +486,87 @@ pub struct DispatchTransition {
     /// Assigned next block/state.
     pub target: EntityId,
 }
+}
 /// Structural control. All primitives remain in referenced operation bodies.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StructuredKind {
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum StructuredKind<N = StructuredNode> {
     /// Ordered syntax children.
-    Sequence(Vec<StructuredNode>),
+    Sequence(Vec<N>),
     /// Execute block operations only; following nodes choose its terminator.
-    Block { block: EntityId },
+    Block {
+        /// Referenced semantic block.
+        block: EntityId,
+    },
     /// Simultaneously assign destination parameters.
-    Transfer { edge: EntityId },
+    Transfer {
+        /// Referenced simultaneous parameter transfer.
+        edge: EntityId,
+    },
     /// Nonzero word selects the first arm.
-    If { condition: EntityId, then_branch: Box<StructuredNode>, else_branch: Box<StructuredNode> },
+    If {
+        /// Condition word; nonzero selects the true arm.
+        condition: EntityId,
+        /// Syntax selected by a nonzero condition.
+        then_branch: Box<N>,
+        /// Syntax selected by a zero condition.
+        else_branch: Box<N>,
+    },
     /// Header executes before every test. None is an unconditional loop.
     While {
-        header: Box<StructuredNode>, condition: Option<EntityId>, condition_nonzero: bool,
-        body: Box<StructuredNode>, exit_edge: Option<EntityId>,
+        /// Executed before each loop test.
+        header: Box<N>,
+        /// Condition word; nonzero selects the true arm.
+        #[serde(deserialize_with = "crate::required_field")]
+        condition: Option<EntityId>,
+        /// Whether nonzero continues this loop.
+        condition_nonzero: bool,
+        /// Executable region body.
+        body: Box<N>,
+        /// Parameter transfer when the loop test exits.
+        #[serde(deserialize_with = "crate::required_field")]
+        exit_edge: Option<EntityId>,
     },
     /// Leave the nearest natural loop after an explicit transfer.
     Break,
     /// Begin the next natural-loop iteration.
     Continue,
     /// Evaluate a terminal IR exit, exceptional halt or partial frontier.
-    Exit { block: EntityId },
+    Exit {
+        /// Referenced semantic block.
+        block: EntityId,
+    },
     /// Explicit unresolved indirect escape; never silently falls through.
-    PartialExit { block: EntityId },
+    PartialExit {
+        /// Referenced semantic block.
+        block: EntityId,
+    },
     /// Target-based local alternatives, distinct from residual CFG dispatch.
-    Indirect { block: EntityId, arms: Vec<IndirectArm>, unresolved: bool },
+    Indirect {
+        /// Referenced semantic block.
+        block: EntityId,
+        /// Known target-specific continuations.
+        arms: Vec<IndirectArm<N>>,
+        /// Whether an explicit unknown target remains.
+        unresolved: bool,
+    },
     /// A real state variable loop over only the residual region's cases.
-    Dispatcher { entry: EntityId, cases: Vec<DispatchCase> },
+    Dispatcher {
+        /// Initial semantic block/state.
+        entry: EntityId,
+        /// Executable residual control cases.
+        cases: Vec<DispatchCase>,
+    },
 }
+strict_record! {
 /// One known dynamic-target choice with its own structured continuation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndirectArm {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndirectArm<N = StructuredNode> {
     /// Concrete original jump destination PC.
     pub target_pc: usize,
     /// Chosen edge assignment and continuation.
-    pub body: StructuredNode,
+    pub body: N,
+}
 }
 
 /// Observable recovery/transformation phase, without transport state.
@@ -367,6 +575,7 @@ pub struct IndirectArm {
 pub enum Phase {
     /// Fork-aware decode.
     #[default]
+    /// Input decoding failed.
     Decode,
     /// Local CFG/stack/memory convergence.
     Recovery,
@@ -383,8 +592,9 @@ pub enum Phase {
     /// Attempt finished, including partial/cancelled/limited outcomes.
     Complete,
 }
+strict_record! {
 /// Monotone high-water counters plus an actual immutable stage boundary.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Progress {
     /// Actual current phase.
     pub phase: Phase,
@@ -396,4 +606,5 @@ pub struct Progress {
     pub work: usize,
     /// Latest validated stage.
     pub stage: Option<StageId>,
+}
 }
