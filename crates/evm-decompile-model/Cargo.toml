@@ -12,5 +12,8 @@ evm-bytecode = { path = "../evm-bytecode" }
 alloy-primitives.workspace = true
 serde.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
