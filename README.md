@@ -166,7 +166,7 @@ nix develop -c jq '.status, (.native.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的原始输入位于 `.global.analysis.entry.environment`，Native 条件位于 `.native.analysis.entry.environment`。当前[原生 schema](crates/evm-abstract/src/analysis.rs) 为 16，[Web wire schema](crates/evm-abstract-protocol/src/lib.rs) 为 21，[域 schema 与成本版本](crates/evm-abstract/src/domain/spec.rs)为 3 与 9。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界 Native 图的 `.native.analysis.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的原始输入位于 `.global.analysis.entry.environment`，Native 条件位于 `.native.analysis.entry.environment`。当前[原生 schema](crates/evm-abstract/src/analysis.rs) 为 16，[Web wire schema](crates/evm-abstract-protocol/src/lib.rs) 为 21，[域 schema 与成本版本](crates/evm-domain/src/domain/spec.rs)为 3 与 9。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界 Native 图的 `.native.analysis.states[].entry.relations` 保存关系信息。
 
 RPC 混合分析保留原始全局关系，并用同一固定快照和累计账本扩展可选精度。后续补查失败或额度耗尽时，已经独立闭合的基线继续有效，采集失败、Native frontiers 与各自 revision 显式保留；基线本身未获认证时仍是 `Incomplete`。初始入口采集失败属于输入错误，取消返回类型化错误。原生 RPC 库入口继续用 `RpcAcquisition` 表示尚需补查的详细义务。
 
@@ -219,12 +219,12 @@ cargo run --locked -p evm-abstract-cli -- explain --file examples/straight-line.
 
 | 读什么实现 | 源码入口 |
 | --- | --- |
-| 指令解码与基本块 | [`bytecode.rs`](crates/evm-abstract/src/bytecode.rs) |
-| 常量集合的 Top、非空集合与有界运算 | [`finite_constant_set.rs`](crates/evm-abstract/src/domain/finite_constant_set.rs) |
-| 数值组件、合并与算术 | [`numeric.rs`](crates/evm-abstract/src/domain/numeric.rs)、[`domain.rs`](crates/evm-abstract/src/domain.rs) |
-| 机器值、来源与独立身份 | [`value.rs`](crates/evm-abstract/src/domain/value.rs)、[`provenance.rs`](crates/evm-abstract/src/domain/provenance.rs)、[`identity.rs`](crates/evm-abstract/src/domain/identity.rs) |
-| 持久表达式、关系环境与查询 | [`symbolic.rs`](crates/evm-abstract/src/domain/symbolic.rs)、[`relational.rs`](crates/evm-abstract/src/domain/relational.rs) |
-| 固定位、区间、同余、来源与事实交换 | [`domain/`](crates/evm-abstract/src/domain) |
+| 指令解码与基本块 | [`bytecode.rs`](crates/evm-bytecode/src/bytecode.rs) |
+| 常量集合的 Top、非空集合与有界运算 | [`finite_constant_set.rs`](crates/evm-domain/src/domain/finite_constant_set.rs) |
+| 数值组件、合并与算术 | [`numeric.rs`](crates/evm-domain/src/domain/numeric.rs)、[`domain.rs`](crates/evm-domain/src/domain.rs) |
+| 机器值、来源与独立身份 | [`value.rs`](crates/evm-domain/src/domain/value.rs)、[`provenance.rs`](crates/evm-domain/src/domain/provenance.rs)、[`identity.rs`](crates/evm-domain/src/domain/identity.rs) |
+| 持久表达式、关系环境与查询 | [`symbolic.rs`](crates/evm-domain/src/domain/symbolic.rs)、[`relational.rs`](crates/evm-domain/src/domain/relational.rs) |
+| 固定位、区间、同余、来源与事实交换 | [`domain/`](crates/evm-domain/src/domain) |
 | 调用帧、局部与跨合约工作表 | [`analysis/`](crates/evm-abstract/src/analysis) |
 | 账户事实与账户状态 | [`world/`](crates/evm-abstract/src/world) |
 | 内存、calldata 与 returndata 的抽象字节数组 | [`world/bytes.rs`](crates/evm-abstract/src/world/bytes.rs) |

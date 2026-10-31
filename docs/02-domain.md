@@ -216,11 +216,11 @@ nix run . -- cfg --no-relations --hex 5f351e00 --max-constants 8
 
 ## 读源码时对应到哪里
 
-建议先读 [`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)：它把常量组件封装为 Top 或非空有限集合，集合求交或筛选为空时返回错误。容量由 [`DomainSpec`](../crates/evm-abstract/src/domain/spec.rs) 决定，不保存在每个集合里；有界收集与 join 超过容量时放弃整个常量列表。
+建议先读 [`FiniteConstantSet`](../crates/evm-domain/src/domain/finite_constant_set.rs)：它把常量组件封装为 Top 或非空有限集合，集合求交或筛选为空时返回错误。容量由 [`DomainSpec`](../crates/evm-domain/src/domain/spec.rs) 决定，不保存在每个集合里；有界收集与 join 超过容量时放弃整个常量列表。
 
-数值策略有两个独立实现：[`FiniteSetAlgebra`](../crates/evm-abstract/src/domain/finite_algebra.rs) 的实际载体是 `FiniteConstantSet`；[`ProductAlgebra`](../crates/evm-abstract/src/domain/cooperation/policy.rs) 的实际载体是 [`NumericValue`](../crates/evm-abstract/src/domain/numeric.rs)。前者适合核对本课的有限并集、笛卡尔积和容量手算，后者在不能列完候选时继续传播位、区间与同余约束。两者都实现 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)，以借用的操作数执行 `apply_numeric(op, args)`，并按 opcode 给出完整工作报价。
+数值策略有两个独立实现：[`FiniteSetAlgebra`](../crates/evm-domain/src/domain/finite_algebra.rs) 的实际载体是 `FiniteConstantSet`；[`ProductAlgebra`](../crates/evm-domain/src/domain/cooperation/policy.rs) 的实际载体是 [`NumericValue`](../crates/evm-domain/src/domain/numeric.rs)。前者适合核对本课的有限并集、笛卡尔积和容量手算，后者在不能列完候选时继续传播位、区间与同余约束。两者都实现 [`EvmNumericAlgebra`](../crates/evm-domain/src/domain/algebra.rs)，以借用的操作数执行 `apply_numeric(op, args)`，并按 opcode 给出完整工作报价。
 
-执行值 [`EvmValue<N>`](../crates/evm-abstract/src/domain/value.rs) 保存真实的数值载体 `N`；[`ValueAlgebra<D>`](../crates/evm-abstract/src/domain/algebra.rs) 统一处理来源、可信复制身份与表达式，再调用选定的数值代数。容量和关系限制来自这份代数的 `spec()`。应用只在入口选择一次 `product` 或 `finite-set`，随后世界、栈、字节数组和结果都保留相应的类型。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-abstract/src/domain/concrete.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
+执行值 [`EvmValue<N>`](../crates/evm-domain/src/domain/value.rs) 保存真实的数值载体 `N`；[`ValueAlgebra<D>`](../crates/evm-domain/src/domain/algebra.rs) 统一处理来源、可信复制身份与表达式，再调用选定的数值代数。容量和关系限制来自这份代数的 `spec()`。应用只在入口选择一次 `product` 或 `finite-set`，随后世界、栈、字节数组和结果都保留相应的类型。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-bytecode/src/word.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
 
 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 对照已支持纯操作的边界值和随机 256 位输入；这是核对 EVM 语义的证据，不等于所有环境、内存、跨合约行为都已精确建模。
 

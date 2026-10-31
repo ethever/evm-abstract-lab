@@ -30,7 +30,7 @@ flowchart TD
 
 | 到达库之前的数据 | 它代表什么 | 源码中怎样建立 |
 | --- | --- | --- |
-| `Program` | 按选定 fork 解码的指令、基本块、合法 JUMPDEST | `Input::load` → [`Program::from_hex_with_fork`](../../crates/evm-abstract/src/bytecode.rs#L134) |
+| `Program` | 按选定 fork 解码的指令、基本块、合法 JUMPDEST | `Input::load` → [`Program::from_hex_with_fork`](../../crates/evm-bytecode/src/bytecode.rs#L134) |
 | `EvmWorld<N>` | 入口执行前已观察到的账户事实 | [`world::load`](../../crates/evm-abstract-cli/src/world.rs#L138) 读取离线 JSON；RPC 路径另由采集器建立 |
 | `EvmEntry<N>` / `EvmEnvironmentValues<N>` | 从哪个状态账户开始，以及 caller、value、calldata 等输入的范围与身份 | [`EvmArgs::environment`](../../crates/evm-abstract-cli/src/evm.rs#L143) 与 [`EvmEntry<N>`](../../crates/evm-abstract/src/world.rs#L383) |
 | `NumericModel` / `DomainSpec` | 应用选择的实际数值载体，以及共享数值和关系限制 | `ProductAlgebra::from_spec(spec)` 或 `FiniteSetAlgebra::from_spec(spec)`，再装入 `ValueAlgebra<D>` |
@@ -79,11 +79,11 @@ flowchart TD
 
 本主题的独立模块：[数值摘要与组合域](../modules/domains.md)。
 
-在 [`transfer::execute`](../../crates/evm-abstract/src/analysis/transfer.rs) 中找普通算术指令的处理：按 EVM 顺序弹出操作数，交给域运算，再把结果压回活动帧。它的输入是 opcode 和若干 `EvmValue<N>`；输出是数值结果以及本次计算留下的精度、表达式或资源信息。先用[第 02 课的 transfer 手算](../02-domain.md#4-transfer在摘要上执行指令)对齐弹栈顺序，再读 [`ValueAlgebra::apply_detailed`](../../crates/evm-abstract/src/domain/algebra.rs)。
+在 [`transfer::execute`](../../crates/evm-abstract/src/analysis/transfer.rs) 中找普通算术指令的处理：按 EVM 顺序弹出操作数，交给域运算，再把结果压回活动帧。它的输入是 opcode 和若干 `EvmValue<N>`；输出是数值结果以及本次计算留下的精度、表达式或资源信息。先用[第 02 课的 transfer 手算](../02-domain.md#4-transfer在摘要上执行指令)对齐弹栈顺序，再读 [`ValueAlgebra::apply_detailed`](../../crates/evm-domain/src/domain/algebra.rs)。
 
-顺着结果往里追，会经过 [`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs#L16) 和 [`EvmNumericAlgebra`](../../crates/evm-abstract/src/domain/algebra.rs)。前者把实际数值载体、来源、身份与可选表达式放在一起；`ProductAlgebra::Element = NumericValue` 保存有限常量、位、区间和同余，`FiniteSetAlgebra::Element = FiniteConstantSet` 直接保存有限集合。`DomainSpec` 则是整次分析共用的策略，不能把某个值的内容和域策略混成同一对象。
+顺着结果往里追，会经过 [`EvmValue<N>`](../../crates/evm-domain/src/domain/value.rs#L16) 和 [`EvmNumericAlgebra`](../../crates/evm-domain/src/domain/algebra.rs)。前者把实际数值载体、来源、身份与可选表达式放在一起；`ProductAlgebra::Element = NumericValue` 保存有限常量、位、区间和同余，`FiniteSetAlgebra::Element = FiniteConstantSet` 直接保存有限集合。`DomainSpec` 则是整次分析共用的策略，不能把某个值的内容和域策略混成同一对象。
 
-最小实验选[第 12 课的位条件](../12-product-domains-facts.md#1-先手算这个条件可能为零吗)：[`known-bits-branch.hex`](../../examples/known-bits-branch.hex) 中 `(x AND 15) OR 1` 的最低位一定为 1。沿 [`domain/transfer.rs`](../../crates/evm-abstract/src/domain/transfer.rs) 看 opcode 怎样更新组件，再沿 [`reduce::reduce`](../../crates/evm-abstract/src/domain/reduce.rs#L329) 看组件怎样交换已证明的事实，最后回到 `may_be_zero` 的分支判断。这个结果如何少掉 false 边，现在可以从值传递解释出来。
+最小实验选[第 12 课的位条件](../12-product-domains-facts.md#1-先手算这个条件可能为零吗)：[`known-bits-branch.hex`](../../examples/known-bits-branch.hex) 中 `(x AND 15) OR 1` 的最低位一定为 1。沿 [`domain/transfer.rs`](../../crates/evm-domain/src/domain/transfer.rs) 看 opcode 怎样更新组件，再沿 [`reduce::reduce`](../../crates/evm-domain/src/domain/reduce.rs#L329) 看组件怎样交换已证明的事实，最后回到 `may_be_zero` 的分支判断。这个结果如何少掉 false 边，现在可以从值传递解释出来。
 
 这里要用[第 02 课的 join](../02-domain.md#3-join把两条路径的信息合在一起)和[第 12 课的组件组合](../12-product-domains-facts.md#5-同一值的约束取交不同路径的可能取并)检查两个相反方向：多个组件描述同一值时，其约束取交；多个执行路径汇合时，摘要必须覆盖并集。当前实现保存组件逐项 join，事实交换有轮数和容量上限；不能因此称它已经计算出唯一、完全规约的 reduced product。
 
@@ -169,11 +169,11 @@ flowchart TD
 
 运行 [`symbolic-conflicting-guards.hex`](../../examples/symbolic-conflicting-guards.hex) 的[矛盾条件实验](../15-symbolic-relations.md#1-先看同一个输入不能同时等于-1-和-2)，对照关闭和开启关系层的 JSON，定位关闭时保留、开启后消失的状态或边。再从 `transfer::execute` 的 JUMPI 分支进入 [`relations::branch`](../../crates/evm-abstract/src/analysis/transfer/relations.rs#L128)：输入是当前机器载荷、条件值和真假方向；正常情况下输出附有分支假设的后继载荷，证明不可行时则不生成后继。工作预算耗尽也可停止该分支并记录 `Work` 前沿，此时没有后继并不表示已证明不可达。
 
-顺着条件值的 `expression` 到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs)，再读 [`RelationState`](../../crates/evm-abstract/src/domain/relational.rs) 的假设保留、局部检查与数值投影。表达式回答“这是哪个输入经过什么运算得到的值”，关系状态回答“当前路径保证哪些条件”。局部事实只能在证明矛盾时删边，只能按已证明的上界收窄数值；未证明矛盾继续保留路径。EVM 的调用、数组根和读取语义由各自的 transfer 与状态模块解释。
+顺着条件值的 `expression` 到 [`ExprId`](../../crates/evm-domain/src/domain/symbolic.rs)，再读 [`RelationState`](../../crates/evm-domain/src/domain/relational.rs) 的假设保留、局部检查与数值投影。表达式回答“这是哪个输入经过什么运算得到的值”，关系状态回答“当前路径保证哪些条件”。局部事实只能在证明矛盾时删边，只能按已证明的上界收窄数值；未证明矛盾继续保留路径。EVM 的调用、数组根和读取语义由各自的 transfer 与状态模块解释。
 
 现在用[分支假设与数值精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)检查数据方向：数值保证可以导入关系层；查询证明唯一值后，回写更窄的数值摘要。删除分支需要矛盾证明。可选 value 查询未完成时，若完整保守状态仍能继续，记录精度诊断；无法保留条件、构造后继或覆盖所需执行时才留下 frontier。两种结果都不能被当作矛盾。
 
-继续在 [`RelationState::join`](../../crates/evm-abstract/src/domain/relational.rs) 与 [`machine/join.rs`](../../crates/evm-abstract/src/analysis/machine/join.rs) 各停一下。前者保留共同保证；后者另用同一个 selector 配对栈、状态根与完整路径公式，不能把 `x=1`、`x=2` 同时要求为真。用[关系合并示例](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)区分数值投影、普通整机 join 和循环 widening。再读[作用域与摘要重放](../15-symbolic-relations.md#5-作用域与摘要重放)，检查一张 rename map 怎样覆盖隐藏在历史 view、返回数据与 rollback store 中的 fresh 身份，避免独立调用被错误绑定。
+继续在 [`RelationState::join`](../../crates/evm-domain/src/domain/relational.rs) 与 [`machine/join.rs`](../../crates/evm-abstract/src/analysis/machine/join.rs) 各停一下。前者保留共同保证；后者另用同一个 selector 配对栈、状态根与完整路径公式，不能把 `x=1`、`x=2` 同时要求为真。用[关系合并示例](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)区分数值投影、普通整机 join 和循环 widening。再读[作用域与摘要重放](../15-symbolic-relations.md#5-作用域与摘要重放)，检查一张 rename map 怎样覆盖隐藏在历史 view、返回数据与 rollback store 中的 fresh 身份，避免独立调用被错误绑定。
 
 **核对问题：**为什么在两个不同 calldata 偏移读出的值都标记 Calldata，仍不能证明它们相等？为什么 `x=1` 与 `x=2` 的合流不会把整个汇合块判成不可达？回答时要分别使用 provenance、表达式身份和关系 join。
 

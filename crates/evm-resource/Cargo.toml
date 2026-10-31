@@ -1,0 +1,19 @@
+[package]
+name                   = "evm-resource"
+description            = "Typed shared work budgets, quotation and cancellation for EVM analyses"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[features]
+default      = []
+test-support = []
+
+[dependencies]
+analysis-control    = { path = "../analysis-control" }
+thiserror.workspace = true
+
+[lints]
+workspace = true
