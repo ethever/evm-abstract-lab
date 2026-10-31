@@ -42,6 +42,7 @@ pub(crate) struct Canvas {
     fit: bool,
     cancel_wheel: bool,
     focus: bool,
+    viewport_size: Option<Vec2>,
 }
 
 impl Default for Canvas {
@@ -56,6 +57,7 @@ impl Default for Canvas {
             fit: true,
             cancel_wheel: false,
             focus: false,
+            viewport_size: None,
         }
     }
 }
@@ -138,7 +140,14 @@ impl Canvas {
             Sense::click_and_drag(),
         );
         controls::observe(ui, &response, title, "graph-canvas", None);
-        let canvas = response.rect;
+        // Pixel-rounded allocation can extend past the parent's last half
+        // pixel. Camera geometry must use the viewport that is really painted.
+        let canvas = painter.clip_rect();
+        if let Some(previous) = self.viewport_size.replace(canvas.size()) {
+            // Preserve the viewed world center and manual zoom through dock/
+            // viewport resize, instead of retaining a now off-screen pan.
+            self.pan += (canvas.size() - previous) * 0.5;
+        }
         if self.fit && self.placement.bounds.is_finite() {
             self.zoom = fit_scale(self.placement.bounds.size(), canvas.size()).min(1.0);
             self.pan = canvas.size() * 0.5 - self.placement.bounds.center().to_vec2() * self.zoom;

@@ -590,3 +590,263 @@ fn bounded_graph_preview_exposes_a_late_fault_without_formatting_the_whole_body(
     );
     assert!(index.value_reads.get() <= crate::graph_view::PREVIEW_LINES);
 }
+
+#[test]
+fn graph_paint_and_hit_regions_do_not_overlap_the_docked_inspector() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let artifact = fixture::artifact(evm_abstract_protocol::DecompileStrategy::Dispatcher);
+    let mut workspace = crate::decompile::Workspace::default();
+    workspace.form.open = false;
+    workspace.state.install(
+        &artifact,
+        Publication {
+            job: JobId(1),
+            version: fixture::version(1),
+        },
+    );
+    workspace.artifact = Some(artifact);
+    workspace.views.route = Route::Graphs;
+    for size in [
+        Vec2::new(900.0, 620.0),
+        Vec2::new(640.0, 760.0),
+        Vec2::new(1440.0, 900.0),
+    ] {
+        let mut visible = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                    ..RawInput::default()
+                },
+                |ui| {
+                    controls::begin_observation(ui.ctx(), true);
+                    workspace.show(ui);
+                },
+            );
+            output.textures_delta.clear();
+            visible =
+                serde_json::from_str::<Vec<serde_json::Value>>(&controls::observed(&ctx).unwrap())
+                    .unwrap();
+        }
+        let bounds = |value: &serde_json::Value| {
+            Rect::from_min_max(
+                Pos2::new(
+                    value["rect"][0].as_f64().unwrap() as f32,
+                    value["rect"][1].as_f64().unwrap() as f32,
+                ),
+                Pos2::new(
+                    value["rect"][2].as_f64().unwrap() as f32,
+                    value["rect"][3].as_f64().unwrap() as f32,
+                ),
+            )
+        };
+        let status = bounds(
+            visible
+                .iter()
+                .find(|control| control["role"] == "decompile-status")
+                .unwrap(),
+        );
+        let inspector = bounds(
+            visible
+                .iter()
+                .find(|control| control["role"] == "decompile-inspector")
+                .unwrap(),
+        );
+        let canvases: Vec<_> = visible
+            .iter()
+            .filter(|control| control["role"] == "graph-canvas")
+            .collect();
+        assert!(!canvases.is_empty());
+        for canvas in canvases {
+            let rect = bounds(canvas);
+            assert!(
+                !rect.intersect(status).is_positive(),
+                "graph paint/hit region{rect:?} overlaps status{status:?}"
+            );
+            assert!(
+                !rect.intersect(inspector).is_positive(),
+                "{} paint/hit region{rect:?} overlaps inspector{inspector:?} at{size:?}",
+                canvas["label"]
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_graphs_leave_real_inspector_reference_clicks_available() {
+    use egui::{Event, Modifiers, PointerButton};
+    fn paint(
+        ctx: &Context,
+        workspace: &mut crate::decompile::Workspace,
+        events: Vec<Event>,
+    ) -> Vec<serde_json::Value> {
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 620.0))),
+                events,
+                ..RawInput::default()
+            },
+            |ui| {
+                controls::begin_observation(ui.ctx(), true);
+                workspace.show(ui);
+            },
+        );
+        output.textures_delta.clear();
+        serde_json::from_str(&controls::observed(ctx).unwrap()).unwrap()
+    }
+    fn click(
+        ctx: &Context,
+        workspace: &mut crate::decompile::Workspace,
+        control: &serde_json::Value,
+    ) {
+        let rect = &control["rect"];
+        let pos = Pos2::new(
+            ((rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap()) * 0.5) as f32,
+            ((rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap()) * 0.5) as f32,
+        );
+        paint(
+            ctx,
+            workspace,
+            vec![
+                Event::PointerMoved(pos),
+                Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+        );
+        paint(
+            ctx,
+            workspace,
+            vec![Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+    }
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let artifact = fixture::artifact(evm_abstract_protocol::DecompileStrategy::Dispatcher);
+    let mut workspace = crate::decompile::Workspace::default();
+    workspace.form.open = false;
+    workspace.state.install(
+        &artifact,
+        Publication {
+            job: JobId(1),
+            version: fixture::version(1),
+        },
+    );
+    workspace.artifact = Some(artifact);
+    workspace.views.route = Route::Graphs;
+    paint(&ctx, &mut workspace, vec![]);
+    let visible = paint(&ctx, &mut workspace, vec![]);
+    let section = visible
+        .iter()
+        .find(|control| control["role"] == "section" && control["label"] == "Entity references")
+        .expect("actual inspector header");
+    click(&ctx, &mut workspace, section);
+    let mut target = None;
+    for _ in 0..20 {
+        let visible = paint(&ctx, &mut workspace, vec![]);
+        if let Some(control) = visible.into_iter().find(|control| {
+            control["role"] == "decompile-entity-link"
+                && control["label"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Reference s1/e5 ")
+        }) {
+            target = Some(control);
+            break;
+        }
+    }
+    click(
+        &ctx,
+        &mut workspace,
+        &target.expect("actual reference in docked inspector"),
+    );
+    let visible = paint(&ctx, &mut workspace, vec![]);
+    assert_eq!(
+        workspace.state.selected.as_ref().unwrap().at,
+        EntityRef {
+            stage: StageId(1),
+            entity: EntityId(5)
+        }
+    );
+    assert_eq!(workspace.views.route_label(), "IR");
+    selected_visible(&visible, "decompile-ir", "v5:", 620.0);
+}
+
+#[test]
+fn window_resize_keeps_graphs_visible_without_changing_their_zoom() {
+    fn bounds(control: &serde_json::Value) -> Rect {
+        let [left, top, right, bottom]: [f32; 4] =
+            serde_json::from_value(control["rect"].clone()).unwrap();
+        Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom))
+    }
+    fn measured(visible: &[serde_json::Value]) -> Vec<(Vec2, Vec2)> {
+        ["Before CFG", "Current CFG"]
+            .into_iter()
+            .map(|title| {
+                let canvas = bounds(
+                    visible
+                        .iter()
+                        .find(|control| {
+                            control["role"] == "graph-canvas" && control["label"] == title
+                        })
+                        .unwrap(),
+                );
+                let block = visible
+                    .iter()
+                    .filter(|control| control["role"] == "decompile-block")
+                    .map(bounds)
+                    .find(|rect| canvas.contains_rect(*rect))
+                    .unwrap_or_else(|| panic!("no visible block in {title} after resize"));
+                (block.center() - canvas.center(), block.size())
+            })
+            .collect()
+    }
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let artifact = fixture::large(1);
+    let mut views = Views {
+        route: Route::Graphs,
+        ..Views::default()
+    };
+    let mut state = ViewState::default();
+    state.install(
+        &artifact,
+        Publication {
+            job: JobId(1),
+            version: fixture::version(1),
+        },
+    );
+    let before = measured(&frame(
+        &ctx,
+        &mut views,
+        &artifact,
+        &mut state,
+        Vec2::new(1440.0, 900.0),
+    ));
+    let after = measured(&frame(
+        &ctx,
+        &mut views,
+        &artifact,
+        &mut state,
+        Vec2::new(900.0, 620.0),
+    ));
+    for ((old_center, old_size), (new_center, new_size)) in before.into_iter().zip(after) {
+        assert!(
+            (new_center - old_center).length() < 0.01,
+            "canvas-relative block center {old_center:?} -> {new_center:?}"
+        );
+        assert!(
+            (new_size - old_size).length() < 0.01,
+            "painted block size {old_size:?} -> {new_size:?}"
+        );
+    }
+}

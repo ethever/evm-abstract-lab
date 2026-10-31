@@ -118,7 +118,7 @@ impl Workspace {
             self.form.open = false;
             self.task.start(request)
         });
-        egui::Panel::bottom("decompile_status")
+        let status_response = egui::Panel::bottom("decompile_status")
             .frame(palette::chrome_frame())
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -154,6 +154,13 @@ impl Workspace {
                     ui.colored_label(palette::ERROR, error.to_string());
                 }
             });
+        controls::observe(
+            ui,
+            &status_response.response,
+            "Decompiler status",
+            "decompile-status",
+            None,
+        );
         if let Some(artifact) = &self.artifact {
             egui::Panel::top("decompile_stage_controls")
                 .frame(palette::chrome_frame())
@@ -185,7 +192,19 @@ impl Workspace {
                     None,
                 );
             }
-            self.views.show(ui, artifact, &mut self.state);
+            // Panels reserve the available content, while columns use their
+            // parent's max_rect. Bound both allocation and clipping here so
+            // graph/IR widgets cannot paint or receive input over docked UI.
+            let content = ui.available_rect_before_wrap();
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .id_salt("decompile_result_content")
+                    .max_rect(content),
+                |ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(content));
+                    self.views.show(ui, artifact, &mut self.state);
+                },
+            );
         } else {
             crate::widgets::empty(
                 ui,

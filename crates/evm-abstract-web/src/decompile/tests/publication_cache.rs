@@ -103,6 +103,40 @@ fn graph_blocks(controls: &[Control]) -> Vec<Rect> {
     blocks
 }
 
+fn graph_placement(controls: &[Control]) -> Vec<(Rect, Rect)> {
+    let blocks = graph_blocks(controls);
+    let canvases: Vec<_> = controls
+        .iter()
+        .filter(|row| row["role"] == "graph-canvas")
+        .map(rect)
+        .collect();
+    assert_eq!(canvases.len(), blocks.len());
+    canvases.into_iter().zip(blocks).collect()
+}
+
+fn assert_retained_view(before: &[(Rect, Rect)], controls: &[Control]) {
+    let after = graph_placement(controls);
+    assert_eq!(before.len(), after.len());
+    for ((old_canvas, old_block), (canvas, block)) in before.iter().zip(after) {
+        // Status/error text can resize the available content. Retain the
+        // manual world-space view and zoom relative to that actual canvas.
+        let old_offset = old_block.center() - old_canvas.center();
+        let offset = block.center() - canvas.center();
+        assert!(
+            (offset - old_offset).length() < 0.01,
+            "pan changed: canvas {old_canvas:?} -> {canvas:?}, block {old_block:?} -> {block:?}"
+        );
+        assert_eq!(block.size(), old_block.size(), "manual zoom changed");
+        if *old_canvas != canvas {
+            eprintln!(
+                "Retained view: canvas {old_canvas:?} -> {canvas:?}; block {old_block:?} -> {block:?}; center delta {:?}; size delta {:?}",
+                canvas.center() - old_canvas.center(),
+                canvas.size() - old_canvas.size()
+            );
+        }
+    }
+}
+
 fn pan_graph(ctx: &Context, workspace: &mut Workspace, graph: &[Control]) -> Vec<Rect> {
     let original = graph_blocks(graph);
     let canvas = rect(
@@ -333,9 +367,10 @@ fn submit_workspace_switch_and_rejected_attempts_retain_the_painted_publication_
     let (ctx, mut workspace, first) = setup();
     let initial = snapshot(&ctx, &mut workspace);
     let graph = tab(&ctx, &mut workspace, "Graphs");
-    let panned = pan_graph(&ctx, &mut workspace, &graph);
+    pan_graph(&ctx, &mut workspace, &graph);
+    let panned = graph_placement(&frame(&ctx, &mut workspace, vec![]));
     start(&mut workspace);
-    assert_eq!(graph_blocks(&frame(&ctx, &mut workspace, vec![])), panned);
+    assert_retained_view(&panned, &frame(&ctx, &mut workspace, vec![]));
 
     // Render the independent analysis workspace, then return to this instance.
     let mut analysis = crate::Workspace::default();
@@ -344,7 +379,7 @@ fn submit_workspace_switch_and_rejected_attempts_retain_the_painted_publication_
     });
     output.textures_delta.clear();
     assert_eq!(workspace.views.route_label(), "Graphs");
-    assert_eq!(graph_blocks(&frame(&ctx, &mut workspace, vec![])), panned);
+    assert_retained_view(&panned, &frame(&ctx, &mut workspace, vec![]));
     let selection = workspace.state.selected.clone();
     let mut invalid = first.clone();
     invalid.current_stage = Some(StageId(999));
@@ -354,7 +389,7 @@ fn submit_workspace_switch_and_rejected_attempts_retain_the_painted_publication_
         workspace.task.error,
         Some(super::task::Error::Artifact(_))
     ));
-    assert_eq!(graph_blocks(&frame(&ctx, &mut workspace, vec![])), panned);
+    assert_retained_view(&panned, &frame(&ctx, &mut workspace, vec![]));
     assert_eq!(snapshot(&ctx, &mut workspace), initial);
 
     for (job, completion) in [
@@ -378,7 +413,7 @@ fn submit_workspace_switch_and_rejected_attempts_retain_the_painted_publication_
         assert_eq!(workspace.artifact.as_ref(), Some(&first));
         assert_eq!(workspace.state.selected, selection);
         assert_eq!(workspace.views.route_label(), "Graphs");
-        assert_eq!(graph_blocks(&frame(&ctx, &mut workspace, vec![])), panned);
+        assert_retained_view(&panned, &frame(&ctx, &mut workspace, vec![]));
         assert_eq!(snapshot(&ctx, &mut workspace), initial);
     }
 }

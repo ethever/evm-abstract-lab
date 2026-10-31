@@ -46,6 +46,11 @@ def run(context):
     # Constant decisions remove real IR entities; their historical rows remain selectable.
     pruned, _ = submit(context, page, canvas, "6001600a576002600d565b60035b00", "removed-entities")
     assert any(event["deleted"] for event in pruned["events"])
+    removed_event = next(event for event in pruned["events"] if event["deleted"])
+    before = next(item for item in pruned["stages"] if item["id"] == removed_event["from_stage"])
+    after = next(item for item in pruned["stages"] if item["id"] == removed_event["to_stage"])
+    choose_stage(page, canvas, pruned, after["kind"])
+    choose_stage(page, canvas, pruned, before["kind"], before=True)
     click_control(page, canvas, "Changes", role="tab")
     assert any("Removed" in row["label"] for row in observed(page, "decompile-difference"))
     canvas.screenshot(path=str(context.output / "removed-before-entities.png"))

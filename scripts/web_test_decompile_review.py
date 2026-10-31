@@ -56,13 +56,16 @@ def recovery(context):
         code_rows = observed(page, "decompile-code")
         text = "\n".join(row["label"] for row in code_rows)
         if name in {"mixed-targets", "known-targets"}:
-            assert "target 0xf:" in text and 'otherwise: exception("invalid jump destination")' in text, text
             structured = stage(artifact, "structured")
             node = next(node for node in structured["ir"]["structured"]["nodes"] if "indirect" in node["kind"])
             block = next(block for block in structured["ir"]["blocks"] if block["id"] == node["kind"]["indirect"]["block"])
             jump_pc = next(op["source"]["pc"] for op in block["operations"] if op["opcode"] == 0x56)
             source_descendant(page, canvas, artifact, structured["id"], node["id"], jump_pc)
             selected_row(page, "decompile-code", "indirect_jump")
+            # Position the actual indirect region in the virtual code pane
+            # before checking its complete alternatives and exceptional exit.
+            text = "\n".join(row["label"] for row in observed(page, "decompile-code"))
+            assert "target 0xf:" in text and 'otherwise: exception("invalid jump destination")' in text, text
             click_control(page, canvas, "Original bytecode", role="tab")
             edit_control(page, canvas, "Original PC", f"0x{jump_pc:x}")
             click_control(page, canvas, "Go to original PC", role="action")
@@ -240,13 +243,16 @@ def editing(context):
     checkpoint()
     page.keyboard.insert_text("00")
     rendered_frame(page)
+    draft(a + "00")
     checkpoint()
     page.keyboard.press("Escape")
     click_control(page, canvas, "Decompiler", role="tab")
     prepare(page, canvas, b)
+    focus_text_control(page, canvas, "Runtime bytecode")
     checkpoint()
     page.keyboard.insert_text("00")
     rendered_frame(page)
+    draft(b + "00")
     checkpoint()
     page.keyboard.press("Control+z")
     rendered_frame(page)
@@ -259,7 +265,8 @@ def editing(context):
     draft(b + "00")
     click_control(page, canvas, "Analysis", role="tab")
     open_input(page, mode="Bytecode")
-    focus_text_control(page, canvas, "Runtime bytecode")
+    # open_input already establishes focus; avoid another selection-changing
+    # activation before the exact single Undo/Redo assertions.
     page.keyboard.press("Control+z")
     rendered_frame(page)
     draft(a)
