@@ -58,6 +58,16 @@ pub(super) struct Views {
 }
 
 impl Views {
+    /// Artifact IDs name input/configuration namespaces and can recur across
+    /// publications. Drop every derived cache, including nested canvas state.
+    pub fn artifact_installed(&mut self) {
+        *self = Self {
+            route: self.route,
+            narrow_before: self.narrow_before,
+            ..Self::default()
+        };
+    }
+
     pub fn route_label(&self) -> &'static str {
         self.route.label()
     }
