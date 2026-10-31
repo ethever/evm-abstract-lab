@@ -5,7 +5,7 @@
 //! 本类型只允许已支持的三个版本；Program 保存版本，CFG、SSA 和输出共享它。
 
 use revm_bytecode::primitives::hardfork::SpecId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
 
@@ -73,3 +73,15 @@ impl FromStr for Fork {
         }
     }
 }
+
+impl<'de> Deserialize<'de> for Fork {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Keep transport input identical to the existing string parser and
+        // serialized names; enum-object encodings are not fork selections.
+        let input = String::deserialize(deserializer)?;
+        input.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests;

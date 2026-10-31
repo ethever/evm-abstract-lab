@@ -4,5 +4,5 @@
 # Preserve Clippy's default Bytes exemption; do not exempt OnceLock generally.
 ignore-interior-mutability = [
     "bytes::Bytes",
-    "evm_abstract::domain::symbolic::bytes::ByteStateData",
+    "evm_domain::domain::symbolic::bytes::ByteStateData",
 ]
