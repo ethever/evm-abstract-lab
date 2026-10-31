@@ -5,7 +5,8 @@ import json
 from playwright.sync_api import expect
 from web_test_decompile_helpers import (BRANCH, contains_ast, open_decompiler,
                                        prepare, stage, submit, wait_job)
-from web_test_harness import analysis_server, click_control, ui_control, webgpu_evidence
+from web_test_harness import (analysis_server, click_control, ui_control, webgpu_evidence,
+                              expect_http_error, consume_http_error)
 from web_test_rpc_helpers import EntryRpcFixture, RPC_PROVIDERS
 
 
@@ -46,9 +47,12 @@ def run(context):
             missing = page.request.get(url + "/api/decompile/tasks/0")
             assert missing.status == 404 and missing.json()["result"]["Err"]["code"] == "TaskNotFound"
             missing_body = missing.text()
+            expected_missing_errors = []
 
             def disappeared(route):
                 if route.request.method == "GET":
+                    expected_missing_errors.append(expect_http_error(
+                        page, method=route.request.method, url=route.request.url, status=404))
                     route.fulfill(status=404, content_type="application/json", body=missing_body)
                 else:
                     route.continue_()
@@ -61,6 +65,8 @@ def run(context):
             missing_id = missing_admission.value.json()["result"]["Ok"]["id"]
             expect(status).to_contain_text("Decompile task: Task unavailable")
             expect(status).to_contain_text("TaskNotFound")
+            assert len(expected_missing_errors) == 1
+            expected_missing_error = consume_http_error(page, expected_missing_errors[0])
             expect(status).to_contain_text("Artifact: " + baseline["id"])
             expect(status).to_contain_text("Selected entity: " + retained_selection)
             click_control(page, canvas, "Edit bytecode", role="action")
@@ -103,6 +109,7 @@ def run(context):
             canvas.screenshot(path=str(context.output / "unresolved-current-cfg.png"))
             result = {"queued": queued, "cancelled": acknowledged,
                       "missing_task": missing_id,
+                      "expected_missing_http_error": expected_missing_error,
                       "retained_artifact": baseline["id"], "recovered_artifact": unknown["id"],
                       "renderer": webgpu_evidence(page)}
             page.close()
