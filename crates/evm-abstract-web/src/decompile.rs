@@ -282,6 +282,7 @@ impl Workspace {
                         version: result.publication,
                     },
                 );
+                self.views.artifact_installed();
                 self.artifact = Some(result.artifact);
                 self.task.delivered(result.publication);
             }
