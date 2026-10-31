@@ -69,7 +69,7 @@ Return 的全效果包络可以没有显式账户：persistent、余额、nonce�
 
 ## wire 15 的身份迁移
 
-当前[原生分析 schema](../crates/evm-abstract/src/analysis.rs) 为 **16**，[Web wire schema](../crates/evm-abstract-protocol/src/lib.rs) 为 **21**，[域 schema 与逻辑成本版本](../crates/evm-abstract/src/domain/spec.rs)分别为 **3** 与 **9**。此前 native 10 / wire 15 新增可选覆盖记录；wire 15 还引入请求开关和上述 Store 字段，同时把 `InputIdentity.scope` 改为 `DecimalU64`。新 snapshot offline namespace、fact revision、input scope 也采用同一个类型。当前报告新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，与局部 `RoundLimit` 区分；cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费。成本版本属于完整输入绑定与摘要策略，不能只替换版本号复用旧记录；跨成本版本的原始 work 不是同一单位。
+当前[原生分析 schema](../crates/evm-abstract/src/analysis.rs) 为 **16**，[Web wire schema](../crates/evm-abstract-protocol/src/lib.rs) 为 **21**，[域 schema 与逻辑成本版本](../crates/evm-domain/src/domain/spec.rs)分别为 **3** 与 **9**。此前 native 10 / wire 15 新增可选覆盖记录；wire 15 还引入请求开关和上述 Store 字段，同时把 `InputIdentity.scope` 改为 `DecimalU64`。新 snapshot offline namespace、fact revision、input scope 也采用同一个类型。当前报告新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，与局部 `RoundLimit` 区分；cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费。成本版本属于完整输入绑定与摘要策略，不能只替换版本号复用旧记录；跨成本版本的原始 work 不是同一单位。
 
 这些 opaque 身份只能编码为规范十进制**字符串**：`"0"`、`"9007199254740993"`、`"18446744073709551615"` 均有效。JSON number、空串、符号、空格、小数、指数、前导零（如 `"01"`）和超过 `u64::MAX` 的值必须拒绝。不要先经过 JavaScript `Number`，也不要为身份 alpha-renaming 丢失 namespace 的复用关系。状态/转移/work/耗时等统计计数仍保留原来的整数编码；此次迁移只改变这些 opaque identity 字段。
 

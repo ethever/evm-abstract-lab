@@ -2607,9 +2607,9 @@ dependencies = [
  "analysis-control",
  "analysis-kernel",
  "evm-abstract-notation",
- "num-bigint",
- "num-integer",
- "num-traits",
+ "evm-bytecode",
+ "evm-domain",
+ "evm-resource",
  "petgraph",
  "proptest",
  "reqwest",
@@ -2634,6 +2634,8 @@ dependencies = [
  "evm-abstract",
  "evm-abstract-notation",
  "evm-abstract-protocol",
+ "evm-bytecode",
+ "evm-decompile",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2656,6 +2658,7 @@ version = "0.4.0"
 name = "evm-abstract-protocol"
 version = "0.4.0"
 dependencies = [
+ "evm-decompile-model",
  "serde",
  "serde_json",
  "symbolic-structure",
@@ -2672,6 +2675,8 @@ dependencies = [
  "evm-abstract",
  "evm-abstract-protocol",
  "evm-abstract-server",
+ "evm-bytecode",
+ "evm-decompile",
  "hyper",
  "hyper-util",
  "reqwest",
@@ -2702,6 +2707,73 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "evm-bytecode"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "analysis-control",
+ "evm-resource",
+ "revm-bytecode",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "evm-decompile"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "analysis-control",
+ "analysis-kernel",
+ "evm-bytecode",
+ "evm-decompile-model",
+ "evm-domain",
+ "evm-resource",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "evm-decompile-model"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "evm-bytecode",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "evm-domain"
+version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "analysis-control",
+ "analysis-kernel",
+ "evm-bytecode",
+ "evm-resource",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "proptest",
+ "revm-bytecode",
+ "serde",
+ "serde_json",
+ "symbolic-structure",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "evm-resource"
+version = "0.4.0"
+dependencies = [
+ "analysis-control",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

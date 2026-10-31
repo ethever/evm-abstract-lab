@@ -2,6 +2,8 @@
 members = [
     "crates/analysis-control",
     "crates/analysis-kernel",
+    "crates/evm-decompile",
+    "crates/evm-decompile-model",
     "crates/evm-abstract",
     "crates/evm-abstract-cli",
     "crates/evm-abstract-layout",
@@ -9,6 +11,9 @@ members = [
     "crates/evm-abstract-protocol",
     "crates/evm-abstract-server",
     "crates/evm-abstract-web",
+    "crates/evm-bytecode",
+    "crates/evm-domain",
+    "crates/evm-resource",
     "crates/snapshot-state",
     "crates/symbolic-structure",
 ]

@@ -20,9 +20,9 @@
 
 | 要确认什么 | 第一手资料 | 对照本仓库 |
 | --- | --- | --- |
-| JUMP/JUMPI、PC、STOP 的控制流 | [Ethereum execution-specs：Cancun 控制流](https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/cancun/vm/instructions/control_flow.py) | [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs)、[`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) |
-| 算术、补码、位运算和参数顺序 | [Cancun VM 指令实现](https://github.com/ethereum/execution-specs/tree/master/src/ethereum/forks/cancun/vm/instructions) | [`domain.rs`](../crates/evm-abstract/src/domain.rs)；参数按栈顶先弹出排列 |
-| 升级包含哪些规则 | [Ethereum 官方路线图](https://ethereum.org/roadmap/)、[Fusaka Meta EIP-7607](https://eips.ethereum.org/EIPS/eip-7607) | [第 08 课](08-forks.md)、[`fork.rs`](../crates/evm-abstract/src/fork.rs)；项目默认 fork 与某个区块实际采用的 fork 要分别确认 |
+| JUMP/JUMPI、PC、STOP 的控制流 | [Ethereum execution-specs：Cancun 控制流](https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/cancun/vm/instructions/control_flow.py) | [`bytecode.rs`](../crates/evm-bytecode/src/bytecode.rs)、[`transfer.rs`](../crates/evm-abstract/src/analysis/transfer.rs) |
+| 算术、补码、位运算和参数顺序 | [Cancun VM 指令实现](https://github.com/ethereum/execution-specs/tree/master/src/ethereum/forks/cancun/vm/instructions) | [`domain.rs`](../crates/evm-domain/src/domain.rs)；参数按栈顶先弹出排列 |
+| 升级包含哪些规则 | [Ethereum 官方路线图](https://ethereum.org/roadmap/)、[Fusaka Meta EIP-7607](https://eips.ethereum.org/EIPS/eip-7607) | [第 08 课](08-forks.md)、[`fork.rs`](../crates/evm-bytecode/src/fork.rs)；项目默认 fork 与某个区块实际采用的 fork 要分别确认 |
 | CLZ 怎样计算前导零 | [EIP-7939](https://eips.ethereum.org/EIPS/eip-7939) | [`osaka-clz.hex`](../examples/osaka-clz.hex)；`0x1e`，零输入得到 256 |
 | EOA 的代码委托标记是什么 | [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) | 区分账户的委托标记与目标代码；单段解码和世界执行的处理不同 |
 
@@ -55,7 +55,7 @@ execution-specs 的默认分支会更新。以上 Cancun 链接用于相应规�
 | 返回数据缓冲区、REVERT 数据及复制越界 | [EIP-211](https://eips.ethereum.org/EIPS/eip-211) | 每帧 returndata，RETURNDATACOPY 与 CALL 输出区 |
 | STATICCALL 限制怎样向子帧传播 | [EIP-214](https://eips.ethereum.org/EIPS/eip-214) | SSTORE/LOG/value CALL 的故障与 CALLCODE 规则 |
 | transient storage 属于哪个账户，怎样回滚 | [EIP-1153](https://eips.ethereum.org/EIPS/eip-1153) | 同交易共享状态、DELEGATECALL 的状态账户、REVERT checkpoint |
-| 本仓库怎样声明未知环境字段和 caller/origin 关联 | [`environment.rs`](../crates/evm-abstract/src/world/environment.rs)、[`provenance.rs`](../crates/evm-abstract/src/domain/provenance.rs) | [第 13 课](13-evm-environment.md)；每组输入的独立符号命名空间、默认 origin 与 caller 共享身份；不等同于完整关系式符号执行 |
+| 本仓库怎样声明未知环境字段和 caller/origin 关联 | [`environment.rs`](../crates/evm-abstract/src/world/environment.rs)、[`provenance.rs`](../crates/evm-domain/src/domain/provenance.rs) | [第 13 课](13-evm-environment.md)；每组输入的独立符号命名空间、默认 origin 与 caller 共享身份；不等同于完整关系式符号执行 |
 | 怎样把 RPC 请求固定在同一个区块 | [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) | 启动时解析区块，再以 exact block hash 与 canonical selector 采集状态；loader 完全信任提供者，不请求账户或槽位证明 |
 | SLOAD 的有限槽怎样按需补查，代理应读谁的状态 | [`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs)、[`world/rpc/session.rs`](../crates/evm-abstract/src/world/rpc/session.rs) | [第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)；真实 HTTP CLI 回归在 [`rpc/storage.rs`](../crates/evm-abstract-cli/tests/cli/rpc/storage.rs)，覆盖状态 owner、零值缓存、回滚与迟发失败 |
 | CREATE2 怎样确定地址，initcode 有哪些限制 | [EIP-1014](https://eips.ethereum.org/EIPS/eip-1014)、[EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) | salt 与 initcode hash、创建帧和长度检查 |
@@ -68,7 +68,7 @@ execution-specs 的默认分支会更新。以上 Cancun 链接用于相应规�
 
 | 实现问题 | 官方资料 | 本仓库使用方式 |
 | --- | --- | --- |
-| opcode 名称与栈 I/O 元数据 | [revm-bytecode 43.0.0](https://docs.rs/revm-bytecode/43.0.0/revm_bytecode/) | 复用元数据，再按所选 fork 检查启用；PUSH 宽度与立即数由 [`bytecode.rs`](../crates/evm-abstract/src/bytecode.rs) 解码 |
+| opcode 名称与栈 I/O 元数据 | [revm-bytecode 43.0.0](https://docs.rs/revm-bytecode/43.0.0/revm_bytecode/) | 复用元数据，再按所选 fork 检查启用；PUSH 宽度与立即数由 [`bytecode.rs`](../crates/evm-bytecode/src/bytecode.rs) 解码 |
 | 原生预编译计算 | [revm-precompile 43.0.3](https://docs.rs/revm-precompile/43.0.3/revm_precompile/) | 选 fork 注册表；分析器另负责输入资格、返回流及累计工作预算 |
 | 256 bit 数与模运算 | [alloy-primitives 1.7.3](https://docs.rs/alloy-primitives/1.7.3/alloy_primitives/) | 使用 U256 与库算法；测试和 revm 对照 |
 | 浏览器请求如何进入分析服务 | [Axum 0.8.9](https://docs.rs/axum/0.8.9/axum/)、[Hyper HTTP/1 server](https://docs.rs/hyper/1.11.1/hyper/server/conn/http1/struct.Builder.html) | 复用路由、HTTP 解析与响应传输；服务另负责同源、资源上限、任务调度和静态路径规则 |

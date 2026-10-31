@@ -1,16 +1,18 @@
 //! Single-writer task lifecycle and explicit per-worker channels.
 
 use super::{
-    Config, Executor, PoolError, PublishedResult, Publisher, worker_error, worker_spawn_error,
+    Config, Executor, PoolError, PublishedDecompileResult, PublishedResult, Publisher,
+    task::{Kind, Outcome, Published, Request, Retained, Snapshot},
+    worker_error, worker_spawn_error,
 };
 use evm_abstract::analysis::{
     control::Control,
     progress::{Event, Observer, Phase},
 };
 use evm_abstract_protocol::{
-    AnalysisPhase, AnalysisProgress, AnalysisReport, AnalysisStatus, AnalysisTimings,
-    AnalyzeRequest, ApiError, ApiErrorCode, DecimalU64, ErrorDetails, JobId, JobPublication,
-    JobSnapshot, JobState, PublicationVersion, TaskErrorKind, TaskFailure, WorkerErrorKind,
+    AnalysisPhase, AnalysisReport, AnalysisStatus, ApiError, ApiErrorCode, DecimalU64,
+    ErrorDetails, JobId, JobPublication, JobState, PublicationVersion, TaskErrorKind, TaskFailure,
+    WorkerErrorKind,
 };
 use std::{
     collections::{BTreeMap, VecDeque, hash_map::RandomState},
@@ -42,20 +44,23 @@ fn next_id() -> Result<JobId, ApiError> {
 
 pub(super) enum Command {
     Submit {
-        request: Box<AnalyzeRequest>,
-        reply: SyncSender<Result<JobSnapshot, ApiError>>,
+        request: Box<Request>,
+        reply: SyncSender<Result<Snapshot, ApiError>>,
     },
     Status {
         id: JobId,
-        reply: SyncSender<Result<JobSnapshot, ApiError>>,
+        kind: Kind,
+        reply: SyncSender<Result<Snapshot, ApiError>>,
     },
     Cancel {
         id: JobId,
-        reply: SyncSender<Result<JobSnapshot, ApiError>>,
+        kind: Kind,
+        reply: SyncSender<Result<Snapshot, ApiError>>,
     },
     Result {
         id: JobId,
-        reply: SyncSender<Result<PublishedResult, ApiError>>,
+        kind: Kind,
+        reply: SyncSender<Result<Published, ApiError>>,
     },
     Published {
         worker: usize,
@@ -66,7 +71,7 @@ pub(super) enum Command {
     Finished {
         worker: usize,
         id: JobId,
-        result: Box<Result<AnalysisReport, ApiError>>,
+        result: Box<Result<Outcome, ApiError>>,
     },
     Stopped {
         worker: usize,
@@ -79,8 +84,9 @@ pub(super) enum Command {
 
 struct Work {
     id: JobId,
-    request: AnalyzeRequest,
+    request: Request,
     control: Control,
+    decompile_progress: crate::decompile::Observer,
 }
 
 struct Worker {
@@ -89,12 +95,14 @@ struct Worker {
 }
 
 struct Entry {
-    snapshot: JobSnapshot,
+    snapshot: Snapshot,
     queued_at: Instant,
     control: Control,
     events: Receiver<Event>,
-    request: Option<AnalyzeRequest>,
-    report: Option<Arc<AnalysisReport>>,
+    decompile_events: Receiver<evm_abstract_protocol::decompile_model::Progress>,
+    decompile_progress: crate::decompile::Observer,
+    request: Option<Request>,
+    report: Option<Retained>,
 }
 
 pub(super) struct Coordinator<E> {
@@ -162,22 +170,23 @@ impl<E: Executor> Coordinator<E> {
                 let result = self.submit(*request);
                 let _ = reply.send(result);
             }
-            Command::Status { id, reply } => {
+            Command::Status { id, kind, reply } => {
                 let result = self
                     .jobs
                     .get_mut(&id)
+                    .filter(|entry| entry.snapshot.kind() == kind)
                     .map(|entry| {
                         refresh_timings(entry);
-                        entry.snapshot.clone()
+                        entry.snapshot.copy()
                     })
                     .ok_or_else(|| task_error(TaskErrorKind::NotFound, Some(id)));
                 let _ = reply.send(result);
             }
-            Command::Cancel { id, reply } => {
-                let _ = reply.send(self.cancel(id));
+            Command::Cancel { id, kind, reply } => {
+                let _ = reply.send(self.cancel(id, kind));
             }
-            Command::Result { id, reply } => {
-                let result = self.result(id);
+            Command::Result { id, kind, reply } => {
+                let result = self.result(id, kind);
                 let _ = reply.send(result);
             }
             Command::Published {
@@ -193,7 +202,7 @@ impl<E: Executor> Coordinator<E> {
                     .is_some_and(|slot| slot.active == Some(id))
                     && let Some(entry) = self.jobs.get_mut(&id)
                     && matches!(
-                        entry.snapshot.state,
+                        entry.snapshot.state(),
                         JobState::Running | JobState::Cancelling
                     )
                 {
@@ -239,7 +248,7 @@ impl<E: Executor> Coordinator<E> {
         }
     }
 
-    fn submit(&mut self, request: AnalyzeRequest) -> Result<JobSnapshot, ApiError> {
+    fn submit(&mut self, request: Request) -> Result<Snapshot, ApiError> {
         if self.stopping {
             return Err(worker_error(
                 WorkerErrorKind::Channel,
@@ -263,17 +272,14 @@ impl<E: Executor> Coordinator<E> {
         }
         let id = next_id()?;
         let (sender, events) = mpsc::sync_channel(32);
+        let (decompile_sender, decompile_events) = mpsc::sync_channel(32);
         let entry = Entry {
-            snapshot: JobSnapshot {
-                id,
-                state: JobState::Queued,
-                progress: AnalysisProgress::default(),
-                timings: AnalysisTimings::default(),
-                publication: None,
-            },
+            snapshot: Snapshot::new(id, request.kind()),
             queued_at: Instant::now(),
             control: Control::new(Observer::new(sender)),
             events,
+            decompile_events,
+            decompile_progress: crate::decompile::Observer::new(decompile_sender),
             request: Some(request),
             report: None,
         };
@@ -282,7 +288,7 @@ impl<E: Executor> Coordinator<E> {
         self.dispatch();
         let entry = self.jobs.get_mut(&id).expect("submitted job remains owned");
         refresh_timings(entry);
-        Ok(entry.snapshot.clone())
+        Ok(entry.snapshot.copy())
     }
 
     fn dispatch(&mut self) {
@@ -304,12 +310,15 @@ impl<E: Executor> Coordinator<E> {
                 .get_mut(&id)
                 .expect("queued job remains owned by coordinator");
             let request = entry.request.take().expect("queued job has one request");
-            entry.snapshot.state = JobState::Running;
-            entry.snapshot.progress.phase = AnalysisPhase::Validating;
+            *entry.snapshot.state_mut() = JobState::Running;
+            if let Snapshot::Analysis(snapshot) = &mut entry.snapshot {
+                snapshot.progress.phase = AnalysisPhase::Validating;
+            }
             let work = Work {
                 id,
                 request,
                 control: entry.control.clone(),
+                decompile_progress: entry.decompile_progress.clone(),
             };
             let slot = self.workers[worker].as_mut().expect("worker checked above");
             slot.active = Some(id);
@@ -327,31 +336,47 @@ impl<E: Executor> Coordinator<E> {
         }
     }
 
-    fn result(&self, id: JobId) -> Result<PublishedResult, ApiError> {
+    fn result(&self, id: JobId, kind: Kind) -> Result<Published, ApiError> {
         let entry = self
             .jobs
             .get(&id)
+            .filter(|entry| entry.snapshot.kind() == kind)
             .ok_or_else(|| task_error(TaskErrorKind::NotFound, Some(id)))?;
-        if let (Some(report), Some(publication)) = (&entry.report, &entry.snapshot.publication) {
-            return Ok(PublishedResult {
-                id,
-                publication: publication.clone(),
-                report: Arc::clone(report),
-            });
+        match (&entry.report, &entry.snapshot) {
+            (Some(Retained::Analysis(report)), Snapshot::Analysis(snapshot)) => {
+                if let Some(publication) = &snapshot.publication {
+                    return Ok(Published::Analysis(PublishedResult {
+                        id,
+                        publication: publication.clone(),
+                        report: Arc::clone(report),
+                    }));
+                }
+            }
+            (Some(Retained::Decompile(artifact)), Snapshot::Decompile(snapshot)) => {
+                if let Some(publication) = snapshot.publication {
+                    return Ok(Published::Decompile(PublishedDecompileResult {
+                        id,
+                        publication,
+                        artifact: Arc::clone(artifact),
+                    }));
+                }
+            }
+            _ => {}
         }
-        match &entry.snapshot.state {
+        match entry.snapshot.state() {
             JobState::Failed(error) => Err(error.clone()),
             JobState::Cancelled => Err(task_error(TaskErrorKind::Cancelled, Some(id))),
             _ => Err(task_error(TaskErrorKind::NotReady, Some(id))),
         }
     }
 
-    fn cancel(&mut self, id: JobId) -> Result<JobSnapshot, ApiError> {
+    fn cancel(&mut self, id: JobId, kind: Kind) -> Result<Snapshot, ApiError> {
         let entry = self
             .jobs
             .get_mut(&id)
+            .filter(|entry| entry.snapshot.kind() == kind)
             .ok_or_else(|| task_error(TaskErrorKind::NotFound, Some(id)))?;
-        match entry.snapshot.state {
+        match entry.snapshot.state() {
             JobState::Queued => {
                 entry.control.cancellation().cancel();
                 entry.request.take();
@@ -360,7 +385,7 @@ impl<E: Executor> Coordinator<E> {
             }
             JobState::Running => {
                 entry.control.cancellation().cancel();
-                entry.snapshot.state = JobState::Cancelling;
+                *entry.snapshot.state_mut() = JobState::Cancelling;
             }
             JobState::Cancelling
             | JobState::Completed
@@ -369,51 +394,66 @@ impl<E: Executor> Coordinator<E> {
         }
         let entry = self.jobs.get_mut(&id).expect("cancelled job remains owned");
         refresh_timings(entry);
-        Ok(entry.snapshot.clone())
+        Ok(entry.snapshot.copy())
     }
 
-    fn finish(&mut self, id: JobId, result: Result<AnalysisReport, ApiError>) {
+    fn finish(&mut self, id: JobId, result: Result<Outcome, ApiError>) {
         let Some(entry) = self.jobs.get_mut(&id) else {
             return;
         };
+        let result = result.and_then(|outcome| {
+            if outcome.kind() == entry.snapshot.kind() {
+                Ok(outcome)
+            } else {
+                Err(super::task_type_error())
+            }
+        });
         entry.control.observer().finish_timing();
         drain_progress(entry);
         refresh_timings(entry);
         if entry.control.cancellation().is_cancelled() {
-            drop(result);
-            entry.snapshot.state = JobState::Cancelled;
-            entry.snapshot.progress.phase = AnalysisPhase::Cancelled;
+            // A decompiler can return an inspectable partial artifact after a
+            // checkpoint. Retain its validated stages while acknowledging cancellation.
+            if let Ok(Outcome::Decompile(artifact)) = result {
+                publish_decompile(entry, Arc::from(artifact));
+            }
+            *entry.snapshot.state_mut() = JobState::Cancelled;
+            if let Snapshot::Analysis(snapshot) = &mut entry.snapshot {
+                snapshot.progress.phase = AnalysisPhase::Cancelled;
+            }
         } else {
             match result {
-                Ok(mut report) => {
-                    report.timings = entry.snapshot.timings.clone();
-                    entry.snapshot.progress.phase = AnalysisPhase::Complete;
-                    entry.snapshot.progress.transfers =
-                        entry.snapshot.progress.transfers.max(report.transfers);
-                    entry.snapshot.progress.work = report.work;
+                Ok(Outcome::Analysis(mut report)) => {
+                    let Snapshot::Analysis(snapshot) = &mut entry.snapshot else {
+                        unreachable!("result kind was checked before updating the lifecycle")
+                    };
+                    report.timings = snapshot.timings.clone();
+                    snapshot.progress.phase = AnalysisPhase::Complete;
+                    snapshot.progress.transfers = snapshot.progress.transfers.max(report.transfers);
+                    snapshot.progress.work = report.work;
                     if let Some(graph) = report.selected_graph() {
-                        entry.snapshot.progress.states =
-                            entry.snapshot.progress.states.max(graph.cfg.len());
-                        entry.snapshot.progress.accounts = graph.accounts.len();
-                        entry.snapshot.progress.slots = graph
+                        snapshot.progress.states = snapshot.progress.states.max(graph.cfg.len());
+                        snapshot.progress.accounts = graph.accounts.len();
+                        snapshot.progress.slots = graph
                             .accounts
                             .iter()
                             .map(|account| account.storage.len())
                             .sum();
                     }
                     if let Some(acquisition) = &report.acquisition {
-                        entry.snapshot.progress.round = acquisition.rounds;
-                        entry.snapshot.progress.requests = acquisition.requests;
-                        entry.snapshot.progress.states = entry
-                            .snapshot
-                            .progress
-                            .states
-                            .max(acquisition.states_created);
+                        snapshot.progress.round = acquisition.rounds;
+                        snapshot.progress.requests = acquisition.requests;
+                        snapshot.progress.states =
+                            snapshot.progress.states.max(acquisition.states_created);
                     }
-                    publish(entry, Arc::new(report));
-                    entry.snapshot.state = JobState::Completed;
+                    publish(entry, Arc::from(report));
+                    *entry.snapshot.state_mut() = JobState::Completed;
                 }
-                Err(error) => entry.snapshot.state = JobState::Failed(error),
+                Ok(Outcome::Decompile(artifact)) => {
+                    publish_decompile(entry, Arc::from(artifact));
+                    *entry.snapshot.state_mut() = JobState::Completed;
+                }
+                Err(error) => *entry.snapshot.state_mut() = JobState::Failed(error),
             }
         }
         self.retained.push_back(id);
@@ -436,7 +476,7 @@ impl<E: Executor> Coordinator<E> {
     fn progress(&mut self) {
         for entry in self.jobs.values_mut() {
             if matches!(
-                entry.snapshot.state,
+                entry.snapshot.state(),
                 JobState::Running | JobState::Cancelling
             ) {
                 drain_progress(entry);
@@ -455,12 +495,12 @@ impl<E: Executor> Coordinator<E> {
         }
         for entry in self.jobs.values_mut() {
             if matches!(
-                entry.snapshot.state,
+                entry.snapshot.state(),
                 JobState::Queued | JobState::Running | JobState::Cancelling
             ) {
                 entry.control.cancellation().cancel();
-                if entry.snapshot.state == JobState::Running {
-                    entry.snapshot.state = JobState::Cancelling;
+                if entry.snapshot.state() == &JobState::Running {
+                    *entry.snapshot.state_mut() = JobState::Cancelling;
                 }
             }
         }
@@ -474,18 +514,23 @@ impl<E: Executor> Coordinator<E> {
 }
 
 fn publish(entry: &mut Entry, report: Arc<AnalysisReport>) {
+    let Snapshot::Analysis(snapshot) = &mut entry.snapshot else {
+        return;
+    };
     // There are only two publications: the certified baseline, and final output.
     // Preserve Global identity only by reusing the exact projected object.
     // Replacing a model, even at an equal revision, gets a fresh graph version.
-    let version = entry
-        .snapshot
+    let version = snapshot
         .publication
         .as_ref()
         .map_or(1, |previous| previous.version.0.0.saturating_add(1));
-    let previous = entry.report.as_ref();
-    let prior = entry.snapshot.publication.as_ref();
+    let previous = match entry.report.as_ref() {
+        Some(Retained::Analysis(report)) => Some(report),
+        _ => None,
+    };
+    let prior = snapshot.publication.as_ref();
     let next = PublicationVersion(DecimalU64(version));
-    entry.snapshot.publication = Some(JobPublication {
+    snapshot.publication = Some(JobPublication {
         version: next,
         minimum_version: retained_version(
             &report.minimum,
@@ -514,7 +559,28 @@ fn publish(entry: &mut Entry, report: Arc<AnalysisReport>) {
                 .as_ref()
                 .is_none_or(|hybrid| hybrid.coverage.baseline_current),
     });
-    entry.report = Some(report);
+    entry.report = Some(Retained::Analysis(report));
+}
+
+fn publish_decompile(entry: &mut Entry, artifact: Arc<evm_abstract_protocol::DecompileArtifact>) {
+    let Snapshot::Decompile(snapshot) = &mut entry.snapshot else {
+        return;
+    };
+    let version = snapshot
+        .publication
+        .map_or(1, |prior| prior.0.0.saturating_add(1));
+    // Best-effort progress can be dropped while the coordinator is busy. Final
+    // artifact counters are authoritative, including for cancelled attempts.
+    snapshot.progress.phase = evm_abstract_protocol::decompile_model::Phase::Complete;
+    snapshot.progress.blocks = snapshot.progress.blocks.max(artifact.statistics.blocks);
+    snapshot.progress.operations = snapshot
+        .progress
+        .operations
+        .max(artifact.statistics.operations);
+    snapshot.progress.work = artifact.statistics.work;
+    snapshot.progress.stage = artifact.current_stage;
+    snapshot.publication = Some(PublicationVersion(DecimalU64(version)));
+    entry.report = Some(Retained::Decompile(artifact));
 }
 
 // Only immutable object identity preserves a namespace's installed IDs. Equal
@@ -536,7 +602,7 @@ fn retained_version<T>(
 
 fn refresh_timings(entry: &mut Entry) {
     if !matches!(
-        entry.snapshot.state,
+        entry.snapshot.state(),
         JobState::Queued | JobState::Running | JobState::Cancelling
     ) {
         return;
@@ -550,12 +616,29 @@ fn refresh_timings(entry: &mut Entry) {
         .unwrap_or(observed_at)
         .saturating_duration_since(entry.queued_at);
     let queue_ns = u64::try_from(queue.as_nanos()).unwrap_or(u64::MAX);
-    entry.snapshot.timings = crate::analyze::timing::project(snapshot, queue_ns);
+    match &mut entry.snapshot {
+        Snapshot::Analysis(status) => {
+            status.timings = crate::analyze::timing::project(snapshot, queue_ns)
+        }
+        Snapshot::Decompile(status) => {
+            status.queue_ns = DecimalU64(queue_ns);
+            status.processing_ns = DecimalU64(snapshot.elapsed_ns);
+        }
+    }
 }
 
 fn drain_progress(entry: &mut Entry) {
+    if let Snapshot::Decompile(snapshot) = &mut entry.snapshot {
+        for progress in entry.decompile_events.try_iter() {
+            snapshot.progress = progress;
+        }
+        return;
+    }
+    let Snapshot::Analysis(snapshot) = &mut entry.snapshot else {
+        return;
+    };
     for event in entry.events.try_iter() {
-        let progress = &mut entry.snapshot.progress;
+        let progress = &mut snapshot.progress;
         match event {
             Event::Phase(phase) => {
                 progress.phase = match phase {
@@ -660,11 +743,14 @@ fn start_worker<E: Executor>(
                                 id: work.id,
                                 published: std::sync::atomic::AtomicBool::new(false),
                             };
-                            let result = executor.execute_with_publisher(
-                                work.request,
-                                &work.control,
-                                &publisher,
-                            );
+                            let result = match work.request {
+                                Request::Analysis(request) => executor
+                                    .execute_with_publisher(*request, &work.control, &publisher)
+                                    .map(|report| Outcome::Analysis(Box::new(report))),
+                                Request::Decompile(request) => executor
+                                    .decompile(*request, &work.control, &work.decompile_progress)
+                                    .map(|artifact| Outcome::Decompile(Box::new(artifact))),
+                            };
                             drop(timing);
                             let id = work.id;
                             drop(work.control);

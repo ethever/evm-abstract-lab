@@ -199,10 +199,10 @@ impl AnalysisForm {
             });
         if !self.was_open {
             let id = match self.source {
-                Source::Bytecode => "runtime_bytecode",
-                Source::Rpc => "rpc_address",
+                Source::Bytecode => framework::BytecodeEditor::Analysis.id(),
+                Source::Rpc => Id::new("rpc_address"),
             };
-            ctx.memory_mut(|memory| memory.request_focus(Id::new(id)));
+            ctx.memory_mut(|memory| memory.request_focus(id));
             self.was_open = true;
         }
         if self.can_submit(busy) && keyboard_submit {
@@ -266,10 +266,10 @@ impl AnalysisForm {
         controls::observe(ui, &source_group.response, "input_source", "group", None);
         if previous_source != self.source {
             let id = match self.source {
-                Source::Bytecode => "runtime_bytecode",
-                Source::Rpc => "rpc_address",
+                Source::Bytecode => framework::BytecodeEditor::Analysis.id(),
+                Source::Rpc => Id::new("rpc_address"),
             };
-            ui.memory_mut(|memory| memory.request_focus(Id::new(id)));
+            ui.memory_mut(|memory| memory.request_focus(id));
         }
         ui.label(
             RichText::new(match self.source {
@@ -295,7 +295,12 @@ impl AnalysisForm {
                         }
                     });
                 });
-                framework::bytecode_editor(ui, &mut self.bytecode.bytecode, 80.0);
+                framework::bytecode_editor(
+                    ui,
+                    framework::BytecodeEditor::Analysis,
+                    &mut self.bytecode.bytecode,
+                    80.0,
+                );
                 optional_text(
                     ui,
                     "Root address",

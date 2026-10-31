@@ -55,7 +55,7 @@ nix run . -- cfg --hex 6003600204
 | 前两个 PUSH 为 2、3，DIV | `[2,3]` | 3/2，整数除法 | 1 |
 | 前两个 PUSH 为 3、2，DIV | `[3,2]` | 2/3，整数除法 | 0 |
 
-U256::MAX 显示为 64 个十六进制 `f`。源码里的 `args[0]` 是先弹出的栈顶；读 [`domain.rs`](../crates/evm-abstract/src/domain.rs) 时要按这个顺序代入。若修改运算实现，应使用独立 revm 对照，防止测试和实现复制同一个顺序错误。
+U256::MAX 显示为 64 个十六进制 `f`。源码里的 `args[0]` 是先弹出的栈顶；读 [`domain.rs`](../crates/evm-domain/src/domain.rs) 时要按这个顺序代入。若修改运算实现，应使用独立 revm 对照，防止测试和实现复制同一个顺序错误。
 
 </details>
 

@@ -6,7 +6,7 @@ import json
 from web_test_hybrid import job_result_report, source_block, source_program
 
 
-WIRE_VERSION = 21
+WIRE_VERSION = 22
 NATIVE_VERSION = 16
 # D5 application default; only omission in a request/CLI profile applies it.
 DEFAULT_DETAIL_REGIONS = 1

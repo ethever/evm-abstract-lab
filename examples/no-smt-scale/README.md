@@ -2,7 +2,7 @@
 
 本目录固定输入、命令策略、外部资源 guard 和报告验收边界，用于比较已有 SMT 基线与当前 no-SMT 分层抽象解释实现。[命令生成器](../../scripts/generate-no-smt-scale-commands.py)生成当前 CLI profile；[benchmark](../../scripts/benchmark-no-smt-scale.py)默认只核对输入，显式传入 `--execute` 才顺序启动已有 ELF。两者都不构建、不访问 RPC；benchmark 不翻译策略、不调用 shell、不计算速度倍数。
 
-基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**。选定 checkout 的当前接口以[原生 schema 常量](../../crates/evm-abstract/src/analysis.rs)、[Web schema 常量](../../crates/evm-abstract-protocol/src/lib.rs)和[数值配置及计费版本](../../crates/evm-abstract/src/domain/spec.rs)为准，并由匹配的命令生成器核对。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。跨 cost 版本的原始 work 不是同一单位，**不能把不同 cost 版本的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
+基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**。选定 checkout 的当前接口以[原生 schema 常量](../../crates/evm-abstract/src/analysis.rs)、[Web schema 常量](../../crates/evm-abstract-protocol/src/lib.rs)和[数值配置及计费版本](../../crates/evm-domain/src/domain/spec.rs)为准，并由匹配的命令生成器核对。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。跨 cost 版本的原始 work 不是同一单位，**不能把不同 cost 版本的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
 
 ## 固定输入与事实边界
 

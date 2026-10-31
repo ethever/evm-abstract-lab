@@ -3,6 +3,9 @@
 #[path = "http/requests.rs"]
 mod requests;
 
+#[path = "http/decompile.rs"]
+mod decompile;
+
 use evm_abstract_protocol::{
     AnalysisInput, AnalyzeRequest, ApiErrorCode, BlockSelector, BytecodeInput, ErrorDetails,
     JobReply, JobResultReply, JobState, RpcInput, RpcProvidersReply,

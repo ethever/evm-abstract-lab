@@ -1,8 +1,9 @@
 //! Versioned data exchanged by the native analyzer and the browser workbench.
 //!
 //! This crate uses serde and an engine-independent structural schema, with no execution engine, networking
-//! or GUI code. IDs refer to native machine states and edges throughout the
-//! graph and SSA; byte offsets are never used as state identities. Word values
+//! or GUI code. Analysis graph/SSA IDs refer to native states and edges;
+//! decompiler artifacts have independent stage/entity identities. Byte offsets
+//! are source locations, not state or entity identities. Word values
 //! are lossless hexadecimal strings rather than JavaScript floating point numbers.
 
 #[macro_use]
@@ -10,6 +11,7 @@ mod codec;
 mod analysis;
 pub mod application_defaults;
 mod boundaries;
+mod decompile;
 mod errors;
 mod hybrid;
 mod input_errors;
@@ -32,6 +34,7 @@ mod terminal;
 
 pub use analysis::*;
 pub use boundaries::*;
+pub use decompile::*;
 pub use errors::*;
 pub use hybrid::*;
 pub use input_errors::*;
@@ -55,10 +58,11 @@ pub use terminal::*;
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of native report JSON.
+/// Version 22 adds independent local decompiler tasks and transformation artifacts.
 /// Version 21 fixes graph placement, shares the source directory and qualifies
 /// graph snapshots/revisions independently of job publication and selection.
 /// Version 20 qualifies root templates, process sources and conditional native detail.
-pub const SCHEMA_VERSION: u16 = 21;
+pub const SCHEMA_VERSION: u16 = 22;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

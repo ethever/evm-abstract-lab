@@ -18,6 +18,8 @@ default = []
 imbl    = ["evm-abstract/imbl"]
 
 [dependencies]
+evm-bytecode               = { path = "../evm-bytecode" }
+evm-decompile              = { path = "../evm-decompile" }
 evm-abstract               = { path = "../evm-abstract" }
 evm-abstract-protocol      = { path = "../evm-abstract-protocol" }
 clap.workspace             = true

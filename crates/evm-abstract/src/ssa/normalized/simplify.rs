@@ -61,12 +61,8 @@ pub(super) fn instruction(
             .collect::<Option<Vec<_>>>()
         {
             crate::ssa::work::evaluate(op, budget)?;
-            let value = crate::domain::concrete::evaluate(
-                op,
-                constants[0],
-                constants.get(1).copied().unwrap_or(U256::ZERO),
-                constants.get(2).copied().unwrap_or(U256::ZERO),
-            );
+            let value = evm_bytecode::word::evaluate(op, &constants)
+                .expect("pure validated the opcode and operand count");
             return Ok(constant(
                 value,
                 ValueTransformation::ConstantFold,

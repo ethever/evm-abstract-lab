@@ -53,7 +53,7 @@ def ssa_values_interactions(browser, url, output):
     for name,code,completion in cases:
         set_control(page,canvas,'Inspect',False)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
-        assert report['schema_version']==21 and report['status']==completion
+        assert report['schema_version']==22 and report['status']==completion
         ssa=report['ssa']
         assert len(ssa['values'])==ssa['value_count']
         assert [value['id'] for value in ssa['values']]==list(range(ssa['value_count']))
