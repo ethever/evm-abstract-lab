@@ -42,7 +42,7 @@ nix run . -- decompile --file examples/diamond.hex --strategy code-duplication
 
 每份产物都有自己的身份，阶段和节点身份只在相应产物中有意义。源 PC 是字节码位置，不能同时充当分析上下文、复制实例和辅助节点的唯一身份。
 
-转换记录应回答以下问题：
+转换记录提供以下关系：
 
 | 对象 | 调试时需要查看的关系 |
 | --- | --- |
@@ -61,6 +61,17 @@ nix run . -- decompile --file examples/diamond.hex --strategy code-duplication
 执行分析和反编译共用一个应用入口。反编译工作区拥有独立输入、任务状态、阶段选择与实体选择，不把生成的节点放入 Native 执行状态命名空间。
 
 结构化结果、原字节码、基线 CFG 和选定阶段可以相互定位。前后对照和转换检查器直接消费库生成的来源与变化记录。旧任务的迟到响应不能覆盖新任务；取消请求必须等工作线程清理完毕后才进入终止状态。
+
+例如，要检查代码复制修改了哪里：
+
+1. 打开 `Decompiler`，输入字节码并选择 fork，选中 `Code duplication` 后提交。也可以在执行分析中点击 `Decompile captured source`，带入当前已捕获的代码和 fork。
+2. 在 `Transformation history` 选择控制流转换，点击 `Compare transform stages`。`Before stage` 与 `Current stage` 分别指向该转换的输入和输出；`Graphs`、`IR` 与 `Changes` 展示对应差异。
+3. 展开 `Copied entities`，分别点击 `Copy original` 和 `Copy descendant`；展开 `Redirected edges` 查看旧目标、新目标与真实边身份。
+4. 点击实体的 `Original` 来源，查看原始指令及它的所有派生位置。`Parent occurrences` 和 `Entity descendants` 用于沿转换链前后定位，历史导航保留所选阶段和实体。
+
+选择 `Dispatcher` 时采用同样的检查流程，新增的分派控制出现在转换记录中。两种策略都保留基线；界面中的辅助控制、原指令及复制实例使用各自的身份。
+
+HTTP 入口为 `POST /api/decompile/tasks`，状态和取消分别使用 `GET`／`DELETE /api/decompile/tasks/{id}`，结果使用 `GET /api/decompile/tasks/{id}/result`。请求与结果类型定义在 `evm-abstract-protocol`；任务的 publication 版本与产物内部的 stage 身份分开。
 
 ## 实现边界
 
