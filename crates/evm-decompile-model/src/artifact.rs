@@ -11,24 +11,35 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Completion {
+    /// All local recovery obligations and adopted checks completed.
     Complete,
+    /// An explicit recovery or transformation gap remains.
     Partial,
+    /// The operation owner requested cancellation.
     Cancelled,
+    /// A configured resource bound refused more work.
     Limited,
+    /// Input or internal validation failed.
     Failed,
 }
 /// Independently inspectable immutable phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageKind {
+    /// Original fork-aware instruction decoding.
     Decoded,
+    /// Stable local semantic recovery.
     Baseline,
+    /// Validated pure simplification.
     Simplified,
+    /// Control normalization and optional node splitting.
     ControlFlow,
+    /// Executable structured syntax.
     Structured,
 }
+strict_record! {
 /// One owned historical snapshot. Failed candidates never replace current.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stage {
     /// Stable artifact-local stage ID.
     pub id: StageId,
@@ -41,16 +52,21 @@ pub struct Stage {
     /// Actual invariant-check results.
     pub validation: Validation,
 }
+}
 /// Whether advertised invariant checks were executed and passed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValidationStatus {
+    /// All advertised checks executed successfully.
     Passed,
+    /// Input or internal validation failed.
     Failed,
+    /// Checks were interrupted or not executed.
     NotRun,
 }
+strict_record! {
 /// An individual executable invariant check.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidationCheck {
     /// Stable check name.
     pub name: String,
@@ -59,39 +75,56 @@ pub struct ValidationCheck {
     /// Concrete explanation or failure context.
     pub message: String,
 }
+}
+strict_record! {
 /// Validation is evidence about specified invariants, not a universal proof.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Validation {
     /// Aggregate result.
     pub status: ValidationStatus,
     /// Checks run at this snapshot.
     pub checks: Vec<ValidationCheck>,
 }
+}
 /// Diagnostic severity, independent of partial recovery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
+    /// Informational observation.
     Info,
+    /// Partial coverage or refusal details.
     Warning,
+    /// Invalid input or representation.
     Error,
 }
 /// Stable diagnostic classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticCode {
+    /// Input decoding failed.
     Decode,
+    /// An indirect target or frontier remains unresolved.
     UnknownJump,
+    /// A known target exceptionally halts.
     InvalidJump,
+    /// An instruction lacks required operands.
     StackUnderflow,
+    /// An instruction exceeds the EVM stack bound.
     StackOverflow,
+    /// Incompatible stack contexts require separate coverage.
     StackHeightMismatch,
+    /// A configured resource bound refused work.
     Limit,
+    /// The operation owner requested cancellation.
     Cancelled,
+    /// A representation invariant failed.
     Validation,
+    /// The requested operation is unsupported.
     Unsupported,
 }
+strict_record! {
 /// Located, machine-inspectable explanation retained on partial results.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     /// Severity for presentation.
     pub severity: Severity,
@@ -106,16 +139,20 @@ pub struct Diagnostic {
     /// Human-readable details.
     pub message: String,
 }
+}
+strict_record! {
 /// One real entity copy, with independent IDs for operations/results/edges too.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloneRelation {
     /// Original occurrence.
     pub original: EntityRef,
     /// New copied occurrence.
     pub copy: EntityRef,
 }
+}
+strict_record! {
 /// A control-flow redirection, including the old and new destinations.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeRedirect {
     /// Identity of the changed edge.
     pub edge: EntityId,
@@ -124,8 +161,10 @@ pub struct EdgeRedirect {
     /// New target.
     pub after: EntityId,
 }
+}
+strict_record! {
 /// Complete record of a phase rewrite and its validation outcome.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransformEvent {
     /// Artifact-local event identity.
     pub id: u64,
@@ -152,8 +191,10 @@ pub struct TransformEvent {
     /// Candidate validation, including non-adoption on failure.
     pub validation: Validation,
 }
+}
+strict_record! {
 /// One entity occurrence's ancestry, materialized by core at transformation time.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Origin {
     /// Entity occurrence.
     pub entity: EntityRef,
@@ -166,14 +207,18 @@ pub struct Origin {
     /// Specific introduction or carry-forward rule.
     pub reason: String,
 }
+}
+strict_record! {
 /// Materialized bidirectional ancestry database; helpers never parse text.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceMappings {
     /// Origins for every retained historical occurrence.
     pub origins: Vec<Origin>,
 }
+}
+strict_record! {
 /// Differences of actual entities, not rendered strings.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StageDiff {
     /// IDs newly introduced.
     pub added: Vec<EntityId>,
@@ -182,8 +227,10 @@ pub struct StageDiff {
     /// Retained IDs whose typed contents changed.
     pub changed: Vec<EntityId>,
 }
+}
+strict_record! {
 /// Work and final retained sizes.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Statistics {
     /// Successful logical-work reservation.
     pub work: usize,
@@ -202,8 +249,10 @@ pub struct Statistics {
     /// Retained history entities, references and provenance payload units.
     pub history_entities: usize,
 }
+}
+strict_record! {
 /// Complete offline result, including interrupted and failed attempts.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Artifact {
     /// Wire schema version.
     pub schema_version: u32,
@@ -227,6 +276,7 @@ pub struct Artifact {
     pub current_stage: Option<StageId>,
     /// Actual paid work and retained sizes.
     pub statistics: Statistics,
+}
 }
 impl Artifact {
     /// Retrieve a historical snapshot.
