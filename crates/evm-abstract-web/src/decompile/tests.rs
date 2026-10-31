@@ -14,6 +14,7 @@ use evm_abstract_protocol::{
 };
 
 mod fixture;
+mod lifecycle;
 
 fn start(workspace: &mut Workspace) -> u64 {
     match workspace.task.start(api::DecompileRequest::default()) {

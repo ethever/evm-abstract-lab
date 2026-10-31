@@ -65,6 +65,7 @@ enum Phase {
     Submitting,
     Active,
     Terminal,
+    Missing,
 }
 
 #[derive(Default)]
@@ -115,6 +116,9 @@ impl Task {
     }
 
     pub fn next(&mut self, now: f64) -> Option<Command> {
+        if self.phase == Phase::Missing {
+            return None;
+        }
         let snapshot = self.snapshot.as_ref()?;
         let id = snapshot.id;
         let generation = self.generation;
@@ -148,6 +152,9 @@ impl Task {
     }
 
     pub fn needs_refresh(&self) -> bool {
+        if self.phase == Phase::Missing {
+            return self.result_pending;
+        }
         self.busy()
             || self.result_pending
             || self.snapshot.as_ref().is_some_and(|snapshot| {
@@ -181,13 +188,22 @@ impl Task {
                 if operation == JobOperation::Cancel {
                     self.cancel_requested = false;
                 }
-                if self.snapshot.is_none() {
+                if matches!(&error, Error::Api(error) if error.code == evm_abstract_protocol::ApiErrorCode::TaskNotFound)
+                {
+                    // A qualified result already in flight may still arrive.
+                    // Retire future polling/cancellation without erasing it.
+                    self.phase = Phase::Missing;
+                    self.cancel_requested = false;
+                } else if self.snapshot.is_none() {
                     self.phase = Phase::Terminal;
                 }
                 self.error = Some(error);
                 return;
             }
         };
+        if self.phase == Phase::Missing {
+            return;
+        }
         if let Some(previous) = &self.snapshot {
             if next.id != previous.id {
                 self.error = Some(Error::Identity {
@@ -250,10 +266,11 @@ impl Task {
         self.delivered = Some(publication);
         self.rejected = None;
         self.result_pending = false;
-        if self
-            .snapshot
-            .as_ref()
-            .is_none_or(|snapshot| !matches!(snapshot.state, JobState::Failed(_)))
+        if self.phase != Phase::Missing
+            && self
+                .snapshot
+                .as_ref()
+                .is_none_or(|snapshot| !matches!(snapshot.state, JobState::Failed(_)))
         {
             self.error = None;
         }
@@ -274,6 +291,9 @@ impl Task {
     }
 
     pub fn label(&self) -> &'static str {
+        if self.phase == Phase::Missing {
+            return "Task unavailable";
+        }
         if self.phase == Phase::Submitting {
             return if self.cancel_requested {
                 "Cancelling after admission"
