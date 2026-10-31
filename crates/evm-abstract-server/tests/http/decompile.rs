@@ -192,7 +192,9 @@ fn json_and_hex_errors_preserve_their_authoritative_validation_categories() {
 fn deeply_nested_structured_artifact_roundtrips_inside_the_actual_result_envelope() {
     // Twenty-five nested loops exceed the old incidental JSON-tree limit while
     // remaining comfortably inside the declared semantic structuring depth.
-    let mut bytes = Vec::new();
+    // A real memory definition also exercises the nullable producing-operation
+    // field inside the populated HTTP result, alongside branches and loops.
+    let mut bytes = vec![0x60, 0x2a, 0x5f, 0x52];
     let mut headers = Vec::new();
     let mut fixups = Vec::new();
     for _ in 0..25 {
@@ -243,6 +245,7 @@ fn deeply_nested_structured_artifact_roundtrips_inside_the_actual_result_envelop
     );
     let (_, reply): (_, DecompileJobResultReply) =
         decode(&exchange_with_pool(request.as_bytes(), &assets.0, &pool));
+    assert_named_result_payloads_are_strict(&reply);
     let artifact = reply.result.unwrap().artifact;
     assert_eq!(
         artifact.completion,
@@ -264,4 +267,101 @@ fn deeply_nested_structured_artifact_roundtrips_inside_the_actual_result_envelop
         artifact
     );
     pool.shutdown().unwrap();
+}
+
+fn assert_named_result_payloads_are_strict(reply: &DecompileJobResultReply) {
+    let wire = serde_json::to_value(reply).unwrap();
+    let stages = wire["result"]["Ok"]["artifact"]["stages"]
+        .as_array()
+        .unwrap();
+    let mut paths = Vec::new();
+    for (stage, snapshot) in stages.iter().enumerate() {
+        for (index, value) in snapshot["ir"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if value["kind"].get("memory").is_some() {
+                paths.push((
+                    format!("/result/Ok/artifact/stages/{stage}/ir/values/{index}/kind/memory"),
+                    "operation",
+                ));
+                break;
+            }
+        }
+        for (index, block) in snapshot["ir"]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if block["terminator"].get("branch").is_some() {
+                paths.push((
+                    format!(
+                        "/result/Ok/artifact/stages/{stage}/ir/blocks/{index}/terminator/branch"
+                    ),
+                    "else_edge",
+                ));
+                break;
+            }
+        }
+        if let Some(nodes) = snapshot["ir"]["structured"]["nodes"].as_array() {
+            for (index, node) in nodes.iter().enumerate() {
+                if node["kind"].get("while").is_some() {
+                    paths.push((format!("/result/Ok/artifact/stages/{stage}/ir/structured/nodes/{index}/kind/while"), "condition"));
+                    break;
+                }
+            }
+        }
+    }
+    for field in ["operation", "else_edge", "condition"] {
+        assert!(
+            paths.iter().any(|(_, found)| *found == field),
+            "missing populated {field} payload"
+        );
+    }
+    for (path, required) in paths {
+        let mut missing = wire.clone();
+        assert!(
+            missing
+                .pointer_mut(&path)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(required)
+                .is_some()
+        );
+        assert!(
+            serde_json::from_slice::<DecompileJobResultReply>(
+                &serde_json::to_vec(&missing).unwrap()
+            )
+            .is_err(),
+            "accepted missing {required} at {path}"
+        );
+        let mut extra = wire.clone();
+        extra.pointer_mut(&path).unwrap()["unexpected_field"] = serde_json::json!(0);
+        assert!(
+            serde_json::from_slice::<DecompileJobResultReply>(&serde_json::to_vec(&extra).unwrap())
+                .is_err(),
+            "accepted unknown field at {path}"
+        );
+        let mut positional = wire.clone();
+        let fields = positional
+            .pointer(&path)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        *positional.pointer_mut(&path).unwrap() = serde_json::json!(fields);
+        assert!(
+            serde_json::from_slice::<DecompileJobResultReply>(
+                &serde_json::to_vec(&positional).unwrap()
+            )
+            .is_err(),
+            "accepted positional payload at {path}"
+        );
+    }
 }
