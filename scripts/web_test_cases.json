@@ -693,6 +693,51 @@
         "scripts/web_test_report_lifecycle.py",
         "scripts/web_test_rpc.py"
       ]
+    },
+    {
+      "id": "decompile-workspace",
+      "group": "decompile",
+      "module": "web_test_decompile",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "decompile-strategies",
+      "group": "decompile",
+      "module": "web_test_decompile_strategies",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_strategies.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "decompile-lifecycle",
+      "group": "decompile",
+      "module": "web_test_decompile_lifecycle",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_lifecycle.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_rpc.py",
+        "scripts/web_test_rpc_helpers.py"
+      ]
     }
   ],
   "legacy_flags": {
