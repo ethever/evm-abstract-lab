@@ -127,7 +127,7 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 
 来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
 
-[`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)表示 Top 或非空有限集合，空交返回错误。它既是 product 的常量组件，也是 `FiniteSetAlgebra::Element` 的独立载体。`EvmValue<N>::finite_constants()` 读取所选载体导出的有限保证；product 的 `contains()` 同时检查常量、位、区间、同余与非零约束。常量组件为 Top 不等于 product 的整个数值没有限制。
+[`FiniteConstantSet`](../crates/evm-domain/src/domain/finite_constant_set.rs)表示 Top 或非空有限集合，空交返回错误。它既是 product 的常量组件，也是 `FiniteSetAlgebra::Element` 的独立载体。`EvmValue<N>::finite_constants()` 读取所选载体导出的有限保证；product 的 `contains()` 同时检查常量、位、区间、同余与非零约束。常量组件为 Top 不等于 product 的整个数值没有限制。
 
 原生 JSON 中，每个 `EvmValue<N>` 都是对象：必填的 `.numeric` 保存实际 `N`，非默认的 `.provenance`、`.identity`、`.expression` 和 `.symbolic_limit` 保存不同种类的元数据。未知来源、空身份、无表达式和 false 标志均可省略，只有外层 `.numeric` 必填。product 的 `.numeric` 按组件省略默认值：
 
@@ -218,7 +218,7 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 
 来源、地址范围和代码用途也必须区分。`IsAddress` 保证高 96 位为零；`IsCodeAddress` 只记录作为代码地址使用的角色。它们都不能证明该账户存在，更不能提供未知账户的代码。
 
-若想继续看库接口，可从 [`ValueAlgebra::from_facts`](../crates/evm-abstract/src/domain/algebra.rs) 和 [`facts.rs`](../crates/evm-abstract/src/domain/facts.rs)进入。上述范围加 8 的倍数就是该接口可以建立的初始前提。`MemberOf` 的 `FiniteSet` 与常量组件共用非空集合表示，但声明成员关系必须给出具体集合，不能使用 Top。事实表按候选元素计入事实容量；导入组合值后，常量容量决定能否继续保留这份完整列表。这是两项独立的限制。非法范围、空候选或零模数会被拒绝；矛盾不能改写成成功的 Top。
+若想继续看库接口，可从 [`ValueAlgebra::from_facts`](../crates/evm-domain/src/domain/algebra.rs) 和 [`facts.rs`](../crates/evm-domain/src/domain/facts.rs)进入。上述范围加 8 的倍数就是该接口可以建立的初始前提。`MemberOf` 的 `FiniteSet` 与常量组件共用非空集合表示，但声明成员关系必须给出具体集合，不能使用 Top。事实表按候选元素计入事实容量；导入组合值后，常量容量决定能否继续保留这份完整列表。这是两项独立的限制。非法范围、空候选或零模数会被拒绝；矛盾不能改写成成功的 Top。
 
 ## 5. 同一值的约束取交，不同路径的可能取并
 
@@ -282,9 +282,9 @@ nix run . -- analyze \
 jq '(.native // .global).analysis | .schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-原生报告的 `schema_version`、独立的 Web 协议版本与 `domain_spec.schema_version` 分别由[原生分析格式](../crates/evm-abstract/src/analysis.rs)、[Web 协议](../crates/evm-abstract-protocol/src/lib.rs)和[域策略](../crates/evm-abstract/src/domain/spec.rs)定义。CLI 用 `numeric_model: "product"` / `"finite-set"` 记录所选模型，Web 协议对应为 `"Product"` / `"FiniteSet"`，`domain_spec` 则保存实际代数的 word 宽度、常量容量、交换上限、widening、费用版本、来源策略和关系限制，不包含模型选择器。原生 `Config` 只保存上下文、状态和 transfer 限制，`ExecutionConfig` 再保存工作、调用深度、具体物化等执行预算；数值与关系限制只由 `algebra.spec()` 提供。`DomainSpec::validate()` 返回类型化 `DomainSpecError`；表达式与关系上限为零时，即使关闭关系推理也会拒绝。
+原生报告的 `schema_version`、独立的 Web 协议版本与 `domain_spec.schema_version` 分别由[原生分析格式](../crates/evm-abstract/src/analysis.rs)、[Web 协议](../crates/evm-abstract-protocol/src/lib.rs)和[域策略](../crates/evm-domain/src/domain/spec.rs)定义。CLI 用 `numeric_model: "product"` / `"finite-set"` 记录所选模型，Web 协议对应为 `"Product"` / `"FiniteSet"`，`domain_spec` 则保存实际代数的 word 宽度、常量容量、交换上限、widening、费用版本、来源策略和关系限制，不包含模型选择器。原生 `Config` 只保存上下文、状态和 transfer 限制，`ExecutionConfig` 再保存工作、调用深度、具体物化等执行预算；数值与关系限制只由 `algebra.spec()` 提供。`DomainSpec::validate()` 返回类型化 `DomainSpecError`；表达式与关系上限为零时，即使关闭关系推理也会拒绝。
 
-`DomainSpec.cost_version` 冻结本次分析的逻辑工作计费口径，当前值见[域策略定义](../crates/evm-abstract/src/domain/spec.rs)。版本 7 的借用式数值操作与显式 opcode 工作报价，以及版本 6 的共享 kernel、规则和独立查询计费，都是此前的口径；跨费用版本的原始 work 不是同一单位，同样整数预算不代表相同分析工作量，不能直接相除解释为提速。`domain_spec.relations` 冻结关系开关与表达式/约束预算。子调用使用同一代数和策略，[调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)还要检查实际输入、来源和策略资格；模型标签不能代替这些检查。
+`DomainSpec.cost_version` 冻结本次分析的逻辑工作计费口径，当前值见[域策略定义](../crates/evm-domain/src/domain/spec.rs)。版本 7 的借用式数值操作与显式 opcode 工作报价，以及版本 6 的共享 kernel、规则和独立查询计费，都是此前的口径；跨费用版本的原始 work 不是同一单位，同样整数预算不代表相同分析工作量，不能直接相除解释为提速。`domain_spec.relations` 冻结关系开关与表达式/约束预算。子调用使用同一代数和策略，[调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)还要检查实际输入、来源和策略资格；模型标签不能代替这些检查。
 
 `--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 finite-set 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 
@@ -304,6 +304,6 @@ jq '.states[0].exit_stack[0]' /tmp/facts-value.json
 
 输入 JSON 与 RPC 初始账户的读取发生在执行账本建立之前。RPC 的后续账户与有限槽采集发生在分析轮次之间，账户数和 HTTP 请求数另有累计上限；成功后扩充初始事实，从入口重建分析，沿用根执行账本。JSON 的 `rpc_acquisition.states_created` 记录全部轮次的状态分配数，因此可能大于最终 `states` 长度。`fetched_storage` 与 `failed_storage` 记录动态槽采集的地址和槽键，显式 `--slot` 的初始采集不计入前者。数值域的 `--max-facts` 只限制局部事实交换，不限制这些 RPC 观察；读[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)可对照两组额度。
 
-当前没有对 JSON/RPC 全部输入设置统一字节配额，也没有全过程峰值内存配额。更完整的析取/路径分组、别名关系与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-abstract/src/domain.rs)、[`numeric.rs`](../crates/evm-abstract/src/domain/numeric.rs)、[`value.rs`](../crates/evm-abstract/src/domain/value.rs)、[`identity.rs`](../crates/evm-abstract/src/domain/identity.rs)、[`relational.rs`](../crates/evm-abstract/src/domain/relational.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。
+当前没有对 JSON/RPC 全部输入设置统一字节配额，也没有全过程峰值内存配额。更完整的析取/路径分组、别名关系与输入准入仍是[后续设计边界](https://github.com/ethever/evm-abstract-lab/issues/21)。源码入口是 [`domain.rs`](../crates/evm-domain/src/domain.rs)、[`numeric.rs`](../crates/evm-domain/src/domain/numeric.rs)、[`value.rs`](../crates/evm-domain/src/domain/value.rs)、[`identity.rs`](../crates/evm-domain/src/domain/identity.rs)、[`relational.rs`](../crates/evm-domain/src/domain/relational.rs)，真实 CFG、字节和状态精度的回归样例在 [`product_domains.rs`](../crates/evm-abstract/tests/product_domains.rs)。
 
 默认输入、跨帧规则和全部环境参数见[第 13 课](13-evm-environment.md)。

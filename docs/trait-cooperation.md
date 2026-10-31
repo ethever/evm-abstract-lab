@@ -52,7 +52,7 @@ imports、错误类型和三个对照的完整代码在示例中。[contracts.rs
 
 | 选择 | 公开接口 | 所负责的语义 |
 | --- | --- | --- |
-| 一个机器字怎样表示和计算 | [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)、[`WordElement`](../crates/evm-abstract/src/domain/element.rs) | 实际载体 `N = D::Element`、数值运算、投影和局部规约 |
+| 一个机器字怎样表示和计算 | [`EvmNumericAlgebra`](../crates/evm-domain/src/domain/algebra.rs)、[`WordElement`](../crates/evm-domain/src/domain/element.rs) | 实际载体 `N = D::Element`、数值运算、投影和局部规约 |
 | 整个执行状态怎样分组、覆盖和加速 | [`EnginePolicies<C,P,S>`](../crates/evm-abstract/src/analysis/engine/policy.rs)、[`StatePolicy`](../crates/evm-abstract/src/analysis/engine/policy/semantic.rs) | 实际状态键、完整输入准入、相对输入及过程输出摘要 |
 | 独立任务怎样交换事实 | [`Extension<A,P,F,G>`](../crates/evm-abstract/src/analysis/cooperation/composition.rs)、[`analysis-kernel`](../crates/analysis-kernel/src/lib.rs) | 任务计划、类型化 channel、跨程序点依赖与共同闭包 |
 
@@ -193,9 +193,9 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 | `StackFacts::Unreachable` | 登记规则证明本代没有到达执行 | 证明满足本代全部前提时可以 |
 | 配置、scope、组件或资源错误 | 所需求值未正常完成 | 不能 |
 
-[`StackFacts`](../crates/evm-abstract/src/analysis/cooperation/facts.rs)是 Native 解释器消费的反馈词汇：活动栈槽的 [`WordObservation`](../crates/evm-abstract/src/domain/observation.rs) 或显式不可达。自定义事实若要影响 EVM，需要一个遵守契约的组件将结论送到这个端口；槽越界、无效事实与失效 scope 有类型化失败路径。
+[`StackFacts`](../crates/evm-abstract/src/analysis/cooperation/facts.rs)是 Native 解释器消费的反馈词汇：活动栈槽的 [`WordObservation`](../crates/evm-domain/src/domain/observation.rs) 或显式不可达。自定义事实若要影响 EVM，需要一个遵守契约的组件将结论送到这个端口；槽越界、无效事实与失效 scope 有类型化失败路径。
 
-将同一代的合法数值保证合取后，明确数值矛盾可以排除该执行视图。但 [`ReductionStatus::Empty`](../crates/evm-abstract/src/domain/reduce.rs) 本身不会自动变成 EVM 路径不可达；来源冲突也不证明数值矛盾。具体处理见[反馈应用](../crates/evm-abstract/src/analysis/cooperation/refinement.rs)：区分已证明矛盾、保守精度损失和错误。
+将同一代的合法数值保证合取后，明确数值矛盾可以排除该执行视图。但 [`ReductionStatus::Empty`](../crates/evm-domain/src/domain/reduce.rs) 本身不会自动变成 EVM 路径不可达；来源冲突也不证明数值矛盾。具体处理见[反馈应用](../crates/evm-abstract/src/analysis/cooperation/refinement.rs)：区分已证明矛盾、保守精度损失和错误。
 
 ## Process 视图与 Hybrid 注册阶段
 
@@ -215,19 +215,19 @@ World 重证明始终重新观察来源与区域证据。只有同一个 World `
 
 ## 数值局部协作与工作报价
 
-[`ProductAlgebra<M,R,W>`](../crates/evm-abstract/src/domain/cooperation/policy.rs)在一次固定数值输入内组合位、区间与标量规约；它与程序层的 `Extension` 可以分别选择。`ProductAlgebra::from_spec(spec)` 装配内置规则和 `BuiltinWork`；`ProductAlgebra::new(spec, masks, bounds)` 选择替换规则并使用 `ComposedWork`。只有确切的内置组合可以使用经过核对的收敛、拼接和均匀字节定律。替换规则必须保持这次输入的共同具体含义，不能沿用另一组规则的收敛或成本证明。
+[`ProductAlgebra<M,R,W>`](../crates/evm-domain/src/domain/cooperation/policy.rs)在一次固定数值输入内组合位、区间与标量规约；它与程序层的 `Extension` 可以分别选择。`ProductAlgebra::from_spec(spec)` 装配内置规则和 `BuiltinWork`；`ProductAlgebra::new(spec, masks, bounds)` 选择替换规则并使用 `ComposedWork`。只有确切的内置组合可以使用经过核对的收敛、拼接和均匀字节定律。替换规则必须保持这次输入的共同具体含义，不能沿用另一组规则的收敛或成本证明。
 
 例如 `x∈[7,14]` 时，`ADD 1; AND 8` 恒得 `8`：区间先得到 `[8,15]`，再将恒定的位传给按位域，供下一条 `AND` 使用。[数值组合客户端](../crates/evm-abstract/tests/cooperation/product.rs)用实际返回值检查这条信息传递，并关闭该规约方向检查精度贡献。
 
-`ComposedWork` 要求所选规则实现 [`RuleWork`](../crates/evm-abstract/src/domain/cooperation/cost.rs)，覆盖一次执行的能力调用、发布策略及计算，再按允许的整个调度组合报价。`with_work` 可注入针对这对规则的 `ProductWork`，包括显式的 `BoundedWork`；有限工作额度并不承诺局部闭包，也不改变事实容量和允许的规则步数。
+`ComposedWork` 要求所选规则实现 [`RuleWork`](../crates/evm-domain/src/domain/cooperation/cost.rs)，覆盖一次执行的能力调用、发布策略及计算，再按允许的整个调度组合报价。`with_work` 可注入针对这对规则的 `ProductWork`，包括显式的 `BoundedWork`；有限工作额度并不承诺局部闭包，也不改变事实容量和允许的规则步数。
 
 `EvmNumericAlgebra::apply_numeric(op, args)` 接收 `ExactSizeIterator<Item = &Element>`，`observe_byte_numeric` 使用同一借用协议。`operation_work(op, args)` 必须按实际 opcode 覆盖数值运算本身（含实现内部的复制和查询），且报价必须不小于返回元素的 `Element::work_size`；调用方可据此另行预留临时结果的释放费用。`EvmValue` 的公共元数据独立计费，共用的 `ValueAlgebra` 不强制复制数值操作数。报价不能通过先执行运算或构造结果取得；未知报价以 `usize::MAX` 拒绝。缺少可选能力时可以保守返回 Top。后续独立查询仍按下文的查询契约另行计费。
 
-观察导入与闭包是不同工作。策略若提供 `refinement_import_work`，先支付导入，再按实际导入结果支付后续规约；新增 `MemberOf` 的集合可能比原输入大，原来的 atom 数不足以推导其闭包成本。未提供导入专用报价时，保留完整 `refinement_work` 的付款契约。具体接口见 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)。
+观察导入与闭包是不同工作。策略若提供 `refinement_import_work`，先支付导入，再按实际导入结果支付后续规约；新增 `MemberOf` 的集合可能比原输入大，原来的 atom 数不足以推导其闭包成本。未提供导入专用报价时，保留完整 `refinement_work` 的付款契约。具体接口见 [`EvmNumericAlgebra`](../crates/evm-domain/src/domain/algebra.rs)。
 
 数值优化同样需要明确语义证书。`uniform_word_bytes(word)` 声明在**这一策略**下，32 个合法 `BYTE` 索引的结果等价，包含隐藏载体约束；可见形状相同或 `byte_quotes_uniform()` 报价相同都不能替代它。自定义策略默认拒绝这项证书，`ProductAlgebra` 也不会因选用了默认载体而自动继承更强的写入捷径。`pack_word_numeric` 则须等价于该策略约定的逐字节拼接，保留必需的自定义规约，受计费调用按 `pack_word_work` 先付费，缺少报价则走普通路径。
 
-这些证书只声明数值语义。[`EvmValue`](../crates/evm-abstract/src/domain/value.rs) 将数值约束、provenance、身份和表达式分层保存：数值相同不能建立源身份，来源相同也不能建立值身份。内存字节的表达式与来源仍须按真实操作保留，不能用 uniform-byte 或拼接证书替代其来源证明。
+这些证书只声明数值语义。[`EvmValue`](../crates/evm-domain/src/domain/value.rs) 将数值约束、provenance、身份和表达式分层保存：数值相同不能建立源身份，来源相同也不能建立值身份。内存字节的表达式与来源仍须按真实操作保留，不能用 uniform-byte 或拼接证书替代其来源证明。
 
 例如，`MLOAD` 已付费的内容证明给出零时，可以保留字面值 `0`，来源仍是 `Memory`。[外部来源与回滚见证](../crates/evm-abstract/tests/issue13_review.rs)将实际 `MLOAD` 数值检查到完成的 `SSTORE` 和后续存储读取。算术运算已获得的单值证明也只针对这次输入下的当前结果，不能按 opcode 跨输入复用。
 
@@ -241,7 +241,7 @@ World 重证明始终重新观察来源与区域证据。只有同一个 World `
 
 不能从内建载体查询便宜推断自定义载体也便宜，也不能重复收取完整报价已覆盖的内部查询。缺失的报价不代表免费；受计费路径中的 `literal_quote_work` 默认以 `usize::MAX` 在构造前拒绝。没有账本的纯库调用由调用者承担工作。
 
-局部结果必须连同结束原因读取：精度轮数/事实容量限制保留安全的已完成结果，`WorkLimit`、`Cancelled`、`KernelFailure` 分别记录工作中断、取消与协议失败，不能都解释为“规则已稳定”。原生报告 schema、wire schema 与 `DomainSpec` 的成本版本分别见[原生分析格式常量](../crates/evm-abstract/src/analysis.rs)、[Web 协议常量](../crates/evm-abstract-protocol/src/lib.rs)和[域策略定义](../crates/evm-abstract/src/domain/spec.rs)；报告格式与逻辑工作单位各自有版本。
+局部结果必须连同结束原因读取：精度轮数/事实容量限制保留安全的已完成结果，`WorkLimit`、`Cancelled`、`KernelFailure` 分别记录工作中断、取消与协议失败，不能都解释为“规则已稳定”。原生报告 schema、wire schema 与 `DomainSpec` 的成本版本分别见[原生分析格式常量](../crates/evm-abstract/src/analysis.rs)、[Web 协议常量](../crates/evm-abstract-protocol/src/lib.rs)和[域策略定义](../crates/evm-domain/src/domain/spec.rs)；报告格式与逻辑工作单位各自有版本。
 
 ## 共同闭包与客户端责任
 

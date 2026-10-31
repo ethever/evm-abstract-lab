@@ -286,7 +286,7 @@ B₀ @ 0x0000:
 
 反过来，**看到 frontier 不等于所有执行都立刻停止**。`boundary` 负责记录前沿，是否返回由调用处决定；某些关系分析限制会留下前沿并继续做保守计算，未知调用目标也可以同时保留有证据支持的失败或继续边。因此，应同时读当前指令的 `progress`、已经记录的后继边和整张图的 `status`。局部块完成、某条已知路径完成、整个图覆盖闭合，分别是不同的判断。
 
-CALL 则已被 [`Instruction::ends_block`](../crates/evm-abstract/src/bytecode.rs) 定义为静态块边界：调用者后面的 ADD 等指令属于继续块，需要继续边才能进入。下面用 CALL 说明图的覆盖仍开放；用上面的 MLOAD 才能直接看到**同一个静态块的中途停止**。
+CALL 则已被 [`Instruction::ends_block`](../crates/evm-bytecode/src/bytecode.rs) 定义为静态块边界：调用者后面的 ADD 等指令属于继续块，需要继续边才能进入。下面用 CALL 说明图的覆盖仍开放；用上面的 MLOAD 才能直接看到**同一个静态块的中途停止**。
 
 ### 先运行一个未知调用目标
 

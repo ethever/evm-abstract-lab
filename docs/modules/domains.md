@@ -18,7 +18,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| 一个抽象值覆盖多个可能的具体 word；Top 允许任意 word。未到达状态与一槽的 Top 不是同一概念。 | 在 [`FiniteConstantSet`](../../crates/evm-abstract/src/domain/finite_constant_set.rs) 看 Top 与非空有限集合，再在 [`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs) 看数值之外的元数据。 |
+| 一个抽象值覆盖多个可能的具体 word；Top 允许任意 word。未到达状态与一槽的 Top 不是同一概念。 | 在 [`FiniteConstantSet`](../../crates/evm-domain/src/domain/finite_constant_set.rs) 看 Top 与非空有限集合，再在 [`EvmValue<N>`](../../crates/evm-domain/src/domain/value.rs) 看数值之外的元数据。 |
 
 **完成产物：**写出汇合前、汇合后与 ADD 后的栈高和候选值。结合[抽象值的含义](../02-domain.md#2-抽象值保存的是允许的可能性)，解释“没有对应状态”为什么还要先检查分析是否未完成，才能讨论不可达。
 
@@ -32,7 +32,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| join 覆盖任一前驱；transfer 覆盖输入组合的计算结果。超过表示容量时扩大摘要，不能删除真实候选；算术须遵守 EVM word 回绕规则。 | 在 [`FiniteConstantSet::join`](../../crates/evm-abstract/src/domain/finite_constant_set.rs)、[`FiniteSetAlgebra::apply_numeric`](../../crates/evm-abstract/src/domain/finite_algebra.rs) 与 [`concrete::evaluate`](../../crates/evm-abstract/src/domain/concrete.rs) 分别核对合并、枚举和具体运算。 |
+| join 覆盖任一前驱；transfer 覆盖输入组合的计算结果。超过表示容量时扩大摘要，不能删除真实候选；算术须遵守 EVM word 回绕规则。 | 在 [`FiniteConstantSet::join`](../../crates/evm-domain/src/domain/finite_constant_set.rs)、[`FiniteSetAlgebra::apply_numeric`](../../crates/evm-domain/src/domain/finite_algebra.rs) 与 [`concrete::evaluate`](../../crates/evm-bytecode/src/word.rs) 分别核对合并、枚举和具体运算。 |
 
 **完成产物：**手算 `{1,2}+{10,20}`，再解释容量不足为何可能得到 Top。另将 `[1,10]` 与 `[2,20]` 逐槽合并，列出[额外允许的配对](../02-domain.md#5-为什么摘要会包含实际不会出现的组合)：增加容量为什么不能自动修复这项关系损失？
 
@@ -46,7 +46,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| 位、区间和同余同时约束同一个 word，其含义取交；不同路径的可能性仍需取并。规约把已有保证传给其他组件，不会凭空增加输入事实。 | 在 [`NumericValue`](../../crates/evm-abstract/src/domain/numeric.rs) 对应组件字段，沿 [`domain/transfer.rs`](../../crates/evm-abstract/src/domain/transfer.rs) 与 [`reduce.rs`](../../crates/evm-abstract/src/domain/reduce.rs) 追踪运算和 facts 交换。 |
+| 位、区间和同余同时约束同一个 word，其含义取交；不同路径的可能性仍需取并。规约把已有保证传给其他组件，不会凭空增加输入事实。 | 在 [`NumericValue`](../../crates/evm-domain/src/domain/numeric.rs) 对应组件字段，沿 [`domain/transfer.rs`](../../crates/evm-domain/src/domain/transfer.rs) 与 [`reduce.rs`](../../crates/evm-domain/src/domain/reduce.rs) 追踪运算和 facts 交换。 |
 
 **完成产物：**指出常量组件为 Top 时，哪项位保证仍排除零；为范围/同余例子写出候选 `{8,16}`。用[组件约束与路径 join](../12-product-domains-facts.md#5-同一值的约束取交不同路径的可能取并)解释为什么这两个地方不能都使用交集。
 
@@ -60,7 +60,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| 来源、相等身份与单值数值约束是不同知识；局部精化少做几轮与程序后继尚未分析也是不同边界。 | 在 [`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs) 分开看 identity、provenance 和 numeric，在 [`ReductionStatus`](../../crates/evm-abstract/src/domain/reduce.rs) 区分局部交换结果。 |
+| 来源、相等身份与单值数值约束是不同知识；局部精化少做几轮与程序后继尚未分析也是不同边界。 | 在 [`EvmValue<N>`](../../crates/evm-domain/src/domain/value.rs) 分开看 identity、provenance 和 numeric，在 [`ReductionStatus`](../../crates/evm-domain/src/domain/reduce.rs) 区分局部交换结果。 |
 
 **完成产物：**解释为什么两种数值模型 都可利用 DUP 或同一固定输入身份，而同为 Calldata 来源的独立读取仍可能不同。给“集合容量不足”“事实交换轮数不足”“共享工作预算耗尽”分别写出保留的信息与完成状态影响；参数位置可查[策略与 JSON](../12-product-domains-facts.md#7-选择策略并读懂-json)。
 

@@ -60,7 +60,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| 保守传播要覆盖尚不能排除的合法目标；候选边可能来自近似，不能当作具体路径见证。预算停止则表示仍有行为没有展开。 | 在 [`transfer.rs`](../../crates/evm-abstract/src/analysis/transfer.rs) 找 JUMP/JUMPI 候选筛选，合法位置来自 [`Program`](../../crates/evm-abstract/src/bytecode.rs)；在 [`Engine::run`](../../crates/evm-abstract/src/analysis/engine.rs) 末尾看 frontiers 如何决定 status。 |
+| 保守传播要覆盖尚不能排除的合法目标；候选边可能来自近似，不能当作具体路径见证。预算停止则表示仍有行为没有展开。 | 在 [`transfer.rs`](../../crates/evm-abstract/src/analysis/transfer.rs) 找 JUMP/JUMPI 候选筛选，合法位置来自 [`Program`](../../crates/evm-bytecode/src/bytecode.rs)；在 [`Engine::run`](../../crates/evm-abstract/src/analysis/engine.rs) 末尾看 frontiers 如何决定 status。 |
 
 **完成产物：**解释本例为什么同时有 `UnknownJump` 诊断和通向 SSTORE 的边。若候选展开耗尽预算，报告还应保留什么？依据[精度与预算参数](../05-sensitivity.md#7-实验时分别调整精度与预算)，选择一个与问题对应的调整方向，不能只说“把所有上限调大”。
 

@@ -18,7 +18,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| pc 是字节偏移；PUSH 的数据不能作为可独立执行的 opcode。缺失立即数字节按 EVM 规则补零。 | 在 [`Program::decode_with_fork`](../../crates/evm-abstract/src/bytecode.rs) 中找立即数读取、补齐与 pc 前进规则。 |
+| pc 是字节偏移；PUSH 的数据不能作为可独立执行的 opcode。缺失立即数字节按 EVM 规则补零。 | 在 [`Program::decode_with_fork`](../../crates/evm-bytecode/src/bytecode.rs) 中找立即数读取、补齐与 pc 前进规则。 |
 
 **完成产物：**给 `60 5b 00` 和 `61 ab` 各写一行“指令起点 → 指令 → 下一 pc”。解释第二段为何压入 `0xab00`，而非 `0x00ab`。可把反汇编与[直线程序的栈表](../00-start.md#第二步先手算这个程序)逐项对应。
 
@@ -32,7 +32,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| 基本块描述顺序指令边界；实际后继还依赖栈上的目标和条件。JUMPI 条件为零时走顺序后继。 | 在 [`Instruction::ends_block` 与 `Program`](../../crates/evm-abstract/src/bytecode.rs) 中分别定位切块规则与合法 JUMPDEST 集合。 |
+| 基本块描述顺序指令边界；实际后继还依赖栈上的目标和条件。JUMPI 条件为零时走顺序后继。 | 在 [`Instruction::ends_block` 与 `Program`](../../crates/evm-bytecode/src/bytecode.rs) 中分别定位切块规则与合法 JUMPDEST 集合。 |
 
 **完成产物：**写出一组 Bᵢ 编号与起始 pc 的对应关系，并解释“B₁”为什么不等于“pc=1”。指出 CALL 后面为什么也需要块边界；调用暂停与恢复留给[调用模块](calls-state.md)。
 
@@ -46,7 +46,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| fork 改变被分析程序的执行规则；精度参数改变分析怎样概括既定规则下的可能性。无效指令也有明确的终止语义。 | 在 [`Fork::supports_clz`](../../crates/evm-abstract/src/fork.rs) 与 [`Instruction`](../../crates/evm-abstract/src/bytecode.rs) 的有效性判断中核对版本选择。 |
+| fork 改变被分析程序的执行规则；精度参数改变分析怎样概括既定规则下的可能性。无效指令也有明确的终止语义。 | 在 [`Fork::supports_clz`](../../crates/evm-bytecode/src/fork.rs) 与 [`Instruction`](../../crates/evm-bytecode/src/bytecode.rs) 的有效性判断中核对版本选择。 |
 
 **完成产物：**为 Osaka、Cancun、Prague 各写一行“CLZ 是否有效、能否到达后续 JUMPDEST、分析为何可能完成”。默认 fork 固定在项目配置中，不能据此判断任意链上区块采用的规则；核对方式见[选择如何贯穿输出](../08-forks.md#5-怎样确认选择贯穿了整个分析)。
 
