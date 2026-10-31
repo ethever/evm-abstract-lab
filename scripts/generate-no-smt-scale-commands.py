@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Bind the frozen offline corpus to an explicitly selected no-SMT CLI source.
 
-Only writes a command profile and optional wire 21 requests; never builds or
+Only writes a command profile and optional wire 22 requests; never builds or
 runs analysis. Keep outputs separate from frozen baselines. Regenerate the
 profile for the final build's exact source commit.
 
-The current interface requires native 16 / wire 21 / domain 3 / cost 9. Historical
+The current interface requires native 16 / wire 22 / domain 3 / cost 9. Historical
 profiles stay bound to their frozen source and generator; they are not upgraded.
 """
 
@@ -30,7 +30,7 @@ def generate(repository, source):
         "cost": "crates/evm-domain/src/domain/spec.rs",
     }
     texts = {key: (source / path).read_text() for key, path in witnesses.items()}
-    for key, expected in [("native", 16), ("wire", 21)]:
+    for key, expected in [("native", 16), ("wire", 22)]:
         match = re.search(r"pub const SCHEMA_VERSION: u16 = (\d+);", texts[key])
         if match is None or int(match[1]) != expected:
             raise ValueError(f"expected {key} schema {expected}")
@@ -45,7 +45,7 @@ def generate(repository, source):
     profile["interface"] = {
         "name": "no-smt-cli-world",
         "source_commit": commit,
-        "versions": {"native": 16, "wire": 21, "domain": 3, "cost": 9},
+        "versions": {"native": 16, "wire": 22, "domain": 3, "cost": 9},
         "source_witnesses": {
             path: hashlib.sha256((source / path).read_bytes()).hexdigest()
             for path in witnesses.values()
@@ -100,7 +100,7 @@ def generate(repository, source):
     return profile
 
 
-def derive_wire21_request(original):
+def derive_wire22_request(original):
     """Migrate one frozen wire 14 request, retaining its exact input and limits."""
     request = deepcopy(original)
     # This is an explicit historical-input derivation, never a live decoder.
@@ -115,7 +115,7 @@ def main():
     parser.add_argument("--interface-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--request-output-dir", type=Path,
-                        help="write separate wire 21 WETH/USDC requests with the frozen 1T/off policy")
+                        help="write separate wire 22 WETH/USDC requests with the frozen 1T/off policy")
     arguments = parser.parse_args()
     repository = Path(__file__).resolve().parents[1]
     profile = generate(repository, arguments.interface_source.resolve(strict=True))
@@ -124,8 +124,8 @@ def main():
         arguments.request_output_dir.mkdir(parents=True, exist_ok=True)
         for name in ("weth", "usdc"):
             original = repository / f"examples/no-smt-scale/wire14/{name}-original-request.json"
-            request = derive_wire21_request(json.loads(original.read_bytes()))
-            output = arguments.request_output_dir / f"{name}-wire21-request.json"
+            request = derive_wire22_request(json.loads(original.read_bytes()))
+            output = arguments.request_output_dir / f"{name}-wire22-request.json"
             output.write_text(json.dumps(request, indent=2) + "\n")
 
 

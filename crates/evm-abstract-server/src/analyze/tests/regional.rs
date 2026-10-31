@@ -87,7 +87,7 @@ fn fixture_with_policy<S: analysis::ProcedureSummaryPolicy<ProductAlgebra>>(
         &Control::default(),
     )
     .unwrap();
-    assert_eq!(report.schema_version, 21);
+    assert_eq!(report.schema_version, 22);
     assert!(
         report
             .selected_graph()
