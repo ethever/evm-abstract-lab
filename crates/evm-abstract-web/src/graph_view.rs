@@ -6,7 +6,14 @@ use std::collections::BTreeMap;
 use egui::{Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use evm_abstract_layout as geometry;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod canvas;
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) use canvas::{Canvas, Card, Connection, Scene};
+
 pub(crate) const FIT_MARGIN: f32 = 7.0;
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) const PREVIEW_LINES: usize = 6;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EdgeRoute {

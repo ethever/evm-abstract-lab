@@ -626,7 +626,7 @@ def _schema_control(page, canvas, output, expected_request):
         native_text = response.text()
         envelope = json.loads(native_text)
         report = job_result_report(envelope)
-        assert report["schema_version"] == 21
+        assert report["schema_version"] == 22
         report["schema_version"] = 16
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
@@ -700,7 +700,7 @@ def root_terminal_coverage_interactions(context):
     full_ordinary = first.report
     assert_hybrid(full_ordinary)
     ordinary = oracle_graph(full_ordinary, "Native")
-    assert ordinary["schema_version"] == 21 and ordinary["root_terminal_coverage"] is None
+    assert ordinary["schema_version"] == 22 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
     _stores(ordinary)
@@ -798,7 +798,7 @@ def root_terminal_coverage_interactions(context):
         assert request == expected, (name, request, expected)
         report = reply.report
         native = oracle_graph(report, "Native")
-        assert report["schema_version"] == 21 and native["metadata"]["limits"] == expected["limits"]
+        assert report["schema_version"] == 22 and native["metadata"]["limits"] == expected["limits"]
         assert native["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         assert_hybrid(report)

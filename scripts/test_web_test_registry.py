@@ -324,7 +324,7 @@ class ReportWireTests(unittest.TestCase):
         # Equal local IDs deliberately name different Native/Global data. Source
         # IDs are sparse and shared, so array-position lookups cannot pass.
         return {
-            "schema_version": 21, "selected_view": "Baseline", "status": "Converged",
+            "schema_version": 22, "selected_view": "Baseline", "status": "Converged",
             "minimum": None, "rich_export": "Complete",
             "hybrid": {"coverage": {"baseline_current": True}},
             "programs": [{"id": 91, "blocks": [{"id": 12, "instructions": [{"pc": 40}]}]},
@@ -557,7 +557,7 @@ class ReportWireTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(AssertionError):
                 job_result_report(envelope)
         report["process_controls"] = []
-        for value in [20, 22, True, "21"]:
+        for value in [20, 21, 23, True, "22"]:
             report["schema_version"] = value
             with self.subTest(schema=value), self.assertRaises(AssertionError):
                 job_result_report(envelope)

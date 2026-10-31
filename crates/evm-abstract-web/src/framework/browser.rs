@@ -2,6 +2,7 @@
 //! futures necessarily use dynamic dispatch here; the workspace and painter
 //! widgets remain statically dispatched and contain no transport logic.
 
+mod decompile;
 mod pointer;
 mod shortcut;
 
@@ -17,7 +18,8 @@ use evm_abstract_protocol::{
 use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
-use crate::app::{Command, JobOperation, Message, TransportError, Workspace, timing};
+use crate::app::{Command, JobOperation, Message, TransportError, timing};
+use crate::application::{Application, Command as AppCommand, Message as AppMessage};
 
 /// Start the browser workspace on an existing canvas element.
 #[wasm_bindgen]
@@ -99,9 +101,9 @@ pub async fn start(canvas_id: &str) -> Result<(), JsValue> {
 }
 
 struct BrowserApp {
-    workspace: Workspace,
-    results: Receiver<Message>,
-    sender: Sender<Message>,
+    workspace: Application,
+    results: Receiver<AppMessage>,
+    sender: Sender<AppMessage>,
     initial_request: bool,
     last_status: String,
     shortcuts: shortcut::ShortcutBridge,
@@ -112,7 +114,7 @@ impl BrowserApp {
     fn new(shortcuts: shortcut::ShortcutBridge, pointer: pointer::PointerBridge) -> Self {
         let (sender, results) = mpsc::channel();
         Self {
-            workspace: Workspace::default(),
+            workspace: Application::default(),
             results,
             sender,
             initial_request: true,
@@ -156,9 +158,13 @@ impl eframe::App for BrowserApp {
             self.initial_request = false;
             request = request.or_else(|| self.workspace.startup_command());
         }
-        for request in [request, self.workspace.rpc_provider_command()]
-            .into_iter()
-            .flatten()
+        for request in [
+            request,
+            self.workspace.background_command(ui.ctx()),
+            self.workspace.rpc_provider_command(),
+        ]
+        .into_iter()
+        .flatten()
         {
             let sender = self.sender.clone();
             let context = ui.ctx().clone();
@@ -194,7 +200,14 @@ impl eframe::App for BrowserApp {
     }
 }
 
-async fn execute(command: Command) -> Message {
+async fn execute(command: AppCommand) -> AppMessage {
+    match command {
+        AppCommand::Analysis(command) => AppMessage::Analysis(execute_analysis(command).await),
+        AppCommand::Decompile(command) => AppMessage::Decompile(decompile::execute(command).await),
+    }
+}
+
+async fn execute_analysis(command: Command) -> Message {
     match command {
         Command::RpcProviders { generation } => Message::RpcProviders {
             generation,
@@ -247,7 +260,11 @@ async fn status(
     path: &str,
     request: Option<AnalyzeRequest>,
 ) -> Result<JobReply, TransportError> {
-    let (status, ok, body) = fetch(method, path, request).await?;
+    let body = request
+        .map(|request| serde_json::to_string(&request))
+        .transpose()
+        .map_err(TransportError::Encode)?;
+    let (status, ok, body) = fetch(method, path, body).await?;
     let reply: JobReply =
         serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
     if !ok && reply.result.is_ok() {
@@ -281,15 +298,14 @@ async fn result(path: &str) -> (Result<JobResultReply, TransportError>, u64, u64
 async fn fetch(
     method: &str,
     path: &str,
-    request: Option<AnalyzeRequest>,
+    body: Option<String>,
 ) -> Result<(u16, bool, String), TransportError> {
     let options = web_sys::RequestInit::new();
     options.set_method(method);
     options.set_mode(web_sys::RequestMode::SameOrigin);
     let controller = web_sys::AbortController::new().map_err(browser_error)?;
     options.set_signal(Some(&controller.signal()));
-    if let Some(request) = request {
-        let body = serde_json::to_string(&request).map_err(TransportError::Encode)?;
+    if let Some(body) = body {
         options.set_body(&JsValue::from_str(&body));
     }
     let request = web_sys::Request::new_with_str_and_init(path, &options).map_err(browser_error)?;

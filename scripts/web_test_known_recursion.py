@@ -23,7 +23,7 @@ def known_recursion_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "known-recursion", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 21 and report["status"] == "Converged"
+    assert report["schema_version"] == 22 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries

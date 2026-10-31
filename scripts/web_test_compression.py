@@ -49,7 +49,7 @@ def compression_interactions(browser, url: str, output: Path):
                                        publication=completed.job["publication"])
             assert report == completed.report
             assert_hybrid(report)
-            assert report["schema_version"] == 21
+            assert report["schema_version"] == 22
             native = graph(report, "Native")
             assert "max_output_bytes" not in native["metadata"]["export_limits"]
             assert native["cfg"] and native["ssa"]["blocks"]

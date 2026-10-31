@@ -420,7 +420,7 @@ fn modal_editor_is_visible_and_bounded_with_shared_control_fonts() {
     ] {
         let output = settled(&ctx, &mut workspace, size);
         let response = ctx
-            .read_response(egui::Id::new("runtime_bytecode"))
+            .read_response(crate::framework::BytecodeEditor::Analysis.id())
             .unwrap();
         let viewport = Rect::from_min_size(Pos2::ZERO, size);
         assert!(
@@ -460,7 +460,7 @@ fn visible_bytecode_editor_accepts_pointer_and_keyboard_input_after_resizes() {
     ] {
         settled(&ctx, &mut workspace, size);
         let editor = ctx
-            .read_response(egui::Id::new("runtime_bytecode"))
+            .read_response(crate::framework::BytecodeEditor::Analysis.id())
             .unwrap();
         assert!(editor.interact_rect.height() >= 16.0);
         click(
@@ -593,7 +593,7 @@ fn typing_f_and_shift_f_in_the_focused_editor_keeps_the_manual_camera() {
     workspace.form.open = true;
     settled(&ctx, &mut workspace, size);
     let editor = ctx
-        .read_response(egui::Id::new("runtime_bytecode"))
+        .read_response(crate::framework::BytecodeEditor::Analysis.id())
         .unwrap();
     click(
         &ctx,
@@ -695,7 +695,7 @@ fn scrolling_the_modal_editor_does_not_navigate_the_background_graph() {
     let titles = graph_titles(&before, &workspace);
     let zoom = workspace.graph.zoom;
     let editor = ctx
-        .read_response(egui::Id::new("runtime_bytecode"))
+        .read_response(crate::framework::BytecodeEditor::Analysis.id())
         .unwrap();
     let top = editor.rect.top();
     frame(
@@ -717,7 +717,7 @@ fn scrolling_the_modal_editor_does_not_navigate_the_background_graph() {
     }
     let after = settled(&ctx, &mut workspace, size);
     assert!(
-        ctx.read_response(egui::Id::new("runtime_bytecode"))
+        ctx.read_response(crate::framework::BytecodeEditor::Analysis.id())
             .unwrap()
             .rect
             .top()

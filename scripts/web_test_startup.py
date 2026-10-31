@@ -16,7 +16,7 @@ def run_startup(context):
     full_analysis = reply.report
     assert_hybrid(full_analysis)
     analysis = oracle_graph(full_analysis, "Native")
-    assert analysis["schema_version"] == 21
+    assert analysis["schema_version"] == 22
     assert analysis["metadata"]["postprocessing_max_work"] == 2_000_000_000
     assert 0 <= analysis["metadata"]["postprocessing_work"] <= 2_000_000_000
     assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0

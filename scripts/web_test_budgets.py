@@ -68,7 +68,7 @@ def budget_interactions(browser, url: str, output: Path):
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.report
     assert_hybrid(initial_report)
-    assert initial_report["schema_version"] == 21
+    assert initial_report["schema_version"] == 22
     initial_report = oracle_graph(initial_report, "Native")
     assert initial_report["metadata"]["postprocessing_max_work"] == 2_000_000_000
     assert 0 <= initial_report["metadata"]["postprocessing_work"] <= 2_000_000_000
@@ -101,7 +101,7 @@ def budget_interactions(browser, url: str, output: Path):
     report = reply.report
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
     assert_hybrid(report)
-    assert report["schema_version"] == 21
+    assert report["schema_version"] == 22
     report = oracle_graph(report, "Native")
     # This independent finite allowance does not inherit the edited execution
     # budget or the deliberately huge informational export work counter.
