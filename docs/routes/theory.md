@@ -24,7 +24,7 @@
 2. 做[第 01 课的 `60 5b 00` 实验](../01-bytecode.md#1-先手算三字节程序)。在每个字节下面写“操作码”或“立即数”，解释为什么中间的 `5b` 不能作为跳转目标。接着读[截断 PUSH](../01-bytecode.md#2-push-的立即数缺一半时怎么办)和[切块规则](../01-bytecode.md#3-把指令切成基本块)，把“字节位置”和“可执行位置”分开。
 3. 用[第 08 课的 CLZ 对照](../08-forks.md#2-手算-clz-怎样算出跳转地址)观察同一字节在不同 fork 下的结果，再做[第 13 课的离线默认输入实验](../13-evm-environment.md#先用离线命令检查默认关联)。分别记录协议规则与环境假设：默认 caller 和 origin 是同一输入，省略 calldata 则保持未知，不能当作空字节。读到[委托代码](../08-forks.md#4-eip-7702账户的-code-可能是委托标记)时，先记下“代码来源账户可能不同于状态账户”，第七步再展开。
 
-源码从 [`bytecode.rs`](../../crates/evm-abstract/src/bytecode.rs)、[`fork.rs`](../../crates/evm-abstract/src/fork.rs) 和 [`world/environment.rs`](../../crates/evm-abstract/src/world/environment.rs) 进入，分别寻找指令边界、协议选择与 `AddressInput` / `EvmEnvironmentValues<N>`。环境有符号身份，不等于它已经有具体数值；fork 默认值也不证明它适用于任意链上区块。
+源码从 [`bytecode.rs`](../../crates/evm-bytecode/src/bytecode.rs)、[`fork.rs`](../../crates/evm-bytecode/src/fork.rs) 和 [`world/environment.rs`](../../crates/evm-abstract/src/world/environment.rs) 进入，分别寻找指令边界、协议选择与 `AddressInput` / `EvmEnvironmentValues<N>`。环境有符号身份，不等于它已经有具体数值；fork 默认值也不证明它适用于任意链上区块。
 
 **完成问题：** 两次分析用相同字节码，一次省略 calldata，一次明确传入空 calldata，它们在分析同一组调用吗？如果 CLZ 在某个 fork 下异常终止，而分析报告 `Converged`，为什么这两件事可以同时成立？
 
@@ -44,7 +44,7 @@
 2. 读[逐槽合并丢失配对关系](../02-domain.md#5-为什么摘要会包含实际不会出现的组合)：`[1,10]` 和 `[2,20]` 合为 `[{1,2},{10,20}]` 后，写出多出的组合。带着这个问题读[第 12 课的组件表](../12-product-domains-facts.md#3-几个组件约束同一个-word)：位、区间和同余共同约束一个 word，却不会自动记住两个槽位来自同一条路径。
 3. 手算[范围与同余交换](../12-product-domains-facts.md#4-信息交换从范围和整除性找回候选)：`1≤x≤20` 且 x 是 8 的倍数，候选为 `{8,16}`。这叫规约：把已有约束相互传递。再读[约束取交与路径取并](../12-product-domains-facts.md#5-同一值的约束取交不同路径的可能取并)，用一句话解释为什么这两处不能都使用“交集”。
 
-源码依次看 [`FiniteConstantSet::join`](../../crates/evm-abstract/src/domain/finite_constant_set.rs)、[`NumericValue`](../../crates/evm-abstract/src/domain/numeric.rs)、[`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs)，再看 [`ValueAlgebra<D>`](../../crates/evm-abstract/src/domain/algebra.rs) 以及 `ProductAlgebra` / `FiniteSetAlgebra` 与 [`reduce.rs`](../../crates/evm-abstract/src/domain/reduce.rs)。区分常量组件为 Top 和整个数值没有约束；工作表 join 与有轮数限制的 facts 交换也是不同操作。当前实现没有声称每次都求得理论上最精确的组合域结果。
+源码依次看 [`FiniteConstantSet::join`](../../crates/evm-domain/src/domain/finite_constant_set.rs)、[`NumericValue`](../../crates/evm-domain/src/domain/numeric.rs)、[`EvmValue<N>`](../../crates/evm-domain/src/domain/value.rs)，再看 [`ValueAlgebra<D>`](../../crates/evm-domain/src/domain/algebra.rs) 以及 `ProductAlgebra` / `FiniteSetAlgebra` 与 [`reduce.rs`](../../crates/evm-domain/src/domain/reduce.rs)。区分常量组件为 Top 和整个数值没有约束；工作表 join 与有轮数限制的 facts 交换也是不同操作。当前实现没有声称每次都求得理论上最精确的组合域结果。
 
 **完成问题：** 常量组件无法枚举，却知道一个值最低位为 1，能否判断它非零？把容量从 1 提高到 8，为什么仍不能自动恢复 `[1,10]` 与 `[2,20]` 的配对关系？
 
@@ -132,7 +132,7 @@ SSA 在静态表示中给每个值定义分配一个唯一名字，让使用者�
 2. 读[五层信息](../15-symbolic-relations.md#2-五层信息分别保存什么)和 [`assume` / 数值精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)，给第二步的数值摘要、第四步的 SSA 名字各找位置。再用正文两次计算 `x+1` 的例子区分表达式相等、来源标签相同与数值摘要相同。
 3. 阅读[关系 join](../15-symbolic-relations.md#4-join-和-widening-不能漏掉路径)、[作用域](../15-symbolic-relations.md#5-作用域与摘要重放)与[状态索引关系](../15-symbolic-relations.md#有值的表达式不等于有符号索引数组)。左路 `x=1`、右路 `x=2` 不能直接合取；普通 RelationState join 保留共同项，整机 join 另保存共享 selector 下的完整替代。循环 widening 则明确放弃部分保证，详见第 17 课。将这些表示层次带回第五步，说明为何数值投影宽于完整读取，且局部规则不能凭空补上未建模的语义。
 
-源码看 [`domain/symbolic.rs`](../../crates/evm-abstract/src/domain/symbolic.rs) 的 `ExprId`、[`domain/relational.rs`](../../crates/evm-abstract/src/domain/relational.rs) 的 `assume` / `join` / `unique_value`，再接到 [`analysis/transfer/relations.rs`](../../crates/evm-abstract/src/analysis/transfer/relations.rs)。运算遵守 256 位 EVM 规则；表达式节点、深度、关系数量与求解资源都有上限，见[第 15 课资源预算](../15-symbolic-relations.md#7-原生后端与确定性资源预算)。固定输入身份有环境作用域，跨报告同名 Caller 不能直接建立相等关系。
+源码看 [`domain/symbolic.rs`](../../crates/evm-domain/src/domain/symbolic.rs) 的 `ExprId`、[`domain/relational.rs`](../../crates/evm-domain/src/domain/relational.rs) 的 `assume` / `join` / `unique_value`，再接到 [`analysis/transfer/relations.rs`](../../crates/evm-abstract/src/analysis/transfer/relations.rs)。运算遵守 256 位 EVM 规则；表达式节点、深度、关系数量与求解资源都有上限，见[第 15 课资源预算](../15-symbolic-relations.md#7-原生后端与确定性资源预算)。固定输入身份有环境作用域，跨报告同名 Caller 不能直接建立相等关系。
 
 **完成问题：** 证明 k=0 与只知道两次 k 相同，分别怎样帮助有序 slot 读取？为什么同址规则成立，仍不意味着任意 hash 别名或任意路径公式都可在给定预算下被精确判定？
 

@@ -16,7 +16,7 @@ use crate::{
     },
     domain::{
         DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, ValueAlgebra, WordElement,
-        concrete::{arity, evaluate},
+        concrete::arity,
     },
     resource::WorkBudget,
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
@@ -57,6 +57,7 @@ impl EvmNumericAlgebra for StatusAlgebra {
         if arity(op) != Some(args.len()) {
             return NumericReduction::stable(Word::top());
         }
+        let count = args.len();
         let mut words = [U256::ZERO; 3];
         for (word, argument) in words.iter_mut().zip(args) {
             let Some(exact) = argument.singleton() else {
@@ -64,7 +65,10 @@ impl EvmNumericAlgebra for StatusAlgebra {
             };
             *word = exact;
         }
-        NumericReduction::stable(Word::constant(evaluate(op, words[0], words[1], words[2])))
+        NumericReduction::stable(Word::constant(
+            evm_bytecode::word::evaluate(op, &words[..count])
+                .expect("the input arity and pure opcode were checked"),
+        ))
     }
     fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
         // Own exact evaluation, a possible facade expression fold and its

@@ -324,7 +324,7 @@ class ReportWireTests(unittest.TestCase):
         # Equal local IDs deliberately name different Native/Global data. Source
         # IDs are sparse and shared, so array-position lookups cannot pass.
         return {
-            "schema_version": 21, "selected_view": "Baseline", "status": "Converged",
+            "schema_version": 22, "selected_view": "Baseline", "status": "Converged",
             "minimum": None, "rich_export": "Complete",
             "hybrid": {"coverage": {"baseline_current": True}},
             "programs": [{"id": 91, "blocks": [{"id": 12, "instructions": [{"pc": 40}]}]},
@@ -557,7 +557,7 @@ class ReportWireTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(AssertionError):
                 job_result_report(envelope)
         report["process_controls"] = []
-        for value in [20, 22, True, "21"]:
+        for value in [20, 21, 23, True, "22"]:
             report["schema_version"] = value
             with self.subTest(schema=value), self.assertRaises(AssertionError):
                 job_result_report(envelope)
@@ -902,6 +902,50 @@ class NativeContextAdmissionTests(unittest.TestCase):
                 frame[key] = value
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 native_entry_context(report)
+
+
+class ExpectedHttpErrorTests(unittest.TestCase):
+    def test_exact_response_and_console_are_required_in_both_event_orders(self):
+        from web_test_http_errors import ExpectedHttpErrors
+        url = "http://127.0.0.1:1234/api/decompile/tasks/42"
+        message = "Failed to load resource: the server responded with a status of 404 (Not Found)"
+        for console_first in [False, True]:
+            ledger = ExpectedHttpErrors()
+            item = ledger.expect("GET", url, 404)
+            if console_first:
+                self.assertTrue(ledger.console(url, message))
+                with self.assertRaises(AssertionError): ledger.assert_complete()
+            ledger.response("GET", url, 404)
+            if not console_first: self.assertTrue(ledger.console(url, message))
+            ledger.assert_complete()
+            self.assertEqual(item.evidence(), {"method":"GET", "url":url, "status":404, "responses":1, "console_messages":1})
+
+    def test_unrelated_url_status_console_or_page_error_cannot_be_consumed(self):
+        from web_test_http_errors import ExpectedHttpErrors
+        ledger = ExpectedHttpErrors()
+        url = "http://127.0.0.1:1234/api/decompile/tasks/42"
+        ledger.expect("GET", url, 404)
+        for other_url, text in [
+            (url + "/result", "Failed to load resource: the server responded with a status of 404 (Not Found)"),
+            (url, "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"),
+            (url, "Error: unexpected JavaScript page error 404"),
+        ]:
+            self.assertFalse(ledger.console(other_url, text))
+        with self.assertRaises(AssertionError): ledger.assert_complete()
+
+    def test_wrong_method_duplicate_messages_and_unconsumed_registration_reject(self):
+        from web_test_http_errors import ExpectedHttpErrors
+        url = "http://127.0.0.1:1234/api/decompile/tasks/42"
+        message = "Failed to load resource: the server responded with a status of 404 (Not Found)"
+        ledger = ExpectedHttpErrors(); ledger.expect("GET", url, 404)
+        ledger.response("POST", url, 404)
+        self.assertTrue(ledger.console(url, message))
+        with self.assertRaises(AssertionError): ledger.assert_complete()
+        ledger.response("GET", url, 404); ledger.assert_complete()
+        self.assertFalse(ledger.console(url, message))
+        with self.assertRaises(AssertionError): ledger.expect("GET", url, 404)
+        ledger.response("GET", url, 404)
+        with self.assertRaises(AssertionError): ledger.assert_complete()
 
 
 if __name__ == "__main__":

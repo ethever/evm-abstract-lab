@@ -203,7 +203,7 @@ def job_result_report(envelope, *, job_id=None, publication=None):
         assert identity == publication, (identity, publication)
     report = result["report"]
     assert type(report) is dict
-    assert type(report["schema_version"]) is int and report["schema_version"] == 21
+    assert type(report["schema_version"]) is int and report["schema_version"] == 22
     assert "process_controls" in report
     assert type(report["process_controls"]) is list
     assert type(report["programs"]) is list
@@ -272,7 +272,7 @@ def assert_detail_policy(report, requested):
 
 
 def assert_hybrid(report):
-    assert report["schema_version"] == 21
+    assert report["schema_version"] == 22
     hybrid = report["hybrid"]
     assert isinstance(hybrid, dict)
     coverage = hybrid["coverage"]

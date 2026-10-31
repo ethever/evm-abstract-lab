@@ -96,6 +96,6 @@ fn closing_and_immediately_reopening_requests_the_source_editor_focus_again() {
     frame(&ctx, &mut form, vec![]);
     assert_eq!(
         ctx.memory(|memory| memory.focused()),
-        Some(Id::new("runtime_bytecode"))
+        Some(crate::framework::BytecodeEditor::Analysis.id())
     );
 }

@@ -1,7 +1,8 @@
 //! Screen-space CFG edges, arrows and labels.
 
 mod flow;
-mod geometry;
+#[cfg(test)]
+use crate::graph_view as geometry;
 mod viewport;
 pub(super) use viewport::has_visible_geometry;
 #[cfg(test)]
@@ -9,7 +10,7 @@ mod tests;
 
 use super::layout::EdgeRoute;
 use crate::palette;
-use egui::{Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
+use egui::{Color32, FontId, Painter, Pos2, Rect, Stroke};
 use evm_abstract_protocol::EdgeKind;
 
 pub(super) const FLOW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
@@ -122,28 +123,10 @@ pub(super) fn paint_edge_style(
             color.gamma_multiply(0.65)
         },
     );
-    let pixels_per_point = painter.pixels_per_point();
-    // Unlike individual LineSegments, epaint does not round PathShape centers
-    // to the physical pixel grid. Apply the same stroke-aware rounding here so
-    // orthogonal segments retain equal coverage as the graph moves or scales.
-    let points = geometry::screen_points(&route.path, origin, zoom, stroke, pixels_per_point);
+    let points = crate::graph_view::paint_path(painter, route, origin, zoom, stroke);
     if points.len() < 2 {
         return false;
     }
-    painter.add(Shape::line(points.clone(), stroke));
-    let end = points[points.len() - 1];
-    let direction = (end - points[points.len() - 2]).normalized();
-    let perpendicular = Vec2::new(-direction.y, direction.x);
-    let size = (6.0 * zoom).max(2.0);
-    painter.add(Shape::convex_polygon(
-        vec![
-            end,
-            end - direction * size + perpendicular * size * 0.5,
-            end - direction * size - perpendicular * size * 0.5,
-        ],
-        stroke.color,
-        Stroke::NONE,
-    ));
     let animated = selected && flow::paint(painter, &points, color, zoom);
     // ELK jointly places the route and its annotation. The label may sit beside
     // a segment; drawing it must never add bends or break the original path.

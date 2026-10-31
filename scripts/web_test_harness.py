@@ -11,9 +11,11 @@ import selectors
 import subprocess
 import time
 from web_test_hybrid import assert_detail_policy, job_result_report, namespace_available, native_entry_context, source_program
+from web_test_http_errors import ExpectedHttpErrors
 
 
 _browser_errors = ContextVar("browser_acceptance_errors", default=None)
+_http_error_ledgers = ContextVar("browser_expected_http_errors", default=None)
 
 
 @contextmanager
@@ -21,9 +23,14 @@ def capture_browser_errors():
     """Collect real page failures across every browser launched by one case."""
     errors = []
     token = _browser_errors.set(errors)
+    ledgers = []
+    ledger_token = _http_error_ledgers.set(ledgers)
     try:
         yield errors
+        for ledger in ledgers:
+            ledger.assert_complete()
     finally:
+        _http_error_ledgers.reset(ledger_token)
         _browser_errors.reset(token)
 
 
@@ -32,10 +39,35 @@ def capture_console_errors(page):
     # InvalidBytecode HTTP failure is expected in the submissions case.
     errors = _browser_errors.get()
     if errors is not None:
-        page.on("console", lambda message: errors.append(message.text)
-                if message.type == "error"
-                and not (message.location.get("url", "").endswith("/api/tasks")
-                         and "400" in message.text) else None)
+        ledger = ExpectedHttpErrors()
+        page.expected_http_errors = ledger
+        _http_error_ledgers.get().append(ledger)
+        page.on("response", lambda response: ledger.response(response.request.method, response.url, response.status))
+
+        def console(message):
+            if message.type != "error":
+                return
+            if (message.location.get("url", "").endswith("/api/tasks") and "400" in message.text):
+                return  # Existing InvalidBytecode admission oracle.
+            if not ledger.console(message.location.get("url", ""), message.text):
+                errors.append(message.text)
+        page.on("console", console)
+
+
+def expect_http_error(page, *, method, url, status):
+    """Register one exact request before deliberately fulfilling its failure."""
+    return page.expected_http_errors.expect(method, url, status)
+
+
+def consume_http_error(page, expectation):
+    # Chromium can emit its resource console message before or after the
+    # response event. Both must be observed exactly once before accepting it.
+    deadline = time.monotonic() + 5
+    while expectation.responses == 0 or expectation.console_messages == 0:
+        assert time.monotonic() < deadline, expectation.evidence()
+        page.wait_for_timeout(25)
+    expectation.assert_complete()
+    return expectation.evidence()
 
 
 def server_url(process: subprocess.Popen[str]) -> str:

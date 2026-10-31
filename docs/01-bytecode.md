@@ -154,7 +154,7 @@ fork 指执行层协议版本。本仓库支持 `cancun`、`prague`、`osaka`，
 
 ## 读源码时对应到哪里
 
-先带着上面的例子读 [`Program::decode_with_fork`](../crates/evm-abstract/src/bytecode.rs)：`width` 决定 PUSH 的声明宽度，`available` 决定实际能读多少字节，`pc += width + 1` 决定下一条指令的位置。立即数放在 32 字节数组的最右侧 n 字节区域；实际数据复制到该区域的开头，未读到的部分保留零。随后检查 `Instruction::ends_block` 与 `jumpdest_blocks()` 如何建立块和合法目标索引。指令名称和栈输入/输出数量来自 `revm-bytecode`。
+先带着上面的例子读 [`Program::decode_with_fork`](../crates/evm-bytecode/src/bytecode.rs)：`width` 决定 PUSH 的声明宽度，`available` 决定实际能读多少字节，`pc += width + 1` 决定下一条指令的位置。立即数放在 32 字节数组的最右侧 n 字节区域；实际数据复制到该区域的开头，未读到的部分保留零。随后检查 `Instruction::ends_block` 与 `jumpdest_blocks()` 如何建立块和合法目标索引。指令名称和栈输入/输出数量来自 `revm-bytecode`。
 
 [`pipeline.rs`](../crates/evm-abstract/tests/pipeline.rs) 中的 `push_data_is_not_a_jumpdest`、`truncated_push_pads_on_the_right`、`zero_condition_does_not_validate_invalid_target` 分别核对本课三个容易出错的边界。
 

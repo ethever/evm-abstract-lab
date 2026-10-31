@@ -82,7 +82,7 @@ def minimum_result():
                                           "input": {}, "outputs": [{"kind": "Success", "data": {}, "store": {}}]}]}],
                "postprocessing_max_work": 2_000_000_000, "export_limits": {"max_nodes": 100},
                "export_usage": {"nodes": 2, "work": 10}}
-    payload = {"schema_version": 21, "selected_view": "Baseline", "minimum": minimum,
+    payload = {"schema_version": 22, "selected_view": "Baseline", "minimum": minimum,
                "rich_export": "NotRequested", "status": "Converged", "work": 42, "transfers": 7,
                "postprocessing_work": 10, "timings": {"projecting_ns": 12}, "acquisition": None,
                "process_controls": [],

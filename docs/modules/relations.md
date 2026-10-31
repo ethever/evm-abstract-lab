@@ -20,7 +20,7 @@
 
 **理论角度：**数值摘要相同只说明允许的取值集合相同；Calldata 来源相同只说明来源类别。身份说明是否复用了同一个值，表达式还记录它如何由操作数计算出来。
 
-**实现角度：**在 [`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs) 中区分 numeric、provenance、identity、expression；再到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs) 找输入叶与 operation。完整路径条件另在 `RelationState`，不属于某个单值。
+**实现角度：**在 [`EvmValue<N>`](../../crates/evm-domain/src/domain/value.rs) 中区分 numeric、provenance、identity、expression；再到 [`ExprId`](../../crates/evm-domain/src/domain/symbolic.rs) 找输入叶与 operation。完整路径条件另在 `RelationState`，不属于某个单值。
 
 **观察与停点：**正文默认关系模式下 EQ 得 `{1}`，关闭关系后得 `{0,1}`。能说明差别来自保留派生表达式，即可继续；固定输入身份和 DUP 复制规则在关闭关系后仍可存在。
 
@@ -34,7 +34,7 @@
 
 **理论角度：**身份提供“还是同一个 v”，路径假设提供“在这里 v=1”。两项合起来才能排除第二次 true；仅知道比较结果在 `{0,1}` 中还不够。
 
-**实现角度：**顺着 [`relations::branch`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 进入 [`RelationState::assume` / `check`](../../crates/evm-abstract/src/domain/relational.rs)。true/false 后继各保存自己的假设；`refine` 再把已证明的后果反馈到数值摘要。完整过程见[指令转换与精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)。
+**实现角度：**顺着 [`relations::branch`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 进入 [`RelationState::assume` / `check`](../../crates/evm-domain/src/domain/relational.rs)。true/false 后继各保存自己的假设；`refine` 再把已证明的后果反馈到数值摘要。完整过程见[指令转换与精化](../15-symbolic-relations.md#3-指令转换assume-和数值精化)。
 
 **观察与停点：**按正文 JSON 查询，B₂ 的出边只有 `BranchFalse`，入口 v 的常量为 `{1}`；关闭关系后两条分支都保留。两份分析都可 `Converged`，边多是精度差别，不自动表示传播未完成。
 
@@ -48,7 +48,7 @@
 
 **理论角度：**路径内部的条件合取与路径之间的可能性合并方向不同。共同保证是普通 RelationState join 的结果；整机 guarded join 另用一个 selector 保存完整替代。数值投影可能看不到配对，循环 widening 也明确丢弃部分保证，不能将三者混为同一操作。
 
-**实现角度：**先读 [`RelationState::join`](../../crates/evm-abstract/src/domain/relational.rs) 与 [`join_covers_both_paths_instead_of_conjoining_their_conditions`](../../crates/evm-abstract/src/domain/relational/tests.rs)：x=1、x=2 都不能被排除。再到 [`machine/join.rs`](../../crates/evm-abstract/src/analysis/machine/join.rs) 跟踪同一个 selector 如何覆盖栈、byte/slot 根、rollback store 与完整路径公式。循环规则与验证范围见[第 17 课](../17-symbolic-state.md#汇合固定点与摘要来源)。
+**实现角度：**先读 [`RelationState::join`](../../crates/evm-domain/src/domain/relational.rs) 与 [`join_covers_both_paths_instead_of_conjoining_their_conditions`](../../crates/evm-domain/src/domain/relational/tests.rs)：x=1、x=2 都不能被排除。再到 [`machine/join.rs`](../../crates/evm-abstract/src/analysis/machine/join.rs) 跟踪同一个 selector 如何覆盖栈、byte/slot 根、rollback store 与完整路径公式。循环规则与验证范围见[第 17 课](../17-symbolic-state.md#汇合固定点与摘要来源)。
 
 随后读[作用域与 fresh 身份](../15-symbolic-relations.md#5-作用域与摘要重放)的前半部分。同名 Caller 不证明不同环境的输入相等，不同身份也不证明它们数值不等。源码测试 `distinct_input_scopes_remain_independent_not_disequal` 检查后一个区别。
 
@@ -62,7 +62,7 @@
 
 **理论角度：**身份回答“地址是否还是 k”，有序根回答“读的是写入之前还是之后”。两项合起来才可用 `select(store(S,k,7),k)=7`。若随后向 q 写入，还需区分 q=k 与 q≠k；不同来源或不同 hash 输入不能直接证明不等。没有局部证明也不等于条件不成立。
 
-**实现角度：**[`EvmByteArray<N>`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`EvmStore<N>`](../../crates/evm-abstract/src/world/store/slots.rs) 建立 EVM 状态根；[`RelationState`](../../crates/evm-abstract/src/domain/relational.rs) 保留局部事实和路径条件；[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 再将已证明的上界反馈到数值投影。长度、范围、账户和回滚规则仍由状态实现负责。
+**实现角度：**[`EvmByteArray<N>`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`EvmStore<N>`](../../crates/evm-abstract/src/world/store/slots.rs) 建立 EVM 状态根；[`RelationState`](../../crates/evm-domain/src/domain/relational.rs) 保留局部事实和路径条件；[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 再将已证明的上界反馈到数值投影。长度、范围、账户和回滚规则仍由状态实现负责。
 
 再读[局部推理与工作预算](../15-symbolic-relations.md#7-局部推理与工作预算)，找到当前报告的表达式/约束上限、status 和 frontiers。`max_work` 是抽象工作量，不是秒数或 EVM gas。
 
