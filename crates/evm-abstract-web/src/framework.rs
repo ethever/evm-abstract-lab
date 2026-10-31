@@ -8,6 +8,8 @@ pub use browser::start;
 
 #[cfg(test)]
 mod contact;
+#[cfg(test)]
+mod editors;
 
 mod submit;
 pub(crate) use submit::SubmitKeyboard;
@@ -37,7 +39,30 @@ pub(crate) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui
 
 /// Keep pasted multi-line programs inside the input budget instead of growing
 /// the top panel until it covers the analysis panes.
-pub(crate) fn bytecode_editor(ui: &mut egui::Ui, bytecode: &mut String, height: f32) {
+#[derive(Clone, Copy, Hash)]
+pub(crate) enum BytecodeEditor {
+    Analysis,
+    Decompiler,
+}
+
+impl BytecodeEditor {
+    pub(crate) fn id(self) -> egui::Id {
+        egui::Id::new(("runtime_bytecode", self))
+    }
+
+    /// Explicit replacement starts a new edit session. Ordinary close/reopen
+    /// preserves this editor's cursor and undo history.
+    pub(crate) fn replace(self, context: &egui::Context) {
+        egui::text_edit::TextEditState::default().store(context, self.id());
+    }
+}
+
+pub(crate) fn bytecode_editor(
+    ui: &mut egui::Ui,
+    editor: BytecodeEditor,
+    bytecode: &mut String,
+    height: f32,
+) {
     egui::ScrollArea::vertical()
         .id_salt("bytecode_scroll")
         .max_height(height)
@@ -48,7 +73,7 @@ pub(crate) fn bytecode_editor(ui: &mut egui::Ui, bytecode: &mut String, height: 
         .show(ui, |ui| {
             let response = ui.add(
                 egui::TextEdit::multiline(bytecode)
-                    .id(egui::Id::new("runtime_bytecode"))
+                    .id(editor.id())
                     .font(egui::TextStyle::Monospace)
                     .desired_width(f32::INFINITY)
                     .desired_rows(1)

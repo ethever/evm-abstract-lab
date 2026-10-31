@@ -13,6 +13,7 @@ pub(super) struct Form {
     strategy: DecompileStrategy,
     limits: DecompileLimits,
     keyboard: framework::SubmitKeyboard,
+    replace_editor: bool,
 }
 
 impl Default for Form {
@@ -24,6 +25,7 @@ impl Default for Form {
             strategy: DecompileStrategy::Dispatcher,
             limits: DecompileLimits::default(),
             keyboard: framework::SubmitKeyboard::default(),
+            replace_editor: false,
         }
     }
 }
@@ -34,6 +36,7 @@ impl Form {
         self.fork = fork;
         self.open = true;
         self.keyboard.reset();
+        self.replace_editor = true;
     }
 
     pub fn validation(&self) -> Option<&'static str> {
@@ -60,11 +63,22 @@ impl Form {
             self.keyboard.reset();
             return None;
         }
+        if std::mem::take(&mut self.replace_editor) {
+            framework::BytecodeEditor::Decompiler.replace(ui.ctx());
+            ui.memory_mut(|memory| {
+                memory.request_focus(framework::BytecodeEditor::Decompiler.id())
+            });
+        }
         let keyboard_submit = self.keyboard.submit(ui.ctx());
         let mut submit = false;
         ui.push_id("decompile_input", |ui| {
             ui.label("Runtime bytecode");
-            framework::bytecode_editor(ui, &mut self.bytecode, 64.0);
+            framework::bytecode_editor(
+                ui,
+                framework::BytecodeEditor::Decompiler,
+                &mut self.bytecode,
+                64.0,
+            );
             Density::Regular.scope(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("EVM fork");
