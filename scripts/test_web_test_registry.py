@@ -904,5 +904,49 @@ class NativeContextAdmissionTests(unittest.TestCase):
                 native_entry_context(report)
 
 
+class ExpectedHttpErrorTests(unittest.TestCase):
+    def test_exact_response_and_console_are_required_in_both_event_orders(self):
+        from web_test_http_errors import ExpectedHttpErrors
+        url = "http://127.0.0.1:1234/api/decompile/tasks/42"
+        message = "Failed to load resource: the server responded with a status of 404 (Not Found)"
+        for console_first in [False, True]:
+            ledger = ExpectedHttpErrors()
+            item = ledger.expect("GET", url, 404)
+            if console_first:
+                self.assertTrue(ledger.console(url, message))
+                with self.assertRaises(AssertionError): ledger.assert_complete()
+            ledger.response("GET", url, 404)
+            if not console_first: self.assertTrue(ledger.console(url, message))
+            ledger.assert_complete()
+            self.assertEqual(item.evidence(), {"method":"GET", "url":url, "status":404, "responses":1, "console_messages":1})
+
+    def test_unrelated_url_status_console_or_page_error_cannot_be_consumed(self):
+        from web_test_http_errors import ExpectedHttpErrors
+        ledger = ExpectedHttpErrors()
+        url = "http://127.0.0.1:1234/api/decompile/tasks/42"
+        ledger.expect("GET", url, 404)
+        for other_url, text in [
+            (url + "/result", "Failed to load resource: the server responded with a status of 404 (Not Found)"),
+            (url, "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"),
+            (url, "Error: unexpected JavaScript page error 404"),
+        ]:
+            self.assertFalse(ledger.console(other_url, text))
+        with self.assertRaises(AssertionError): ledger.assert_complete()
+
+    def test_wrong_method_duplicate_messages_and_unconsumed_registration_reject(self):
+        from web_test_http_errors import ExpectedHttpErrors
+        url = "http://127.0.0.1:1234/api/decompile/tasks/42"
+        message = "Failed to load resource: the server responded with a status of 404 (Not Found)"
+        ledger = ExpectedHttpErrors(); ledger.expect("GET", url, 404)
+        ledger.response("POST", url, 404)
+        self.assertTrue(ledger.console(url, message))
+        with self.assertRaises(AssertionError): ledger.assert_complete()
+        ledger.response("GET", url, 404); ledger.assert_complete()
+        self.assertFalse(ledger.console(url, message))
+        with self.assertRaises(AssertionError): ledger.expect("GET", url, 404)
+        ledger.response("GET", url, 404)
+        with self.assertRaises(AssertionError): ledger.assert_complete()
+
+
 if __name__ == "__main__":
     unittest.main()
