@@ -5,7 +5,7 @@ import json
 from playwright.sync_api import expect
 from web_test_decompile_helpers import (BRANCH, contains_ast, open_decompiler,
                                        prepare, stage, submit, wait_job)
-from web_test_harness import analysis_server, click_control, webgpu_evidence
+from web_test_harness import analysis_server, click_control, ui_control, webgpu_evidence
 from web_test_rpc_helpers import EntryRpcFixture, RPC_PROVIDERS
 
 
@@ -42,6 +42,32 @@ def run(context):
             expect(status).to_contain_text("Artifact: " + baseline["id"])
             assert acknowledged["publication"] is None
             canvas.screenshot(path=str(context.output / "cancelled-retained-artifact.png"))
+            retained_selection = status.text_content().split("; Selected entity: ")[1].split(";")[0]
+            missing = page.request.get(url + "/api/decompile/tasks/0")
+            assert missing.status == 404 and missing.json()["result"]["Err"]["code"] == "TaskNotFound"
+            missing_body = missing.text()
+
+            def disappeared(route):
+                if route.request.method == "GET":
+                    route.fulfill(status=404, content_type="application/json", body=missing_body)
+                else:
+                    route.continue_()
+
+            page.route("**/api/decompile/tasks/*", disappeared)
+            prepare(page, canvas, "600560060100")
+            with page.expect_response(lambda response: response.request.method == "POST"
+                                      and response.url.endswith("/api/decompile/tasks")) as missing_admission:
+                click_control(page, canvas, "Decompile", role="action")
+            missing_id = missing_admission.value.json()["result"]["Ok"]["id"]
+            expect(status).to_contain_text("Decompile task: Task unavailable")
+            expect(status).to_contain_text("TaskNotFound")
+            expect(status).to_contain_text("Artifact: " + baseline["id"])
+            expect(status).to_contain_text("Selected entity: " + retained_selection)
+            click_control(page, canvas, "Edit bytecode", role="action")
+            ui_control(page, "Decompile", role="action", enabled=True)
+            canvas.screenshot(path=str(context.output / "missing-task-unlocks-retained-workspace.png"))
+            page.unroute("**/api/decompile/tasks/*", disappeared)
+            assert page.request.delete(url + "/api/decompile/tasks/" + str(missing_id)).ok
             stopped = page.request.delete(url + "/api/tasks/" + str(active_id))
             assert stopped.ok
             assert rpc.disconnected.wait(5), "cancelling the occupying task did not release RPC"
@@ -76,6 +102,7 @@ def run(context):
             click_control(page, canvas, "Graphs", role="tab")
             canvas.screenshot(path=str(context.output / "unresolved-current-cfg.png"))
             result = {"queued": queued, "cancelled": acknowledged,
+                      "missing_task": missing_id,
                       "retained_artifact": baseline["id"], "recovered_artifact": unknown["id"],
                       "renderer": webgpu_evidence(page)}
             page.close()

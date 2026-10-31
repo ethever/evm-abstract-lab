@@ -67,12 +67,22 @@ def run(context):
         click_control(page, canvas, "Decompile captured source", role="action")
         click_control(page, canvas, "Decompile", role="action")
     transferred_artifact = transferred.value.json()["result"]["Ok"]["artifact"]
+    report = page.decompile_analysis_report
+    graph = report["native"] or report["global"]
+    program = next(program for program in report["programs"] if program["id"] == graph["metadata"]["root_program"])
+    assert transferred_artifact["input"]["runtime_bytecode"] == list(bytes.fromhex(program["bytecode"].removeprefix("0x")))
+    assert transferred_artifact["input"]["fork"] == program["fork"].lower()
     expect(status).to_contain_text("Artifact: " + transferred_artifact["id"])
     loop, loop_request = submit(context, page, canvas, LOOP, "natural-loop", fork="Cancun")
-    assert loop_request["fork"] == "Cancun" and loop["input"]["fork"] == "Cancun"
+    assert loop_request["fork"] == "Cancun" and loop["input"]["fork"] == "cancun"
     assert contains_ast(stage(loop, "structured")["ir"]["structured"], "while")
     click_control(page, canvas, "Structured code", role="tab")
     assert any("while (" in item["label"] for item in observed(page, "decompile-code"))
+    canvas.screenshot(path=str(context.output / "natural-loop-structured-code.png"))
+    for fork in ["Prague", "Osaka"]:
+        other, actual = submit(context, page, canvas, LOOP, f"natural-loop-{fork.lower()}", fork=fork)
+        assert actual["fork"] == fork and other["input"]["fork"] == fork.lower()
+        assert contains_ast(stage(other, "structured")["ir"]["structured"], "while")
     resize_view(page, 640, 760)
     click_control(page, canvas, "Graphs", role="tab")
     click_control(page, canvas, "Before graph", role="tab")

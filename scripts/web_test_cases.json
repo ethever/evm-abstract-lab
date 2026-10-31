@@ -738,6 +738,54 @@
         "scripts/web_test_rpc.py",
         "scripts/web_test_rpc_helpers.py"
       ]
+    },
+    {
+      "id": "decompile-recovery",
+      "group": "decompile",
+      "module": "web_test_decompile_review",
+      "parameters": {
+        "scenario": "recovery"
+      },
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "decompile-navigation",
+      "group": "decompile",
+      "module": "web_test_decompile_review",
+      "parameters": {
+        "scenario": "navigation"
+      },
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
+      "id": "decompile-editing",
+      "group": "decompile",
+      "module": "web_test_decompile_review",
+      "parameters": {
+        "scenario": "editing"
+      },
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_registry.py"
+      ]
     }
   ],
   "legacy_flags": {

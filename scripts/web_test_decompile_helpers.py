@@ -23,6 +23,10 @@ def open_decompiler(context, url=None):
     expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
     analysis_status = page.locator("#analysis-status").text_content()
+    job_id = startup.value.json()["result"]["Ok"]["id"]
+    retained = page.request.get((url or context.url).rstrip("/") + f"/api/tasks/{job_id}/result")
+    assert retained.ok, retained.text()
+    page.decompile_analysis_report = retained.json()["result"]["Ok"]["report"]
     click_control(page, canvas, "Decompiler", role="tab")
     expect(page.locator("#analysis-status")).to_contain_text("Workspace: Decompiler")
     return page, canvas, startup.value.request.post_data_json, analysis_status
@@ -57,6 +61,9 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     artifact = result["artifact"]
     assert artifact["schema_version"] == 1
     assert artifact["config"]["strategy"] == {"Dispatcher": "dispatcher", "Code duplication": "code_duplication"}[strategy]
+    selected_fork = admission.request.post_data_json["fork"]
+    assert artifact["input"]["fork"] == selected_fork.lower()
+    expect(page.locator("#analysis-status")).to_contain_text("Fork: " + selected_fork)
     expect(page.locator("#analysis-status")).to_contain_text("Artifact: " + artifact["id"])
     expect(page.locator("#analysis-status")).to_contain_text("Decompile task: Ready")
     (context.output / (name + "-request.json")).write_text(admission.request.post_data + "\n")
