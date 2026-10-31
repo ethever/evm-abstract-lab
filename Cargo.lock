@@ -2634,6 +2634,8 @@ dependencies = [
  "evm-abstract",
  "evm-abstract-notation",
  "evm-abstract-protocol",
+ "evm-bytecode",
+ "evm-decompile",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2656,6 +2658,7 @@ version = "0.4.0"
 name = "evm-abstract-protocol"
 version = "0.4.0"
 dependencies = [
+ "evm-decompile-model",
  "serde",
  "serde_json",
  "symbolic-structure",
@@ -2672,6 +2675,8 @@ dependencies = [
  "evm-abstract",
  "evm-abstract-protocol",
  "evm-abstract-server",
+ "evm-bytecode",
+ "evm-decompile",
  "hyper",
  "hyper-util",
  "reqwest",

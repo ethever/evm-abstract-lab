@@ -1,5 +1,6 @@
 //! CLI 只负责参数、文件和输出；分析与渲染逻辑在库中，便于逐层学习和复用。
 
+mod decompile;
 mod defaults;
 mod error;
 mod evm;
@@ -40,7 +41,7 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
-    about = "Analyze cross-contract EVM execution: world → call frames → graph → SSA"
+    about = "Inspect EVM bytecode: execution analysis, SSA and traceable local decompilation"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -49,6 +50,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Decompile runtime bytecode locally, retaining structured IR and transformation origins.
+    Decompile {
+        #[command(flatten)]
+        args: Box<decompile::DecompileArgs>,
+    },
     /// Analyze an offline or fixed RPC world, including calls, returns and state effects.
     Analyze {
         #[command(flatten)]
@@ -218,13 +224,18 @@ enum CfgFormat {
 }
 
 impl Input {
-    fn load(self) -> Result<Program, CliError> {
+    fn load_text(self) -> Result<(String, Fork), CliError> {
         let text = match (self.hex, self.file) {
             (Some(hex), None) => hex,
             (None, Some(file)) => fs::read_to_string(file)?,
             _ => unreachable!("clap requires exactly one bytecode source"),
         };
-        Ok(Program::from_hex_with_fork(&text, self.fork)?)
+        Ok((text, self.fork))
+    }
+
+    fn load(self) -> Result<Program, CliError> {
+        let (text, fork) = self.load_text()?;
+        Ok(Program::from_hex_with_fork(&text, fork)?)
     }
 }
 
@@ -234,7 +245,7 @@ impl Command {
             Self::Analyze { args, .. } => Some(&args.numeric),
             Self::Cfg { args, .. } | Self::Ssa { args, .. } => Some(&args.numeric),
             Self::Explain { args } => Some(&args.numeric),
-            Self::Disasm { .. } => None,
+            Self::Disasm { .. } | Self::Decompile { .. } => None,
         }
     }
 }
@@ -267,8 +278,10 @@ fn run() -> Result<ExitCode, CliError> {
 fn execute(command: Command, control: &Control) -> Result<(String, bool), CliError> {
     control.scope(|| {
         let Some(numeric) = command.numeric() else {
-            let Command::Disasm { input, format } = command else {
-                unreachable!("only disassembly does not execute bytecode")
+            let (input, format) = match command {
+                Command::Disasm { input, format } => (input, format),
+                Command::Decompile { args } => return decompile::run(*args, control),
+                _ => unreachable!("execution commands select a numeric algebra"),
             };
             let program = input.load()?;
             return Ok((
@@ -377,7 +390,9 @@ fn execute_with<D: EvmNumericAlgebra>(
                 &mut reporting,
             )?
         }
-        Command::Disasm { .. } => unreachable!("disassembly is handled before numeric dispatch"),
+        Command::Disasm { .. } | Command::Decompile { .. } => {
+            unreachable!("local code commands are handled before execution dispatch")
+        }
         Command::Cfg { args, format } => {
             let native = args.analyze(algebra, control)?;
             if native.root_code(&mut reporting)? != FrameCode::Runtime {

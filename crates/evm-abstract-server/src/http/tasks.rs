@@ -90,7 +90,7 @@ pub(super) async fn result(
     }
 }
 
-fn id(path: Result<Path<String>, PathRejection>) -> Result<JobId, ApiError> {
+pub(super) fn id(path: Result<Path<String>, PathRejection>) -> Result<JobId, ApiError> {
     let Path(value) =
         path.map_err(|_| api_error(ApiErrorCode::InvalidRequest, "invalid task path"))?;
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {

@@ -3,6 +3,7 @@
 //! Task admission, origin policy and canonical asset paths are application rules.
 
 mod connection;
+mod decompile;
 mod export;
 mod tasks;
 
@@ -69,6 +70,15 @@ pub fn router(assets: PathBuf, jobs: crate::jobs::Pool) -> Router {
     Router::new()
         .route(RPC_PROVIDERS_PATH, get(providers))
         .route(API_PATH, post(tasks::submit))
+        .route(
+            evm_abstract_protocol::DECOMPILE_API_PATH,
+            post(decompile::submit),
+        )
+        .route(
+            "/api/decompile/tasks/{id}",
+            get(decompile::status).delete(decompile::cancel),
+        )
+        .route("/api/decompile/tasks/{id}/result", get(decompile::result))
         .route("/api/tasks/{id}", get(tasks::status).delete(tasks::cancel))
         .route("/api/tasks/{id}/result", get(tasks::result))
         .fallback(asset)
