@@ -780,3 +780,67 @@ fn compact_graphs_leave_real_inspector_reference_clicks_available() {
     assert_eq!(workspace.views.route_label(), "IR");
     selected_visible(&visible, "decompile-ir", "v5:", 620.0);
 }
+
+#[test]
+fn window_resize_keeps_graphs_visible_without_changing_their_zoom() {
+    fn bounds(control: &serde_json::Value) -> Rect {
+        let [left, top, right, bottom]: [f32; 4] =
+            serde_json::from_value(control["rect"].clone()).unwrap();
+        Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom))
+    }
+    fn measured(visible: &[serde_json::Value]) -> Vec<(Vec2, Vec2)> {
+        ["Before CFG", "Current CFG"]
+            .into_iter()
+            .map(|title| {
+                let canvas = bounds(
+                    visible
+                        .iter()
+                        .find(|control| {
+                            control["role"] == "graph-canvas" && control["label"] == title
+                        })
+                        .unwrap(),
+                );
+                let block = visible
+                    .iter()
+                    .filter(|control| control["role"] == "decompile-block")
+                    .map(bounds)
+                    .find(|rect| canvas.contains_rect(*rect))
+                    .unwrap_or_else(|| panic!("no visible block in {title} after resize"));
+                (block.center() - canvas.center(), block.size())
+            })
+            .collect()
+    }
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let artifact = fixture::large(1);
+    let mut views = Views {
+        route: Route::Graphs,
+        ..Views::default()
+    };
+    let mut state = ViewState::default();
+    state.install(
+        &artifact,
+        Publication {
+            job: JobId(1),
+            version: fixture::version(1),
+        },
+    );
+    let before = measured(&frame(
+        &ctx,
+        &mut views,
+        &artifact,
+        &mut state,
+        Vec2::new(1440.0, 900.0),
+    ));
+    let after = measured(&frame(
+        &ctx,
+        &mut views,
+        &artifact,
+        &mut state,
+        Vec2::new(900.0, 620.0),
+    ));
+    for ((old_center, old_size), (new_center, new_size)) in before.into_iter().zip(after) {
+        assert!((new_center - old_center).length() < 0.01);
+        assert!((new_size - old_size).length() < 0.01);
+    }
+}
