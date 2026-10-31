@@ -17,6 +17,7 @@ mod dispatch;
 pub(super) mod fixture;
 mod input;
 mod lifecycle;
+mod publication_cache;
 mod rendering;
 
 fn start(workspace: &mut Workspace) -> u64 {
