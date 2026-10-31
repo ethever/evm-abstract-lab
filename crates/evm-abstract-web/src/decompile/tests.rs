@@ -13,10 +13,11 @@ use evm_abstract_protocol::{
     },
 };
 
+mod dispatch;
 pub(super) mod fixture;
+mod input;
 mod lifecycle;
 mod rendering;
-mod input;
 
 fn start(workspace: &mut Workspace) -> u64 {
     match workspace.task.start(api::DecompileRequest::default()) {

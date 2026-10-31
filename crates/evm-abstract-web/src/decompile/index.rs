@@ -19,6 +19,30 @@ pub(super) struct StageIndex {
 }
 
 impl StageIndex {
+    // Resolve displayed continuation and loop-header labels from typed AST
+    // references, reusing this stage's edge index for transfer entries.
+    pub fn first_block(&self, ir: &Ir, node: &StructuredNode) -> Option<EntityId> {
+        let mut pending = vec![node];
+        while let Some(node) = pending.pop() {
+            match &node.kind {
+                StructuredKind::Block { block }
+                | StructuredKind::Exit { block }
+                | StructuredKind::PartialExit { block }
+                | StructuredKind::Indirect { block, .. } => return Some(*block),
+                StructuredKind::Sequence(nodes) => pending.extend(nodes.iter().rev()),
+                StructuredKind::While { header, body, .. } => {
+                    pending.push(body);
+                    pending.push(header);
+                }
+                StructuredKind::Dispatcher { entry, .. } => return Some(*entry),
+                StructuredKind::Transfer { edge } => {
+                    return self.edge(ir, *edge).map(|edge| edge.from);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
     pub fn new(ir: &Ir) -> Self {
         let mut index = Self::default();
         for (position, block) in ir.blocks.iter().enumerate() {

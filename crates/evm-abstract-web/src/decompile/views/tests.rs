@@ -154,6 +154,8 @@ fn dispatcher_transition_and_edge_links_open_actual_semantic_content() {
     edge.memory = EntityId(5);
     edge.effect = EntityId(12);
     artifact.stages[2].ir.edges.push(edge);
+    artifact.stages[2].ir.blocks[0].terminator =
+        evm_abstract_protocol::decompile_model::Terminator::Fallthrough { edge: EntityId(9) };
     let ctx = Context::default();
     crate::palette::configure(&ctx);
     let mut state = ViewState::default();

@@ -7,6 +7,19 @@ use evm_abstract_protocol::decompile_model::{
     EntityId, ExitKind, Ir, Operation, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
 };
 
+mod dispatch;
+
+#[derive(Clone, Copy, Default)]
+struct Scope {
+    following: Option<EntityId>,
+    outer_loop: Option<LoopScope>,
+}
+#[derive(Clone, Copy)]
+struct LoopScope {
+    node: EntityId,
+    entry: Option<EntityId>,
+}
+
 pub(super) struct Line {
     pub entity: EntityId,
     pub indent: usize,
@@ -49,7 +62,14 @@ pub(super) fn lines(stage: &Stage) -> Vec<Line> {
 pub(super) fn lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
     let mut output = Vec::new();
     if let Some(program) = &stage.ir.structured {
-        render(&program.root, &stage.ir, index, 0, &mut output);
+        render(
+            &program.root,
+            &stage.ir,
+            index,
+            Scope::default(),
+            0,
+            &mut output,
+        );
     }
     output
 }
@@ -66,6 +86,7 @@ fn render(
     node: &StructuredNode,
     ir: &Ir,
     index: &StageIndex,
+    scope: Scope,
     indent: usize,
     output: &mut Vec<Line>,
 ) {
@@ -77,8 +98,19 @@ fn render(
                 indent,
                 format!("// sequence ast{} · {} children", node.id.0, nodes.len()),
             );
-            for child in nodes {
-                render(child, ir, index, indent, output);
+            for (position, child) in nodes.iter().enumerate() {
+                let following = nodes
+                    .get(position + 1)
+                    .map(|next| index.first_block(ir, next))
+                    .unwrap_or(scope.following);
+                render(
+                    child,
+                    ir,
+                    index,
+                    Scope { following, ..scope },
+                    indent,
+                    output,
+                );
             }
         }
         StructuredKind::Block { block } => body(node.id, *block, ir, index, indent, output),
@@ -94,9 +126,9 @@ fn render(
                 indent,
                 format!("if ({} != 0) {{", value(*condition)),
             );
-            render(then_branch, ir, index, indent + 1, output);
+            render(then_branch, ir, index, scope, indent + 1, output);
             emit(output, node.id, indent, "} else {");
-            render(else_branch, ir, index, indent + 1, output);
+            render(else_branch, ir, index, scope, indent + 1, output);
             emit(output, node.id, indent, "}");
         }
         StructuredKind::While {
@@ -106,8 +138,13 @@ fn render(
             body,
             exit_edge,
         } => {
-            emit(output, node.id, indent, "while (true) {");
-            render(header, ir, index, indent + 1, output);
+            emit(
+                output,
+                node.id,
+                indent,
+                format!("'loop{}: while (true) {{", node.id.0),
+            );
+            render(header, ir, index, scope, indent + 1, output);
             if let Some(condition) = condition {
                 emit(
                     output,
@@ -125,7 +162,23 @@ fn render(
                 emit(output, node.id, indent + 2, "break;");
                 emit(output, node.id, indent + 1, "}");
             }
-            render(body, ir, index, indent + 1, output);
+            let outer_loop = Some(LoopScope {
+                node: node.id,
+                entry: index
+                    .first_block(ir, header)
+                    .or_else(|| index.first_block(ir, body)),
+            });
+            render(
+                body,
+                ir,
+                index,
+                Scope {
+                    following: None,
+                    outer_loop,
+                },
+                indent + 1,
+                output,
+            );
             emit(output, node.id, indent, "}");
         }
         StructuredKind::Break => emit(output, node.id, indent, "break;"),
@@ -169,7 +222,7 @@ fn render(
                     indent + 1,
                     format!("target 0x{:x}: {{", arm.target_pc),
                 );
-                render(&arm.body, ir, index, indent + 2, output);
+                render(&arm.body, ir, index, scope, indent + 2, output);
                 emit(output, node.id, indent + 1, "}");
             }
             if *unresolved {
@@ -190,57 +243,14 @@ fn render(
             emit(output, node.id, indent, "}");
         }
         StructuredKind::Dispatcher { entry, cases } => {
-            emit(
-                output,
+            dispatch::show(
                 node.id,
+                *entry,
+                cases,
+                dispatch::Context { ir, index, scope },
                 indent,
-                format!("dispatch_state = b{};", entry.0),
-            );
-            emit(
                 output,
-                node.id,
-                indent,
-                "while (dispatch_state is active) {",
             );
-            emit(output, node.id, indent + 1, "switch (dispatch_state) {");
-            for case in cases {
-                emit(
-                    output,
-                    node.id,
-                    indent + 2,
-                    format!("case b{}: {{", case.block.0),
-                );
-                body(node.id, case.block, ir, index, indent + 3, output);
-                if let Some(block) = index.block(ir, case.block) {
-                    emit(output, block.id, indent + 3, terminator(&block.terminator));
-                }
-                for transition in &case.transitions {
-                    emit(
-                        output,
-                        transition.id,
-                        indent + 3,
-                        format!("on e{}: {{", transition.edge.0),
-                    );
-                    transfer(
-                        transition.id,
-                        transition.edge,
-                        ir,
-                        index,
-                        indent + 4,
-                        output,
-                    );
-                    emit(
-                        output,
-                        transition.id,
-                        indent + 4,
-                        format!("dispatch_state = b{};", transition.target.0),
-                    );
-                    emit(output, transition.id, indent + 3, "}");
-                }
-                emit(output, node.id, indent + 2, "}");
-            }
-            emit(output, node.id, indent + 1, "}");
-            emit(output, node.id, indent, "}");
         }
     }
 }
