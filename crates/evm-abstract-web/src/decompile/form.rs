@@ -155,8 +155,20 @@ impl Form {
             });
         });
         if (submit || keyboard_submit) && !busy && self.validation().is_none() {
+            let compact: String = self
+                .bytecode
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            // Draft spelling belongs to the editor/undo history. Only the wire
+            // payload canonicalizes the prefix accepted by the shared parser.
+            let bytecode = if let Some(digits) = compact.strip_prefix("0X") {
+                format!("0x{digits}")
+            } else {
+                compact
+            };
             Some(DecompileRequest {
-                bytecode: self.bytecode.clone(),
+                bytecode,
                 fork: self.fork,
                 strategy: self.strategy,
                 limits: self.limits.clone(),
