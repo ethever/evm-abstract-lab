@@ -2,6 +2,7 @@
 members = [
     "crates/analysis-control",
     "crates/analysis-kernel",
+    "crates/evm-decompile",
     "crates/evm-decompile-model",
     "crates/evm-abstract",
     "crates/evm-abstract-cli",
