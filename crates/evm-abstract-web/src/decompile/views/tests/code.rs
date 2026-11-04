@@ -490,77 +490,142 @@ fn structured_real_clicks_select_entities_and_copy_exact_indentation_without_sta
 #[test]
 fn structured_native_drag_copy_retains_full_indentation_without_status_symbols() {
     let artifact = nested();
-    let ctx = Context::default();
-    crate::palette::configure(&ctx);
-    let mut state = state(&artifact);
-    let mut views = Views::default();
-    views
-        .differences
-        .after
-        .insert(EntityId(43), [Marker::Copied, Marker::Changed].into());
-    let size = Vec2::new(1200.0, 1100.0);
-    paint(&ctx, &mut views, &artifact, &mut state, size, vec![]);
-    let frame = paint(&ctx, &mut views, &artifact, &mut state, size, vec![]);
-    let row = observed(&frame, "decompile-code")
-        .into_iter()
-        .find(|row| {
-            row["label"]
-                .as_str()
-                .unwrap()
-                .ends_with("        continue;")
-        })
-        .unwrap();
-    let rect = bounds(row);
-    let from = rect.right_center() - egui::vec2(0.1, 0.0);
-    // Drag just above the line to select the whole native Label, including its
-    // copy-only whitespace, rather than ending at the first visible character.
-    let to = egui::pos2(rect.left() + 1.0, rect.top() - 1.0);
-    paint(
-        &ctx,
-        &mut views,
-        &artifact,
-        &mut state,
-        size,
-        vec![
-            Event::PointerMoved(from),
-            Event::PointerButton {
+    let expected = "        continue;";
+    for (font_size, interact_radius) in [(13.0, 5.0), (18.0, 12.0), (26.0, 0.0)] {
+        let ctx = Context::default();
+        crate::palette::configure(&ctx);
+        ctx.global_style_mut(|style| {
+            style
+                .text_styles
+                .insert(TextStyle::Monospace, FontId::monospace(font_size));
+            style.interaction.interact_radius = interact_radius;
+        });
+        let mut state = state(&artifact);
+        let mut views = Views::default();
+        views
+            .differences
+            .after
+            .insert(EntityId(43), [Marker::Copied, Marker::Changed].into());
+        let size = Vec2::new(1200.0, 1100.0);
+        paint(&ctx, &mut views, &artifact, &mut state, size, vec![]);
+        let frame = paint(&ctx, &mut views, &artifact, &mut state, size, vec![]);
+        let (text, _) = texts(&frame.output)
+            .into_iter()
+            .find(|(text, _)| text.galley.text() == expected)
+            .unwrap();
+        let body = text.galley.rect.translate(text.pos.to_vec2());
+        let control = observed(&frame, "decompile-code")
+            .into_iter()
+            .find(|control| control["label"].as_str().unwrap().ends_with(expected))
+            .unwrap();
+        let hit = bounds(control);
+        // Centered Galley bounds include pixel rounding and can extend beyond
+        // Label's actual response. Press inside the real hit rectangle even
+        // with zero interact_radius, while staying in the final caret cell.
+        let last_advance = text.galley.rows[0].glyphs.last().unwrap().advance_width;
+        let from = hit.right_center() - egui::vec2(last_advance * 0.25, 0.0);
+        assert!(hit.contains(from));
+        assert_eq!(
+            text.galley.cursor_from_pos(from - text.pos),
+            text.galley.end(),
+            "press at the actual last character boundary"
+        );
+        // A one-point upward exit at body_left+1 can still hit the Label via
+        // interact_radius and select character 8, not the whitespace at index 0.
+        // Exit horizontally beyond every code hit region so native upward drag
+        // selection must reach Galley::begin, independent of font and hit slop.
+        let right = observed(&frame, "decompile-code")
+            .into_iter()
+            .map(|row| bounds(row).right())
+            .fold(body.right(), f32::max);
+        let to = egui::pos2(right + interact_radius + 1.0, body.top() - 1.0);
+        for events in [
+            vec![Event::PointerMoved(from)],
+            vec![Event::PointerButton {
                 pos: from,
                 button: PointerButton::Primary,
                 pressed: true,
                 modifiers: Modifiers::NONE,
-            },
-        ],
+            }],
+            // Establish a nonempty in-label selection before crossing out of
+            // the hit region. Native upward extension uses that painted range.
+            vec![Event::PointerMoved(
+                body.left_center() + egui::vec2(1.0, 0.0),
+            )],
+            vec![Event::PointerMoved(to)],
+            vec![Event::PointerButton {
+                pos: to,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        ] {
+            paint(&ctx, &mut views, &artifact, &mut state, size, events);
+        }
+        let frame = paint(
+            &ctx,
+            &mut views,
+            &artifact,
+            &mut state,
+            size,
+            vec![Event::Copy],
+        );
+        assert_native_whole_line_selection(&frame, expected, &ctx);
+        assert_eq!(copied(&frame), vec!["        continue;"]);
+
+        // Changing markers must preserve the actual native selection as well
+        // as its response identity and the independent code-column geometry.
+        views.differences.after.remove(&EntityId(43));
+        let frame = paint(
+            &ctx,
+            &mut views,
+            &artifact,
+            &mut state,
+            size,
+            vec![Event::Copy],
+        );
+        assert_native_whole_line_selection(&frame, expected, &ctx);
+        assert_eq!(copied(&frame), vec!["        continue;"]);
+    }
+}
+
+fn assert_native_whole_line_selection(frame: &Frame, expected: &str, ctx: &Context) {
+    let (text, _) = texts(&frame.output)
+        .into_iter()
+        .find(|(text, _)| text.galley.text() == expected)
+        .unwrap();
+    let row = &text.galley.rows[0];
+    let selection_color = ctx.global_style().visuals.selection.bg_fill;
+    let selected: Vec<_> = row
+        .visuals
+        .mesh
+        .vertices
+        .iter()
+        .filter(|vertex| vertex.color == selection_color)
+        .collect();
+    // Native Label copy also copies an entire Galley for an EMPTY range. The
+    // actual painted selection must therefore span the whitespace too; clipboard
+    // equality by itself would let a broken drag gesture pass accidentally.
+    assert_eq!(selected.len(), 4, "one real selection rectangle must paint");
+    let left = selected
+        .iter()
+        .map(|vertex| vertex.pos.x)
+        .fold(f32::INFINITY, f32::min);
+    let right = selected
+        .iter()
+        .map(|vertex| vertex.pos.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    close(left, row.glyphs.first().unwrap().pos.x);
+    close(right, row.glyphs.last().unwrap().max_x());
+    assert!(
+        left < row
+            .glyphs
+            .iter()
+            .find(|glyph| !glyph.chr.is_whitespace())
+            .unwrap()
+            .pos
+            .x
     );
-    paint(
-        &ctx,
-        &mut views,
-        &artifact,
-        &mut state,
-        size,
-        vec![Event::PointerMoved(to)],
-    );
-    paint(
-        &ctx,
-        &mut views,
-        &artifact,
-        &mut state,
-        size,
-        vec![Event::PointerButton {
-            pos: to,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }],
-    );
-    let frame = paint(
-        &ctx,
-        &mut views,
-        &artifact,
-        &mut state,
-        size,
-        vec![Event::Copy],
-    );
-    assert_eq!(copied(&frame), vec!["        continue;"]);
 }
 
 #[test]
