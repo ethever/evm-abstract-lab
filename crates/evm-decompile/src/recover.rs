@@ -1,21 +1,32 @@
 //! Independent local fixed point. Identity allocation is outside transfer loops.
-//! Stack-height contexts are separate blocks; facts never cross incompatible
-//! frames. A memory fact survives a merge only when all incoming snapshots agree.
+//! Stack height and literal control provenance select separate blocks. Numeric
+//! facts still converge inside each context; its identity never follows widening.
+//! A memory fact survives a merge only when all incoming snapshots agree.
+
+mod context;
+mod targets;
 
 use crate::{
     Block, Completion, DiagnosticCode, Edge, EdgeKind, EntityId, ExitKind, FactScope, Ir,
     Operation, Phase, Progress, Severity, SourceSpan, StageKind, Terminator, U256, Value,
     ValueFact, ValueKind, artifact::Builder, effects::effects,
 };
-use analysis_kernel::Worklist;
+use analysis_kernel::{Worklist, cost};
+use context::ContextKey;
 use evm_bytecode::Program;
 use evm_domain::{DomainSpec, EvmNumericAlgebra, FiniteConstantSet, FiniteSetAlgebra};
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
+use targets::{JumpSite, TargetPools};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Cell {
     value: EntityId,
     fact: ValueFact,
+    // Only literal JUMPDEST addresses, independent of the numeric lattice.
+    control: Option<usize>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Memory {
@@ -156,12 +167,14 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         states: vec![None; blocks],
         origins: (0..blocks).collect(),
         contexts: BTreeMap::new(),
+        jump_targets: TargetPools::default(),
         queue: Worklist::default(),
         edges: BTreeMap::new(),
         algebra,
         parents: BTreeMap::new(),
         copies: Vec::new(),
         value_index: BTreeMap::new(),
+        target_candidates: BTreeMap::new(),
         operation_count: count,
     };
     recovery.reindex();
@@ -173,7 +186,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
                 words: BTreeMap::new(),
             },
         });
-        recovery.contexts.insert((0, 0), 0);
+        recovery.contexts.insert(ContextKey::new(0, &[]), 0);
         if !recovery.enqueue(0) {
             return false;
         }
@@ -404,14 +417,18 @@ struct Recovery<'a, P: FnMut(Progress)> {
     ir: Ir,
     states: Vec<Option<State>>,
     origins: Vec<usize>,
-    contexts: BTreeMap<(usize, usize), usize>,
+    contexts: BTreeMap<ContextKey, usize>,
+    jump_targets: TargetPools,
     queue: Worklist<usize>,
     edges: BTreeMap<(usize, usize, EdgeKind), EntityId>,
     algebra: FiniteSetAlgebra,
     value_index: BTreeMap<EntityId, usize>,
+    // Retain discovered legal targets even if a value reaches top before its
+    // first JUMP evaluation. Candidates never close an unresolved jump.
+    target_candidates: BTreeMap<EntityId, BTreeSet<usize>>,
     parents: BTreeMap<EntityId, Vec<EntityId>>,
     copies: Vec<(EntityId, EntityId)>,
-    // Includes source templates and real stack-height context copies.
+    // Includes source templates and real recovery context copies.
     operation_count: usize,
 }
 impl<P: FnMut(Progress)> Recovery<'_, P> {
@@ -471,18 +488,88 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 .join_numeric(&Self::numeric(a), &Self::numeric(b)),
         )
     }
-    fn publish(&mut self, id: EntityId, fact: ValueFact) -> Cell {
+    fn publish(&mut self, id: EntityId, fact: ValueFact) -> Option<ValueFact> {
+        if let ValueFact::Constants(values) = &fact {
+            if !self
+                .owner
+                .pay(values.len().saturating_mul(cost::key_lookup_work(
+                    self.program.jumpdest_blocks().len(),
+                    1,
+                )))
+            {
+                return None;
+            }
+            let targets: BTreeSet<_> = values
+                .iter()
+                .filter_map(|v| u64::try_from(*v).ok())
+                .filter_map(|v| usize::try_from(v).ok())
+                .filter(|pc| self.program.jumpdest_blocks().contains_key(pc))
+                .collect();
+            self.remember_targets(id, targets)?;
+        }
         let index = self.value_index[&id];
         let fact = self.join(&self.ir.values[index].fact, &fact);
         self.ir.values[index].fact = fact.clone();
-        Cell { value: id, fact }
+        Some(fact)
+    }
+    fn remember_targets(&mut self, id: EntityId, targets: BTreeSet<usize>) -> Option<bool> {
+        if targets.is_empty() {
+            return Some(false);
+        }
+        if !self
+            .owner
+            .pay(cost::key_lookup_work(self.target_candidates.len(), 1))
+        {
+            return None;
+        }
+        let old_size = self.target_candidates.get(&id).map_or(0, BTreeSet::len);
+        if !self.owner.pay(
+            targets
+                .len()
+                .saturating_mul(cost::tree_work(old_size.saturating_add(targets.len()))),
+        ) {
+            return None;
+        }
+        let known = self.target_candidates.entry(id).or_default();
+        known.extend(targets);
+        Some(known.len() != old_size)
+    }
+    fn inherit_targets(&mut self, id: EntityId, source: EntityId) -> Option<bool> {
+        if id == source {
+            return Some(false);
+        }
+        if !self
+            .owner
+            .pay(cost::key_lookup_work(self.target_candidates.len(), 1))
+        {
+            return None;
+        }
+        let Some(targets) = self.target_candidates.get(&source) else {
+            return Some(false);
+        };
+        if !self.owner.pay(targets.len()) {
+            return None;
+        }
+        let targets = targets.clone();
+        self.remember_targets(id, targets)
+    }
+    fn context_key(&mut self, original: usize, state: &State) -> Option<ContextKey> {
+        let height = state.stack.len();
+        // Include key construction, comparison and a possible owned insertion.
+        if !self.owner.pay(cost::key_lookup_work(
+            self.contexts.len(),
+            height.saturating_mul(2).saturating_add(2),
+        )) {
+            return None;
+        }
+        Some(ContextKey::new(original, &state.stack))
     }
     fn copy_context(&mut self, original: usize) -> Option<usize> {
         if self.ir.blocks.len() >= self.owner.limits().max_blocks {
             self.owner.stop(
                 Completion::Limited,
                 DiagnosticCode::Limit,
-                "stack-height context block limit exceeded",
+                "recovery context block limit exceeded",
             );
             return None;
         }
@@ -491,7 +578,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             self.owner.stop(
                 Completion::Limited,
                 DiagnosticCode::Limit,
-                "stack-height context operation limit exceeded; prior validated stage retained",
+                "recovery context operation limit exceeded; prior validated stage retained",
             );
             return None;
         }
@@ -579,7 +666,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         memory: EntityId,
         effect: EntityId,
     ) -> Option<EntityId> {
-        let key = (original, state.stack.len());
+        let key = self.context_key(original, state)?;
         let index = if let Some(i) = self.contexts.get(&key) {
             *i
         } else {
@@ -608,6 +695,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 }) {
                     return None;
                 }
+                self.inherit_targets(id, cell.value)?;
                 cell.value = id;
             }
             self.ir.blocks[index].parameters = parameters;
@@ -615,24 +703,51 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             if !self.enqueue(index) {
                 return None;
             }
-        } else {
-            let mut incoming = self.states[index].clone().expect("reached context");
-            let mut changed = false;
-            for (old, new) in incoming.stack.iter_mut().zip(&state.stack) {
-                let next = self.join(&old.fact, &new.fact);
-                if old.fact != next {
-                    old.fact = next;
-                    changed = true;
-                }
-            }
-            changed |= incoming.memory.merge(&state.memory);
-            if changed {
-                self.states[index] = Some(incoming);
-                if !self.enqueue(index) {
-                    return None;
-                }
+            return Some(self.connect_edge(from, index, kind, state, memory, effect));
+        }
+        self.connect_context(from, index, kind, state, memory, effect)
+    }
+    fn connect_context(
+        &mut self,
+        from: usize,
+        index: usize,
+        kind: EdgeKind,
+        state: &State,
+        memory: EntityId,
+        effect: EntityId,
+    ) -> Option<EntityId> {
+        let mut incoming = self.states[index].clone().expect("reached context");
+        debug_assert_eq!(incoming.stack.len(), state.stack.len());
+        let mut changed = false;
+        for (old, new) in incoming.stack.iter_mut().zip(&state.stack) {
+            // Control tags are immutable context identity, including the active
+            // target. Numeric/candidate growth never changes this projection.
+            debug_assert_eq!(old.control, new.control);
+            changed |= self.inherit_targets(old.value, new.value)?;
+            let next = self.join(&old.fact, &new.fact);
+            if old.fact != next {
+                old.fact = next;
+                changed = true;
             }
         }
+        changed |= incoming.memory.merge(&state.memory);
+        if changed {
+            self.states[index] = Some(incoming);
+            if !self.enqueue(index) {
+                return None;
+            }
+        }
+        Some(self.connect_edge(from, index, kind, state, memory, effect))
+    }
+    fn connect_edge(
+        &mut self,
+        from: usize,
+        index: usize,
+        kind: EdgeKind,
+        state: &State,
+        memory: EntityId,
+        effect: EntityId,
+    ) -> EntityId {
         let target = self.ir.blocks[index].id;
         let edge_id = if let Some(id) = self.edges.get(&(from, index, kind)) {
             *id
@@ -659,7 +774,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         edge.arguments = state.stack.iter().map(|c| c.value).collect();
         edge.memory = memory;
         edge.effect = effect;
-        Some(edge_id)
+        edge_id
     }
     fn jump(
         &mut self,
@@ -670,33 +785,88 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         memory: EntityId,
         effect: EntityId,
     ) -> Option<(Vec<EntityId>, bool, Vec<U256>)> {
-        let ValueFact::Constants(targets) = &target.fact else {
-            let known: std::collections::BTreeSet<_> = self
-                .edges
-                .iter()
-                .filter(|((source, _, edge_kind), _)| *source == from && *edge_kind == kind)
-                .map(|((_, target, _), _)| self.origins[*target])
-                .collect();
-            // Widening the target does not retract known continuations. Their
-            // carried stack/memory must still receive this evaluation's input.
-            let mut edges = Vec::new();
-            for original in known {
-                edges.push(self.connect(from, original, kind, state, memory, effect)?);
-            }
-            return Some((edges, true, Vec::new()));
+        let site = JumpSite {
+            original: self.origins[from],
+            height: self.states[from]
+                .as_ref()
+                .expect("reached source")
+                .stack
+                .len(),
+            kind,
         };
-        let mut edges = Vec::new();
         let mut invalid = Vec::new();
-        for pc in targets {
-            let target_block = u64::try_from(*pc)
-                .ok()
-                .and_then(|pc| usize::try_from(pc).ok())
-                .and_then(|pc| self.program.jumpdest_blocks().get(&pc).copied());
-            if let Some(block) = target_block {
-                edges.push(self.connect(from, block, kind, state, memory, effect)?);
-            } else {
-                invalid.push(*pc);
+        let (discovered, unresolved) = if let ValueFact::Constants(targets) = &target.fact {
+            if !self.owner.pay(
+                targets.len().saturating_mul(
+                    cost::key_lookup_work(self.program.jumpdest_blocks().len(), 1)
+                        .saturating_add(cost::tree_work(targets.len()))
+                        .saturating_add(2),
+                ),
+            ) {
+                return None;
             }
+            let mut discovered = Vec::new();
+            for pc in targets {
+                let legal = u64::try_from(*pc)
+                    .ok()
+                    .and_then(|pc| usize::try_from(pc).ok())
+                    .filter(|pc| self.program.jumpdest_blocks().contains_key(pc));
+                if let Some(pc) = legal {
+                    discovered.push(pc);
+                } else {
+                    invalid.push(*pc);
+                }
+            }
+            discovered.sort_unstable();
+            discovered.dedup();
+            (discovered, false)
+        } else {
+            // Preserve finite contributions that joined top before the first
+            // evaluation, including untagged computed control addresses.
+            if !self
+                .owner
+                .pay(cost::key_lookup_work(self.target_candidates.len(), 1))
+            {
+                return None;
+            }
+            let known = self.target_candidates.get(&target.value);
+            if !self.owner.pay(known.map_or(0, BTreeSet::len)) {
+                return None;
+            }
+            (
+                known.map_or_else(Vec::new, |targets| targets.iter().copied().collect()),
+                true,
+            )
+        };
+        let wake = self.jump_targets.observe(site, &discovered, self.owner)?;
+        for context in wake {
+            if !self.enqueue(context) {
+                return None;
+            }
+        }
+        let targets = if unresolved {
+            self.jump_targets.subscribe(site, from, self.owner)?
+        } else {
+            // A finite literal context follows only its own targets. Sharing
+            // discoveries must not reintroduce sibling return correlations.
+            discovered
+        };
+        if !self
+            .owner
+            .pay(targets.len().saturating_mul(cost::key_lookup_work(
+                self.program.jumpdest_blocks().len(),
+                1,
+            )))
+        {
+            return None;
+        }
+        let mut edges = Vec::new();
+        for pc in targets {
+            let original = self.program.jumpdest_blocks()[&pc];
+            // Reconnect each discovered PC with this context's own frame. Its
+            // stable full tag vector selects the same physical successor on
+            // every evaluation, including target/pool widening.
+            edges.push(self.connect(from, original, kind, state, memory, effect)?);
         }
         if !invalid.is_empty() {
             self.owner.diagnostic(
@@ -707,7 +877,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 "known non-JUMPDEST target is an explicit exceptional exit".to_owned(),
             );
         }
-        Some((edges, false, invalid))
+        Some((edges, unresolved, invalid))
     }
     fn transfer(&mut self, index: usize) -> bool {
         let origin = self.origins[index];
@@ -715,7 +885,10 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         let mut block = self.ir.blocks[index].clone();
         let mut state = self.states[index].clone().expect("queued reachable state");
         for cell in &mut state.stack {
-            *cell = self.publish(cell.value, cell.fact.clone());
+            let Some(fact) = self.publish(cell.value, cell.fact.clone()) else {
+                return false;
+            };
+            cell.fact = fact;
         }
         let mut memory = block.memory_parameter;
         let mut effect = block.effect_parameter;
@@ -844,8 +1017,22 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                         }
                         _ => ValueFact::Unknown,
                     };
-                    let result = self.publish(output, fact);
-                    state.stack.push(result);
+                    let control = if (0x5f..=0x7f).contains(&code) {
+                        u64::try_from(instruction.immediate.unwrap_or(U256::ZERO))
+                            .ok()
+                            .and_then(|v| usize::try_from(v).ok())
+                            .filter(|pc| self.program.jumpdest_blocks().contains_key(pc))
+                    } else {
+                        None
+                    };
+                    let Some(fact) = self.publish(output, fact) else {
+                        return false;
+                    };
+                    state.stack.push(Cell {
+                        value: output,
+                        fact,
+                        control,
+                    });
                 }
                 if op.effects.memory_write {
                     match code {
