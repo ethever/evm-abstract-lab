@@ -88,6 +88,81 @@ def literal_shared_returns(page, canvas, artifact):
         selected_row(page, "decompile-code", "effect token on e" + edge)
 
 
+def dead_block_parameters(context, page, canvas):
+    artifact, _ = submit(context, page, canvas, "600160026007565b5f5ffd", "dead-block-parameters")
+    assert artifact["completion"] == "complete", artifact["diagnostics"]
+    assert all(item["validation"]["status"] == "passed" for item in artifact["stages"])
+    baseline = stage(artifact, "baseline")
+    simplified = stage(artifact, "simplified")
+    structured = stage(artifact, "structured")
+    originals = blocks_at_pc(baseline, 7)
+    assert len(originals) == 1, originals
+    original = originals[0]
+    removed = original["parameters"]
+    assert len(removed) == 2, original
+    incoming = [edge for edge in baseline["ir"]["edges"] if edge["to"] == original["id"]]
+    assert incoming and all(len(edge["arguments"]) == 2 for edge in incoming), incoming
+    for at_stage in [simplified, structured]:
+        blocks = blocks_at_pc(at_stage, 7)
+        assert len(blocks) == 1 and blocks[0]["id"] == original["id"], blocks
+        projected = blocks[0]
+        assert projected["parameters"] == [], projected
+        for field in ["memory_parameter", "effect_parameter", "operations", "terminator"]:
+            assert projected[field] == original[field], (at_stage["kind"], field, projected)
+        assert not set(removed) & {value["id"] for value in at_stage["ir"]["values"]}
+        edges = {edge["id"]: edge for edge in at_stage["ir"]["edges"]}
+        for edge in incoming:
+            projected_edge = edges[edge["id"]]
+            assert projected_edge["arguments"] == [], projected_edge
+            for field in ["from", "to", "kind", "memory", "effect"]:
+                assert projected_edge[field] == edge[field], (field, projected_edge)
+
+    event = next(event for event in artifact["events"] if event["rule"] == "dead_block_parameters")
+    assert event["from_stage"] == baseline["id"] and event["to_stage"] == simplified["id"], event
+    assert set(event["deleted"]) == set(removed), event
+    changed_entities = [original["id"]] + [edge["id"] for edge in incoming]
+    for entity in changed_entities:
+        assert {"stage": baseline["id"], "entity": entity} in event["inputs"], event
+        assert {"stage": simplified["id"], "entity": entity} in event["outputs"], event
+        origin = next(origin for origin in artifact["mappings"]["origins"]
+                      if origin["entity"] == {"stage": simplified["id"], "entity": entity})
+        assert origin["introduced_by"] == event["id"], origin
+        assert {"stage": baseline["id"], "entity": entity} in origin["parents"], origin
+    choose_stage(page, canvas, artifact, "simplified")
+    choose_stage(page, canvas, artifact, "baseline", before=True)
+    click_control(page, canvas, "Changes", role="tab")
+    differences = observed(page, "decompile-difference")
+    for entity in changed_entities:
+        assert any(f"After entity {entity} · stage {simplified['id']} ·" in row["label"]
+                   and "Changed" in row["label"] for row in differences), (entity, differences)
+    for parameter in removed:
+        assert any(f"Before entity {parameter} · stage {baseline['id']} ·" in row["label"]
+                   and "Removed" in row["label"] for row in differences), (parameter, differences)
+    canvas.screenshot(path=str(context.output / "dead-block-parameters-changes.png"))
+
+    # A deleted definition remains a real, navigable Baseline occurrence.
+    source_descendant(page, canvas, artifact, baseline["id"], removed[0], 7)
+    expect(page.locator("#analysis-status")).to_contain_text(f"Current stage: {baseline['id']}")
+    row = selected_row(page, "decompile-ir", "v" + removed[0] + ":")
+    assert "Parameter" in row["label"], row
+    canvas.screenshot(path=str(context.output / "dead-block-parameters-baseline-history.png"))
+
+    choose_stage(page, canvas, artifact, "structured")
+    for edge in incoming:
+        transfer = next(node for node in structured["ir"]["structured"]["nodes"]
+                        if "transfer" in node["kind"] and node["kind"]["transfer"]["edge"] == edge["id"])
+        source_descendant(page, canvas, artifact, structured["id"], transfer["id"])
+        selected_row(page, "decompile-code",
+                     f"m{original['memory_parameter']} = m{edge['memory']}; // memory token on e{edge['id']}")
+        selected_row(page, "decompile-code",
+                     f"q{original['effect_parameter']} = q{edge['effect']}; // effect token on e{edge['id']}")
+        rows = observed(page, "decompile-code")
+        assert not any("parallel assignment on e" + edge["id"] in row["label"] for row in rows), rows
+        assert any("evm.revert(" in row["label"] for row in rows), rows
+    canvas.screenshot(path=str(context.output / "dead-block-parameters-structured-transfer.png"))
+    return artifact["id"]
+
+
 def recovery(context):
     page, canvas, _, _ = open_decompiler(context)
     artifacts = []
@@ -176,6 +251,7 @@ def recovery(context):
             selected_row(page, "decompile-source", mnemonic)
         canvas.screenshot(path=str(context.output / f"{name}-semantic-content.png"))
         artifacts.append(artifact["id"])
+    artifacts.append(dead_block_parameters(context, page, canvas))
     # A real recovery context copy that faults after one entry supplied too
     # few stack values; the retained fault identity must resolve to source.
     copied, _ = submit(context, page, canvas, "5f35600a5760096012565b600260036012565b015f5500", "faulted-context-copy")

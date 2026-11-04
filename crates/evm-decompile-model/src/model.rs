@@ -146,11 +146,12 @@ pub enum ValueKind {
         /// Result or parameter position.
         index: usize,
     },
-    /// Simultaneously assigned block-entry stack slot, bottom to top.
+    /// Simultaneously assigned word entry operand. Baseline retains the full
+    /// EVM stack bottom to top; optimized snapshots may omit unused slots.
     Parameter {
         /// Referenced semantic block.
         block: EntityId,
-        /// Result or parameter position.
+        /// Dense position in this snapshot's block-parameter tuple.
         index: usize,
     },
     /// Ordered memory snapshot after a writer, or initial zero memory.
@@ -392,7 +393,8 @@ pub struct Block {
     pub id: EntityId,
     /// Original range; cloned blocks retain the same original ancestry.
     pub source: Option<SourceSpan>,
-    /// Stack entry definitions.
+    /// Ordered word entry definitions, possibly projected after Baseline.
+    /// Use Baseline/history for original physical stack slots and height.
     pub parameters: Vec<EntityId>,
     /// Memory entry definition.
     pub memory_parameter: EntityId,

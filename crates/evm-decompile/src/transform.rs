@@ -1,4 +1,6 @@
-//! Transactional pure folds and real selective node splitting.
+//! Transactional pure folds, entry-parameter projection and selective splitting.
+mod dead_parameters;
+
 use crate::{
     Completion, DiagnosticCode, EdgeRedirect, EntityId, ExitKind, FactScope, Ir, Progress,
     Severity, StageKind, StructuredKind, StructuredNode, Terminator, U256, ValueFact, ValueKind,
@@ -11,10 +13,46 @@ pub(crate) fn simplify(owner: &mut Builder<impl FnMut(Progress)>) {
         return;
     }
     let mut ir = owner.current().ir.clone();
-    if ir.fact_scope != FactScope::CompleteLocalCfg {
-        owner.commit(StageKind::Simplified, ir, ("preserve_open_facts","unresolved predecessor coverage keeps numeric facts conditional; no unconditional folding"), BTreeMap::new(), Vec::new(), Vec::new());
+    let closed = ir.fact_scope == FactScope::CompleteLocalCfg;
+    if closed && !fold(owner, &mut ir) {
         return;
     }
+    let Some(removed) = dead_parameters::run(owner, &mut ir) else {
+        return;
+    };
+    // Folding and projection share the existing immutable phase boundary. The
+    // event names actual parameter deletion without retaining a second full IR.
+    let explanation = if removed > 0 {
+        (
+            "dead_block_parameters",
+            if closed {
+                "fold pure numeric facts and decided branches, then remove dead block-entry word parameters and matching incoming arguments by fixed-point liveness; primitive bodies and memory/effect tokens remain ordered"
+            } else {
+                "remove dead block-entry word parameters and matching incoming arguments by fixed-point liveness; unresolved boundaries retain their complete entry operands and numeric facts remain conditional"
+            },
+        )
+    } else if closed {
+        (
+            "pure_folding",
+            "shared numeric facts fold pure operations and decided branches; effects remain ordered",
+        )
+    } else {
+        (
+            "preserve_open_facts",
+            "unresolved predecessor coverage keeps numeric facts conditional; no unconditional folding",
+        )
+    };
+    owner.commit(
+        StageKind::Simplified,
+        ir,
+        explanation,
+        BTreeMap::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+}
+
+fn fold(owner: &mut Builder<impl FnMut(Progress)>, ir: &mut Ir) -> bool {
     let facts: BTreeMap<_, _> = ir.values.iter().map(|v| (v.id, v.fact.clone())).collect();
     let value_indices: BTreeMap<_, _> = ir
         .values
@@ -25,7 +63,7 @@ pub(crate) fn simplify(owner: &mut Builder<impl FnMut(Progress)>) {
     for b in &mut ir.blocks {
         for op in &mut b.operations {
             if !owner.pay(1) {
-                return;
+                return false;
             }
             if op.effects.is_pure()
                 && evm_bytecode::word::arity(op.opcode).is_some()
@@ -69,8 +107,8 @@ pub(crate) fn simplify(owner: &mut Builder<impl FnMut(Progress)>) {
             }
         }
     }
-    prune(&mut ir);
-    owner.commit(StageKind::Simplified, ir, ("pure_folding","shared numeric facts fold pure operations and decided branches; effects remain ordered"), BTreeMap::new(), Vec::new(), Vec::new());
+    prune(ir);
+    true
 }
 pub(crate) fn ir_size(ir: &Ir) -> usize {
     let mut units = ir
