@@ -648,7 +648,7 @@ fn clone_refusal_keeps_previous_validated_graph_and_reports_strategy_limit() {
     assert!(a.events.iter().all(|e| e.clones.is_empty()));
 }
 #[test]
-fn shared_internal_returns_recover_finite_dynamic_targets() {
+fn shared_internal_returns_preserve_all_real_continuations() {
     let mut a = Asm::default();
     a.op(0x5f)
         .op(0x35)
@@ -673,6 +673,8 @@ fn shared_internal_returns_recover_finite_dynamic_targets() {
         .push(42)
         .op(0x90)
         .op(0x56);
+    let callee_pc = a.labels["callee"];
+    let expected_returns = std::collections::BTreeSet::from([a.labels["ret1"], a.labels["ret2"]]);
     let input = a.finish();
     for value in [0, 1] {
         let artifact = check(
@@ -680,7 +682,30 @@ fn shared_internal_returns_recover_finite_dynamic_targets() {
             &Config::default(),
             MemoryHost::new(&input, calldata(value)),
         );
-        assert!(baseline(&artifact).ir.blocks.iter().any(|b|matches!(&b.terminator,Terminator::Jump {edges,unresolved:false,..}if edges.len()==2)));
+        let ir = &baseline(&artifact).ir;
+        let mut returns = std::collections::BTreeSet::new();
+        for block in ir
+            .blocks
+            .iter()
+            .filter(|b| b.source.is_some_and(|s| s.pc == callee_pc))
+        {
+            let Terminator::Jump {
+                edges,
+                unresolved: false,
+                invalid_targets,
+                ..
+            } = &block.terminator
+            else {
+                panic!("shared helper return must be resolved")
+            };
+            assert!(invalid_targets.is_empty());
+            assert!(!edges.is_empty());
+            for edge in edges {
+                let target = ir.edge(*edge).unwrap().to;
+                returns.insert(ir.block(target).unwrap().source.unwrap().pc);
+            }
+        }
+        assert_eq!(returns, expected_returns);
     }
 }
 #[test]

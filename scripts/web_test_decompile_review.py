@@ -33,6 +33,61 @@ def source_descendant(page, canvas, artifact, at_stage, entity, pc=None):
     expect(page.locator("#analysis-status")).to_contain_text(f"{artifact['id']}/stage:{at_stage}/entity:{entity}")
 
 
+def blocks_at_pc(at_stage, pc):
+    blocks = [block for block in at_stage["ir"]["blocks"]
+              if block["source"] and block["source"]["pc"] == pc]
+    assert blocks, (at_stage["kind"], hex(pc))
+    return blocks
+
+
+def constant_words(at_stage, entity):
+    fact = next(value["fact"] for value in at_stage["ir"]["values"] if value["id"] == entity)
+    assert "constants" in fact, fact
+    return {int(word, 0) for word in fact["constants"]}
+
+
+def finite_jump(at_stage, block, targets, invalid=()):
+    jump = block["terminator"]["jump"]
+    assert not jump["unresolved"], jump
+    assert {int(word, 0) for word in jump["invalid_targets"]} == set(invalid), jump
+    assert constant_words(at_stage, jump["target"]) == targets | set(invalid)
+    edges = {edge["id"]: edge for edge in at_stage["ir"]["edges"]}
+    blocks = {item["id"]: item for item in at_stage["ir"]["blocks"]}
+    assert len(jump["edges"]) == len(targets), jump
+    assert {blocks[edges[edge]["to"]]["source"]["pc"] for edge in jump["edges"]} == targets
+    return jump
+
+
+def literal_shared_returns(page, canvas, artifact):
+    assert artifact["completion"] == "complete", artifact["diagnostics"]
+    # The original fixture's shared JUMP is PC0xe. Its two literal return
+    # addresses must stay separate through recovery and structured rendering.
+    for kind in ["baseline", "structured"]:
+        at_stage = stage(artifact, kind)
+        contexts = blocks_at_pc(at_stage, 0xd)
+        assert len(contexts) == 2, contexts
+        callers = set()
+        for block in contexts:
+            assert len(block["parameters"]) == 1, block
+            targets = constant_words(at_stage, block["parameters"][0])
+            assert len(targets) == 1 and targets <= {0xf, 0x11}, targets
+            finite_jump(at_stage, block, targets)
+            callers |= targets
+        assert callers == {0xf, 0x11}, callers
+    current = stage(artifact, "structured")
+    nodes = current["ir"]["structured"]["nodes"]
+    assert all(not any(kind in node["kind"] for kind in ["indirect", "dispatcher", "while"])
+               for node in nodes), nodes
+    for block in blocks_at_pc(current, 0xd):
+        edge = block["terminator"]["jump"]["edges"][0]
+        transfers = [node for node in nodes
+                     if "transfer" in node["kind"] and node["kind"]["transfer"]["edge"] == edge]
+        assert transfers, (block["source"], edge)
+        source_descendant(page, canvas, artifact, current["id"], transfers[0]["id"], 0xe)
+        selected_row(page, "decompile-code", "memory token on e" + edge)
+        selected_row(page, "decompile-code", "effect token on e" + edge)
+
+
 def recovery(context):
     page, canvas, _, _ = open_decompiler(context)
     artifacts = []
@@ -46,8 +101,11 @@ def recovery(context):
         click_control(page, canvas, "Edit bytecode", role="action")
         ui_control(page, draft, role="bytecode-value")
         artifacts.append(artifact["id"])
-    for name, code in [("mixed-targets", "5f35600a576001600d565b600f5b565b00"),
-                       ("known-targets", "5f35600a576011600d565b600f5b565b005b00"),
+    # ADD clears literal control tags before the common JUMP at PC0x12, so
+    # these remain real finite indirect choices under precise literal recovery.
+    for name, code in [("mixed-targets", "5f35600c5760015f016011565b60155f015b565b005b00"),
+                       ("known-targets", "5f35600c5760135f016011565b60155f015b565b005b00"),
+                       ("literal-returns", "5f35600a576011600d565b600f5b565b005b00"),
                        ("unknown-target", "5f3556"),
                        ("jumpi-falloff", "5b5f35600057"),
                        ("fault-add", "01"), ("fault-sstore", "55")]:
@@ -56,20 +114,41 @@ def recovery(context):
         code_rows = observed(page, "decompile-code")
         text = "\n".join(row["label"] for row in code_rows)
         if name in {"mixed-targets", "known-targets"}:
+            assert artifact["completion"] == "complete", artifact["diagnostics"]
+            targets = {0x13, 0x15} if name == "known-targets" else {0x15}
+            invalid = () if name == "known-targets" else (1,)
+            for kind in ["baseline", "structured"]:
+                at_stage = stage(artifact, kind)
+                contexts = blocks_at_pc(at_stage, 0x11)
+                assert len(contexts) == 1, contexts
+                finite_jump(at_stage, contexts[0], targets, invalid)
             structured = stage(artifact, "structured")
-            node = next(node for node in structured["ir"]["structured"]["nodes"] if "indirect" in node["kind"])
-            block = next(block for block in structured["ir"]["blocks"] if block["id"] == node["kind"]["indirect"]["block"])
-            jump_pc = next(op["source"]["pc"] for op in block["operations"] if op["opcode"] == 0x56)
+            block = blocks_at_pc(structured, 0x11)[0]
+            indirects = [node for node in structured["ir"]["structured"]["nodes"]
+                         if "indirect" in node["kind"]
+                         and node["kind"]["indirect"]["block"] == block["id"]]
+            assert indirects, block
+            node = indirects[0]
+            indirect = node["kind"]["indirect"]
+            assert not indirect["unresolved"]
+            assert {arm["target_pc"] for arm in indirect["arms"]} == targets
+            assert len(indirect["arms"]) == len(targets)
+            jump_pc = 0x12
+            assert any(op["opcode"] == 0x56 and op["source"]["pc"] == jump_pc
+                       for op in block["operations"])
             source_descendant(page, canvas, artifact, structured["id"], node["id"], jump_pc)
             selected_row(page, "decompile-code", "indirect_jump")
             # Position the actual indirect region in the virtual code pane
             # before checking its complete alternatives and exceptional exit.
             text = "\n".join(row["label"] for row in observed(page, "decompile-code"))
-            assert "target 0xf:" in text and 'otherwise: exception("invalid jump destination")' in text, text
+            assert all(f"target 0x{target:x}:" in text for target in targets), text
+            assert 'otherwise: exception("invalid jump destination")' in text, text
             click_control(page, canvas, "Original bytecode", role="tab")
             edit_control(page, canvas, "Original PC", f"0x{jump_pc:x}")
             click_control(page, canvas, "Go to original PC", role="action")
             selected_row(page, "decompile-source", "JUMP ")
+        elif name == "literal-returns":
+            literal_shared_returns(page, canvas, artifact)
         elif name == "unknown-target":
             assert "partial" in text or "unresolved_target" in text, text
         elif name == "jumpi-falloff":
