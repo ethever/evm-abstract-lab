@@ -17,6 +17,8 @@ use evm_abstract_protocol::{
     },
 };
 
+mod code;
+
 fn frame(
     ctx: &Context,
     views: &mut Views,

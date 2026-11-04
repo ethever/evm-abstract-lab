@@ -66,6 +66,21 @@
       ]
     },
     {
+      "name": "decompile-alignment-case-isolation",
+      "description": "The alignment geometry oracle changes only its independent browser case, registry validator and browser aggregate, preserving existing decompiler cases and production inputs.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_decompile_alignment.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-decompile-alignment",
+        "web-browser-registry",
+        "web-browser"
+      ]
+    },
+    {
       "name": "manifest-content-projection",
       "description": "Semantically identical manifest formatting preserves every projected browser case.",
       "mutations": [

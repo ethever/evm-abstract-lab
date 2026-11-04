@@ -72,6 +72,8 @@ nix run . -- decompile --file examples/diamond.hex --strategy code-duplication
 
 结构化结果、原字节码、基线 CFG 和选定阶段可以相互定位。前后对照和转换检查器直接消费库生成的来源与变化记录。旧任务的迟到响应不能覆盖新任务；取消请求必须等工作线程清理完毕后才进入终止状态。
 
+结构化代码使用独立的固定状态栏：`N` 表示 New、`C` 表示 Copied、`−` 表示 Removed、`→` 表示 Redirected、`Δ` 表示 Changed；图例和悬浮提示提供完整名称。同一行可以显示多个状态，没有状态时仍保留栏位。代码从统一起点按层级缩进，状态变化不会挤动代码或括号。复制结构化文本保留每层四个空格，不包含状态符号。
+
 例如，要检查代码复制修改了哪里：
 
 1. 打开 `Decompiler`，输入字节码并选择 fork，选中 `Code duplication` 后提交。也可以在执行分析中点击 `Decompile captured source`，带入当前已捕获的代码和 fork。

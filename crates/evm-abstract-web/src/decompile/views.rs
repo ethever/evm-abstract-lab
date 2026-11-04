@@ -16,6 +16,7 @@ use evm_abstract_protocol::decompile_model::{
 };
 use std::collections::BTreeSet;
 
+mod code;
 mod graph;
 mod ir;
 mod source;
@@ -262,30 +263,34 @@ impl Views {
                 );
             }
         });
+        code::legend(ui);
+        let layout = code::Layout::new(ui);
         let mut scroll = egui::ScrollArea::both().id_salt(("decompile_structured", stage.id.0));
         if state.entity_navigation
             && let Some(selected) = state.selected_in(artifact, stage.id)
             && let Some(position) = lines.iter().position(|line| line.entity == selected)
         {
-            scroll = scroll.vertical_scroll_offset(rows::offset(ui, position));
+            scroll = scroll.vertical_scroll_offset(rows::offset_with_height(
+                ui,
+                position,
+                layout.row_height,
+            ));
         }
-        scroll.show_rows(ui, rows::HEIGHT, lines.len(), |ui, range| {
+        scroll.show_rows(ui, layout.row_height, lines.len(), |ui, range| {
             for number in range {
                 let line = &lines[number];
-                rows::row(ui, number, |ui| {
+                rows::row_with_height(ui, number, layout.row_height, |ui| {
                     let at = EntityRef {
                         stage: stage.id,
                         entity: line.entity,
                     };
-                    let text = format!("{}{}", "    ".repeat(line.indent), line.text);
-                    let visible = entity_line(
+                    let visible = layout.line(
                         ui,
                         artifact,
                         state,
                         at,
-                        &text,
-                        "decompile-code",
-                        &self.differences.markers(line.entity, false),
+                        line,
+                        self.differences.after.get(&line.entity),
                     );
                     if visible && state.selected_in(artifact, stage.id) == Some(line.entity) {
                         state.entity_navigation = false;
