@@ -7,12 +7,16 @@ from web_test_decompile_alignment import copy_code
 from web_test_decompile_helpers import (choose_stage, inspector_control, observed,
                                        open_decompiler, stage, submit)
 from web_test_decompile_review import selected_row, source_descendant
-from web_test_harness import click_control, rendered_frame, ui_control, webgpu_evidence
+from web_test_harness import (click_control, rendered_frame, set_control,
+                              ui_control, webgpu_evidence)
 
 
 TRIPLE_ZERO = "6020355f3510151515600f575f5ffd5b00"
 NUMERIC_TRUTH = "5f3515155f5500"
 RETURN_CLEANUP = "60096007600b5600005b005b5056"
+# Read storage once, overwrite the slot in the next block, then store the old
+# captured value in slot 1 after another edge. The copies are live on baseline.
+COPY_CHAIN = "5f54610006565b602a5f5561000f565b60015500"
 
 
 def projection(artifact):
@@ -125,6 +129,55 @@ def run(context):
     for parameter in blocks[0]["parameters"]:
         assert f"v{parameter}" not in text, text
     canvas.screenshot(path=str(context.output / "lifted-return-and-pop-parameters.png"))
+    artifacts.append(artifact["id"])
+
+    artifact, _ = submit(context, page, canvas, COPY_CHAIN, "lifted-copy-chain")
+    before, current, program, _ = projection(artifact)
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    load = next(operation for operation in operations.values() if operation["opcode"] == 0x54)
+    loaded = load["outputs"][0]
+    original_parameters = [parameter for block in before["ir"]["blocks"]
+                           for parameter in block["parameters"]]
+    assert len(original_parameters) >= 2, before
+    assert all(not block["parameters"] for block in program["blocks"]), program
+    assert all(not transfer["arguments"] for transfer in program["transfers"]), program
+    expressions = {expression["id"]: expression for expression in program["expressions"]}
+    stores = [statement for block in program["blocks"] for statement in block["statements"]
+              if operations[statement["operation"]]["opcode"] == 0x55]
+    assert len(stores) == 2
+    final_store = next(statement for statement in stores
+                       if expressions[statement["inputs"][0]]["kind"].get("word") == "0x1")
+    assert expressions[final_store["inputs"][1]]["kind"] == {"value": loaded}, final_store
+    click_control(page, canvas, "Simplified structured code", role="tab")
+    ui_control(page, "Show structure annotations", role="toggle", selected=False)
+    text = copy_code(page, canvas)
+    assert text.count("sload(") == 1 and text.count("sstore(") == 2, text
+    assert f"sstore(0x1, v{loaded})" in text and "sstore(0x0, 0x2a)" in text, text
+    assert not re.search(r"(?m)^\s*\(v\d+", text), text
+    assert "// sequence" not in text and "// b" not in text, text
+    for parameter in original_parameters:
+        assert not re.search(r"\bv" + parameter + r"\b", text), text
+    canvas.screenshot(path=str(context.output / "lifted-copy-chain-clean.png"))
+
+    # A hidden semantic block header has no code occurrence, while its
+    # statements remain visible. Its source link must land on real IR details.
+    raw_middle = next(block for block in current["ir"]["blocks"] if block["source"]["pc"] == 6)
+    middle = next(block for block in program["blocks"] if block["block"] == raw_middle["id"])
+    source_descendant(page, canvas, artifact, current["id"], middle["id"])
+    ui_control(page, "IR", role="tab", selected=True)
+    selected_row(page, "decompile-ir", "High-level block h" + middle["id"])
+    click_control(page, canvas, "Simplified structured code", role="tab")
+    assert copy_code(page, canvas) == text
+    set_control(page, canvas, "Show structure annotations", True)
+    source_descendant(page, canvas, artifact, current["id"], middle["id"])
+    ui_control(page, "Simplified structured code", role="tab", selected=True)
+    selected_row(page, "decompile-code", "// b" + raw_middle["id"])
+    set_control(page, canvas, "Show structure annotations", False)
+    assert copy_code(page, canvas) == text
+    click_control(page, canvas, "Structured code", role="tab")
+    raw_text = copy_code(page, canvas)
+    assert "parallel assignment" in raw_text and "// b" in raw_text, raw_text
     artifacts.append(artifact["id"])
 
     # Residual exits must use high expressions even when raw PUSH/ADD/ISZERO

@@ -38,6 +38,16 @@ impl Asm {
         self
     }
 
+    /// End the current block with a resolved jump to a new forwarding block.
+    pub(super) fn next_block(&mut self) -> &mut Self {
+        let destination = u16::try_from(self.bytes.len() + 4)
+            .expect("small complete bytecode fixture")
+            .to_be_bytes();
+        self.bytes
+            .extend([0x61, destination[0], destination[1], 0x56, 0x5b]);
+        self
+    }
+
     pub(super) fn finish(mut self) -> Input {
         for (offset, label) in self.fixups {
             self.bytes[offset..offset + 2].copy_from_slice(

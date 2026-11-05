@@ -105,7 +105,9 @@ impl Dispatch<'_> {
             );
             return;
         };
-        emit(output, transition.id, indent, format!("// on e{}", edge.0));
+        if self.context.scope.show_structure_annotations() {
+            emit(output, transition.id, indent, format!("// on e{}", edge.0));
+        }
         transfer(
             transition.id,
             edge,

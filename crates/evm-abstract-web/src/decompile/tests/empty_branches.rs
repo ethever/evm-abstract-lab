@@ -40,7 +40,21 @@ fn high(stage: &Stage, dependencies: bool) -> Vec<Row> {
     rows(structured::lifted_lines_indexed(
         stage,
         &StageIndex::new(&stage.ir),
-        dependencies,
+        structured::HighDisplayOptions {
+            show_state_dependencies: dependencies,
+            show_structure_annotations: true,
+        },
+    ))
+}
+
+fn clean(stage: &Stage, dependencies: bool) -> Vec<Row> {
+    rows(structured::lifted_lines_indexed(
+        stage,
+        &StageIndex::new(&stage.ir),
+        structured::HighDisplayOptions {
+            show_state_dependencies: dependencies,
+            ..structured::HighDisplayOptions::default()
+        },
     ))
 }
 
@@ -391,6 +405,13 @@ fn with_else(body: Vec<Row>) -> Vec<Row> {
     expected
 }
 
+fn with_clean_else(body: Vec<Row>) -> Vec<Row> {
+    let mut expected = vec![row(103, 0, "if ((v2 != 0)) {"), row(103, 0, "} else {")];
+    expected.extend(body);
+    expected.push(row(103, 0, "}"));
+    expected
+}
+
 #[test]
 fn empty_and_nested_context_only_else_omit_their_rows_but_keep_both_empty_if() {
     for (otherwise, raw_body) in [
@@ -435,6 +456,10 @@ fn empty_and_nested_context_only_else_omit_their_rows_but_keep_both_empty_if() {
                 ]
             );
             assert_eq!(rows(structured::lines(&stage)), expected_raw);
+            assert_eq!(
+                clean(&stage, dependencies),
+                vec![row(103, 0, "if ((v2 != 0)) {"), row(103, 0, "}")]
+            );
         }
     }
 }
@@ -571,6 +596,10 @@ fn partial_invalid_exceptional_and_normal_exits_are_substantive_else_content() {
                 high(&stage, dependencies),
                 with_else(vec![row(104, 1, text)])
             );
+            assert_eq!(
+                clean(&stage, dependencies),
+                with_clean_else(vec![row(104, 1, text)])
+            );
             let raw = rows(structured::lines(&stage));
             assert!(raw.contains(&row(10, 0, "} else {")));
             assert!(raw.contains(&row(12, 1, text)));
@@ -614,6 +643,10 @@ fn a_fault_comment_alone_keeps_else_and_its_source_identity() {
         assert_eq!(
             high(&stage, dependencies),
             with_else(vec![row(104, 1, "// b1"), row(105, 1, fault)])
+        );
+        assert_eq!(
+            clean(&stage, dependencies),
+            with_clean_else(vec![row(105, 1, fault)])
         );
         assert_eq!(
             rows(structured::lines(&stage)),
@@ -674,6 +707,10 @@ fn unavailable_block_statement_and_exit_diagnostics_keep_else() {
     ] {
         for dependencies in [false, true] {
             assert_eq!(high(&stage, dependencies), with_else(body.clone()));
+            assert_eq!(
+                clean(&stage, dependencies),
+                with_clean_else(vec![body.last().unwrap().clone()])
+            );
         }
     }
 }
@@ -698,6 +735,7 @@ fn unavailable_live_transfer_keeps_else_even_without_dependency_rows() {
                 row(12, 1, "q4 = q4; // effect token on e9"),
             ]);
         }
-        assert_eq!(high(&stage, dependencies), with_else(body));
+        assert_eq!(high(&stage, dependencies), with_else(body.clone()));
+        assert_eq!(clean(&stage, dependencies), with_clean_else(body));
     }
 }

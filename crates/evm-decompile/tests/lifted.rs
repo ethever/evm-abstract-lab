@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "lifted/captured.rs"]
 mod captured;
+#[path = "lifted/copies.rs"]
+mod copies;
 #[path = "lifted/oracle.rs"]
 mod oracle;
 #[path = "lifted/resources.rs"]

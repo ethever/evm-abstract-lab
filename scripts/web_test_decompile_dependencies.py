@@ -16,8 +16,10 @@ LIVE_PHI = "5f35600a576001600d565b60025b6003015f5500"
 EMPTY_TRANSFER = "60096007600b5600005b005b5056"
 REVERT_GUARD = "5f35600a57602a5f55005b3d5ffd"
 TOGGLE = "Show state dependencies"
+STRUCTURE = "Show structure annotations"
 ALIASES = re.compile(r"(?m)^\s*[mq]\d+\s*=")
 TUPLES = re.compile(r"(?m)^\s*\(v\d+(?:, v\d+)*\) =.*$")
+ANNOTATIONS = re.compile(r"(?m)^\s*// (?:sequence ast|b\d+\b|on e\d+\b)")
 
 
 def clean(text):
@@ -53,11 +55,21 @@ def run(context):
     result_url = publication_urls[-1]
     admitted = len(posts)
     ui_control(page, TOGGLE, role="toggle", selected=False)
+    ui_control(page, STRUCTURE, role="toggle", selected=False)
     reading = painted_copy(page, canvas)
     clean(reading)
+    assert not ANNOTATIONS.search(reading), reading
     for operation in ["calldataload(", "mstore(", "mload(", "sstore(", "stop("]:
         assert reading.count(operation) == 1, reading
     canvas.screenshot(path=str(context.output / "dependencies-default-reading.png"))
+
+    # Structure/source annotations are independent of state dependency metadata.
+    set_control(page, canvas, STRUCTURE, True)
+    annotated = painted_copy(page, canvas)
+    assert ANNOTATIONS.search(annotated), annotated
+    clean(annotated)
+    set_control(page, canvas, STRUCTURE, False)
+    assert painted_copy(page, canvas) == reading
 
     # Hidden code annotations remain available in the selected semantic details.
     raw_operations = {operation["id"]: operation for block in current["ir"]["blocks"]
@@ -74,9 +86,15 @@ def run(context):
     set_control(page, canvas, TOGGLE, True)
     detailed = painted_copy(page, canvas)
     assert "// memory" in detailed and "// effect" in detailed, detailed
+    assert not ANNOTATIONS.search(detailed), detailed
     for operation in ["calldataload(", "mstore(", "mload(", "sstore(", "stop("]:
         assert detailed.count(operation) == 1, detailed
     canvas.screenshot(path=str(context.output / "dependencies-enabled-memory.png"))
+    set_control(page, canvas, STRUCTURE, True)
+    full = painted_copy(page, canvas)
+    assert ANNOTATIONS.search(full) and "// memory" in full and "// effect" in full, full
+    set_control(page, canvas, STRUCTURE, False)
+    assert painted_copy(page, canvas) == detailed
     set_control(page, canvas, TOGGLE, False)
     assert painted_copy(page, canvas) == reading
 
@@ -227,6 +245,53 @@ def run(context):
     results.append({"artifact": artifact["id"], "omitted_else_edge": edge,
                     "reading_lines": len(reading.splitlines()),
                     "detailed_lines": len(detailed.splitlines())})
+
+    # The structure preference survives routes/stages and new/identical
+    # publications. Raw AST source links retain their full Structured view.
+    set_control(page, canvas, STRUCTURE, True)
+    annotated = painted_copy(page, canvas)
+    assert ANNOTATIONS.search(annotated) and "} else {" not in annotated, annotated
+    choose_stage(page, canvas, artifact, "structured")
+    click_control(page, canvas, "Structured code", role="tab")
+    assert ANNOTATIONS.search(copy_code(page, canvas))
+    choose_stage(page, canvas, artifact, "lifted")
+    high(page, canvas)
+    ui_control(page, STRUCTURE, role="toggle", selected=True)
+    assert painted_copy(page, canvas) == annotated
+
+    artifact, _ = submit(context, page, canvas, MEMORY, "annotations-new-publication")
+    current = stage(artifact, "lifted")
+    admitted = len(posts)
+    high(page, canvas)
+    ui_control(page, STRUCTURE, role="toggle", selected=True)
+    annotated = painted_copy(page, canvas)
+    assert ANNOTATIONS.search(annotated), annotated
+    # Sequence identity belongs to the retained raw AST. Its source link still
+    # opens Structured code even when that context is hidden in the high view.
+    sequence = current["ir"]["structured"]["root"]
+    set_control(page, canvas, STRUCTURE, False)
+    reading = painted_copy(page, canvas)
+    assert not ANNOTATIONS.search(reading), reading
+    source_descendant(page, canvas, artifact, current["id"], sequence)
+    ui_control(page, "Structured code", role="tab", selected=True)
+    selected_row(page, "decompile-code", "sequence ast" + sequence)
+    high(page, canvas)
+    assert painted_copy(page, canvas) == reading
+    set_control(page, canvas, STRUCTURE, True)
+    header = next(row for row in observed(page, "decompile-code")
+                  if "sequence ast" + sequence in row["label"])
+    click_control(page, canvas, header["label"], role="decompile-code", id=header["id"])
+    selected_row(page, "decompile-code", "sequence ast" + sequence)
+    assert len(posts) == admitted, posts
+    repeated, _ = submit(context, page, canvas, MEMORY, "annotations-repeated-publication")
+    assert repeated == artifact
+    ui_control(page, STRUCTURE, role="toggle", selected=True)
+    assert painted_copy(page, canvas) == annotated
+    set_control(page, canvas, STRUCTURE, False)
+    assert painted_copy(page, canvas) == reading
+    results.append({"artifact": artifact["id"], "hidden_sequence": sequence,
+                    "reading_lines": len(reading.splitlines()),
+                    "annotated_lines": len(annotated.splitlines())})
     gpu = webgpu_evidence(page)
     page.close()
     return {"publications": results, "renderer": gpu}
