@@ -153,7 +153,7 @@ def run(context):
     ui_control(page, "Show structure annotations", role="toggle", selected=False)
     text = copy_code(page, canvas)
     assert text.count("sload(") == 1 and text.count("sstore(") == 2, text
-    assert f"sstore(0x1, v{loaded})" in text and "sstore(0x0, 0x2a)" in text, text
+    assert f"sstore(slot = 0x1, value = v{loaded})" in text and "sstore(slot = 0x0, value = 0x2a)" in text, text
     assert not re.search(r"(?m)^\s*\(v\d+", text), text
     assert "// sequence" not in text and "// b" not in text, text
     for parameter in original_parameters:

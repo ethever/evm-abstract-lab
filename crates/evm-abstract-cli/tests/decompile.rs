@@ -175,3 +175,98 @@ fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stag
     assert!(text.contains(" >= "), "{text}");
     assert!(!text.contains("iszero"), "{text}");
 }
+
+#[test]
+fn installed_cli_names_distinct_call_arguments_and_keeps_json_operand_identity() {
+    for (bytecode, opcode, expected_values, expected_text) in [
+        (
+            "6077606660556044603360226011f15000",
+            0xf1,
+            &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77][..],
+            "call(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
+        ),
+        (
+            "6077606660556044603360226011f25000",
+            0xf2,
+            &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77][..],
+            "callcode(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
+        ),
+        (
+            "606660556044603360226011f45000",
+            0xf4,
+            &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66][..],
+            "delegatecall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
+        ),
+        (
+            "606660556044603360226011fa5000",
+            0xfa,
+            &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66][..],
+            "staticcall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
+        ),
+    ] {
+        let json = run(&["--hex", bytecode, "--format", "json"]);
+        assert!(
+            json.status.success(),
+            "{}",
+            String::from_utf8_lossy(&json.stderr)
+        );
+        let artifact: evm_decompile::Artifact = serde_json::from_slice(&json.stdout).unwrap();
+        let stage = artifact.current().unwrap();
+        assert_eq!(stage.kind, evm_decompile::StageKind::Lifted);
+        let operation = stage
+            .ir
+            .blocks
+            .iter()
+            .flat_map(|block| &block.operations)
+            .find(|operation| operation.opcode == opcode)
+            .unwrap();
+        let actual: Vec<_> = operation
+            .inputs
+            .iter()
+            .map(|id| stage.ir.value(*id).unwrap().fact.singleton().unwrap())
+            .collect();
+        assert_eq!(
+            actual,
+            expected_values
+                .iter()
+                .copied()
+                .map(evm_decompile::U256::from)
+                .collect::<Vec<_>>()
+        );
+        let raw = artifact
+            .stages
+            .iter()
+            .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
+            .unwrap();
+        let mut witness = stage.ir.clone();
+        witness.lifted = None;
+        assert_eq!(witness, raw.ir);
+        let output = run(&["--hex", bytecode]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(text.matches(expected_text).count(), 1, "{text}");
+    }
+}
+
+#[test]
+fn installed_cli_terminal_text_names_offset_size_and_beneficiary() {
+    for (bytecode, expected) in [
+        ("60226011f3", "return(offset = 0x11, size = 0x22);"),
+        ("60226011fd", "revert(offset = 0x11, size = 0x22);"),
+        ("6011ff", "selfdestruct(beneficiary = 0x11);"),
+        ("00", "stop();"),
+    ] {
+        let output = run(&["--hex", bytecode]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(text.matches(expected).count(), 1, "{text}");
+    }
+}

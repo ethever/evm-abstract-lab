@@ -6,6 +6,9 @@ use super::{
 use crate::{EntityId, Ir};
 use std::collections::BTreeMap;
 
+mod primitive;
+use primitive::append;
+
 /// Reusable indexes for rendering many semantic rows without rescanning arenas.
 /// Owners reserve index construction from their own work ledger before creating it.
 pub struct LiftedRenderIndex<'a> {
@@ -89,30 +92,48 @@ impl<'a> LiftedRenderIndex<'a> {
             {
                 return Err(LiftedRenderError::Limit);
             }
-            let mut call = |name: &str, args: &[EntityId]| {
+            let mut call = |name: &str, args: &[EntityId], names: Option<&[&str]>| {
+                // Bound pending expansion before allocating per-argument parts.
+                let parts = if names.is_some() { 3 } else { 2 };
+                if work
+                    .saturating_add(pending.len())
+                    .saturating_add(args.len().saturating_mul(parts))
+                    .saturating_add(2)
+                    > MAX_LIFTED_EXPRESSION_TEXT
+                {
+                    return Err(LiftedRenderError::Limit);
+                }
                 pending.push(Part::Text(")".to_owned()));
                 for (i, arg) in args.iter().enumerate().rev() {
                     pending.push(Part::Expression(*arg));
+                    if let Some(names) = names {
+                        pending.push(Part::Text(format!("{} = ", names[i])));
+                    }
                     if i > 0 {
                         pending.push(Part::Text(", ".to_owned()));
                     }
                 }
                 pending.push(Part::Text(format!("{name}(")));
+                Ok(())
             };
             match part {
-                Part::Text(text) => out.push_str(&text),
+                Part::Text(text) => append(&mut out, &text, &mut reserve)?,
                 Part::Expression(next) => {
                     let e = self
                         .expressions
                         .get(&next)
                         .ok_or(LiftedRenderError::MissingExpression(next))?;
                     match &e.kind {
-                        LiftedExpressionKind::Word(v) => out.push_str(&format!("0x{v:x}")),
-                        LiftedExpressionKind::Predicate(v) => {
-                            out.push_str(if *v { "true" } else { "false" })
+                        LiftedExpressionKind::Word(v) => {
+                            append(&mut out, &format!("0x{v:x}"), &mut reserve)?;
                         }
-                        LiftedExpressionKind::Value(v) => out.push_str(&format!("v{}", v.0)),
-                        LiftedExpressionKind::WordFromPredicate(v) => call("word", &[*v]),
+                        LiftedExpressionKind::Predicate(v) => {
+                            append(&mut out, if *v { "true" } else { "false" }, &mut reserve)?;
+                        }
+                        LiftedExpressionKind::Value(v) => {
+                            append(&mut out, &format!("v{}", v.0), &mut reserve)?;
+                        }
+                        LiftedExpressionKind::WordFromPredicate(v) => call("word", &[*v], None)?,
                         LiftedExpressionKind::NonZero(v) => {
                             pending.push(Part::Text(" != 0)".to_owned()));
                             pending.push(Part::Expression(*v));
@@ -147,7 +168,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                     | LiftedRelation::Sgt
                                     | LiftedRelation::Sge
                             ) {
-                                call(symbol, &[*left, *right]);
+                                call(symbol, &[*left, *right], Some(primitive::LEFT_RIGHT))?;
                             } else {
                                 pending.push(Part::Text(")".to_owned()));
                                 pending.push(Part::Expression(*right));
@@ -191,7 +212,11 @@ impl<'a> LiftedRenderIndex<'a> {
                                     0x1e => "clz",
                                     _ => "word_op",
                                 };
-                                call(name, arguments);
+                                call(
+                                    name,
+                                    arguments,
+                                    primitive::operand_names(*opcode, arguments.len()),
+                                )?;
                             }
                         }
                     }
@@ -201,6 +226,35 @@ impl<'a> LiftedRenderIndex<'a> {
         if out.len() > MAX_LIFTED_EXPRESSION_TEXT {
             return Err(LiftedRenderError::Limit);
         }
+        Ok(out)
+    }
+    /// One complete primitive call from semantic inputs, without a semicolon.
+    /// Operand labels require an exact opcode/arity match; display spelling does
+    /// not select a signature. Names, labels and separators share the expression
+    /// byte ceiling and caller's work allowance. Refusal exposes no partial call.
+    pub fn render_invocation(
+        &self,
+        opcode: u8,
+        name: &str,
+        arguments: &[EntityId],
+        mut reserve: impl FnMut(usize) -> bool,
+    ) -> Result<String, LiftedRenderError> {
+        let names = primitive::operand_names(opcode, arguments.len());
+        let mut out = String::new();
+        append(&mut out, name, &mut reserve)?;
+        append(&mut out, "(", &mut reserve)?;
+        for (position, argument) in arguments.iter().enumerate() {
+            if position > 0 {
+                append(&mut out, ", ", &mut reserve)?;
+            }
+            if let Some(names) = names {
+                append(&mut out, names[position], &mut reserve)?;
+                append(&mut out, " = ", &mut reserve)?;
+            }
+            let argument = self.render_expression(*argument, &mut reserve)?;
+            append(&mut out, &argument, &mut reserve)?;
+        }
+        append(&mut out, ")", &mut reserve)?;
         Ok(out)
     }
     /// One retained primitive, formatted from high semantic inputs.
@@ -224,43 +278,42 @@ impl<'a> LiftedRenderIndex<'a> {
             .get(&statement.operation)
             .copied()
             .ok_or(LiftedRenderError::MissingWitness(statement.operation))?;
+        if operation.name.len() > MAX_LIFTED_EXPRESSION_TEXT || !reserve(operation.name.len()) {
+            return Err(LiftedRenderError::Limit);
+        }
         let name = operation.name.to_lowercase();
-        let lhs = if statement.outputs.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "{} = ",
-                statement
-                    .outputs
-                    .iter()
-                    .map(|v| format!("v{}", v.0))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+        let mut out = String::new();
+        for (position, output) in statement.outputs.iter().enumerate() {
+            if position > 0 {
+                append(&mut out, ", ", &mut reserve)?;
+            }
+            append(&mut out, &format!("v{}", output.0), &mut reserve)?;
+        }
+        if !statement.outputs.is_empty() {
+            append(&mut out, " = ", &mut reserve)?;
+        }
+        let invocation =
+            self.render_invocation(operation.opcode, &name, &statement.inputs, &mut reserve)?;
+        append(&mut out, &invocation, &mut reserve)?;
+        append(&mut out, ";", &mut reserve)?;
+        let memory = match (operation.memory_input, operation.memory_output) {
+            (Some(input), Some(output)) => format!(" // memory m{} → m{}", input.0, output.0),
+            (Some(input), None) => format!(" // memory input m{}", input.0),
+            _ => String::new(),
         };
-        let args = statement
-            .inputs
-            .iter()
-            .map(|id| self.render_expression(*id, &mut reserve))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(", ");
-        let dependencies = if show_state_dependencies {
-            let op = operation;
-            let memory = match (op.memory_input, op.memory_output) {
-                (Some(input), Some(output)) => format!(" // memory m{} → m{}", input.0, output.0),
-                (Some(input), None) => format!(" // memory input m{}", input.0),
-                _ => String::new(),
-            };
-            let effect = match (op.effect_input, op.effect_output) {
-                (Some(input), Some(output)) => format!(" // effect q{} → q{}", input.0, output.0),
-                (Some(input), None) => format!(" // effect input q{}", input.0),
-                _ => String::new(),
-            };
-            format!("{memory}{effect}")
-        } else {
-            String::new()
+        let effect = match (operation.effect_input, operation.effect_output) {
+            (Some(input), Some(output)) => format!(" // effect q{} → q{}", input.0, output.0),
+            (Some(input), None) => format!(" // effect input q{}", input.0),
+            _ => String::new(),
         };
-        Ok(format!("{lhs}{name}({args});{dependencies}"))
+        let dependencies = format!("{memory}{effect}");
+        if show_state_dependencies {
+            append(&mut out, &dependencies, &mut reserve)?;
+        } else if !reserve(dependencies.len()) {
+            // Visibility changes only the suffix, not the owner's work ledger.
+            return Err(LiftedRenderError::Limit);
+        }
+        Ok(out)
     }
     /// Logical edge assignment. RHS expressions are evaluated simultaneously.
     pub fn render_transfer(
