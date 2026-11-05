@@ -14,6 +14,7 @@ from web_test_harness import (click_control, rendered_frame, set_control,
 MEMORY = "5f356080526080515f5500"
 LIVE_PHI = "5f35600a576001600d565b60025b6003015f5500"
 EMPTY_TRANSFER = "60096007600b5600005b005b5056"
+REVERT_GUARD = "5f35600a57602a5f55005b3d5ffd"
 TOGGLE = "Show state dependencies"
 ALIASES = re.compile(r"(?m)^\s*[mq]\d+\s*=")
 TUPLES = re.compile(r"(?m)^\s*\(v\d+(?:, v\d+)*\) =.*$")
@@ -170,6 +171,60 @@ def run(context):
     set_control(page, canvas, TOGGLE, False)
     assert painted_copy(page, canvas) == reading
     results.append({"artifact": artifact["id"], "hidden_transfer": transfer["id"],
+                    "reading_lines": len(reading.splitlines()),
+                    "detailed_lines": len(detailed.splitlines())})
+
+    # A terminal true arm leaves only its false-edge tokens in the else arm.
+    # Hiding those tokens must also omit the empty syntax, while retaining the
+    # actual revert and the following storage write outside the conditional.
+    artifact, _ = submit(context, page, canvas, REVERT_GUARD, "dependencies-empty-else")
+    current = stage(artifact, "lifted")
+    admitted = len(posts)
+    result_url = publication_urls[-1]
+    high(page, canvas)
+    reading = painted_copy(page, canvas)
+    clean(reading)
+    assert "} else {" not in reading, reading
+    assert reading.count("if (") == 1, reading
+    for operation in ["returndatasize(", "evm.revert(", "sstore(", "evm.stop("]:
+        assert reading.count(operation) == 1, reading
+    rows = reading.splitlines()
+    revert = next(i for i, text in enumerate(rows) if "evm.revert(" in text)
+    store = next(i for i, text in enumerate(rows) if "sstore(" in text)
+    assert rows[revert].startswith("    ") and not rows[store].startswith(" "), reading
+    assert revert < store and "}" in rows[revert + 1:store], reading
+    canvas.screenshot(path=str(context.output / "dependencies-empty-else-omitted.png"))
+
+    nodes = {node["id"]: node for node in current["ir"]["structured"]["nodes"]}
+    branch = next(node["kind"]["if"] for node in nodes.values() if "if" in node["kind"])
+    edge = nodes[branch["else_branch"]]["kind"]["transfer"]["edge"]
+    transfer = next(item for item in current["ir"]["lifted"]["transfers"] if item["edge"] == edge)
+    assert not transfer["arguments"], transfer
+    source_descendant(page, canvas, artifact, current["id"], transfer["id"])
+    ui_control(page, "IR", role="tab", selected=True)
+    selected_row(page, "decompile-ir", "Live transfer h" + transfer["id"])
+    high(page, canvas)
+    assert painted_copy(page, canvas) == reading
+
+    set_control(page, canvas, TOGGLE, True)
+    detailed = painted_copy(page, canvas)
+    assert detailed.count("} else {") == 1, detailed
+    assert "memory token on e" + edge in detailed and "effect token on e" + edge in detailed
+    source_descendant(page, canvas, artifact, current["id"], transfer["id"])
+    ui_control(page, "Simplified structured code", role="tab", selected=True)
+    selected_row(page, "decompile-code", "memory token on e" + edge)
+    canvas.screenshot(path=str(context.output / "dependencies-empty-else-restored.png"))
+    set_control(page, canvas, TOGGLE, False)
+    assert painted_copy(page, canvas) == reading
+    click_control(page, canvas, "Structured code", role="tab")
+    raw = copy_code(page, canvas)
+    assert "} else {" in raw and "memory token on e" + edge in raw, raw
+    high(page, canvas)
+    assert painted_copy(page, canvas) == reading
+    retained = page.request.get(result_url)
+    assert retained.ok and retained.json()["result"]["Ok"]["artifact"] == artifact
+    assert len(posts) == admitted, posts
+    results.append({"artifact": artifact["id"], "omitted_else_edge": edge,
                     "reading_lines": len(reading.splitlines()),
                     "detailed_lines": len(detailed.splitlines())})
     gpu = webgpu_evidence(page)
