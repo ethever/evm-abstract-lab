@@ -1,6 +1,8 @@
 //! Render actual dispatcher decisions and scoped edge transfers. Labels are
 //! qualified by their AST owner, not frontend-created semantic entities.
-use super::{Line, Scope, StageIndex, body, emit, terminator, transfer, value};
+use super::{
+    Line, Scope, StageIndex, body, emit, projected_target, projected_terminator, transfer, value,
+};
 use evm_abstract_protocol::decompile_model::{
     DispatchCase, DispatchTransition, EntityId, Ir, Terminator,
 };
@@ -10,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) struct Context<'a> {
     pub ir: &'a Ir,
     pub index: &'a StageIndex,
-    pub scope: Scope,
+    pub scope: Scope<'a>,
 }
 
 pub(super) fn show(
@@ -56,6 +58,7 @@ pub(super) fn show(
             case.block,
             context.ir,
             context.index,
+            context.scope.lifted,
             indent + 3,
             output,
         );
@@ -108,6 +111,7 @@ impl Dispatch<'_> {
             edge,
             self.context.ir,
             self.context.index,
+            self.context.scope.lifted,
             indent,
             output,
         );
@@ -143,19 +147,14 @@ impl Dispatch<'_> {
 
     fn jump(
         &self,
-        target: EntityId,
+        target: String,
         edges: &[EntityId],
         unresolved: bool,
         transitions: &BTreeMap<EntityId, &DispatchTransition>,
         indent: usize,
         output: &mut Vec<Line>,
     ) {
-        emit(
-            output,
-            self.node,
-            indent,
-            format!("match {} {{", value(target)),
-        );
+        emit(output, self.node, indent, format!("match {target} {{"));
         for edge in edges {
             let pc = self
                 .context
@@ -201,44 +200,113 @@ impl Dispatch<'_> {
                 target,
                 edges,
                 unresolved,
-                ..
-            } => self.jump(*target, edges, *unresolved, transitions, indent, output),
+                invalid_targets,
+            } => {
+                if self.context.scope.lifted.is_some()
+                    && edges.len() == 1
+                    && !unresolved
+                    && invalid_targets.is_empty()
+                {
+                    self.edge(edges[0], transitions, indent, output);
+                } else {
+                    let target = if self.context.scope.lifted.is_some() {
+                        projected_target(
+                            block,
+                            self.context.ir,
+                            self.context.index,
+                            self.context.scope.lifted,
+                        )
+                    } else {
+                        value(*target)
+                    };
+                    self.jump(target, edges, *unresolved, transitions, indent, output);
+                }
+            }
             Terminator::Branch {
                 condition,
                 target,
                 then_edges,
                 else_edge,
                 unresolved,
-                ..
+                invalid_targets,
             } => {
-                emit(
-                    output,
-                    block,
-                    indent,
-                    format!("if ({} != 0) {{", value(*condition)),
-                );
-                self.jump(
-                    *target,
-                    then_edges,
-                    *unresolved,
-                    transitions,
-                    indent + 1,
-                    output,
-                );
-                emit(output, block, indent, "} else {");
+                let (owner, condition) = if self.context.scope.lifted.is_some() {
+                    let semantic = self.context.index.source_block(self.context.ir, block);
+                    let condition = semantic
+                        .and_then(|block| block.condition)
+                        .and_then(|id| {
+                            self.context
+                                .scope
+                                .lifted
+                                .map(|renderer| super::super::lifted::expression(renderer, id))
+                        })
+                        .unwrap_or_else(|| format!("unavailable_predicate(b{})", block.0));
+                    (semantic.map_or(block, |block| block.id), condition)
+                } else {
+                    (block, format!("{} != 0", value(*condition)))
+                };
+                emit(output, owner, indent, format!("if ({condition}) {{"));
+                if self.context.scope.lifted.is_some()
+                    && then_edges.len() == 1
+                    && !unresolved
+                    && invalid_targets.is_empty()
+                {
+                    self.edge(then_edges[0], transitions, indent + 1, output);
+                } else {
+                    let target = if self.context.scope.lifted.is_some() {
+                        projected_target(
+                            block,
+                            self.context.ir,
+                            self.context.index,
+                            self.context.scope.lifted,
+                        )
+                    } else {
+                        value(*target)
+                    };
+                    self.jump(
+                        target,
+                        then_edges,
+                        *unresolved,
+                        transitions,
+                        indent + 1,
+                        output,
+                    );
+                }
+                emit(output, owner, indent, "} else {");
                 if let Some(edge) = else_edge {
                     self.edge(*edge, transitions, indent + 1, output);
                 } else {
                     emit(
                         output,
-                        block,
+                        owner,
                         indent + 1,
                         "evm.stop(); // JUMPI false continuation: end of code",
                     );
                 }
-                emit(output, block, indent, "}");
+                emit(output, owner, indent, "}");
             }
-            _ => emit(output, block, indent, terminator(term)),
+            _ => {
+                let owner = if self.context.scope.lifted.is_some() {
+                    self.context
+                        .index
+                        .source_block(self.context.ir, block)
+                        .map_or(block, |block| block.id)
+                } else {
+                    block
+                };
+                emit(
+                    output,
+                    owner,
+                    indent,
+                    projected_terminator(
+                        block,
+                        term,
+                        self.context.ir,
+                        self.context.index,
+                        self.context.scope.lifted,
+                    ),
+                );
+            }
         }
     }
 }

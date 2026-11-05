@@ -4,15 +4,17 @@
 use super::index::StageIndex;
 
 use evm_abstract_protocol::decompile_model::{
-    EntityId, ExitKind, Ir, Operation, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
+    EntityId, ExitKind, Ir, LiftedRenderIndex, Operation, Stage, StructuredKind, StructuredNode,
+    Terminator, ValueKind,
 };
 
 mod dispatch;
 
 #[derive(Clone, Copy, Default)]
-struct Scope {
+struct Scope<'a> {
     following: Option<EntityId>,
     outer_loop: Option<LoopScope>,
+    lifted: Option<&'a LiftedRenderIndex<'a>>,
 }
 #[derive(Clone, Copy)]
 struct LoopScope {
@@ -60,13 +62,34 @@ pub(super) fn lines(stage: &Stage) -> Vec<Line> {
 }
 
 pub(super) fn lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
+    render_lines(stage, index, false)
+}
+
+pub(super) fn lifted_lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
+    render_lines(stage, index, true)
+}
+
+fn render_lines(stage: &Stage, index: &StageIndex, lifted: bool) -> Vec<Line> {
+    // The shared semantic index is built once for this complete code batch.
+    let renderer = lifted
+        .then(|| {
+            stage
+                .ir
+                .lifted
+                .as_ref()
+                .map(|program| program.render_index(&stage.ir))
+        })
+        .flatten();
     let mut output = Vec::new();
     if let Some(program) = &stage.ir.structured {
         render(
             &program.root,
             &stage.ir,
             index,
-            Scope::default(),
+            Scope {
+                lifted: renderer.as_ref(),
+                ..Scope::default()
+            },
             0,
             &mut output,
         );
@@ -86,7 +109,7 @@ fn render(
     node: &StructuredNode,
     ir: &Ir,
     index: &StageIndex,
-    scope: Scope,
+    scope: Scope<'_>,
     indent: usize,
     output: &mut Vec<Line>,
 ) {
@@ -113,23 +136,23 @@ fn render(
                 );
             }
         }
-        StructuredKind::Block { block } => body(node.id, *block, ir, index, indent, output),
-        StructuredKind::Transfer { edge } => transfer(node.id, *edge, ir, index, indent, output),
+        StructuredKind::Block { block } => {
+            body(node.id, *block, ir, index, scope.lifted, indent, output)
+        }
+        StructuredKind::Transfer { edge } => {
+            transfer(node.id, *edge, ir, index, scope.lifted, indent, output)
+        }
         StructuredKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            emit(
-                output,
-                node.id,
-                indent,
-                format!("if ({} != 0) {{", value(*condition)),
-            );
+            let (owner, predicate) = predicate(node.id, *condition, ir, index, scope.lifted);
+            emit(output, owner, indent, format!("if ({predicate}) {{"));
             render(then_branch, ir, index, scope, indent + 1, output);
-            emit(output, node.id, indent, "} else {");
+            emit(output, owner, indent, "} else {");
             render(else_branch, ir, index, scope, indent + 1, output);
-            emit(output, node.id, indent, "}");
+            emit(output, owner, indent, "}");
         }
         StructuredKind::While {
             header,
@@ -138,29 +161,41 @@ fn render(
             body,
             exit_edge,
         } => {
+            let owner = if scope.lifted.is_some() {
+                index
+                    .source_control(ir, node.id)
+                    .map_or(node.id, |control| control.id)
+            } else {
+                node.id
+            };
             emit(
                 output,
-                node.id,
+                owner,
                 indent,
                 format!("'loop{}: while (true) {{", node.id.0),
             );
             render(header, ir, index, scope, indent + 1, output);
             if let Some(condition) = condition {
-                emit(
-                    output,
-                    node.id,
-                    indent + 1,
+                let condition = if scope.lifted.is_some() {
+                    let (_, predicate) = predicate(node.id, *condition, ir, index, scope.lifted);
+                    if *condition_nonzero {
+                        format!("!({predicate})")
+                    } else {
+                        predicate
+                    }
+                } else {
                     format!(
-                        "if ({} {} 0) {{",
+                        "{} {} 0",
                         value(*condition),
                         if *condition_nonzero { "==" } else { "!=" }
-                    ),
-                );
+                    )
+                };
+                emit(output, owner, indent + 1, format!("if ({condition}) {{"));
                 if let Some(edge) = exit_edge {
-                    transfer(node.id, *edge, ir, index, indent + 2, output);
+                    transfer(owner, *edge, ir, index, scope.lifted, indent + 2, output);
                 }
-                emit(output, node.id, indent + 2, "break;");
-                emit(output, node.id, indent + 1, "}");
+                emit(output, owner, indent + 2, "break;");
+                emit(output, owner, indent + 1, "}");
             }
             let outer_loop = Some(LoopScope {
                 node: node.id,
@@ -175,26 +210,53 @@ fn render(
                 Scope {
                     following: None,
                     outer_loop,
+                    lifted: scope.lifted,
                 },
                 indent + 1,
                 output,
             );
-            emit(output, node.id, indent, "}");
+            emit(output, owner, indent, "}");
         }
         StructuredKind::Break => emit(output, node.id, indent, "break;"),
         StructuredKind::Continue => emit(output, node.id, indent, "continue;"),
         StructuredKind::Exit { block } | StructuredKind::PartialExit { block } => {
             if let Some(block) = index.block(ir, *block) {
                 let text = match &block.terminator {
-                    // Exit is a terminal AST occurrence. A JUMPI with no
-                    // false edge ends code on that false continuation; raw IR
-                    // and dispatcher decisions keep their full branch text.
+                    // The surrounding If has already selected the arm. Only
+                    // its false arm falls off the terminal JUMPI; the true
+                    // arm must retain its target and partial/invalid boundary.
                     Terminator::Branch {
                         else_edge: None, ..
-                    } => "evm.stop(); // JUMPI false continuation: end of code".into(),
-                    term => terminator(term),
+                    } if index.branch_arm(ir, node.id) == Some(false) => {
+                        "evm.stop(); // JUMPI false continuation: end of code".into()
+                    }
+                    Terminator::Branch {
+                        target,
+                        then_edges,
+                        else_edge: None,
+                        unresolved,
+                        invalid_targets,
+                        ..
+                    } if index.branch_arm(ir, node.id) == Some(true) => jump_boundary(
+                        if scope.lifted.is_some() {
+                            projected_target(block.id, ir, index, scope.lifted)
+                        } else {
+                            value(*target)
+                        },
+                        then_edges,
+                        *unresolved,
+                        !invalid_targets.is_empty(),
+                    ),
+                    term => projected_terminator(block.id, term, ir, index, scope.lifted),
                 };
-                emit(output, node.id, indent, text);
+                let owner = if scope.lifted.is_some() {
+                    index
+                        .source_block(ir, block.id)
+                        .map_or(node.id, |block| block.id)
+                } else {
+                    node.id
+                };
+                emit(output, owner, indent, text);
             } else {
                 emit(
                     output,
@@ -213,7 +275,14 @@ fn render(
                 output,
                 node.id,
                 indent,
-                format!("indirect_jump b{} {{", block.0),
+                if scope.lifted.is_some() {
+                    format!(
+                        "indirect_jump {} {{",
+                        projected_target(*block, ir, index, scope.lifted)
+                    )
+                } else {
+                    format!("indirect_jump b{} {{", block.0)
+                },
             );
             for arm in arms {
                 emit(
@@ -260,15 +329,18 @@ fn body(
     block: EntityId,
     ir: &Ir,
     index: &StageIndex,
+    lifted: Option<&LiftedRenderIndex<'_>>,
     indent: usize,
     output: &mut Vec<Line>,
 ) {
     let Some(block) = index.block(ir, block) else {
         return;
     };
+    let semantic = lifted.and_then(|_| index.source_block(ir, block.id));
+    let owner = semantic.map_or(node, |block| block.id);
     emit(
         output,
-        node,
+        owner,
         indent,
         format!(
             "// b{}{}",
@@ -279,6 +351,40 @@ fn body(
             ))
         ),
     );
+    if let Some(renderer) = lifted {
+        let Some(semantic) = semantic else {
+            emit(
+                output,
+                owner,
+                indent,
+                format!("unavailable_high_block(b{});", block.id.0),
+            );
+            return;
+        };
+        for statement in &semantic.statements {
+            if let Some(op) = index.operation(ir, statement.operation) {
+                if let Some(reason) = fault_reason(op, ir, index) {
+                    emit(
+                        output,
+                        statement.id,
+                        indent,
+                        format!("// {}", fault_marker(op, reason)),
+                    );
+                    continue;
+                }
+                if op.effects.terminate {
+                    continue;
+                }
+            }
+            emit(
+                output,
+                statement.id,
+                indent,
+                super::lifted::statement(renderer, statement),
+            );
+        }
+        return;
+    }
     for op in &block.operations {
         if let Some(reason) = fault_reason(op, ir, index) {
             emit(
@@ -303,6 +409,7 @@ fn transfer(
     edge: EntityId,
     ir: &Ir,
     index: &StageIndex,
+    lifted: Option<&LiftedRenderIndex<'_>>,
     indent: usize,
     output: &mut Vec<Line>,
 ) {
@@ -312,7 +419,22 @@ fn transfer(
     let Some(target) = index.block(ir, edge.to) else {
         return;
     };
-    if !target.parameters.is_empty() {
+    let semantic = lifted.and_then(|_| index.source_transfer(ir, edge.id));
+    let owner = semantic.map_or(node, |transfer| transfer.id);
+    if let Some(renderer) = lifted {
+        if let Some(transfer) = semantic {
+            if let Some(text) = super::lifted::transfer(renderer, transfer) {
+                emit(output, owner, indent, text);
+            }
+        } else {
+            emit(
+                output,
+                owner,
+                indent,
+                format!("unavailable_live_transfer(e{});", edge.id.0),
+            );
+        }
+    } else if !target.parameters.is_empty() {
         emit(
             output,
             node,
@@ -327,7 +449,7 @@ fn transfer(
     }
     emit(
         output,
-        node,
+        owner,
         indent,
         format!(
             "m{} = m{}; // memory token on e{}",
@@ -336,13 +458,152 @@ fn transfer(
     );
     emit(
         output,
-        node,
+        owner,
         indent,
         format!(
             "q{} = q{}; // effect token on e{}",
             target.effect_parameter.0, edge.effect.0, edge.id.0
         ),
     );
+}
+
+fn predicate(
+    node: EntityId,
+    raw: EntityId,
+    ir: &Ir,
+    index: &StageIndex,
+    lifted: Option<&LiftedRenderIndex<'_>>,
+) -> (EntityId, String) {
+    if lifted.is_none() {
+        return (node, format!("{} != 0", value(raw)));
+    }
+    match (lifted, index.source_control(ir, node)) {
+        (Some(renderer), Some(control)) => (
+            control.id,
+            super::lifted::expression(renderer, control.condition),
+        ),
+        _ => (node, format!("unavailable_predicate(ast{})", node.0)),
+    }
+}
+
+fn projected_target(
+    block: EntityId,
+    ir: &Ir,
+    index: &StageIndex,
+    renderer: Option<&LiftedRenderIndex<'_>>,
+) -> String {
+    match (
+        renderer,
+        index.source_block(ir, block).and_then(|block| block.target),
+    ) {
+        (Some(renderer), Some(target)) => super::lifted::expression(renderer, target),
+        _ => format!("unavailable_target(b{})", block.0),
+    }
+}
+
+fn projected_terminator(
+    block: EntityId,
+    term: &Terminator,
+    ir: &Ir,
+    index: &StageIndex,
+    lifted: Option<&LiftedRenderIndex<'_>>,
+) -> String {
+    let Some(renderer) = lifted else {
+        return terminator(term);
+    };
+    let Some(semantic) = index.source_block(ir, block) else {
+        return format!("unavailable_exit(b{});", block.0);
+    };
+    let edges = |ids: &[EntityId]| {
+        ids.iter()
+            .map(|id| format!("e{}", id.0))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match term {
+        Terminator::Jump {
+            edges: known,
+            unresolved,
+            invalid_targets,
+            ..
+        } => jump_boundary(
+            projected_target(block, ir, index, lifted),
+            known,
+            *unresolved,
+            !invalid_targets.is_empty(),
+        ),
+        Terminator::Branch {
+            then_edges,
+            else_edge,
+            unresolved,
+            invalid_targets,
+            ..
+        } => {
+            let condition = semantic
+                .condition
+                .map(|id| super::lifted::expression(renderer, id))
+                .unwrap_or_else(|| format!("unavailable_predicate(b{})", block.0));
+            format!(
+                "branch {condition}: jump {} via [{}]; else {};{}{}",
+                projected_target(block, ir, index, lifted),
+                edges(then_edges),
+                else_edge.map_or_else(
+                    || "evm.stop() (end of code)".into(),
+                    |edge| format!("e{}", edge.0)
+                ),
+                if *unresolved {
+                    " unresolved_target (partial);"
+                } else {
+                    ""
+                },
+                if invalid_targets.is_empty() {
+                    ""
+                } else {
+                    " exceptional_invalid_target;"
+                },
+            )
+        }
+        Terminator::Exit { kind, .. } => {
+            let name = match kind {
+                ExitKind::Stop => "stop",
+                ExitKind::Return => "return",
+                ExitKind::Revert => "revert",
+                ExitKind::SelfDestruct => "selfdestruct",
+                ExitKind::EndOfCode => return "evm.stop(); // end of code".into(),
+            };
+            let arguments = semantic
+                .exit_values
+                .iter()
+                .map(|id| super::lifted::expression(renderer, *id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("evm.{name}({arguments});")
+        }
+        Terminator::Pending => "partial_exit(\"recovery pending\");".into(),
+        Terminator::Fallthrough { edge } => format!("follow e{};", edge.0),
+        Terminator::Trap { reason } => format!("exception({reason:?});"),
+    }
+}
+
+fn jump_boundary(target: String, edges: &[EntityId], unresolved: bool, invalid: bool) -> String {
+    let edges = edges
+        .iter()
+        .map(|edge| format!("e{}", edge.0))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "jump {target} via [{edges}]{}{};",
+        if unresolved {
+            " + unresolved_target (partial)"
+        } else {
+            ""
+        },
+        if invalid {
+            " + exceptional_invalid_target"
+        } else {
+            ""
+        },
+    )
 }
 
 pub(super) fn value(id: EntityId) -> String {

@@ -137,3 +137,41 @@ fn malformed_hex_is_an_adapter_error_and_has_no_semantic_artifact() {
     assert!(output.stdout.is_empty());
     assert!(!output.stderr.is_empty());
 }
+
+#[test]
+fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stage() {
+    let bytecode = "6020355f3510151515600f575f5ffd5b00";
+    let output = run(&["--hex", bytecode, "--format", "json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        artifact.current().unwrap().kind,
+        evm_decompile::StageKind::Lifted
+    );
+    let raw = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
+        .expect("retained raw Structured stage");
+    assert!(raw.ir.structured.is_some());
+    assert!(
+        raw.ir
+            .blocks
+            .iter()
+            .flat_map(|block| &block.operations)
+            .any(|op| op.opcode == 0x15)
+    );
+    let output = run(&["--hex", bytecode]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(" >= "), "{text}");
+    assert!(!text.contains("iszero"), "{text}");
+}

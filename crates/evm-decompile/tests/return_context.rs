@@ -170,7 +170,7 @@ fn complete(artifact: &Artifact) {
         "{:?}",
         artifact.diagnostics
     );
-    assert_eq!(artifact.current().unwrap().kind, StageKind::Structured);
+    assert_eq!(artifact.current().unwrap().kind, StageKind::Lifted);
 }
 
 fn singleton_returns(stage: &Stage, blocks: &[&Block]) {
@@ -324,7 +324,7 @@ fn differential(
         assert_eq!(raw_host, graph_host, "{label}, {:?}", stage.kind);
     }
     let current = artifact.current().unwrap();
-    assert_eq!(current.kind, StageKind::Structured);
+    assert_eq!(current.kind, StageKind::Lifted);
     let mut syntax_host = host;
     let syntax = execute_structured(current, &mut syntax_host, &limits)
         .unwrap_or_else(|error| panic!("{label}, structured: {error}"));

@@ -72,7 +72,7 @@ fn captured_weth_dispatch_and_shared_returns_execute_offline() {
             .unwrap();
         assert!(baseline.ir.blocks.len() > 50);
         let current = a.current().unwrap();
-        assert_eq!(current.kind, StageKind::Structured);
+        assert_eq!(current.kind, StageKind::Lifted);
         let origins: BTreeMap<_, _> = a.mappings.origins.iter().map(|o| (o.entity, o)).collect();
         for stage in &a.stages {
             for entity in stage

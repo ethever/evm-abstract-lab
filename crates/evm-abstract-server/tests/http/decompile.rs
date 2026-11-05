@@ -253,7 +253,11 @@ fn deeply_nested_structured_artifact_roundtrips_inside_the_actual_result_envelop
         "{:?}",
         artifact.diagnostics
     );
-    let stage = artifact.current().unwrap();
+    let stage = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == evm_abstract_protocol::decompile_model::StageKind::Structured)
+        .expect("retained raw structured stage");
     assert_eq!(
         stage.kind,
         evm_abstract_protocol::decompile_model::StageKind::Structured
@@ -364,4 +368,84 @@ fn assert_named_result_payloads_are_strict(reply: &DecompileJobResultReply) {
             "accepted positional payload at {path}"
         );
     }
+}
+
+#[test]
+fn lifted_predicates_and_origins_cross_the_compressed_result_protocol() {
+    use evm_abstract_protocol::decompile_model::{LiftedExpressionKind, LiftedRelation, StageKind};
+
+    let assets = Assets::new();
+    let pool = pool();
+    let input = DecompileRequest {
+        bytecode: "6020355f3510151515600f575f5ffd5b00".into(),
+        ..DecompileRequest::default()
+    };
+    let body = serde_json::to_string(&input).unwrap();
+    let (_, reply): (_, DecompileJobReply) = decode(&exchange_with_pool(
+        &submit_request(&body, "http://localhost"),
+        &assets.0,
+        &pool,
+    ));
+    let id = reply.result.unwrap().id;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let terminal = loop {
+        let snapshot = pool.decompile_status(id).unwrap();
+        if snapshot.state == JobState::Completed {
+            break snapshot;
+        }
+        assert!(Instant::now() < deadline, "{snapshot:?}");
+        thread::sleep(Duration::from_millis(2));
+    };
+    let request = format!(
+        "GET /api/decompile/tasks/{id}/result HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\n\r\n"
+    );
+    let (headers, reply): (_, DecompileJobResultReply) =
+        decode(&exchange_with_pool(request.as_bytes(), &assets.0, &pool));
+    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+    assert_eq!(header_value(&headers, "content-encoding"), Some("gzip"));
+    let result = reply.result.as_ref().unwrap();
+    assert_eq!(Some(result.publication), terminal.publication);
+    let artifact = &result.artifact;
+    let current = artifact.current().unwrap();
+    assert_eq!(
+        current.kind,
+        StageKind::Lifted,
+        "{:?}",
+        artifact.diagnostics
+    );
+    let program = current.ir.lifted.as_ref().unwrap();
+    let predicate = program
+        .expressions
+        .iter()
+        .find(|expression| {
+            matches!(
+                expression.kind,
+                LiftedExpressionKind::Compare {
+                    relation: LiftedRelation::Uge,
+                    ..
+                }
+            )
+        })
+        .expect("unsigned >= predicate from LT and triple ISZERO");
+    assert!(program.render_expression(predicate.id).contains(" >= "));
+    let origin = artifact
+        .origin(evm_abstract_protocol::decompile_model::EntityRef {
+            stage: current.id,
+            entity: predicate.id,
+        })
+        .expect("transported semantic origin");
+    assert!(!origin.parents.is_empty());
+    assert!(!origin.source.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<DecompileJobResultReply>(&serde_json::to_vec(&reply).unwrap())
+            .unwrap(),
+        reply
+    );
+    assert!(
+        artifact
+            .stages
+            .iter()
+            .any(|stage| stage.kind == StageKind::Structured)
+    );
+    pool.shutdown().unwrap();
 }

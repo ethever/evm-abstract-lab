@@ -549,6 +549,14 @@ fn inferred_parents(record: &Record<'_>) -> Vec<EntityId> {
             _ => Vec::new(),
         },
         Record::Transition(t) => vec![t.edge],
+        Record::LiftedExpression(e) => match &e.kind {
+            crate::LiftedExpressionKind::Value(value) => vec![*value],
+            _ => Vec::new(),
+        },
+        Record::LiftedBlock(b) => vec![b.block],
+        Record::LiftedStatement(s) => vec![s.operation],
+        Record::LiftedTransfer(t) => vec![t.edge],
+        Record::LiftedControl(c) => vec![c.node],
         _ => Vec::new(),
     }
 }

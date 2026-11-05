@@ -127,9 +127,35 @@ fn faulting_final_op_is_a_source_attributed_fault_and_jumpi_falloff_is_explicit_
         unresolved: false,
         invalid_targets: vec![],
     };
+    // False fall-off is an AST arm role, distinct from a true partial/invalid
+    // boundary that can refer to the same source Branch terminator.
+    stage.ir.structured = Some(StructuredProgram {
+        root: StructuredNode {
+            id: EntityId(40),
+            kind: StructuredKind::If {
+                condition: EntityId(3),
+                then_branch: Box::new(StructuredNode {
+                    id: EntityId(41),
+                    kind: StructuredKind::Exit {
+                        block: EntityId(18),
+                    },
+                }),
+                else_branch: Box::new(StructuredNode {
+                    id: EntityId(42),
+                    kind: StructuredKind::Exit { block: EntityId(1) },
+                }),
+            },
+        },
+    });
     let output = text(stage);
-    assert_eq!(output.matches("evm.stop()").count(), 1, "{output}");
-    assert!(output.contains("JUMPI false continuation: end of code"));
+    assert_eq!(output.matches("evm.stop()").count(), 2, "{output}");
+    assert_eq!(
+        output
+            .matches("JUMPI false continuation: end of code")
+            .count(),
+        1,
+        "{output}"
+    );
     assert!(!output.contains("branch "));
     assert!(structured::terminator(&stage.ir.blocks[0].terminator).contains("branch "));
     assert!(

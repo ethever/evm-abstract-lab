@@ -6,6 +6,7 @@ mod diff;
 mod form;
 mod index;
 mod inspector;
+mod lifted;
 mod model;
 mod rows;
 mod structured;
@@ -301,7 +302,7 @@ impl Workspace {
                         version: result.publication,
                     },
                 );
-                self.views.artifact_installed();
+                self.views.artifact_installed(&result.artifact);
                 self.artifact = Some(result.artifact);
                 self.task.delivered(result.publication);
             }

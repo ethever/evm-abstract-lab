@@ -137,6 +137,7 @@ pub(in crate::decompile) fn artifact(strategy: Strategy) -> Artifact {
                 effect: EntityId(13),
             }],
             structured: None,
+            lifted: None,
         },
     };
     let mut current = baseline.clone();

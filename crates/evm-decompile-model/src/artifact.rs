@@ -36,6 +36,8 @@ pub enum StageKind {
     ControlFlow,
     /// Executable structured syntax.
     Structured,
+    /// Certified typed high-level semantic expressions and logical bindings.
+    Lifted,
 }
 strict_record! {
 /// One owned historical snapshot. Failed candidates never replace current.
@@ -330,6 +332,11 @@ pub enum Record<'a> {
     Edge(&'a Edge),
     Node(&'a StructuredNode),
     Transition(&'a DispatchTransition),
+    LiftedExpression(&'a crate::LiftedExpression),
+    LiftedBlock(&'a crate::LiftedBlock),
+    LiftedStatement(&'a crate::LiftedStatement),
+    LiftedTransfer(&'a crate::LiftedTransfer),
+    LiftedControl(&'a crate::LiftedControl),
 }
 #[doc(hidden)]
 pub fn records(ir: &Ir) -> BTreeMap<EntityId, Record<'_>> {
@@ -348,6 +355,23 @@ pub fn records(ir: &Ir) -> BTreeMap<EntityId, Record<'_>> {
     }
     if let Some(s) = &ir.structured {
         node_records(&s.root, &mut map);
+    }
+    if let Some(lifted) = &ir.lifted {
+        for expression in &lifted.expressions {
+            map.insert(expression.id, Record::LiftedExpression(expression));
+        }
+        for block in &lifted.blocks {
+            map.insert(block.id, Record::LiftedBlock(block));
+            for statement in &block.statements {
+                map.insert(statement.id, Record::LiftedStatement(statement));
+            }
+        }
+        for transfer in &lifted.transfers {
+            map.insert(transfer.id, Record::LiftedTransfer(transfer));
+        }
+        for control in &lifted.controls {
+            map.insert(control.id, Record::LiftedControl(control));
+        }
     }
     map
 }

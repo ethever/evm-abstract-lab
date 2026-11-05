@@ -8,6 +8,7 @@
 mod artifact;
 mod effects;
 mod execute;
+mod lift;
 mod recover;
 mod render;
 mod structure;
@@ -54,6 +55,8 @@ pub fn decompile_with_progress(
             }
             builder.notify_phase(Phase::Structure);
             structure::run(&mut builder);
+            builder.notify_phase(Phase::Lift);
+            lift::run(&mut builder);
         }
         builder.notify_phase(Phase::Complete);
         builder.finish()

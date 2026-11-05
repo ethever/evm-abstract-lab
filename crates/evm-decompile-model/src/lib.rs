@@ -1,11 +1,20 @@
 //! Lightweight transport-safe immutable decompilation schemas.
 /// Current immutable artifact wire schema.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 // Declare each record once, retaining explicit null separately from absence.
 // Enum payload adapters use these same object-only field/duplicate checks.
+macro_rules! strict_field {
+    ($field:ident, $default:expr) => {
+        $field.unwrap_or($default)
+    };
+    ($field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+}
+
 macro_rules! strict_record {
-    ($(#[$meta:meta])* pub struct $name:ident $(<$parameter:ident = $default:ty>)? { $($(#[$field_meta:meta])* pub $field:ident : $ty:ty),* $(,)? }) => {
+    ($(#[$meta:meta])* pub struct $name:ident $(<$parameter:ident = $default:ty>)? { $($(#[$field_meta:meta])* pub $field:ident : $ty:ty $(= $fallback:expr)?),* $(,)? }) => {
         $(#[$meta])*
         #[derive(serde::Serialize)]
         pub struct $name $(<$parameter = $default>)? { $($(#[$field_meta])* pub $field:$ty),* }
@@ -28,7 +37,7 @@ macro_rules! strict_record {
                                 _ => return Err(serde::de::Error::unknown_field(&key, &[$(stringify!($field)),*])),
                             }
                         }
-                        Ok($name { $($field:$field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?),* })
+                        Ok($name { $($field:strict_field!($field $(, $fallback)?)),* })
                     }
                 }
                 deserializer.deserialize_map(Visitor::<Self>(std::marker::PhantomData))
@@ -39,11 +48,13 @@ macro_rules! strict_record {
 
 mod artifact;
 mod codec;
+mod lifted;
 mod model;
 mod structured;
 pub use alloy_primitives::U256;
 pub use artifact::*;
 pub use evm_bytecode::Fork;
+pub use lifted::*;
 pub use model::*;
 pub use structured::{MAX_STRUCTURED_WIRE_DEPTH, MAX_STRUCTURED_WIRE_NODES, MAX_STRUCTURING_DEPTH};
 

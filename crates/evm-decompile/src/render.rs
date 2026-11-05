@@ -1,11 +1,15 @@
 //! Human-readable output is a view of typed syntax, never the semantic owner.
 use crate::{
-    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, Operation, StageKind, StructuredKind,
-    StructuredNode, Terminator, Value, ValueKind,
+    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, LiftedBlock, LiftedControl,
+    LiftedProgram, LiftedRenderError, LiftedRenderIndex, LiftedStatement, LiftedTransfer,
+    Operation, StageKind, StructuredKind, StructuredNode, Terminator, Value, ValueKind,
 };
 use evm_resource::{ResourceError, WorkBudget};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
+
+#[cfg(test)]
+mod tests;
 
 /// Completion of one text export, independently of bytecode recovery coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +79,8 @@ fn export_scoped(artifact: &Artifact, max_work: usize, observer: impl FnMut(usiz
         status: TextExportStatus::Complete,
         loops: Vec::new(),
         next_block: None,
+        lifted: None,
+        lifted_renderer: None,
     };
     let stage = artifact.current();
     if stage.is_none() {
@@ -102,6 +108,8 @@ fn export_scoped(artifact: &Artifact, max_work: usize, observer: impl FnMut(usiz
     index.values = stage.ir.values.iter().map(|v| (v.id, v)).collect();
     index.blocks = stage.ir.blocks.iter().map(|b| (b.id, b)).collect();
     index.edges = stage.ir.edges.iter().map(|e| (e.id, e)).collect();
+    index.lifted = stage.ir.lifted.as_ref();
+    index.lifted_renderer = stage.ir.lifted.as_ref().map(|p| p.render_index(&stage.ir));
     if let Some(s) = &stage.ir.structured {
         syntax(&mut out, &s.root, &mut index, 0);
     } else {
@@ -195,6 +203,8 @@ struct RenderIndex<'a, P: FnMut(usize)> {
     status: TextExportStatus,
     loops: Vec<LoopControl>,
     next_block: Option<EntityId>,
+    lifted: Option<&'a LiftedProgram>,
+    lifted_renderer: Option<LiftedRenderIndex<'a>>,
 }
 #[derive(Clone, Copy)]
 struct LoopControl {
@@ -208,6 +218,46 @@ struct DispatchControl {
     outer: Option<LoopControl>,
 }
 impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
+    fn semantic<T>(
+        &mut self,
+        render: impl FnOnce(&LiftedRenderIndex<'a>, &mut Self) -> Result<T, LiftedRenderError>,
+    ) -> Option<T> {
+        let renderer = self.lifted_renderer.take()?;
+        let result = render(&renderer, self);
+        self.lifted_renderer = Some(renderer);
+        match result {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.stopped = true;
+                if self.status == TextExportStatus::Complete {
+                    self.status = TextExportStatus::Limited;
+                }
+                None
+            }
+        }
+    }
+    fn lifted_block(&self, source: EntityId) -> Option<&'a LiftedBlock> {
+        self.lifted_renderer.as_ref()?.block(source)
+    }
+    fn lifted_transfer(&self, source: EntityId) -> Option<&'a LiftedTransfer> {
+        self.lifted_renderer.as_ref()?.transfer(source)
+    }
+    fn lifted_control(&self, source: EntityId) -> Option<&'a LiftedControl> {
+        self.lifted_renderer.as_ref()?.control(source)
+    }
+    fn high_expression(&mut self, id: EntityId) -> String {
+        self.semantic(|renderer, owner| renderer.render_expression(id, |work| owner.pay(work)))
+            .unwrap_or_else(|| format!("expression_limit(e{})", id.0))
+    }
+    fn high_statement(&mut self, statement: &LiftedStatement) -> Option<String> {
+        self.semantic(|renderer, owner| {
+            renderer.render_statement(statement, |work| owner.pay(work))
+        })
+    }
+    fn high_transfer(&mut self, transfer: &LiftedTransfer) -> Option<String> {
+        self.semantic(|renderer, owner| renderer.render_transfer(transfer, |work| owner.pay(work)))
+            .flatten()
+    }
     fn pay(&mut self, work: usize) -> bool {
         if self.stopped {
             return false;
@@ -269,6 +319,29 @@ fn body(
     ir: &mut RenderIndex<'_, impl FnMut(usize)>,
     depth: usize,
 ) {
+    if let Some(high) = ir.lifted_block(block.id) {
+        for statement in &high.statements {
+            if !ir.pay(1 + statement.inputs.len() + statement.outputs.len()) {
+                return;
+            }
+            // The last faulting primitive remains inspectable in the semantic
+            // model, while the control line reports its exceptional completion.
+            if matches!(block.terminator, Terminator::Trap { .. })
+                && block
+                    .operations
+                    .last()
+                    .is_some_and(|o| o.id == statement.operation)
+            {
+                continue;
+            }
+            let Some(text) = ir.high_statement(statement) else {
+                return;
+            };
+            indent(out, depth);
+            let _ = writeln!(out, "{text} // op{}", statement.operation.0);
+        }
+        return;
+    }
     for (position, op) in block.operations.iter().enumerate() {
         if !ir.pay(1 + op.inputs.len() + op.outputs.len()) {
             return;
@@ -354,6 +427,16 @@ fn transfer(
     ir: &mut RenderIndex<'_, impl FnMut(usize)>,
     depth: usize,
 ) {
+    if let Some(transfer) = ir.lifted_transfer(id) {
+        if !ir.pay(transfer.arguments.len().saturating_add(1)) {
+            return;
+        }
+        if let Some(text) = ir.high_transfer(transfer) {
+            indent(out, depth);
+            let _ = writeln!(out, "{text}");
+        }
+        return;
+    }
     if let Some(edge) = ir.edge(id)
         && let Some(target) = ir.block(edge.to)
         && !target.parameters.is_empty()
@@ -415,7 +498,11 @@ fn syntax(
             else_branch,
         } => {
             indent(out, depth);
-            let _ = writeln!(out, "if ({} != 0) {{", expression(ir, *condition));
+            let condition = ir
+                .lifted_control(n.id)
+                .map(|c| ir.high_expression(c.condition))
+                .unwrap_or_else(|| format!("{} != 0", expression(ir, *condition)));
+            let _ = writeln!(out, "if ({condition}) {{");
             syntax(out, then_branch, ir, depth + 1);
             if visible(else_branch, ir) {
                 indent(out, depth);
@@ -437,12 +524,22 @@ fn syntax(
             syntax(out, header, ir, depth + 1);
             if let Some(condition) = condition {
                 indent(out, depth + 1);
-                let _ = writeln!(
-                    out,
-                    "if ({} {} 0) {{",
-                    expression(ir, *condition),
-                    if *condition_nonzero { "==" } else { "!=" }
-                );
+                if let Some(control) = ir.lifted_control(n.id) {
+                    let condition = ir.high_expression(control.condition);
+                    let _ = writeln!(
+                        out,
+                        "if ({}{}) {{",
+                        if *condition_nonzero { "!" } else { "" },
+                        condition
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "if ({} {} 0) {{",
+                        expression(ir, *condition),
+                        if *condition_nonzero { "==" } else { "!=" }
+                    );
+                }
                 if let Some(edge) = exit_edge {
                     transfer(out, *edge, ir, depth + 2);
                 }
@@ -475,7 +572,15 @@ fn syntax(
         }
         StructuredKind::PartialExit { block } => {
             indent(out, depth);
-            let _ = writeln!(out, "partial_indirect_exit(b{});", block.0);
+            if let Some(target) = ir.lifted_block(*block).and_then(|b| b.target) {
+                let _ = writeln!(
+                    out,
+                    "partial_indirect_exit({});",
+                    ir.high_expression(target)
+                );
+            } else {
+                let _ = writeln!(out, "partial_indirect_exit(b{});", block.0);
+            }
         }
         StructuredKind::Indirect {
             block,
@@ -483,7 +588,11 @@ fn syntax(
             unresolved,
         } => {
             indent(out, depth);
-            let _ = writeln!(out, "match jump_target(b{}) {{", block.0);
+            if let Some(target) = ir.lifted_block(*block).and_then(|b| b.target) {
+                let _ = writeln!(out, "match {} {{", ir.high_expression(target));
+            } else {
+                let _ = writeln!(out, "match jump_target(b{}) {{", block.0);
+            }
             for a in arms {
                 if !ir.pay(1) {
                     break;
@@ -547,6 +656,9 @@ fn syntax(
 fn visible(node: &StructuredNode, ir: &RenderIndex<'_, impl FnMut(usize)>) -> bool {
     match &node.kind {
         StructuredKind::Sequence(nodes) => nodes.iter().any(|n| visible(n, ir)),
+        StructuredKind::Transfer { edge } if ir.lifted.is_some() => ir
+            .lifted_transfer(*edge)
+            .is_some_and(|t| !t.arguments.is_empty()),
         StructuredKind::Transfer { edge } => ir
             .edge(*edge)
             .and_then(|e| ir.block(e.to))
@@ -598,6 +710,7 @@ fn edge_control(
 
 fn jump_control(
     out: &mut String,
+    block: &Block,
     target: EntityId,
     jump: (&[EntityId], bool),
     ir: &mut RenderIndex<'_, impl FnMut(usize)>,
@@ -605,8 +718,19 @@ fn jump_control(
     dispatch: Option<&DispatchControl>,
 ) {
     let (edges, unresolved) = jump;
+    if ir.lifted.is_some() && edges.len() == 1 && !unresolved {
+        let invalid = matches!(&block.terminator, Terminator::Jump { invalid_targets, .. } | Terminator::Branch { invalid_targets, .. } if !invalid_targets.is_empty());
+        if !invalid {
+            edge_control(out, edges[0], ir, depth, dispatch);
+            return;
+        }
+    }
     indent(out, depth);
-    let value = expression(ir, target);
+    let value = ir
+        .lifted_block(block.id)
+        .and_then(|b| b.target)
+        .map(|id| ir.high_expression(id))
+        .unwrap_or_else(|| expression(ir, target));
     if edges.is_empty() {
         let _ = writeln!(
             out,
@@ -705,7 +829,15 @@ fn control(
             edges,
             unresolved,
             ..
-        } => jump_control(out, *target, (edges, *unresolved), ir, depth, dispatch),
+        } => jump_control(
+            out,
+            block,
+            *target,
+            (edges, *unresolved),
+            ir,
+            depth,
+            dispatch,
+        ),
         Terminator::Branch {
             condition,
             target,
@@ -715,9 +847,15 @@ fn control(
             ..
         } => {
             indent(out, depth);
-            let _ = writeln!(out, "if ({} != 0) {{", expression(ir, *condition));
+            let condition = ir
+                .lifted_block(block.id)
+                .and_then(|b| b.condition)
+                .map(|c| ir.high_expression(c))
+                .unwrap_or_else(|| format!("{} != 0", expression(ir, *condition)));
+            let _ = writeln!(out, "if ({condition}) {{");
             jump_control(
                 out,
+                block,
                 *target,
                 (then_edges, *unresolved),
                 ir,

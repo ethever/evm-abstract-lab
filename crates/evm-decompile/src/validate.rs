@@ -40,6 +40,9 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
     if let Some(s) = &ir.structured {
         collect_nodes(&s.root, &mut all);
     }
+    if let Some(lifted) = &ir.lifted {
+        all.extend(lifted.entity_ids());
+    }
     let mut seen = BTreeSet::new();
     add(
         "identity_uniqueness",
@@ -287,10 +290,28 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
                 structural.push(format!("block {id:?} omitted from structured AST"));
             }
         }
-    } else if stage.kind == StageKind::Structured {
+    } else if matches!(stage.kind, StageKind::Structured | StageKind::Lifted) {
         structural.push("structured stage has no AST".to_owned());
     }
     add("structured_references_and_coverage", structural);
+    if stage.kind == StageKind::Lifted {
+        checks.push(if checks.iter().all(|c| c.passed) {
+            crate::lift::certify(ir, cancel)
+        } else {
+            ValidationCheck {
+                name: "lifted_semantic_projection".to_owned(),
+                passed: false,
+                message: "source witness invariants must pass before semantic certification"
+                    .to_owned(),
+            }
+        });
+    } else if ir.lifted.is_some() {
+        checks.push(ValidationCheck {
+            name: "lifted_stage_boundary".to_owned(),
+            passed: false,
+            message: "semantic projection is only valid at the Lifted boundary".to_owned(),
+        });
+    }
     Validation {
         status: if checks.iter().all(|c| c.passed) {
             ValidationStatus::Passed
@@ -473,6 +494,19 @@ pub(crate) fn validate_transition(
     let normalize = |id: &EntityId| ancestry.get(id).copied().unwrap_or(*id);
     let mut projections = BTreeMap::new();
     let mut errors = Vec::new();
+    if after.kind == StageKind::Lifted
+        && (before.kind != StageKind::Structured
+            || before.ir.bytecode_len != after.ir.bytecode_len
+            || before.ir.fact_scope != after.ir.fact_scope
+            || before.ir.entry != after.ir.entry
+            || before.ir.blocks != after.ir.blocks
+            || before.ir.values != after.ir.values
+            || before.ir.edges != after.ir.edges
+            || before.ir.structured != after.ir.structured)
+    {
+        errors
+            .push("Lifted semantic projection changed its Structured primitive witness".to_owned());
+    }
     if before.kind != StageKind::Decoded
         && (before.ir.bytecode_len != after.ir.bytecode_len
             || before.ir.fact_scope != after.ir.fact_scope

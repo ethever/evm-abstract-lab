@@ -64,7 +64,7 @@ fn complete(artifact: &Artifact) {
         "{:?}",
         artifact.diagnostics
     );
-    assert_eq!(artifact.current().unwrap().kind, StageKind::Structured);
+    assert_eq!(artifact.current().unwrap().kind, StageKind::Lifted);
 }
 
 fn assert_projection(artifact: &Artifact, pc: usize, kept: &[usize]) {
@@ -125,7 +125,7 @@ fn captured_terminal_revert_projects_dead_words_and_retains_baseline_history() {
     let baseline = baseline(&artifact);
     assert_eq!(baseline.ir, before.current().unwrap().ir);
     let current = artifact.current().unwrap();
-    assert_eq!(current.kind, StageKind::Structured);
+    assert_eq!(current.kind, StageKind::Lifted);
     let observed: Vec<_> = at_pc(baseline, 0x6a3)
         .into_iter()
         .filter(|block| block.parameters.len() == 10)
