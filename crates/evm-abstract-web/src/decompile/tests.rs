@@ -13,6 +13,8 @@ use evm_abstract_protocol::{
     },
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+mod dependencies;
 mod dispatch;
 pub(super) mod fixture;
 mod input;

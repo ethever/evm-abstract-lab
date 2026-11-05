@@ -80,6 +80,8 @@ if (z != 0) { ... }
 
 前端默认提供 **Simplified structured code**，并保留 **Structured code** 查看底层结构化表示。高层实体可以在 IR、Changes 和转换检查器中检查，并回到原始指令；反向的 source descendant 导航也保留。CLI 文本默认导出最后验证的高层阶段，JSON 保存所有阶段及类型化投影。
 
+高层代码默认隐藏独立的 memory/effect token 传递行及语句尾部的状态依赖注释。开启 **Show state dependencies** 可恢复这些信息；复制按钮使用当前显示选项，缩进与有效 word 参数传递保持一致。真实的内存、storage、调用、日志及终止操作仍显示。该偏好在切换视图、阶段和接收新产物时保留，原始 Structured、IR 与 Inspector 始终保留完整依赖；隐藏的空传边实体仍可通过来源链接定位到 IR。切换显示不会重跑分析、创建转换事件或修改产物，CLI 与 JSON 的既有导出策略也不受这个前端偏好影响。
+
 新产物使用 schema version 2；轻量模型仍可解码不含高层投影的旧 version 1 产物。新字段和枚举不面向旧版严格读取器伪装为 version 1。高层表达式按平面引用编码，构造、历史保留和文本展开有资源限制；导出遇到表达式展开上限或取消时报告准确状态。提升中止时保留最后验证的 `Structured` 阶段。
 
 这一阶段提供表达式与逻辑活性简化。MLOAD、MSTORE、调用和其他 memory 原语仍保留；符号内存内容、字节缓冲区与消费端重建的后续设计见 [#158](https://github.com/ethever/evm-abstract-lab/issues/158)。

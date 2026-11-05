@@ -15,6 +15,7 @@ struct Scope<'a> {
     following: Option<EntityId>,
     outer_loop: Option<LoopScope>,
     lifted: Option<&'a LiftedRenderIndex<'a>>,
+    show_state_dependencies: bool,
 }
 #[derive(Clone, Copy)]
 struct LoopScope {
@@ -62,14 +63,23 @@ pub(super) fn lines(stage: &Stage) -> Vec<Line> {
 }
 
 pub(super) fn lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
-    render_lines(stage, index, false)
+    render_lines(stage, index, false, true)
 }
 
-pub(super) fn lifted_lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
-    render_lines(stage, index, true)
+pub(super) fn lifted_lines_indexed(
+    stage: &Stage,
+    index: &StageIndex,
+    show_state_dependencies: bool,
+) -> Vec<Line> {
+    render_lines(stage, index, true, show_state_dependencies)
 }
 
-fn render_lines(stage: &Stage, index: &StageIndex, lifted: bool) -> Vec<Line> {
+fn render_lines(
+    stage: &Stage,
+    index: &StageIndex,
+    lifted: bool,
+    show_state_dependencies: bool,
+) -> Vec<Line> {
     // The shared semantic index is built once for this complete code batch.
     let renderer = lifted
         .then(|| {
@@ -88,6 +98,7 @@ fn render_lines(stage: &Stage, index: &StageIndex, lifted: bool) -> Vec<Line> {
             index,
             Scope {
                 lifted: renderer.as_ref(),
+                show_state_dependencies,
                 ..Scope::default()
             },
             0,
@@ -136,11 +147,9 @@ fn render(
                 );
             }
         }
-        StructuredKind::Block { block } => {
-            body(node.id, *block, ir, index, scope.lifted, indent, output)
-        }
+        StructuredKind::Block { block } => body(node.id, *block, ir, index, scope, indent, output),
         StructuredKind::Transfer { edge } => {
-            transfer(node.id, *edge, ir, index, scope.lifted, indent, output)
+            transfer(node.id, *edge, ir, index, scope, indent, output)
         }
         StructuredKind::If {
             condition,
@@ -192,7 +201,7 @@ fn render(
                 };
                 emit(output, owner, indent + 1, format!("if ({condition}) {{"));
                 if let Some(edge) = exit_edge {
-                    transfer(owner, *edge, ir, index, scope.lifted, indent + 2, output);
+                    transfer(owner, *edge, ir, index, scope, indent + 2, output);
                 }
                 emit(output, owner, indent + 2, "break;");
                 emit(output, owner, indent + 1, "}");
@@ -210,7 +219,7 @@ fn render(
                 Scope {
                     following: None,
                     outer_loop,
-                    lifted: scope.lifted,
+                    ..scope
                 },
                 indent + 1,
                 output,
@@ -329,14 +338,14 @@ fn body(
     block: EntityId,
     ir: &Ir,
     index: &StageIndex,
-    lifted: Option<&LiftedRenderIndex<'_>>,
+    scope: Scope<'_>,
     indent: usize,
     output: &mut Vec<Line>,
 ) {
     let Some(block) = index.block(ir, block) else {
         return;
     };
-    let semantic = lifted.and_then(|_| index.source_block(ir, block.id));
+    let semantic = scope.lifted.and_then(|_| index.source_block(ir, block.id));
     let owner = semantic.map_or(node, |block| block.id);
     emit(
         output,
@@ -351,7 +360,7 @@ fn body(
             ))
         ),
     );
-    if let Some(renderer) = lifted {
+    if let Some(renderer) = scope.lifted {
         let Some(semantic) = semantic else {
             emit(
                 output,
@@ -380,7 +389,11 @@ fn body(
                 output,
                 statement.id,
                 indent,
-                super::lifted::statement(renderer, statement),
+                super::lifted::statement_with_dependencies(
+                    renderer,
+                    statement,
+                    scope.show_state_dependencies,
+                ),
             );
         }
         return;
@@ -409,7 +422,7 @@ fn transfer(
     edge: EntityId,
     ir: &Ir,
     index: &StageIndex,
-    lifted: Option<&LiftedRenderIndex<'_>>,
+    scope: Scope<'_>,
     indent: usize,
     output: &mut Vec<Line>,
 ) {
@@ -419,9 +432,11 @@ fn transfer(
     let Some(target) = index.block(ir, edge.to) else {
         return;
     };
-    let semantic = lifted.and_then(|_| index.source_transfer(ir, edge.id));
+    let semantic = scope
+        .lifted
+        .and_then(|_| index.source_transfer(ir, edge.id));
     let owner = semantic.map_or(node, |transfer| transfer.id);
-    if let Some(renderer) = lifted {
+    if let Some(renderer) = scope.lifted {
         if let Some(transfer) = semantic {
             if let Some(text) = super::lifted::transfer(renderer, transfer) {
                 emit(output, owner, indent, text);
@@ -446,6 +461,9 @@ fn transfer(
                 edge.id.0
             ),
         );
+    }
+    if scope.lifted.is_some() && !scope.show_state_dependencies {
+        return;
     }
     emit(
         output,

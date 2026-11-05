@@ -58,7 +58,7 @@ pub(super) fn show(
             case.block,
             context.ir,
             context.index,
-            context.scope.lifted,
+            context.scope,
             indent + 3,
             output,
         );
@@ -111,7 +111,7 @@ impl Dispatch<'_> {
             edge,
             self.context.ir,
             self.context.index,
-            self.context.scope.lifted,
+            self.context.scope,
             indent,
             output,
         );

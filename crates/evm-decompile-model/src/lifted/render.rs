@@ -207,6 +207,16 @@ impl<'a> LiftedRenderIndex<'a> {
     pub fn render_statement(
         &self,
         statement: &LiftedStatement,
+        reserve: impl FnMut(usize) -> bool,
+    ) -> Result<String, LiftedRenderError> {
+        self.render_statement_with_dependencies(statement, true, reserve)
+    }
+    /// Format a retained primitive, optionally including state dependency tokens.
+    /// This changes only the suffix; word inputs, outputs and effects are retained.
+    pub fn render_statement_with_dependencies(
+        &self,
+        statement: &LiftedStatement,
+        show_state_dependencies: bool,
         mut reserve: impl FnMut(usize) -> bool,
     ) -> Result<String, LiftedRenderError> {
         let operation = self
@@ -234,7 +244,7 @@ impl<'a> LiftedRenderIndex<'a> {
             .map(|id| self.render_expression(*id, &mut reserve))
             .collect::<Result<Vec<_>, _>>()?
             .join(", ");
-        let dependencies = {
+        let dependencies = if show_state_dependencies {
             let op = operation;
             let memory = match (op.memory_input, op.memory_output) {
                 (Some(input), Some(output)) => format!(" // memory m{} → m{}", input.0, output.0),
@@ -247,6 +257,8 @@ impl<'a> LiftedRenderIndex<'a> {
                 _ => String::new(),
             };
             format!("{memory}{effect}")
+        } else {
+            String::new()
         };
         Ok(format!("{lhs}{name}({args});{dependencies}"))
     }
