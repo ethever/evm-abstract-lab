@@ -32,8 +32,16 @@ pub(super) fn expression(renderer: &LiftedRenderIndex<'_>, id: EntityId) -> Stri
 }
 
 pub(super) fn statement(renderer: &LiftedRenderIndex<'_>, statement: &LiftedStatement) -> String {
+    statement_with_dependencies(renderer, statement, true)
+}
+
+pub(super) fn statement_with_dependencies(
+    renderer: &LiftedRenderIndex<'_>,
+    statement: &LiftedStatement,
+    show_state_dependencies: bool,
+) -> String {
     renderer
-        .render_statement(statement, |_| true)
+        .render_statement_with_dependencies(statement, show_state_dependencies, |_| true)
         .unwrap_or_else(|error| format!("unavailable_statement(h{}: {error});", statement.id.0))
 }
 

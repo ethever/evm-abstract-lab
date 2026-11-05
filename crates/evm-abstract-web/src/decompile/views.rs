@@ -57,6 +57,8 @@ pub(super) struct Views {
     pub differences: Differences,
     rendered: Option<(ArtifactId, StageId, Vec<structured::Line>)>,
     rendered_lifted: bool,
+    rendered_show_state_dependencies: bool,
+    show_state_dependencies: bool,
     lifted_seen: bool,
     narrow_before: bool,
     source: source::Source,
@@ -78,6 +80,7 @@ impl Views {
             route,
             lifted_seen: self.lifted_seen || has_lifted,
             narrow_before: self.narrow_before,
+            show_state_dependencies: self.show_state_dependencies,
             ..Self::default()
         };
     }
@@ -184,7 +187,14 @@ impl Views {
                 {
                     continue;
                 }
-                controls::tab_value(ui, &mut self.route, route, route.label(), Density::Regular);
+                if controls::tab_value(ui, &mut self.route, route, route.label(), Density::Regular)
+                    .clicked()
+                {
+                    // Explicit route selection supersedes pending automatic navigation.
+                    state.entity_navigation = false;
+                    state.source_navigation = false;
+                    state.compare_navigation = false;
+                }
             }
         });
         self.compare(artifact, state);
@@ -296,8 +306,7 @@ impl Views {
                 .show(ui, artifact, stage, state, &self.differences, false);
             return;
         }
-        self.prepare_code(artifact, stage, state);
-        let lines = &self.rendered.as_ref().expect("rendered stage").2;
+        let mut copy = false;
         ui.horizontal_wrapped(|ui| {
             ui.strong(format!(
                 "{} · {:?}",
@@ -306,23 +315,33 @@ impl Views {
             ));
             if self.route == Route::Lifted {
                 ui.label("Word comparisons use unsigned 256-bit order; signed comparisons use s-prefixed names.");
-            }
-            if controls::action(ui, "Copy structured text", Density::Compact).clicked() {
-                ui.ctx().copy_text(
-                    lines
-                        .iter()
-                        .map(|line| format!("{}{}", "    ".repeat(line.indent), line.text))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
+                controls::toggle(
+                    ui,
+                    &mut self.show_state_dependencies,
+                    "Show state dependencies",
+                    Density::Compact,
                 );
             }
+            copy = controls::action(ui, "Copy structured text", Density::Compact).clicked();
         });
+        self.prepare_code(artifact, stage, state);
+        let lines = &self.rendered.as_ref().expect("rendered stage").2;
+        if copy {
+            ui.ctx().copy_text(
+                lines
+                    .iter()
+                    .map(|line| format!("{}{}", "    ".repeat(line.indent), line.text))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
         code::legend(ui);
         let layout = code::Layout::new(ui);
         let mut scroll = egui::ScrollArea::both().id_salt((
             "decompile_structured",
             stage.id.0,
             self.route == Route::Lifted,
+            self.route == Route::Lifted && self.show_state_dependencies,
         ));
         if state.entity_navigation
             && let Some(selected) = state.selected_in(artifact, stage.id)
@@ -361,18 +380,25 @@ impl Views {
     fn prepare_code(&mut self, artifact: &Artifact, stage: &Stage, state: &ViewState) {
         let key = (artifact.id.clone(), stage.id);
         let lifted = self.route == Route::Lifted;
+        let show_state_dependencies = !lifted || self.show_state_dependencies;
         if self
             .rendered
             .as_ref()
             .is_none_or(|(artifact, stage, _)| (artifact, *stage) != (&key.0, key.1))
             || self.rendered_lifted != lifted
+            || self.rendered_show_state_dependencies != show_state_dependencies
         {
             self.rendered_lifted = lifted;
+            self.rendered_show_state_dependencies = show_state_dependencies;
             self.rendered = Some((
                 key.0,
                 key.1,
                 if lifted {
-                    structured::lifted_lines_indexed(stage, &state.index.stage(stage.id))
+                    structured::lifted_lines_indexed(
+                        stage,
+                        &state.index.stage(stage.id),
+                        show_state_dependencies,
+                    )
                 } else {
                     structured::lines_indexed(stage, &state.index.stage(stage.id))
                 },
