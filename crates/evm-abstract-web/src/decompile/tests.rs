@@ -16,6 +16,8 @@ use evm_abstract_protocol::{
 #[cfg(not(target_arch = "wasm32"))]
 mod dependencies;
 mod dispatch;
+#[cfg(not(target_arch = "wasm32"))]
+mod empty_branches;
 pub(super) mod fixture;
 mod input;
 mod lifecycle;

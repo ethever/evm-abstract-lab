@@ -29,6 +29,23 @@ pub(super) struct Line {
     pub text: String,
 }
 
+/// Only sequence/block headers are context. Diagnostics (including fault
+/// comments) and control constructs remain content even without operations.
+#[derive(Default)]
+struct RenderSummary {
+    has_content: bool,
+}
+
+impl RenderSummary {
+    const CONTENT: Self = Self { has_content: true };
+
+    fn since(output: &[Line], start: usize) -> Self {
+        Self {
+            has_content: output.len() > start,
+        }
+    }
+}
+
 pub(super) fn visit(node: &StructuredNode, visitor: &mut impl FnMut(&StructuredNode)) {
     let mut pending = vec![node];
     while let Some(node) = pending.pop() {
@@ -123,7 +140,8 @@ fn render(
     scope: Scope<'_>,
     indent: usize,
     output: &mut Vec<Line>,
-) {
+) -> RenderSummary {
+    let mut summary = RenderSummary::CONTENT;
     match &node.kind {
         StructuredKind::Sequence(nodes) => {
             emit(
@@ -132,24 +150,30 @@ fn render(
                 indent,
                 format!("// sequence ast{} · {} children", node.id.0, nodes.len()),
             );
+            summary = RenderSummary::default();
             for (position, child) in nodes.iter().enumerate() {
                 let following = nodes
                     .get(position + 1)
                     .map(|next| index.first_block(ir, next))
                     .unwrap_or(scope.following);
-                render(
+                summary.has_content |= render(
                     child,
                     ir,
                     index,
                     Scope { following, ..scope },
                     indent,
                     output,
-                );
+                )
+                .has_content;
             }
         }
-        StructuredKind::Block { block } => body(node.id, *block, ir, index, scope, indent, output),
+        StructuredKind::Block { block } => {
+            summary = body(node.id, *block, ir, index, scope, indent, output);
+        }
         StructuredKind::Transfer { edge } => {
-            transfer(node.id, *edge, ir, index, scope, indent, output)
+            let start = output.len();
+            transfer(node.id, *edge, ir, index, scope, indent, output);
+            summary = RenderSummary::since(output, start);
         }
         StructuredKind::If {
             condition,
@@ -159,8 +183,15 @@ fn render(
             let (owner, predicate) = predicate(node.id, *condition, ir, index, scope.lifted);
             emit(output, owner, indent, format!("if ({predicate}) {{"));
             render(then_branch, ir, index, scope, indent + 1, output);
+            let else_start = output.len();
             emit(output, owner, indent, "} else {");
-            render(else_branch, ir, index, scope, indent + 1, output);
+            let otherwise = render(else_branch, ir, index, scope, indent + 1, output);
+            if scope.lifted.is_some() && !otherwise.has_content {
+                // Remove only this tentative separator and its contextual rows;
+                // the final brace still closes the then branch. Each subtree
+                // renders once into the shared buffer, without rescanning it.
+                output.truncate(else_start);
+            }
             emit(output, owner, indent, "}");
         }
         StructuredKind::While {
@@ -331,6 +362,7 @@ fn render(
             );
         }
     }
+    summary
 }
 
 fn body(
@@ -341,9 +373,9 @@ fn body(
     scope: Scope<'_>,
     indent: usize,
     output: &mut Vec<Line>,
-) {
+) -> RenderSummary {
     let Some(block) = index.block(ir, block) else {
-        return;
+        return RenderSummary::default();
     };
     let semantic = scope.lifted.and_then(|_| index.source_block(ir, block.id));
     let owner = semantic.map_or(node, |block| block.id);
@@ -360,6 +392,8 @@ fn body(
             ))
         ),
     );
+    // Everything after the block header is content, including diagnostics.
+    let content_start = output.len();
     if let Some(renderer) = scope.lifted {
         let Some(semantic) = semantic else {
             emit(
@@ -368,7 +402,7 @@ fn body(
                 indent,
                 format!("unavailable_high_block(b{});", block.id.0),
             );
-            return;
+            return RenderSummary::CONTENT;
         };
         for statement in &semantic.statements {
             if let Some(op) = index.operation(ir, statement.operation) {
@@ -396,7 +430,7 @@ fn body(
                 ),
             );
         }
-        return;
+        return RenderSummary::since(output, content_start);
     }
     for op in &block.operations {
         if let Some(reason) = fault_reason(op, ir, index) {
@@ -415,6 +449,7 @@ fn body(
         }
         emit(output, op.id, indent, operation(op, ir, index));
     }
+    RenderSummary::since(output, content_start)
 }
 
 fn transfer(
