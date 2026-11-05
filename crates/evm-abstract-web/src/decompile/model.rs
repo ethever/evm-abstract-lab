@@ -33,6 +33,11 @@ pub(super) enum EntityKind {
     Edge,
     Structure,
     Transition,
+    LiftedExpression,
+    LiftedBlock,
+    LiftedStatement,
+    LiftedTransfer,
+    LiftedControl,
 }
 
 #[derive(Default)]
@@ -95,6 +100,9 @@ impl Index {
                         }
                     }
                 });
+            }
+            if let Some(program) = &stage.ir.lifted {
+                super::lifted::visit(program, &mut add);
             }
         }
         index
@@ -391,7 +399,14 @@ impl ViewState {
 }
 
 pub(super) fn check_artifact(artifact: &Artifact) -> Result<(), String> {
-    if artifact.schema_version != evm_abstract_protocol::decompile_model::SCHEMA_VERSION {
+    let legacy_raw = artifact.schema_version == 1
+        && artifact
+            .stages
+            .iter()
+            .all(|stage| stage.kind != StageKind::Lifted && stage.ir.lifted.is_none());
+    if artifact.schema_version != evm_abstract_protocol::decompile_model::SCHEMA_VERSION
+        && !legacy_raw
+    {
         return Err(format!(
             "unsupported artifact schema {}",
             artifact.schema_version
@@ -441,6 +456,18 @@ pub(super) fn check_artifact(artifact: &Artifact) -> Result<(), String> {
                     }
                 }
             });
+        }
+        if let Some(program) = &stage.ir.lifted {
+            super::lifted::visit(program, &mut |id, _| check(id));
+            if stage.validation.status != ValidationStatus::Failed {
+                program
+                    .validate()
+                    .map_err(|error| format!("invalid lifted stage {:?}: {error}", stage.id))?;
+            }
+        } else if stage.kind == StageKind::Lifted
+            && stage.validation.status != ValidationStatus::Failed
+        {
+            return Err(format!("missing lifted program in stage {:?}", stage.id));
         }
         if let Some(id) = duplicate
             && stage.validation.status != ValidationStatus::Failed

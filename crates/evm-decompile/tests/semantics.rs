@@ -99,7 +99,7 @@ fn check(input: &Input, config: &Config, host: MemoryHost) -> Artifact {
             .map(|s| &s.validation)
             .collect::<Vec<_>>()
     );
-    assert_eq!(artifact.current().unwrap().kind, StageKind::Structured);
+    assert_eq!(artifact.current().unwrap().kind, StageKind::Lifted);
     let limits = ExecutionLimits::default();
     let mut raw_host = host.clone();
     let raw = execute_bytecode(input, &mut raw_host, &limits).unwrap();
@@ -1254,7 +1254,13 @@ fn overflow_and_state_write_underflow_render_faults_without_fake_results() {
         &Config::default(),
         MemoryHost::new(&input, Vec::new()),
     );
-    let text = render_text(&artifact);
+    let mut primitive_view = artifact.clone();
+    primitive_view.current_stage = artifact
+        .stages
+        .iter()
+        .find(|s| s.kind == StageKind::Structured)
+        .map(|s| s.id);
+    let text = render_text(&primitive_view);
     assert!(text.contains("EVM stack overflow"));
     assert_eq!(text.matches(" = ").count(), 1024);
     let fault = baseline(&artifact).ir.blocks[0].operations.last().unwrap();
@@ -1270,7 +1276,13 @@ fn overflow_and_state_write_underflow_render_faults_without_fake_results() {
         &Config::default(),
         MemoryHost::new(&input, Vec::new()),
     );
-    let text = render_text(&artifact);
+    let mut primitive_view = artifact.clone();
+    primitive_view.current_stage = artifact
+        .stages
+        .iter()
+        .find(|s| s.kind == StageKind::Structured)
+        .map(|s| s.id);
+    let text = render_text(&primitive_view);
     assert!(text.contains("0x7") && text.contains("EVM stack underflow"));
     assert!(!text.contains("sstore("));
 }
@@ -1279,8 +1291,22 @@ fn overflow_and_state_write_underflow_render_faults_without_fake_results() {
 fn export_is_bounded_and_can_cancel_during_a_large_primitive_body() {
     let mut bytes = [0x5f, 0x50].repeat(4096);
     bytes.push(0x00);
-    let artifact = decompile(&Input::new(bytes, Fork::Osaka), &Config::default());
-    assert_eq!(artifact.completion, Completion::Complete);
+    let mut config = Config::default();
+    // The additional immutable Lifted snapshot retains the complete raw witness.
+    // This fixture exercises export cancellation, independently of history refusal.
+    config.limits.max_history_entities *= 2;
+    let mut artifact = decompile(&Input::new(bytes, Fork::Osaka), &config);
+    assert_eq!(
+        artifact.completion,
+        Completion::Complete,
+        "{:?}",
+        artifact.diagnostics
+    );
+    artifact.current_stage = artifact
+        .stages
+        .iter()
+        .find(|s| s.kind == StageKind::Structured)
+        .map(|s| s.id);
     let cancel = Cancellation::new();
     let complete = evm_decompile::export_text(&artifact, &cancel);
     assert_eq!(complete.status, evm_decompile::TextExportStatus::Complete);

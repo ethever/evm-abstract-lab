@@ -27,6 +27,7 @@ mod tests;
 enum Route {
     #[default]
     Structured,
+    Lifted,
     Graphs,
     Ir,
     Changes,
@@ -36,6 +37,7 @@ impl Route {
     fn label(self) -> &'static str {
         match self {
             Self::Structured => "Structured code",
+            Self::Lifted => "Simplified structured code",
             Self::Graphs => "Graphs",
             Self::Ir => "IR",
             Self::Changes => "Changes",
@@ -54,6 +56,8 @@ pub(super) struct Views {
     comparison: Option<(ArtifactId, StageId, StageId)>,
     pub differences: Differences,
     rendered: Option<(ArtifactId, StageId, Vec<structured::Line>)>,
+    rendered_lifted: bool,
+    lifted_seen: bool,
     narrow_before: bool,
     source: source::Source,
 }
@@ -61,9 +65,18 @@ pub(super) struct Views {
 impl Views {
     /// Artifact IDs name input/configuration namespaces and can recur across
     /// publications. Drop every derived cache, including nested canvas state.
-    pub fn artifact_installed(&mut self) {
+    pub fn artifact_installed(&mut self, artifact: &Artifact) {
+        let has_lifted = artifact
+            .current()
+            .is_some_and(|stage| stage.ir.lifted.is_some());
+        let route = if !self.lifted_seen && self.route == Route::Structured && has_lifted {
+            Route::Lifted
+        } else {
+            self.route
+        };
         *self = Self {
-            route: self.route,
+            route,
+            lifted_seen: self.lifted_seen || has_lifted,
             narrow_before: self.narrow_before,
             ..Self::default()
         };
@@ -156,12 +169,21 @@ impl Views {
         });
         ui.horizontal_wrapped(|ui| {
             for route in [
+                Route::Lifted,
                 Route::Structured,
                 Route::Graphs,
                 Route::Ir,
                 Route::Changes,
                 Route::Source,
             ] {
+                if route == Route::Lifted
+                    && !artifact
+                        .stages
+                        .iter()
+                        .any(|stage| stage.ir.lifted.is_some())
+                {
+                    continue;
+                }
                 controls::tab_value(ui, &mut self.route, route, route.label(), Density::Regular);
             }
         });
@@ -181,19 +203,32 @@ impl Views {
             && let Some(selected) = &state.selected
         {
             let at = selected.at;
+            let kind = state.index.entities.get(&at).copied();
+            let semantic_code = matches!(
+                kind,
+                Some(
+                    EntityKind::LiftedBlock
+                        | EntityKind::LiftedStatement
+                        | EntityKind::LiftedTransfer
+                        | EntityKind::LiftedControl
+                )
+            );
+            if semantic_code {
+                self.route = Route::Lifted;
+            }
             let keep_code = self.route == Route::Structured
-                && state.index.entities.get(&at) == Some(&EntityKind::Operation)
+                && kind == Some(EntityKind::Operation)
                 && artifact
                     .stage(at.stage)
                     .is_some_and(|stage| stage.ir.structured.is_some());
-            if keep_code {
+            if keep_code || semantic_code {
                 self.prepare_code(
                     artifact,
                     artifact.stage(at.stage).expect("selected stage"),
                     state,
                 );
             }
-            self.route = match state.index.entities.get(&selected.at) {
+            self.route = match kind {
                 Some(EntityKind::Structure | EntityKind::Transition) => Route::Structured,
                 Some(EntityKind::Operation)
                     if keep_code
@@ -203,11 +238,18 @@ impl Views {
                 {
                     Route::Structured
                 }
+                _ if semantic_code
+                    && self.rendered.as_ref().is_some_and(|(_, _, lines)| {
+                        lines.iter().any(|line| line.entity == at.entity)
+                    }) =>
+                {
+                    Route::Lifted
+                }
                 _ => Route::Ir,
             };
         }
         match self.route {
-            Route::Structured => self.code(ui, artifact, state),
+            Route::Structured | Route::Lifted => self.code(ui, artifact, state),
             Route::Graphs => self.graphs(ui, artifact, state),
             Route::Ir => self.ir(ui, artifact, state),
             Route::Changes => changes(ui, artifact, state, &self.differences),
@@ -245,6 +287,15 @@ impl Views {
                 .show(ui, artifact, stage, state, &self.differences, false);
             return;
         }
+        if self.route == Route::Lifted && stage.ir.lifted.is_none() {
+            ui.label(format!(
+                "{} has no simplified structured representation. Select a Lifted stage or inspect its IR.",
+                stage_label(stage)
+            ));
+            self.current_ir
+                .show(ui, artifact, stage, state, &self.differences, false);
+            return;
+        }
         self.prepare_code(artifact, stage, state);
         let lines = &self.rendered.as_ref().expect("rendered stage").2;
         ui.horizontal_wrapped(|ui| {
@@ -253,6 +304,9 @@ impl Views {
                 stage_label(stage),
                 stage.validation.status
             ));
+            if self.route == Route::Lifted {
+                ui.label("Word comparisons use unsigned 256-bit order; signed comparisons use s-prefixed names.");
+            }
             if controls::action(ui, "Copy structured text", Density::Compact).clicked() {
                 ui.ctx().copy_text(
                     lines
@@ -265,7 +319,11 @@ impl Views {
         });
         code::legend(ui);
         let layout = code::Layout::new(ui);
-        let mut scroll = egui::ScrollArea::both().id_salt(("decompile_structured", stage.id.0));
+        let mut scroll = egui::ScrollArea::both().id_salt((
+            "decompile_structured",
+            stage.id.0,
+            self.route == Route::Lifted,
+        ));
         if state.entity_navigation
             && let Some(selected) = state.selected_in(artifact, stage.id)
             && let Some(position) = lines.iter().position(|line| line.entity == selected)
@@ -302,15 +360,22 @@ impl Views {
 
     fn prepare_code(&mut self, artifact: &Artifact, stage: &Stage, state: &ViewState) {
         let key = (artifact.id.clone(), stage.id);
+        let lifted = self.route == Route::Lifted;
         if self
             .rendered
             .as_ref()
             .is_none_or(|(artifact, stage, _)| (artifact, *stage) != (&key.0, key.1))
+            || self.rendered_lifted != lifted
         {
+            self.rendered_lifted = lifted;
             self.rendered = Some((
                 key.0,
                 key.1,
-                structured::lines_indexed(stage, &state.index.stage(stage.id)),
+                if lifted {
+                    structured::lifted_lines_indexed(stage, &state.index.stage(stage.id))
+                } else {
+                    structured::lines_indexed(stage, &state.index.stage(stage.id))
+                },
             ));
         }
     }
@@ -406,6 +471,12 @@ impl Views {
 }
 
 pub(super) fn stage_label(stage: &Stage) -> String {
+    if stage.kind == StageKind::Lifted {
+        return format!(
+            "{} · Lifted · Simplified structured code · {:?}",
+            stage.id.0, stage.validation.status
+        );
+    }
     format!(
         "{} · {:?} · {:?}",
         stage.id.0, stage.kind, stage.validation.status

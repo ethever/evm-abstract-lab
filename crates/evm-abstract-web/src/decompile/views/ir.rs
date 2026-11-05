@@ -1,11 +1,13 @@
 //! Virtual rows retain every IR entity while formatting only the visible range.
 
 use super::{
-    super::{diff::Differences, index::StageIndex, model::ViewState, rows, structured},
+    super::{diff::Differences, index::StageIndex, lifted, model::ViewState, rows, structured},
     entity_line, stage_label,
 };
 use egui::Ui;
-use evm_abstract_protocol::decompile_model::{Artifact, EntityId, EntityRef, Stage, StageKind};
+use evm_abstract_protocol::decompile_model::{
+    Artifact, EntityId, EntityRef, LiftedRenderIndex, Stage, StageKind,
+};
 
 enum Row {
     Block(usize),
@@ -13,6 +15,7 @@ enum Row {
     Terminator(usize),
     Edge(usize),
     Value(usize),
+    Lifted(EntityId),
     Heading(&'static str),
 }
 
@@ -34,10 +37,22 @@ impl Ir {
     ) {
         let title = if before { "Before IR" } else { "Current IR" };
         let index = state.index.stage(stage.id);
+        let renderer = stage
+            .ir
+            .lifted
+            .as_ref()
+            .map(|program| program.render_index(&stage.ir));
         let identity = egui::Id::new((&artifact.id.0, stage.id.0, title));
         if self.identity != Some(identity) {
             self.identity = Some(identity);
             self.rows.clear();
+            if let Some(program) = &stage.ir.lifted {
+                self.rows.push(Row::Heading("Lifted high-level entities"));
+                lifted::visit(program, &mut |entity, _| {
+                    self.rows.push(Row::Lifted(entity))
+                });
+                self.rows.push(Row::Heading("Raw semantic witness"));
+            }
             for (block, body) in stage.ir.blocks.iter().enumerate() {
                 self.rows.push(Row::Block(block));
                 for operation in 0..body.operations.len() {
@@ -81,7 +96,12 @@ impl Ir {
             for position in range {
                 rows::row(ui, position, |ui| {
                     let row = &self.rows[position];
-                    let text = row.text(stage, &index, &artifact.input.runtime_bytecode);
+                    let text = row.text(
+                        stage,
+                        &index,
+                        &artifact.input.runtime_bytecode,
+                        renderer.as_ref(),
+                    );
                     if let Some(entity) = row.entity(stage) {
                         let visible = entity_line(
                             ui,
@@ -119,10 +139,17 @@ impl Row {
             }
             Self::Edge(index) => Some(stage.ir.edges[index].id),
             Self::Value(index) => Some(stage.ir.values[index].id),
+            Self::Lifted(entity) => Some(entity),
             Self::Heading(_) => None,
         }
     }
-    fn text(&self, stage: &Stage, index: &StageIndex, bytecode: &[u8]) -> String {
+    fn text(
+        &self,
+        stage: &Stage,
+        index: &StageIndex,
+        bytecode: &[u8],
+        renderer: Option<&LiftedRenderIndex<'_>>,
+    ) -> String {
         if stage.kind == StageKind::Decoded {
             return match *self {
                 Self::Operation(block, operation) => structured::decoded_operation(
@@ -141,6 +168,7 @@ impl Row {
                     "Recovery pending; decoded instructions do not establish a continuation".into()
                 }
                 Self::Heading(_) => "Original decode metadata (not recovered SSA)".into(),
+                Self::Lifted(_) => "Unavailable lifted entity in original decode".into(),
                 Self::Edge(position) => format!(
                     "Decoded edge e{} · not a recovered SSA transfer",
                     stage.ir.edges[position].id.0
@@ -188,6 +216,12 @@ impl Row {
                 format!("v{}: {:?} · {:?}", value.id.0, value.kind, value.fact)
             }
             Self::Heading(text) => text.into(),
+            Self::Lifted(entity) => renderer
+                .and_then(|renderer| lifted::details(stage, index, entity, renderer))
+                .map_or_else(
+                    || format!("Unavailable lifted entity {}", entity.0),
+                    |details| details.lines.join(" · "),
+                ),
         }
     }
 }

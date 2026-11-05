@@ -2,7 +2,8 @@
 //! is retained: syntax locations use parent/child coordinates in linear space.
 
 use evm_abstract_protocol::decompile_model::{
-    Block, DispatchTransition, Edge, EntityId, Ir, Operation, StructuredKind, StructuredNode, Value,
+    Block, DispatchTransition, Edge, EntityId, Ir, LiftedBlock, LiftedControl, LiftedExpression,
+    LiftedStatement, LiftedTransfer, Operation, StructuredKind, StructuredNode, Value,
 };
 use std::collections::BTreeMap;
 
@@ -14,6 +15,15 @@ pub(super) struct StageIndex {
     edges: BTreeMap<EntityId, usize>,
     nodes: BTreeMap<EntityId, Option<(EntityId, usize)>>,
     transitions: BTreeMap<EntityId, (EntityId, usize, usize)>,
+    expressions: BTreeMap<EntityId, usize>,
+    lifted_blocks: BTreeMap<EntityId, usize>,
+    statements: BTreeMap<EntityId, (usize, usize)>,
+    lifted_transfers: BTreeMap<EntityId, usize>,
+    controls: BTreeMap<EntityId, usize>,
+    source_blocks: BTreeMap<EntityId, usize>,
+    source_edges: BTreeMap<EntityId, usize>,
+    source_nodes: BTreeMap<EntityId, usize>,
+    semantic_owners: BTreeMap<EntityId, usize>,
     #[cfg(test)]
     pub value_reads: std::cell::Cell<usize>,
 }
@@ -62,6 +72,43 @@ impl StageIndex {
                 }
             }
         }
+        if let Some(program) = &ir.lifted {
+            for (position, expression) in program.expressions.iter().enumerate() {
+                index.expressions.insert(expression.id, position);
+                if let Some(block) = index.blocks.get(&expression.block) {
+                    index.semantic_owners.insert(expression.id, *block);
+                }
+            }
+            for (position, block) in program.blocks.iter().enumerate() {
+                index.lifted_blocks.insert(block.id, position);
+                index.source_blocks.insert(block.block, position);
+                if let Some(owner) = index.blocks.get(&block.block) {
+                    index.semantic_owners.insert(block.id, *owner);
+                    for statement in &block.statements {
+                        index.semantic_owners.insert(statement.id, *owner);
+                    }
+                }
+                for (offset, statement) in block.statements.iter().enumerate() {
+                    index.statements.insert(statement.id, (position, offset));
+                }
+            }
+            for (position, transfer) in program.transfers.iter().enumerate() {
+                index.lifted_transfers.insert(transfer.id, position);
+                index.source_edges.insert(transfer.edge, position);
+                if let Some(edge) = index.edge(ir, transfer.edge)
+                    && let Some(block) = index.blocks.get(&edge.from)
+                {
+                    index.semantic_owners.insert(transfer.id, *block);
+                }
+            }
+            for (position, control) in program.controls.iter().enumerate() {
+                index.controls.insert(control.id, position);
+                index.source_nodes.insert(control.node, position);
+                if let Some(block) = index.semantic_owners.get(&control.condition).copied() {
+                    index.semantic_owners.insert(control.id, block);
+                }
+            }
+        }
         index
     }
     pub fn block<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a Block> {
@@ -72,6 +119,7 @@ impl StageIndex {
             .get(&id)
             .copied()
             .or_else(|| self.operations.get(&id).map(|(block, _)| *block))
+            .or_else(|| self.semantic_owners.get(&id).copied())
     }
     pub fn operation<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a Operation> {
         let (block, offset) = *self.operations.get(&id)?;
@@ -98,12 +146,66 @@ impl StageIndex {
         }
         (node.id == id).then_some(node)
     }
+    /// A direct If arm carries the already selected condition polarity.
+    pub fn branch_arm(&self, ir: &Ir, id: EntityId) -> Option<bool> {
+        let (parent, slot) = self.nodes.get(&id).copied().flatten()?;
+        matches!(&self.node(ir, parent)?.kind, StructuredKind::If { .. }).then_some(slot == 0)
+    }
     pub fn transition<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a DispatchTransition> {
         let (node, case, offset) = *self.transitions.get(&id)?;
         let StructuredKind::Dispatcher { cases, .. } = &self.node(ir, node)?.kind else {
             return None;
         };
         cases.get(case)?.transitions.get(offset)
+    }
+
+    pub fn expression<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedExpression> {
+        ir.lifted
+            .as_ref()?
+            .expressions
+            .get(*self.expressions.get(&id)?)
+    }
+    pub fn lifted_block<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedBlock> {
+        ir.lifted
+            .as_ref()?
+            .blocks
+            .get(*self.lifted_blocks.get(&id)?)
+    }
+    pub fn statement<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedStatement> {
+        let (block, offset) = *self.statements.get(&id)?;
+        ir.lifted
+            .as_ref()?
+            .blocks
+            .get(block)?
+            .statements
+            .get(offset)
+    }
+    pub fn lifted_transfer<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedTransfer> {
+        ir.lifted
+            .as_ref()?
+            .transfers
+            .get(*self.lifted_transfers.get(&id)?)
+    }
+    pub fn control<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedControl> {
+        ir.lifted.as_ref()?.controls.get(*self.controls.get(&id)?)
+    }
+    pub fn source_block<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedBlock> {
+        ir.lifted
+            .as_ref()?
+            .blocks
+            .get(*self.source_blocks.get(&id)?)
+    }
+    pub fn source_transfer<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedTransfer> {
+        ir.lifted
+            .as_ref()?
+            .transfers
+            .get(*self.source_edges.get(&id)?)
+    }
+    pub fn source_control<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedControl> {
+        ir.lifted
+            .as_ref()?
+            .controls
+            .get(*self.source_nodes.get(&id)?)
     }
 }
 

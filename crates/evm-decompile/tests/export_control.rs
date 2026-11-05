@@ -1,8 +1,8 @@
 //! Executable equivalent AST fixtures isolate residual dispatcher text routing.
 use evm_decompile::{
     Artifact, Config, DispatchCase, DispatchTransition, EntityId, ExecutionLimits, Fork, Input,
-    MemoryHost, StructuredKind, StructuredNode, StructuredProgram, ValidationStatus, decompile,
-    execute_bytecode, execute_structured, render_text, validate_stage,
+    MemoryHost, StageKind, StructuredKind, StructuredNode, StructuredProgram, ValidationStatus,
+    decompile, execute_bytecode, execute_structured, render_text, validate_stage,
 };
 
 const DISPATCH: EntityId = EntityId(1_000_000);
@@ -37,7 +37,15 @@ fn dispatcher(artifact: &Artifact, block: EntityId) -> StructuredNode {
     }
 }
 fn install(artifact: &mut Artifact, root: StructuredNode) {
-    let current = artifact.current_stage.unwrap();
+    // These fixtures deliberately replace source AST topology. Select the raw
+    // Structured snapshot rather than invalidating a certified Lifted projection.
+    let current = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == StageKind::Structured)
+        .unwrap()
+        .id;
+    artifact.current_stage = Some(current);
     let stage = artifact
         .stages
         .iter_mut()

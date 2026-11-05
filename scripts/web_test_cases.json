@@ -751,6 +751,24 @@
       ]
     },
     {
+      "id": "decompile-lifted",
+      "group": "decompile",
+      "module": "web_test_decompile_lifted",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_alignment.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_lifted.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http_errors.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
       "id": "decompile-alignment",
       "group": "decompile",
       "module": "web_test_decompile_alignment",

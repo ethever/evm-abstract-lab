@@ -15,6 +15,12 @@ pub(super) struct Details {
 }
 
 pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &[u8]) -> Details {
+    if let Some(program) = &stage.ir.lifted
+        && let Some(details) =
+            super::lifted::details(stage, index, id, &program.render_index(&stage.ir))
+    {
+        return details;
+    }
     let mut details = Details::default();
     if stage.kind == StageKind::Decoded {
         details
@@ -52,6 +58,7 @@ pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &
             .push(structured::terminator(&block.terminator));
         refs.extend(block.parameters.iter().copied());
         refs.extend([block.memory_parameter, block.effect_parameter]);
+        refs.extend(index.source_block(&stage.ir, id).map(|block| block.id));
     } else if let Some(op) = index.operation(&stage.ir, id) {
         details.lines.push(format!(
             "Raw IR o{}: {}",
@@ -99,7 +106,17 @@ pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &
         ));
         refs.extend([edge.from, edge.to, edge.memory, edge.effect]);
         refs.extend(edge.arguments.iter().copied());
+        refs.extend(
+            index
+                .source_transfer(&stage.ir, id)
+                .map(|transfer| transfer.id),
+        );
     } else if let Some(node) = index.node(&stage.ir, id) {
+        refs.extend(
+            index
+                .source_control(&stage.ir, id)
+                .map(|control| control.id),
+        );
         refs.extend(children(node).into_iter().map(|child| child.id));
         let text = match &node.kind {
             StructuredKind::Sequence(nodes) => {

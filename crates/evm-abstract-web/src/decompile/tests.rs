@@ -17,6 +17,8 @@ mod dispatch;
 pub(super) mod fixture;
 mod input;
 mod lifecycle;
+#[cfg(not(target_arch = "wasm32"))]
+mod lifted;
 mod publication_cache;
 mod rendering;
 

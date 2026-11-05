@@ -435,6 +435,9 @@ pub struct Ir {
     pub edges: Vec<Edge>,
     /// Executable structured lowering, never assembled from display text.
     pub structured: Option<StructuredProgram>,
+    /// Certified typed semantic projection; omitted on prior wire snapshots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifted: Option<crate::LiftedProgram> = None,
 }
 }
 impl Ir {
@@ -621,6 +624,8 @@ pub enum Phase {
     ControlFlow,
     /// Natural regions and residual state-machine lowering.
     Structure,
+    /// Typed semantic projection and logical value cleanup.
+    Lift,
     /// Candidate invariant checks.
     Validate,
     /// Materializing forward/reverse origins.

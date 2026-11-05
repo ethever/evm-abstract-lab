@@ -76,7 +76,7 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     assert result["id"] == job["id"]
     assert result["publication"].isdigit()
     artifact = result["artifact"]
-    assert artifact["schema_version"] == 1
+    assert artifact["schema_version"] == 2
     assert artifact["config"]["strategy"] == {"Dispatcher": "dispatcher", "Code duplication": "code_duplication"}[strategy]
     selected_fork = admission.request.post_data_json["fork"]
     assert artifact["input"]["fork"] == selected_fork.lower()
@@ -95,6 +95,8 @@ def stage(artifact, kind):
 
 
 def stage_label(value):
+    if value["kind"] == "lifted":
+        return f"{value['id']} · Lifted · Simplified structured code · {value['validation']['status'].title()}"
     return f"{value['id']} · {''.join(part.title() for part in value['kind'].split('_'))} · {''.join(part.title() for part in value['validation']['status'].split('_'))}"
 
 

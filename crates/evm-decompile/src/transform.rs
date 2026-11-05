@@ -133,6 +133,25 @@ pub(crate) fn ir_size(ir: &Ir) -> usize {
     if let Some(s) = &ir.structured {
         units = units.saturating_add(node_size(&s.root));
     }
+    if let Some(lifted) = &ir.lifted {
+        units = units.saturating_add(lifted.entity_ids().count());
+        for e in &lifted.expressions {
+            units = units.saturating_add(e.kind.operands().len());
+        }
+        for b in &lifted.blocks {
+            units = units
+                .saturating_add(b.parameters.len())
+                .saturating_add(b.exit_values.len());
+            for s in &b.statements {
+                units = units
+                    .saturating_add(s.inputs.len())
+                    .saturating_add(s.outputs.len());
+            }
+        }
+        for t in &lifted.transfers {
+            units = units.saturating_add(t.arguments.len());
+        }
+    }
     units
 }
 fn node_size(n: &StructuredNode) -> usize {
