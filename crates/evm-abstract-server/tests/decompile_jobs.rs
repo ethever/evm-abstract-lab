@@ -396,3 +396,48 @@ fn panicking_decompiler_is_reported_and_a_replacement_serves_the_queued_request(
     );
     pool.shutdown().unwrap();
 }
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn native_jobs_preserve_wide_work_configuration_and_publish_small_exact_statistics() {
+    let pool = Pool::new(Config {
+        workers: 1,
+        queue_capacity: 1,
+        retained_jobs: 2,
+    })
+    .unwrap();
+    for max_work in [
+        4_294_967_296,
+        10_000_000_000,
+        9_007_199_254_740_993,
+        u64::MAX,
+    ] {
+        let mut request = DecompileRequest {
+            bytecode: "00".into(),
+            ..DecompileRequest::default()
+        };
+        request.limits.max_work = max_work;
+        let expected = request.limits.clone();
+        let task = pool.submit_decompile(request).unwrap();
+        let done = terminal(&pool, task.id);
+        assert_eq!(done.state, JobState::Completed);
+        let result = pool.decompile_result(task.id).unwrap();
+        assert_eq!(result.artifact.completion, Completion::Complete);
+        assert_eq!(result.artifact.config.limits, expected);
+        assert_eq!(result.artifact.config.limits.max_work, max_work);
+        assert!(result.artifact.statistics.work > 0 && result.artifact.statistics.work < 1_000_000);
+        assert_eq!(done.progress.work, result.artifact.statistics.work);
+        assert_eq!(done.progress.blocks, result.artifact.statistics.blocks);
+        assert_eq!(
+            done.progress.operations,
+            result.artifact.statistics.operations
+        );
+        assert_eq!(done.progress.stage, result.artifact.current_stage);
+        assert_eq!(
+            done.progress.phase,
+            evm_abstract_protocol::decompile_model::Phase::Complete
+        );
+        assert_eq!(Some(result.publication), done.publication);
+    }
+    pool.shutdown().unwrap();
+}

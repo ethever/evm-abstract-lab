@@ -66,40 +66,41 @@ strict_record! {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Reject larger inputs before decode.
-    pub max_bytecode_bytes: usize,
+    pub max_bytecode_bytes: u64,
     /// Maximum decoded blocks.
-    pub max_blocks: usize,
+    pub max_blocks: u64,
     /// Maximum source and copied operations, including unreachable instructions.
-    pub max_operations: usize,
+    pub max_operations: u64,
     /// Maximum allocated word and memory identities.
-    pub max_values: usize,
+    pub max_values: u64,
     /// Shared logical-work ceiling for recovery and transforms.
-    pub max_work: usize,
+    pub max_work: u64,
     /// Maximum block transfer evaluations.
-    pub max_iterations: usize,
+    pub max_iterations: u64,
     /// Finite numeric candidate capacity; zero is rejected.
-    pub max_constant_set: usize,
+    pub max_constant_set: u64,
     /// Maximum real block copies across node splitting.
-    pub max_cloned_blocks: usize,
+    pub max_cloned_blocks: u64,
     /// Recursion ceiling for region construction, at most MAX_STRUCTURING_DEPTH.
-    pub max_structuring_depth: usize,
+    pub max_structuring_depth: u64,
     /// Maximum retained stage/entity/provenance occurrences across history.
-    pub max_history_entities: usize,
+    pub max_history_entities: u64,
 }
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_bytecode_bytes: 100_000,
-            max_blocks: 8_192,
-            max_operations: 100_000,
-            max_values: 500_000,
-            max_work: 100_000_000,
-            max_iterations: 100_000,
+            max_bytecode_bytes: u64::MAX,
+            max_blocks: u64::MAX,
+            max_operations: u64::MAX,
+            max_values: u64::MAX,
+            max_work: u64::MAX,
+            max_iterations: u64::MAX,
             max_constant_set: 8,
-            max_cloned_blocks: 2_048,
-            max_structuring_depth: 128,
-            max_history_entities: 2_000_000,
+            max_cloned_blocks: u64::MAX,
+            max_structuring_depth: u64::try_from(crate::MAX_STRUCTURING_DEPTH)
+                .expect("supported recursion ceiling fits u64"),
+            max_history_entities: u64::MAX,
         }
     }
 }
@@ -640,11 +641,11 @@ pub struct Progress {
     /// Actual current phase.
     pub phase: Phase,
     /// Maximum decoded/retained block count observed.
-    pub blocks: usize,
+    pub blocks: u64,
     /// Maximum decoded/retained operation count observed.
-    pub operations: usize,
+    pub operations: u64,
     /// Successful logical-work reservation.
-    pub work: usize,
+    pub work: u64,
     /// Latest validated stage.
     pub stage: Option<StageId>,
 }

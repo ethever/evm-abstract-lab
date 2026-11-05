@@ -30,7 +30,7 @@ fn semantic_expression_expansion_charges_work_and_checks_cancellation() {
     let artifact = shared_expression();
     let cancel = Cancellation::new();
     let mut checkpoints = 0;
-    let result = export_text_with_observer(&artifact, &cancel, usize::MAX, |_| {
+    let result = export_text_with_observer(&artifact, &cancel, u64::MAX, |_| {
         checkpoints += 1;
         if checkpoints == 64 {
             cancel.cancel();
@@ -38,7 +38,9 @@ fn semantic_expression_expansion_charges_work_and_checks_cancellation() {
     });
     assert!(cancel.is_cancelled());
     assert_eq!(result.status, TextExportStatus::Cancelled);
-    assert!(result.work > 0 && result.work < crate::MAX_LIFTED_EXPRESSION_TEXT);
+    assert!(
+        result.work > 0 && result.work < u64::try_from(crate::MAX_LIFTED_EXPRESSION_TEXT).unwrap()
+    );
     let result = export_text_with_observer(&artifact, &Cancellation::new(), 2_048, |_| {});
     assert_eq!(result.status, TextExportStatus::Limited);
     assert!(result.work <= 2_048);

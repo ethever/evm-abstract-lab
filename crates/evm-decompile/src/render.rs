@@ -1,4 +1,5 @@
 //! Human-readable output is a view of typed syntax, never the semantic owner.
+use crate::budget::{count, work_budget};
 use crate::{
     Artifact, Block, Cancellation, Edge, EntityId, ExitKind, LiftedBlock, LiftedControl,
     LiftedProgram, LiftedRenderError, LiftedRenderIndex, LiftedStatement, LiftedTransfer,
@@ -29,7 +30,7 @@ pub struct TextExport {
     /// Export completion, separate from Artifact::completion.
     pub status: TextExportStatus,
     /// Work successfully reserved by this independent export.
-    pub work: usize,
+    pub work: u64,
 }
 
 /// Export with cancellation and the artifact's configured independent allowance.
@@ -49,8 +50,8 @@ pub fn render_text_with_cancel(artifact: &Artifact, cancel: &Cancellation) -> St
 pub fn render_text_with_observer(
     artifact: &Artifact,
     cancel: &Cancellation,
-    max_work: usize,
-    observer: impl FnMut(usize),
+    max_work: u64,
+    observer: impl FnMut(u64),
 ) -> String {
     export_text_with_observer(artifact, cancel, max_work, observer).text
 }
@@ -58,22 +59,33 @@ pub fn render_text_with_observer(
 pub fn export_text_with_observer(
     artifact: &Artifact,
     cancel: &Cancellation,
-    max_work: usize,
-    observer: impl FnMut(usize),
+    max_work: u64,
+    observer: impl FnMut(u64),
 ) -> TextExport {
     analysis_control::with_cancellation(cancel, || export_scoped(artifact, max_work, observer))
 }
 
-fn export_scoped(artifact: &Artifact, max_work: usize, observer: impl FnMut(usize)) -> TextExport {
+fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) -> TextExport {
     let mut out = format!(
         "// fork={} strategy={:?} recovery={:?}\n",
         artifact.input.fork, artifact.config.strategy, artifact.completion
     );
+    let budget = match work_budget(max_work) {
+        Ok(budget) => budget,
+        Err(error) => {
+            let _ = writeln!(out, "// export work allowance refused: {error}");
+            return TextExport {
+                text: out,
+                status: TextExportStatus::Limited,
+                work: 0,
+            };
+        }
+    };
     let mut index = RenderIndex {
         values: BTreeMap::new(),
         blocks: BTreeMap::new(),
         edges: BTreeMap::new(),
-        budget: WorkBudget::new(max_work),
+        budget,
         observer,
         stopped: false,
         status: TextExportStatus::Complete,
@@ -131,7 +143,7 @@ fn export_scoped(artifact: &Artifact, max_work: usize, observer: impl FnMut(usiz
 fn diagnostics(
     out: &mut String,
     artifact: &Artifact,
-    index: &mut RenderIndex<'_, impl FnMut(usize)>,
+    index: &mut RenderIndex<'_, impl FnMut(u64)>,
 ) {
     for diagnostic in &artifact.diagnostics {
         if !index.pay(diagnostic.message.len().saturating_mul(2).saturating_add(1)) {
@@ -152,7 +164,7 @@ fn source_disassembly(
     out: &mut String,
     blocks: &[Block],
     bytes: &[u8],
-    index: &mut RenderIndex<'_, impl FnMut(usize)>,
+    index: &mut RenderIndex<'_, impl FnMut(u64)>,
 ) {
     // Decoded definitions are stable source placeholders. Their missing inputs
     // and Bottom facts must never be presented as recovered SSA computations.
@@ -193,7 +205,7 @@ fn source_disassembly(
 }
 // One export owns its own work ledger. Indexed lookups keep a large recovered
 // graph from turning each rendered operand into another whole-value scan.
-struct RenderIndex<'a, P: FnMut(usize)> {
+struct RenderIndex<'a, P: FnMut(u64)> {
     values: BTreeMap<EntityId, &'a Value>,
     blocks: BTreeMap<EntityId, &'a Block>,
     edges: BTreeMap<EntityId, &'a Edge>,
@@ -217,7 +229,7 @@ struct DispatchControl {
     continuation: Option<EntityId>,
     outer: Option<LoopControl>,
 }
-impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
+impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
     fn semantic<T>(
         &mut self,
         render: impl FnOnce(&LiftedRenderIndex<'a>, &mut Self) -> Result<T, LiftedRenderError>,
@@ -280,7 +292,7 @@ impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
             };
             return false;
         }
-        (self.observer)(self.budget.used());
+        (self.observer)(count(self.budget.used()));
         true
     }
     fn finish(mut self, mut text: String) -> TextExport {
@@ -298,7 +310,7 @@ impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
         TextExport {
             text,
             status: self.status,
-            work: self.budget.used(),
+            work: count(self.budget.used()),
         }
     }
     fn value(&self, id: EntityId) -> Option<&'a Value> {
@@ -317,18 +329,13 @@ impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
 fn indent(out: &mut String, depth: usize) {
     out.push_str(&"    ".repeat(depth));
 }
-fn expression(ir: &RenderIndex<'_, impl FnMut(usize)>, id: EntityId) -> String {
+fn expression(ir: &RenderIndex<'_, impl FnMut(u64)>, id: EntityId) -> String {
     match ir.value(id).map(|v| &v.kind) {
         Some(ValueKind::Constant(word)) => format!("0x{word:x}"),
         _ => format!("v{}", id.0),
     }
 }
-fn body(
-    out: &mut String,
-    block: &Block,
-    ir: &mut RenderIndex<'_, impl FnMut(usize)>,
-    depth: usize,
-) {
+fn body(out: &mut String, block: &Block, ir: &mut RenderIndex<'_, impl FnMut(u64)>, depth: usize) {
     if let Some(high) = ir.lifted_block(block.id) {
         for statement in &high.statements {
             if !ir.pay(1 + statement.inputs.len() + statement.outputs.len()) {
@@ -419,7 +426,7 @@ fn body(
         let _ = writeln!(out, "; // op{}", op.id.0);
     }
 }
-fn primitive_text(out: &mut String, op: &Operation, ir: &RenderIndex<'_, impl FnMut(usize)>) {
+fn primitive_text(out: &mut String, op: &Operation, ir: &RenderIndex<'_, impl FnMut(u64)>) {
     let _ = write!(
         out,
         "{}({})",
@@ -434,7 +441,7 @@ fn primitive_text(out: &mut String, op: &Operation, ir: &RenderIndex<'_, impl Fn
 fn transfer(
     out: &mut String,
     id: EntityId,
-    ir: &mut RenderIndex<'_, impl FnMut(usize)>,
+    ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
 ) {
     if let Some(transfer) = ir.lifted_transfer(id) {
@@ -475,7 +482,7 @@ fn transfer(
 fn syntax(
     out: &mut String,
     n: &StructuredNode,
-    ir: &mut RenderIndex<'_, impl FnMut(usize)>,
+    ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
 ) {
     if !ir.pay(1) {
@@ -663,7 +670,7 @@ fn syntax(
     }
 }
 
-fn visible(node: &StructuredNode, ir: &RenderIndex<'_, impl FnMut(usize)>) -> bool {
+fn visible(node: &StructuredNode, ir: &RenderIndex<'_, impl FnMut(u64)>) -> bool {
     match &node.kind {
         StructuredKind::Sequence(nodes) => nodes.iter().any(|n| visible(n, ir)),
         StructuredKind::Transfer { edge } if ir.lifted.is_some() => ir
@@ -680,7 +687,7 @@ fn visible(node: &StructuredNode, ir: &RenderIndex<'_, impl FnMut(usize)>) -> bo
 fn edge_control(
     out: &mut String,
     id: EntityId,
-    ir: &mut RenderIndex<'_, impl FnMut(usize)>,
+    ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
     dispatch: Option<&DispatchControl>,
 ) {
@@ -723,7 +730,7 @@ fn jump_control(
     block: &Block,
     target: EntityId,
     jump: (&[EntityId], bool),
-    ir: &mut RenderIndex<'_, impl FnMut(usize)>,
+    ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
     dispatch: Option<&DispatchControl>,
 ) {
@@ -785,7 +792,7 @@ fn jump_control(
 fn control(
     out: &mut String,
     block: &Block,
-    ir: &mut RenderIndex<'_, impl FnMut(usize)>,
+    ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
     dispatch: Option<&DispatchControl>,
 ) {

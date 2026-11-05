@@ -107,7 +107,7 @@ fn named_invocation_export_refusal_and_cancellation_are_atomic() {
     let artifact = checked(&asm.finish());
     let original = artifact.clone();
     let mut checkpoints = Vec::new();
-    let complete = export_text_with_observer(&artifact, &Cancellation::new(), usize::MAX, |work| {
+    let complete = export_text_with_observer(&artifact, &Cancellation::new(), u64::MAX, |work| {
         checkpoints.push(work);
     });
     assert_eq!(complete.status, TextExportStatus::Complete);
@@ -131,7 +131,7 @@ fn named_invocation_export_refusal_and_cancellation_are_atomic() {
             );
         }
         let cancel = Cancellation::new();
-        let cancelled = export_text_with_observer(&artifact, &cancel, usize::MAX, |work| {
+        let cancelled = export_text_with_observer(&artifact, &cancel, u64::MAX, |work| {
             if work >= allowance {
                 cancel.cancel();
             }

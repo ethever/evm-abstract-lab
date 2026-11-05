@@ -11,7 +11,9 @@ mod contact;
 #[cfg(test)]
 mod editors;
 
+mod numbers;
 mod submit;
+pub(crate) use numbers::NumberInputs;
 pub(crate) use submit::SubmitKeyboard;
 
 /// Preserve the native disclosure while exposing its actual header response.

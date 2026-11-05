@@ -34,8 +34,8 @@ pub(super) struct AnalysisForm {
     fork: Fork,
     environment: EnvironmentInput,
     limits: AnalysisLimits,
-    limit_inputs: limits::NumberInputs,
-    block_inputs: limits::NumberInputs,
+    limit_inputs: framework::NumberInputs,
+    block_inputs: framework::NumberInputs,
     keyboard: shortcut::Keyboard,
     pub(super) error: Option<String>,
 }
@@ -61,8 +61,8 @@ impl Default for AnalysisForm {
             fork: defaults.fork,
             environment: defaults.environment,
             limits: defaults.limits,
-            limit_inputs: limits::NumberInputs::default(),
-            block_inputs: limits::NumberInputs::default(),
+            limit_inputs: framework::NumberInputs::default(),
+            block_inputs: framework::NumberInputs::default(),
             keyboard: shortcut::Keyboard::default(),
             error: None,
         }
@@ -381,7 +381,7 @@ impl AnalysisForm {
                     }
                 });
                 if old_kind != std::mem::discriminant(&self.rpc.block) {
-                    self.block_inputs = limits::NumberInputs::default();
+                    self.block_inputs = framework::NumberInputs::default();
                 }
                 if let BlockSelector::Number(number) = &mut self.rpc.block {
                     egui::Grid::new("snapshot_number")

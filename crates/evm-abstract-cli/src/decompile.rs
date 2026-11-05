@@ -23,34 +23,34 @@ pub(crate) struct DecompileArgs {
     strategy: Strategy,
     /// Cumulative recovery and transformation work.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_work)]
-    max_work: usize,
+    max_work: u64,
     /// Maximum input code bytes, checked before local recovery.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_bytecode_bytes)]
-    max_bytecode_bytes: usize,
+    max_bytecode_bytes: u64,
     /// Maximum local recovery blocks, including distinct stack contexts.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_blocks)]
-    max_blocks: usize,
+    max_blocks: u64,
     /// Maximum instruction operations retained in one stage.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_operations)]
-    max_operations: usize,
+    max_operations: u64,
     /// Maximum SSA word/effect definitions.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_values)]
-    max_values: usize,
+    max_values: u64,
     /// Maximum local block evaluations before retaining an incomplete result.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_iterations)]
-    max_iterations: usize,
+    max_iterations: u64,
     /// Finite candidate capacity; exceeding it produces an unknown fact.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_constant_set)]
-    max_constants: usize,
+    max_constants: u64,
     /// Maximum blocks introduced by the code-duplication strategy.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_cloned_blocks)]
-    max_cloned_blocks: usize,
+    max_cloned_blocks: u64,
     /// Maximum recursive structured-region depth.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_structuring_depth)]
-    max_structuring_depth: usize,
+    max_structuring_depth: u64,
     /// Maximum entity occurrences retained across immutable history stages.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_history_entities)]
-    max_history_entities: usize,
+    max_history_entities: u64,
 }
 
 pub(crate) fn run(args: DecompileArgs, control: &Control) -> Result<(String, bool), CliError> {
