@@ -1,12 +1,93 @@
-use super::oracle::evaluate;
-use super::support::{checked, comparison_branch, validated};
+use super::oracle::{certify, evaluate};
+use super::support::{calldata, checked, comparison_branch, validated};
 use super::{assert_unchanged_witness, entry_condition, lifted, loop_registers, structured};
 use evm_decompile::{
-    Artifact, Cancellation, Completion, Config, EntityId, EntityRef, LiftedExpressionKind as Expr,
-    LiftedProgram, LiftedRelation as Relation, LiftedType, LiftedValue, Phase, StageKind, U256,
-    ValidationStatus, decompile, decompile_with_progress, validate_stage,
+    Artifact, Cancellation, Completion, Config, EntityId, EntityRef, Fork, Input,
+    LiftedExpressionKind as Expr, LiftedProgram, LiftedRelation as Relation, LiftedType,
+    LiftedValue, MemoryHost, Phase, StageKind, U256, ValidationStatus, decompile,
+    decompile_with_progress, validate_stage,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+#[test]
+fn synthesized_mask_constant_inherits_rewrite_provenance() {
+    let input = Input::new(
+        vec![
+            0x5f, 0x35, 0x60, 0xf0, 0x16, 0x60, 0xcc, 0x16, 0x5f, 0x55, 0x00,
+        ],
+        Fork::Osaka,
+    );
+    let artifact = checked(&input);
+    for word in [
+        U256::ZERO,
+        U256::from(1),
+        U256::from(0x40),
+        U256::from(0x80),
+        U256::from(0xcc),
+        U256::from(0xf0),
+        U256::from(0xff),
+        U256::from(1) << 255,
+        U256::MAX,
+    ] {
+        let (raw, observed) = certify(
+            &input,
+            &artifact,
+            MemoryHost::new(&input, calldata(&[word])),
+        );
+        assert_eq!(observed.storage[&U256::ZERO], word & U256::from(0xc0));
+        for opcode in [0x35, 0x55] {
+            assert_eq!(raw.trace.iter().filter(|op| op.opcode == opcode).count(), 1);
+        }
+    }
+    assert_unchanged_witness(&artifact);
+    let (stage, program) = lifted(&artifact);
+    let parent = structured(&artifact);
+    let responsible = parent
+        .ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.operations)
+        .rfind(|op| op.opcode == 0x16)
+        .unwrap();
+    let source = responsible.source.unwrap();
+    let mask = program
+        .expressions
+        .iter()
+        .find(|expr| expr.kind == Expr::Word(U256::from(0xc0)))
+        .expect("the combined mask is a new third constant, distinct from 0xf0 and 0xcc");
+    let occurrence = EntityRef {
+        stage: stage.id,
+        entity: mask.id,
+    };
+    let origin = artifact.origin(occurrence).unwrap();
+    assert!(
+        !origin.source.is_empty(),
+        "synthesized mask lost source: {origin:?}"
+    );
+    assert!(
+        !origin.parents.is_empty(),
+        "synthesized mask lost parents: {origin:?}"
+    );
+    assert!(origin.source.contains(&source));
+    let parent_records = evm_decompile::records(&parent.ir);
+    for ancestor in &origin.parents {
+        assert_eq!(ancestor.stage, parent.id);
+        assert!(parent_records.contains_key(&ancestor.entity));
+        assert!(artifact.origin(*ancestor).is_some());
+    }
+    let responsible = EntityRef {
+        stage: parent.id,
+        entity: responsible.id,
+    };
+    assert!(origin.parents.contains(&responsible));
+    assert!(artifact.derived_from(responsible).contains(&occurrence));
+    assert!(artifact.descendants(source.pc).contains(&occurrence));
+    let restored: Artifact =
+        serde_json::from_slice(&serde_json::to_vec(&artifact).unwrap()).unwrap();
+    assert_eq!(restored, artifact);
+    assert_eq!(restored.origin(occurrence), Some(origin));
+    assert!(restored.descendants(source.pc).contains(&occurrence));
+}
 
 #[test]
 fn lifted_entities_have_roundtrip_provenance_and_deterministic_artifact_diffs() {

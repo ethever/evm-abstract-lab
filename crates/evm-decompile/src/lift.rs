@@ -130,6 +130,7 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
             let push =
                 matches!(op.opcode, 0x5f..=0x7f) && op.outputs.len() == 1 && !fault && !pending;
             if pure_word || push {
+                let first_expression = p.result.program.expressions.len();
                 let args = op
                     .inputs
                     .iter()
@@ -144,19 +145,36 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
                     .chain(op.inputs.iter().copied())
                     .chain(op.outputs.iter().copied())
                     .collect();
-                p.result
-                    .parents
-                    .entry(result)
-                    .or_default()
-                    .extend(source.iter().copied());
+                // A rewrite may synthesize children besides its returned root
+                // (for example a combined mask literal). Attribute every fresh
+                // arena record to the raw instruction that introduced it. The
+                // interval bounds work by new records; never traverse the DAG
+                // or copy an existing expression's accumulated ancestry.
+                let mut rewritten: Vec<_> = p.result.program.expressions[first_expression..]
+                    .iter()
+                    .map(|expression| expression.id)
+                    .collect();
+                rewritten.push(result);
                 // A branch consumes the predicate under its numeric 0/1 cast.
-                // Attribute absorbed instructions to that live predicate too.
+                // Retain ancestry updates for reused roots and predicates too.
                 if let Kind::WordFromPredicate(predicate) = p.kind(result).clone() {
+                    rewritten.push(predicate);
+                }
+                rewritten.sort_unstable();
+                rewritten.dedup();
+                if !(p.pay)(
+                    rewritten
+                        .len()
+                        .saturating_mul(source.len().saturating_add(1)),
+                ) {
+                    return None;
+                }
+                for expression in rewritten {
                     p.result
                         .parents
-                        .entry(predicate)
+                        .entry(expression)
                         .or_default()
-                        .extend(source);
+                        .extend(source.iter().copied());
                 }
                 p.bindings.insert((b.id, op.outputs[0]), result);
             } else if !op.effects.is_pure()

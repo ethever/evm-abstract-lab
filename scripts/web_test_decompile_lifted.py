@@ -72,6 +72,24 @@ def run(context):
     canvas.screenshot(path=str(context.output / "lifted-transform-history.png"))
     artifacts.append(artifact["id"])
 
+    # Combining different masks creates a new literal, which must carry its
+    # own rewrite ancestry rather than borrowing only the final AND's origin.
+    artifact, _ = submit(context, page, canvas, "5f3560f01660cc165f5500", "lifted-derived-mask")
+    _, current, program, _ = projection(artifact)
+    mask = next(expression for expression in program["expressions"]
+                if expression["kind"].get("word") == "0xc0")
+    origin = next(origin for origin in artifact["mappings"]["origins"]
+                  if origin["entity"] == {"stage": current["id"], "entity": mask["id"]})
+    assert origin["parents"] and any(span["pc"] <= 7 < span["end_pc"] for span in origin["source"]), origin
+    click_control(page, canvas, "Simplified structured code", role="tab")
+    text = copy_code(page, canvas)
+    assert "0xc0" in text and "0xf0" not in text and "0xcc" not in text, text
+    source_descendant(page, canvas, artifact, current["id"], mask["id"], 7)
+    selected_row(page, "decompile-ir", "x" + mask["id"])
+    inspector_control(page, canvas, "Expression x" + mask["id"], "decompile-entity-detail")
+    canvas.screenshot(path=str(context.output / "lifted-derived-mask-source.png"))
+    artifacts.append(artifact["id"])
+
     # A word consumer must retain the 0/1 cast; double ISZERO is not word identity.
     artifact, _ = submit(context, page, canvas, NUMERIC_TRUTH, "lifted-numeric-truth")
     _, current, program, _ = projection(artifact)
@@ -150,7 +168,10 @@ def run(context):
             click_control(page, canvas, "Structured code", role="tab")
             raw_text = copy_code(page, canvas)
             assert raw_text.count("stop(") == 1, raw_text
-            assert ("unresolved" in raw_text or "partial" in raw_text) if completion == "partial" else "invalid" in raw_text, raw_text
+            if completion == "partial":
+                assert "unresolved" in raw_text or "partial" in raw_text, raw_text
+            else:
+                assert "invalid" in raw_text, raw_text
             click_control(page, canvas, "Simplified structured code", role="tab")
         artifacts.append(artifact["id"])
     rendered_frame(page)
