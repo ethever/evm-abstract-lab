@@ -1,7 +1,8 @@
 //! Scoped semantic DAG construction, simplification and logical liveness.
 //!
 //! The primitive witness is immutable. Expressions capture only earlier pure
-//! definitions in their own block; opaque observations remain ordered statements.
+//! definitions in their own block. Copy proofs introduce consumer-scoped raw
+//! leaves, never cross-block arena edges; their definitions remain bound once.
 //! Logical entry liveness and edge argument projection reach a joint fixed point.
 use crate::{
     Completion, DiagnosticCode, EntityId, Ir, LiftedBlock, LiftedControl, LiftedExpression,
@@ -10,6 +11,8 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod aliases;
+mod availability;
 mod liveness;
 mod simplify;
 mod validate;
@@ -37,9 +40,19 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
         return;
     }
     let mut ir = owner.current().ir.clone();
-    let Some(mut projection) = project(&ir, |work| owner.pay(work)) else {
+    let mut projection_work = 0_usize;
+    let Some(mut projection) = project(&ir, |work| {
+        projection_work = projection_work.saturating_add(work);
+        owner.pay(work)
+    }) else {
         return;
     };
+    // Certification reconstructs this deterministic proof and checks the actual
+    // projection's bindings. Reserve both before validation, whose public API is
+    // cancellation-only. This includes metered dominator/SCC convergence work.
+    if !owner.pay(projection_work.saturating_mul(2)) {
+        return;
+    }
     if projection.program.entity_ids().count() > crate::MAX_LIFTED_RECORDS {
         owner.stop(
             Completion::Limited,
@@ -61,50 +74,41 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
         .collect();
     ir.lifted = Some(projection.program);
     owner.commit(StageKind::Lifted, ir,
-        ("lift_semantic_expressions", "typed scoped EVM expressions, predicate simplification and live logical transfers certified against unchanged primitive witness"),
+        ("lift_semantic_expressions", "typed scoped EVM expressions, available identity copies and live logical transfers certified against unchanged primitive witness"),
         parents, Vec::new(), Vec::new());
 }
 
-struct Projection {
+struct Projection<'a> {
     program: LiftedProgram,
     parents: BTreeMap<EntityId, BTreeSet<EntityId>>,
+    proof: aliases::Copies<'a>,
 }
 struct Projector<'a, P> {
     ir: &'a Ir,
     pay: P,
-    result: Projection,
+    result: Projection<'a>,
     next: u64,
     memo: BTreeMap<(EntityId, Kind), EntityId>,
     indices: BTreeMap<EntityId, usize>,
     bindings: BTreeMap<(EntityId, EntityId), EntityId>,
-    values: BTreeMap<EntityId, &'a crate::Value>,
-    owners: BTreeMap<EntityId, EntityId>,
+    optional_statements: BTreeSet<EntityId>,
 }
-fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
+fn project(ir: &Ir, mut pay: impl FnMut(usize) -> bool) -> Option<Projection<'_>> {
+    let proof = aliases::Copies::build(ir, &mut pay)?;
     let mut p = Projector {
         ir,
         pay,
         result: Projection {
             program: LiftedProgram::default(),
             parents: BTreeMap::new(),
+            proof,
         },
         next: 1,
         memo: BTreeMap::new(),
         indices: BTreeMap::new(),
         bindings: BTreeMap::new(),
-        values: ir.values.iter().map(|v| (v.id, v)).collect(),
-        owners: BTreeMap::new(),
+        optional_statements: BTreeSet::new(),
     };
-    for b in &ir.blocks {
-        for param in &b.parameters {
-            p.owners.insert(*param, b.id);
-        }
-        for op in &b.operations {
-            for output in &op.outputs {
-                p.owners.insert(*output, b.id);
-            }
-        }
-    }
     for b in &ir.blocks {
         if !(p.pay)(b.parameters.len().saturating_add(1)) {
             return None;
@@ -129,7 +133,12 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
                 && !pending;
             let push =
                 matches!(op.opcode, 0x5f..=0x7f) && op.outputs.len() == 1 && !fault && !pending;
-            if pure_word || push {
+            let materialize = (pure_word || push)
+                && op
+                    .outputs
+                    .iter()
+                    .any(|v| p.result.proof.materialize.contains(v));
+            if (pure_word || push) && !materialize {
                 let first_expression = p.result.program.expressions.len();
                 let args = op
                     .inputs
@@ -177,7 +186,8 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
                         .extend(source.iter().copied());
                 }
                 p.bindings.insert((b.id, op.outputs[0]), result);
-            } else if !op.effects.is_pure()
+            } else if materialize
+                || !op.effects.is_pure()
                 || fault
                 || pending
                 || !matches!(op.opcode, 0x50 | 0x56 | 0x57 | 0x5b | 0x80..=0x9f)
@@ -194,6 +204,9 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
                     inputs,
                     outputs: op.outputs.clone(),
                 });
+                if materialize {
+                    p.optional_statements.insert(op.id);
+                }
                 for output in &op.outputs {
                     let expression = p.expression(b.id, Kind::Value(*output), [op.id, *output]);
                     p.bindings.insert((b.id, *output), expression);
@@ -256,7 +269,26 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
             .iter()
             .map(|v| p.word(edge.from, *v))
             .collect::<Option<Vec<_>>>()?;
-        let id = p.id([edge.id]);
+        // Retain a transfer witness even when all its logical slots disappear.
+        // Direct slot correspondences preserve source lookup without flattening
+        // a transitive copy chain into every consumer expression's ancestry.
+        let target = p.result.proof.blocks[&edge.to];
+        if !(p.pay)(edge.arguments.len().saturating_mul(3).saturating_add(1)) {
+            return None;
+        }
+        let parents = std::iter::once(edge.id)
+            .chain(
+                ir.blocks[target]
+                    .parameters
+                    .iter()
+                    .zip(&edge.arguments)
+                    .filter(|(parameter, _)| p.result.proof.aliases.contains_key(parameter))
+                    .flat_map(|(parameter, argument)| {
+                        [*parameter, *argument, p.result.proof.canonical(*parameter)]
+                    }),
+            )
+            .collect::<Vec<_>>();
+        let id = p.id(parents);
         p.result.program.transfers.push(LiftedTransfer {
             id,
             edge: edge.id,
@@ -275,7 +307,7 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
                 _ => None,
             };
             if let Some(value) = condition {
-                let block = *p.owners.get(&value)?;
+                let block = ir.blocks[p.result.proof.definitions.get(&value)?.block].id;
                 let word = p.word(block, value)?;
                 let condition = p.nonzero(block, word);
                 let id = p.id([n.id, value]);
@@ -289,6 +321,16 @@ fn project(ir: &Ir, pay: impl FnMut(usize) -> bool) -> Option<Projection> {
         }
     }
     p.prune()?;
+    if !p
+        .result
+        .proof
+        .check_program(ir, &p.result.program, &mut p.pay)?
+    {
+        return None;
+    }
+    if !validate::source_correspondences(&p.result, ir, &mut p.pay)? {
+        return None;
+    }
     // Canonical local IDs do not depend on discarded expressions. Publication
     // substitutes fresh artifact IDs; certification canonicalizes them again.
     let ids: BTreeMap<_, _> = p
@@ -342,16 +384,19 @@ impl<P: FnMut(usize) -> bool> Projector<'_, P> {
         &self.result.program.expressions[self.indices[&id]].kind
     }
     fn word(&mut self, block: EntityId, value: EntityId) -> Option<EntityId> {
+        let canonical = self.result.proof.canonical(value);
         if let Some(id) = self.bindings.get(&(block, value)) {
             return Some(*id);
         }
         // Only exact literal definitions are substituted. Numeric facts at open
         // boundaries never justify erasing an observation or a phi dependency.
-        let kind = match self.values.get(&value)?.kind {
+        let kind = match self.result.proof.values.get(&canonical)?.kind {
             ValueKind::Constant(word) => Kind::Word(word),
-            _ => Kind::Value(value),
+            _ => Kind::Value(canonical),
         };
-        let id = self.expression(block, kind, [value]);
+        // Memoization merges expression identity, not source occurrences. Each
+        // alias contributes its own direct parent even if a prior use hit memo.
+        let id = self.expression(block, kind, [value, canonical]);
         self.bindings.insert((block, value), id);
         Some(id)
     }

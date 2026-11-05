@@ -56,9 +56,8 @@ pub(super) struct Views {
     comparison: Option<(ArtifactId, StageId, StageId)>,
     pub differences: Differences,
     rendered: Option<(ArtifactId, StageId, Vec<structured::Line>)>,
-    rendered_lifted: bool,
-    rendered_show_state_dependencies: bool,
-    show_state_dependencies: bool,
+    rendered_high_display: Option<structured::HighDisplayOptions>,
+    high_display: structured::HighDisplayOptions,
     lifted_seen: bool,
     narrow_before: bool,
     source: source::Source,
@@ -80,7 +79,7 @@ impl Views {
             route,
             lifted_seen: self.lifted_seen || has_lifted,
             narrow_before: self.narrow_before,
-            show_state_dependencies: self.show_state_dependencies,
+            high_display: self.high_display,
             ..Self::default()
         };
     }
@@ -317,7 +316,13 @@ impl Views {
                 ui.label("Word comparisons use unsigned 256-bit order; signed comparisons use s-prefixed names.");
                 controls::toggle(
                     ui,
-                    &mut self.show_state_dependencies,
+                    &mut self.high_display.show_structure_annotations,
+                    "Show structure annotations",
+                    Density::Compact,
+                );
+                controls::toggle(
+                    ui,
+                    &mut self.high_display.show_state_dependencies,
                     "Show state dependencies",
                     Density::Compact,
                 );
@@ -340,8 +345,7 @@ impl Views {
         let mut scroll = egui::ScrollArea::both().id_salt((
             "decompile_structured",
             stage.id.0,
-            self.route == Route::Lifted,
-            self.route == Route::Lifted && self.show_state_dependencies,
+            self.rendered_high_display,
         ));
         if state.entity_navigation
             && let Some(selected) = state.selected_in(artifact, stage.id)
@@ -379,26 +383,19 @@ impl Views {
 
     fn prepare_code(&mut self, artifact: &Artifact, stage: &Stage, state: &ViewState) {
         let key = (artifact.id.clone(), stage.id);
-        let lifted = self.route == Route::Lifted;
-        let show_state_dependencies = !lifted || self.show_state_dependencies;
+        let high_display = (self.route == Route::Lifted).then_some(self.high_display);
         if self
             .rendered
             .as_ref()
             .is_none_or(|(artifact, stage, _)| (artifact, *stage) != (&key.0, key.1))
-            || self.rendered_lifted != lifted
-            || self.rendered_show_state_dependencies != show_state_dependencies
+            || self.rendered_high_display != high_display
         {
-            self.rendered_lifted = lifted;
-            self.rendered_show_state_dependencies = show_state_dependencies;
+            self.rendered_high_display = high_display;
             self.rendered = Some((
                 key.0,
                 key.1,
-                if lifted {
-                    structured::lifted_lines_indexed(
-                        stage,
-                        &state.index.stage(stage.id),
-                        show_state_dependencies,
-                    )
+                if let Some(display) = high_display {
+                    structured::lifted_lines_indexed(stage, &state.index.stage(stage.id), display)
                 } else {
                     structured::lines_indexed(stage, &state.index.stage(stage.id))
                 },

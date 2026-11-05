@@ -10,12 +10,24 @@ use evm_abstract_protocol::decompile_model::{
 
 mod dispatch;
 
+/// Presentation preferences for high code; raw Structured always shows detail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) struct HighDisplayOptions {
+    pub show_state_dependencies: bool,
+    pub show_structure_annotations: bool,
+}
+
 #[derive(Clone, Copy, Default)]
 struct Scope<'a> {
     following: Option<EntityId>,
     outer_loop: Option<LoopScope>,
     lifted: Option<&'a LiftedRenderIndex<'a>>,
-    show_state_dependencies: bool,
+    display: HighDisplayOptions,
+}
+impl Scope<'_> {
+    fn show_structure_annotations(self) -> bool {
+        self.lifted.is_none() || self.display.show_structure_annotations
+    }
 }
 #[derive(Clone, Copy)]
 struct LoopScope {
@@ -80,22 +92,22 @@ pub(super) fn lines(stage: &Stage) -> Vec<Line> {
 }
 
 pub(super) fn lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
-    render_lines(stage, index, false, true)
+    render_lines(stage, index, false, HighDisplayOptions::default())
 }
 
 pub(super) fn lifted_lines_indexed(
     stage: &Stage,
     index: &StageIndex,
-    show_state_dependencies: bool,
+    display: HighDisplayOptions,
 ) -> Vec<Line> {
-    render_lines(stage, index, true, show_state_dependencies)
+    render_lines(stage, index, true, display)
 }
 
 fn render_lines(
     stage: &Stage,
     index: &StageIndex,
     lifted: bool,
-    show_state_dependencies: bool,
+    display: HighDisplayOptions,
 ) -> Vec<Line> {
     // The shared semantic index is built once for this complete code batch.
     let renderer = lifted
@@ -115,7 +127,7 @@ fn render_lines(
             index,
             Scope {
                 lifted: renderer.as_ref(),
-                show_state_dependencies,
+                display,
                 ..Scope::default()
             },
             0,
@@ -144,12 +156,14 @@ fn render(
     let mut summary = RenderSummary::CONTENT;
     match &node.kind {
         StructuredKind::Sequence(nodes) => {
-            emit(
-                output,
-                node.id,
-                indent,
-                format!("// sequence ast{} · {} children", node.id.0, nodes.len()),
-            );
+            if scope.show_structure_annotations() {
+                emit(
+                    output,
+                    node.id,
+                    indent,
+                    format!("// sequence ast{} · {} children", node.id.0, nodes.len()),
+                );
+            }
             summary = RenderSummary::default();
             for (position, child) in nodes.iter().enumerate() {
                 let following = nodes
@@ -379,19 +393,21 @@ fn body(
     };
     let semantic = scope.lifted.and_then(|_| index.source_block(ir, block.id));
     let owner = semantic.map_or(node, |block| block.id);
-    emit(
-        output,
-        owner,
-        indent,
-        format!(
-            "// b{}{}",
-            block.id.0,
-            block.source.map_or_else(String::new, |source| format!(
-                " · source 0x{:04x}",
-                source.pc
-            ))
-        ),
-    );
+    if scope.show_structure_annotations() {
+        emit(
+            output,
+            owner,
+            indent,
+            format!(
+                "// b{}{}",
+                block.id.0,
+                block.source.map_or_else(String::new, |source| format!(
+                    " · source 0x{:04x}",
+                    source.pc
+                ))
+            ),
+        );
+    }
     // Everything after the block header is content, including diagnostics.
     let content_start = output.len();
     if let Some(renderer) = scope.lifted {
@@ -426,7 +442,7 @@ fn body(
                 super::lifted::statement_with_dependencies(
                     renderer,
                     statement,
-                    scope.show_state_dependencies,
+                    scope.display.show_state_dependencies,
                 ),
             );
         }
@@ -497,7 +513,7 @@ fn transfer(
             ),
         );
     }
-    if scope.lifted.is_some() && !scope.show_state_dependencies {
+    if scope.lifted.is_some() && !scope.display.show_state_dependencies {
         return;
     }
     emit(

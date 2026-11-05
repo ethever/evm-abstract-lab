@@ -12,7 +12,7 @@ fn word(hex: &str) -> U256 {
     U256::from_str_radix(hex.trim_start_matches("0x"), 16).unwrap()
 }
 
-fn proxy() -> Input {
+pub(super) fn proxy() -> Input {
     let capture: serde_json::Value = serde_json::from_str(USDC).unwrap();
     let decoded = Program::from_hex_with_fork(
         capture["accounts"][1]["code"].as_str().unwrap(),
@@ -22,7 +22,7 @@ fn proxy() -> Input {
     Input::new(decoded.bytes().to_vec(), Fork::Osaka)
 }
 
-fn host(input: &Input, data: Vec<u8>, admin: bool) -> MemoryHost {
+pub(super) fn host(input: &Input, data: Vec<u8>, admin: bool) -> MemoryHost {
     let capture: serde_json::Value = serde_json::from_str(USDC).unwrap();
     let account = &capture["accounts"][1];
     let mut host = MemoryHost::new(input, data);

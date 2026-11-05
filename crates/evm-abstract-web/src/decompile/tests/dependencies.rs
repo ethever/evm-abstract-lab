@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod annotations;
+
 // A calldata branch joins a live word after MSTORE/MLOAD/SSTORE/SLOAD. The
 // joined word is stored, then CALL, LOG0 and RETURN remain observable.
 const EFFECTS_BRANCH: &str = concat!(
@@ -68,7 +70,10 @@ fn high(stage: &Stage, dependencies: bool) -> Vec<structured::Line> {
     structured::lifted_lines_indexed(
         stage,
         &crate::decompile::index::StageIndex::new(&stage.ir),
-        dependencies,
+        structured::HighDisplayOptions {
+            show_state_dependencies: dependencies,
+            ..structured::HighDisplayOptions::default()
+        },
     )
 }
 
@@ -139,6 +144,21 @@ fn assert_only_dependency_metadata_changes(stage: &Stage) {
                 without_annotations(&line.text).to_owned(),
             )
         })
+        .collect();
+    // Removing dependency rows may leave an else with no body after copy
+    // propagation. PR161 omits that separator; all actual rows must still match
+    // exactly, including their owners and indentation. Only adjacent braces of
+    // the same control owner qualify, never a nonempty arm or nested control.
+    let expected: Vec<_> = expected
+        .iter()
+        .enumerate()
+        .filter(|(position, row)| {
+            row.2 != "} else {"
+                || !expected
+                    .get(position + 1)
+                    .is_some_and(|next| next.0 == row.0 && next.1 == row.1 && next.2 == "}")
+        })
+        .map(|(_, row)| row.clone())
         .collect();
     assert_eq!(
         rows(&normal),
