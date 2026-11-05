@@ -16,6 +16,7 @@ use std::{
 };
 
 mod annotations;
+mod named_operands;
 
 // A calldata branch joins a live word after MSTORE/MLOAD/SSTORE/SLOAD. The
 // joined word is stored, then CALL, LOG0 and RETURN remain observable.

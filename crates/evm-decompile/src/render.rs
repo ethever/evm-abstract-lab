@@ -254,6 +254,16 @@ impl<'a, P: FnMut(usize)> RenderIndex<'a, P> {
             renderer.render_statement(statement, |work| owner.pay(work))
         })
     }
+    fn high_invocation(
+        &mut self,
+        opcode: u8,
+        name: &str,
+        arguments: &[EntityId],
+    ) -> Option<String> {
+        self.semantic(|renderer, owner| {
+            renderer.render_invocation(opcode, name, arguments, |work| owner.pay(work))
+        })
+    }
     fn high_transfer(&mut self, transfer: &LiftedTransfer) -> Option<String> {
         self.semantic(|renderer, owner| renderer.render_transfer(transfer, |work| owner.pay(work)))
             .flatten()
@@ -792,23 +802,34 @@ fn control(
             {
                 return;
             }
-            indent(out, depth);
             if *kind == ExitKind::EndOfCode {
+                indent(out, depth);
                 out.push_str("stop(); // end of runtime\n");
             } else {
-                let primitive = match kind {
-                    ExitKind::Stop => "stop",
-                    ExitKind::Return => "return",
-                    ExitKind::Revert => "revert",
-                    ExitKind::SelfDestruct => "selfdestruct",
+                let (opcode, primitive) = match kind {
+                    ExitKind::Stop => (0x00, "stop"),
+                    ExitKind::Return => (0xf3, "return"),
+                    ExitKind::Revert => (0xfd, "revert"),
+                    ExitKind::SelfDestruct => (0xff, "selfdestruct"),
                     ExitKind::EndOfCode => unreachable!(),
                 };
-                let args = values
-                    .iter()
-                    .map(|v| expression(ir, *v))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(out, "{primitive}({args});");
+                let invocation = if let Some(semantic) = ir.lifted_block(block.id) {
+                    let Some(invocation) =
+                        ir.high_invocation(opcode, primitive, &semantic.exit_values)
+                    else {
+                        return;
+                    };
+                    invocation
+                } else {
+                    let args = values
+                        .iter()
+                        .map(|v| expression(ir, *v))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{primitive}({args})")
+                };
+                indent(out, depth);
+                let _ = writeln!(out, "{invocation};");
             }
         }
         Terminator::Trap { reason } => {

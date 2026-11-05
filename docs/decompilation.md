@@ -84,6 +84,18 @@ if (z != 0) { ... }
 
 前端默认提供 **Simplified structured code**，并保留 **Structured code** 查看底层结构化表示。高层实体可以在 IR、Changes 和转换检查器中检查，并回到原始指令；反向的 source descendant 导航也保留。CLI 文本默认导出最后验证的高层阶段，JSON 保存所有阶段及类型化投影。
 
+高层原语调用按固定的 opcode 签名显示参数名，例如：
+
+```text
+v4210 = call(gas = (v4205 - 0x2c6), target = v4066, value = 0x0, input_offset = v4169, input_size = 0x84, output_offset = v4169, output_size = 0x0);
+calldatacopy(memory_offset = 0x0, calldata_offset = 0x4, size = v12);
+evm.revert(offset = 0x0, size = v13);
+```
+
+CALL/CALLCODE 显示 `value` 参数，DELEGATECALL/STATICCALL 的六项参数中没有这一项；输出大小为零时仍显示原有输出偏移。创建操作区分 init code 的偏移、长度和 CREATE2 的 salt，LOG 的 topic 按原始弹栈顺序编号。内存、storage、复制、哈希及函数形式的字运算也使用相应的参数名，中缀表达式和 `word(predicate)` 保留现有写法。名字只在已知 opcode 且实参数量精确匹配时使用；未知或异常数量的参数完整地按位置显示。
+
+页面、复制文本、语义 Inspector 和 CLI 高层导出共用这套格式化规则，保持单行代码布局、变量身份、参数值及顺序。原始 Structured 和原始操作数视图继续提供位置参数；JSON 中的操作数和语义投影不因显示名字而改变。格式化工作量与长度限制计入新增名字和分隔符，取消或拒绝时不会把半个调用作为完整结果输出。
+
 高层代码默认隐藏独立的 memory/effect token 传递行及语句尾部的状态依赖注释。开启 **Show state dependencies** 可恢复这些信息；复制按钮使用当前显示选项，缩进与有效 word 参数传递保持一致。真实的内存、storage、调用、日志及终止操作仍显示。该偏好在切换视图、阶段和接收新产物时保留，原始 Structured、IR 与 Inspector 始终保留完整依赖；隐藏的空传边实体仍可通过来源链接定位到 IR。切换显示不会重跑分析、创建转换事件或修改产物，CLI 与 JSON 的既有导出策略也不受这个前端偏好影响。
 
 高层代码还默认隐藏 `// sequence ast…`、`// b… source…` 和 dispatcher 的 `// on e…` 结构位置注释。独立的 **Show structure annotations** 开关可以恢复这些上下文行；fault、未解析目标和其他诊断始终保留。两个显示偏好都影响复制文本，并在阶段、视图和产物切换后保留。隐藏的高层块标题可通过来源链接在 IR 中检查，原始 AST 节点仍导航到完整的 Structured 视图。注释隐藏只作用于前端；跨块复制消除属于共享 Lifted 投影，因此 CLI 和 JSON 也能看到参数与实参的精简结果。

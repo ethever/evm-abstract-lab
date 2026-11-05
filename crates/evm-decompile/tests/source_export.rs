@@ -143,7 +143,7 @@ fn recovered_baseline_and_partial_ssa_keep_real_operands() {
     );
     assert_eq!(partial.completion, Completion::Partial);
     let text = render_text(&partial);
-    assert!(text.contains("calldataload(0x0)"));
+    assert!(text.contains("calldataload(offset = 0x0)"));
     assert!(text.contains("partial_indirect_exit"));
     assert!(!text.contains("decoded source only"));
 }

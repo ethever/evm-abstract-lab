@@ -633,20 +633,17 @@ fn projected_terminator(
             )
         }
         Terminator::Exit { kind, .. } => {
-            let name = match kind {
-                ExitKind::Stop => "stop",
-                ExitKind::Return => "return",
-                ExitKind::Revert => "revert",
-                ExitKind::SelfDestruct => "selfdestruct",
+            let (opcode, name) = match kind {
+                ExitKind::Stop => (0x00, "evm.stop"),
+                ExitKind::Return => (0xf3, "evm.return"),
+                ExitKind::Revert => (0xfd, "evm.revert"),
+                ExitKind::SelfDestruct => (0xff, "evm.selfdestruct"),
                 ExitKind::EndOfCode => return "evm.stop(); // end of code".into(),
             };
-            let arguments = semantic
-                .exit_values
-                .iter()
-                .map(|id| super::lifted::expression(renderer, *id))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("evm.{name}({arguments});")
+            renderer
+                .render_invocation(opcode, name, &semantic.exit_values, |_| true)
+                .map(|invocation| format!("{invocation};"))
+                .unwrap_or_else(|error| format!("unavailable_exit(b{}: {error});", block.0))
         }
         Terminator::Pending => "partial_exit(\"recovery pending\");".into(),
         Terminator::Fallthrough { edge } => format!("follow e{};", edge.0),

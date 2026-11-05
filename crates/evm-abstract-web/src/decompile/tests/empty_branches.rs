@@ -202,7 +202,14 @@ fn real_revert_guard_omits_only_hidden_token_else_and_preserves_continuation() {
     let revert_owner = program.block(revert_block.id).unwrap().id;
     let revert = normal
         .iter()
-        .position(|line| *line == (revert_owner, 1, "evm.revert(0x0, 0x0);".into()))
+        .position(|line| {
+            *line
+                == (
+                    revert_owner,
+                    1,
+                    "evm.revert(offset = 0x0, size = 0x0);".into(),
+                )
+        })
         .unwrap();
     assert_eq!(
         normal
@@ -230,7 +237,11 @@ fn real_revert_guard_omits_only_hidden_token_else_and_preserves_continuation() {
     );
     assert!(revert < store_position);
     assert!(normal[revert + 1..store_position].contains(&(control.id, 0, "}".into())));
-    assert!(normal[store_position].2.contains("sstore(0x0, 0x2a)"));
+    assert!(
+        normal[store_position]
+            .2
+            .contains("sstore(slot = 0x0, value = 0x2a)")
+    );
     assert!(
         normal
             .iter()
