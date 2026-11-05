@@ -456,8 +456,9 @@ fn is_effect(value: Option<&Value>) -> bool {
         )
     })
 }
-/// Check operation/effect order across preserved blocks and real copies. This
-/// is an explicit structural invariant; semantic parity is tested by execution.
+/// Check primitive bodies and positional entry assignments across retained
+/// blocks and real copies. Compact tuples are projections of the preceding
+/// snapshot, never new evidence about physical EVM stack height.
 pub(crate) fn validate_transition(
     before: &Stage,
     after: &Stage,
@@ -466,7 +467,19 @@ pub(crate) fn validate_transition(
 ) -> ValidationCheck {
     let ancestry: BTreeMap<_, _> = copies.iter().map(|(a, b)| (*b, *a)).collect();
     let old_blocks: BTreeMap<_, _> = before.ir.blocks.iter().map(|b| (b.id, b)).collect();
+    let old_values: BTreeMap<_, _> = before.ir.values.iter().map(|v| (v.id, v)).collect();
+    let values: BTreeMap<_, _> = after.ir.values.iter().map(|v| (v.id, v)).collect();
+    let old_edges: BTreeMap<_, _> = before.ir.edges.iter().map(|e| (e.id, e)).collect();
+    let normalize = |id: &EntityId| ancestry.get(id).copied().unwrap_or(*id);
+    let mut projections = BTreeMap::new();
     let mut errors = Vec::new();
+    if before.kind != StageKind::Decoded
+        && (before.ir.bytecode_len != after.ir.bytecode_len
+            || before.ir.fact_scope != after.ir.fact_scope
+            || before.ir.entry != after.ir.entry.as_ref().map(normalize))
+    {
+        errors.push("input length, fact scope or entry changed".to_owned());
+    }
     for b in &after.ir.blocks {
         if cancel.is_cancelled() {
             errors.push("transition validation cancelled".to_owned());
@@ -480,6 +493,49 @@ pub(crate) fn validate_transition(
         if before.kind == StageKind::Decoded {
             continue;
         }
+        if old.source != b.source
+            || old.memory_parameter != normalize(&b.memory_parameter)
+            || old.effect_parameter != normalize(&b.effect_parameter)
+        {
+            errors.push(format!(
+                "block source/memory/effect entry changed at {:?}",
+                b.id
+            ));
+        }
+        if matches!(old.terminator, Terminator::Trap { .. }) && old.terminator != b.terminator {
+            errors.push(format!("established trap changed at {:?}", b.id));
+        }
+        let positions: BTreeMap<_, _> = old
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect();
+        let mut projection = Vec::new();
+        for (index, parameter) in b.parameters.iter().enumerate() {
+            let original = normalize(parameter);
+            let Some(position) = positions.get(&original).copied() else {
+                errors.push(format!("new entry operand {parameter:?} at {:?}", b.id));
+                continue;
+            };
+            if projection.last().is_some_and(|last| *last >= position) {
+                errors.push(format!("entry operand order changed at {:?}", b.id));
+            }
+            projection.push(position);
+            if !matches!(values.get(parameter), Some(value)
+                if matches!(value.kind, ValueKind::Parameter { block, index: slot }
+                    if block == b.id && slot == index)
+                && old_values.get(&original).is_some_and(|old| old.fact == value.fact))
+            {
+                errors.push(format!(
+                    "entry operand index/facts changed at {parameter:?}"
+                ));
+            }
+        }
+        if old.terminator.is_partial() && projection.len() != old.parameters.len() {
+            errors.push(format!("open boundary lost entry operands at {:?}", b.id));
+        }
+        projections.insert(b.id, projection);
         if old.operations.len() != b.operations.len() {
             errors.push(format!("operation count changed at {:?}", b.id));
             continue;
@@ -496,7 +552,6 @@ pub(crate) fn validate_transition(
             {
                 errors.push(format!("operation/effect order changed at {:?}", z.id));
             }
-            let normalize = |id: &EntityId| ancestry.get(id).copied().unwrap_or(*id);
             if a.inputs != z.inputs.iter().map(normalize).collect::<Vec<_>>()
                 || a.outputs != z.outputs.iter().map(normalize).collect::<Vec<_>>()
                 || a.memory_input != z.memory_input.as_ref().map(normalize)
@@ -508,11 +563,53 @@ pub(crate) fn validate_transition(
             }
         }
     }
+    if before.kind != StageKind::Decoded {
+        for edge in &after.ir.edges {
+            if cancel.is_cancelled() {
+                errors.push("transition validation cancelled".to_owned());
+                break;
+            }
+            let original = normalize(&edge.id);
+            let Some(old) = old_edges.get(&original) else {
+                errors.push(format!(
+                    "edge {:?} has no prior assignment ancestry",
+                    edge.id
+                ));
+                continue;
+            };
+            if old.from != normalize(&edge.from)
+                || old.to != normalize(&edge.to)
+                || old.kind != edge.kind
+                || old.memory != normalize(&edge.memory)
+                || old.effect != normalize(&edge.effect)
+            {
+                errors.push(format!(
+                    "edge endpoint/memory/effect remap changed at {:?}",
+                    edge.id
+                ));
+            }
+            let Some(projection) = projections.get(&edge.to) else {
+                errors.push(format!("edge {:?} has no destination projection", edge.id));
+                continue;
+            };
+            let expected: Option<Vec<_>> = projection
+                .iter()
+                .map(|index| old.arguments.get(*index).copied())
+                .collect();
+            if expected.as_ref() != Some(&edge.arguments.iter().map(normalize).collect::<Vec<_>>())
+            {
+                errors.push(format!(
+                    "incoming argument projection changed at {:?}",
+                    edge.id
+                ));
+            }
+        }
+    }
     ValidationCheck {
         name: "preserved_operation_effect_order_and_copy_remap".to_owned(),
         passed: errors.is_empty(),
         message: if errors.is_empty() {
-            "checked body sequence, operand/result remaps and memory/effect dependencies".to_owned()
+            "checked body sequence, operand/result remaps, memory/effect dependencies, traps and positional entry-argument projections".to_owned()
         } else {
             errors.join("; ")
         },
