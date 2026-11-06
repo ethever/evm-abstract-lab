@@ -235,21 +235,21 @@ strict_record! {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Statistics {
     /// Successful logical-work reservation.
-    pub work: usize,
+    pub work: u64,
     /// Number of stable block transfer evaluations.
-    pub evaluations: usize,
+    pub evaluations: u64,
     /// Retained blocks in current IR.
-    pub blocks: usize,
+    pub blocks: u64,
     /// Retained instructions in current IR.
-    pub operations: usize,
+    pub operations: u64,
     /// Retained value identities.
-    pub values: usize,
+    pub values: u64,
     /// Retained known edges.
-    pub edges: usize,
+    pub edges: u64,
     /// Real copied blocks, excluding synthetic dispatcher controls.
-    pub cloned_blocks: usize,
+    pub cloned_blocks: u64,
     /// Retained history entities, references and provenance payload units.
-    pub history_entities: usize,
+    pub history_entities: u64,
 }
 }
 strict_record! {

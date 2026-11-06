@@ -1,4 +1,5 @@
 //! Transactional stage adoption and the shared work ledger.
+use crate::budget::{count, work_budget};
 use crate::{
     Artifact, ArtifactId, Cancellation, CloneRelation, Completion, Config, Diagnostic,
     DiagnosticCode, EdgeRedirect, EntityId, EntityRef, Input, Ir, Limits, Origin, Phase, Progress,
@@ -27,7 +28,13 @@ impl<P: FnMut(Progress)> Builder<P> {
         bytes.push(0);
         bytes.extend_from_slice(&input.runtime_bytecode);
         bytes.extend_from_slice(format!("schema={SCHEMA_VERSION};config={config:?}").as_bytes());
-        Self {
+        // A refused configuration owns an inert ledger and cannot execute pay().
+        // Keep the requested configuration intact for identity and diagnostics.
+        let (budget, refusal) = match work_budget(config.limits.max_work) {
+            Ok(budget) => (budget, None),
+            Err(error) => (WorkBudget::new(0), Some(error)),
+        };
+        let mut builder = Self {
             observer,
             progress: Progress::default(),
             last_reported_work: 0,
@@ -44,25 +51,37 @@ impl<P: FnMut(Progress)> Builder<P> {
                 current_stage: None,
                 statistics: Statistics::default(),
             },
-            budget: WorkBudget::new(config.limits.max_work),
+            budget,
             cancel: cancel.clone(),
             next_entity: 1,
             published_entities: BTreeMap::new(),
             stopped: false,
+        };
+        if let Some(error) = refusal {
+            builder.stop(
+                Completion::Failed,
+                DiagnosticCode::Limit,
+                &error.to_string(),
+            );
         }
+        builder
     }
     pub fn notify_phase(&mut self, phase: Phase) {
         self.progress.phase = phase;
-        self.progress.work = self.budget.used();
+        self.progress.work = count(self.budget.used());
         self.progress.stage = self.artifact.current_stage;
         if let Some(stage) = self.artifact.current() {
-            self.progress.blocks = self.progress.blocks.max(stage.ir.blocks.len());
-            self.progress.operations = self
-                .progress
-                .operations
-                .max(stage.ir.blocks.iter().map(|b| b.operations.len()).sum());
+            self.progress.blocks = self.progress.blocks.max(count(stage.ir.blocks.len()));
+            self.progress.operations = self.progress.operations.max(
+                stage
+                    .ir
+                    .blocks
+                    .iter()
+                    .map(|b| count(b.operations.len()))
+                    .sum(),
+            );
         }
-        self.last_reported_work = self.progress.work;
+        self.last_reported_work = self.budget.used();
         (self.observer)(self.progress.clone());
     }
     pub fn id(&mut self) -> EntityId {
@@ -174,20 +193,20 @@ impl<P: FnMut(Progress)> Builder<P> {
             .map(|s| crate::transform::ir_size(&s.ir))
             .unwrap_or(0);
         let retained = units.saturating_add(old_units).saturating_mul(8);
-        if self
+        let Some(history_entities) = self
             .artifact
             .statistics
             .history_entities
-            .saturating_add(retained)
-            > self.limits().max_history_entities
-        {
+            .checked_add(count(retained))
+            .filter(|total| *total <= self.limits().max_history_entities)
+        else {
             self.stop(
                 Completion::Limited,
                 DiagnosticCode::Limit,
                 "immutable stage/provenance history limit exceeded; prior validated stage retained",
             );
             return false;
-        }
+        };
         // Index construction/diffs/SSA checks plus edge grouping and bounded
         // ancestry payloads are quoted before preparing any publication.
         let work = retained.saturating_mul(8).saturating_add(
@@ -447,7 +466,7 @@ impl<P: FnMut(Progress)> Builder<P> {
         let passed = validation.status == ValidationStatus::Passed;
         // One publication point: cancellation/refusal cannot leave half an event,
         // origin table or stage attached to the artifact.
-        self.artifact.statistics.history_entities += retained;
+        self.artifact.statistics.history_entities = history_entities;
         for diagnostic in &mut self.artifact.diagnostics {
             if diagnostic.stage.is_none() && diagnostic.entity.is_some_and(|e| all.contains_key(&e))
             {
@@ -485,13 +504,13 @@ impl<P: FnMut(Progress)> Builder<P> {
                 diagnostic.entity = None;
             }
         }
-        self.artifact.statistics.work = self.budget.used();
+        self.artifact.statistics.work = count(self.budget.used());
         if let Some(s) = self.artifact.current() {
             let (blocks, operations, values, edges) = (
-                s.ir.blocks.len(),
-                s.ir.blocks.iter().map(|b| b.operations.len()).sum(),
-                s.ir.values.len(),
-                s.ir.edges.len(),
+                count(s.ir.blocks.len()),
+                s.ir.blocks.iter().map(|b| count(b.operations.len())).sum(),
+                count(s.ir.values.len()),
+                count(s.ir.edges.len()),
             );
             self.artifact.statistics.blocks = blocks;
             self.artifact.statistics.operations = operations;

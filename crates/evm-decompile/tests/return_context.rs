@@ -1158,11 +1158,11 @@ fn recursive_context_growth_respects_each_declared_recovery_limit() {
         .op(0x00);
     let input = a.finish();
     let decoded = Program::decode_with_fork(&input.runtime_bytecode, input.fork).unwrap();
-    let blocks = decoded.blocks().len();
-    let operations: usize = decoded
+    let blocks = u64::try_from(decoded.blocks().len()).unwrap();
+    let operations: u64 = decoded
         .blocks()
         .iter()
-        .map(|block| block.instructions.len())
+        .map(|block| u64::try_from(block.instructions.len()).unwrap())
         .sum();
     let mut configurations = Vec::new();
     let mut config = Config::default();
@@ -1204,15 +1204,21 @@ fn recursive_context_growth_respects_each_declared_recovery_limit() {
             "{label}"
         );
         for stage in &artifact.stages {
-            assert!(stage.ir.blocks.len() <= config.limits.max_blocks, "{label}");
-            assert!(stage.ir.values.len() <= config.limits.max_values, "{label}");
+            assert!(
+                u64::try_from(stage.ir.blocks.len()).unwrap() <= config.limits.max_blocks,
+                "{label}"
+            );
+            assert!(
+                u64::try_from(stage.ir.values.len()).unwrap() <= config.limits.max_values,
+                "{label}"
+            );
             assert!(
                 stage
                     .ir
                     .blocks
                     .iter()
-                    .map(|block| block.operations.len())
-                    .sum::<usize>()
+                    .map(|block| u64::try_from(block.operations.len()).unwrap())
+                    .sum::<u64>()
                     <= config.limits.max_operations,
                 "{label}"
             );

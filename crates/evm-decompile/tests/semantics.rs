@@ -235,7 +235,7 @@ fn natural_loop_converges_with_stable_values_and_useful_while() {
     assert!(c.1 > 0);
     assert_eq!(c.2, 0);
     assert!(a.statistics.values < 200);
-    assert!(a.statistics.evaluations > baseline(&a).ir.blocks.len());
+    assert!(a.statistics.evaluations > u64::try_from(baseline(&a).ir.blocks.len()).unwrap());
     assert!(render_text(&a).contains("while ("));
 }
 
@@ -623,6 +623,9 @@ fn dispatcher_and_duplication_artifact_namespaces_are_distinct_and_stable() {
         strategy: Strategy::CodeDuplication,
         ..Config::default()
     };
+    // Compare two admitted explicit policies; incrementing the MAX default
+    // would overflow before exercising artifact identity.
+    config.limits.max_cloned_blocks = 2_048;
     let c = decompile(&input, &config);
     assert_ne!(d.id, c.id);
     config.limits.max_cloned_blocks += 1;
@@ -757,7 +760,12 @@ fn shared_pc_with_different_stack_heights_has_stable_separate_contexts() {
     let original = decompile(&input, &Config::default());
     let decoded = &original.stages[0];
     let mut bounded = Config::default();
-    bounded.limits.max_operations = decoded.ir.blocks.iter().map(|b| b.operations.len()).sum();
+    bounded.limits.max_operations = decoded
+        .ir
+        .blocks
+        .iter()
+        .map(|b| u64::try_from(b.operations.len()).unwrap())
+        .sum();
     let limited = decompile(&input, &bounded);
     assert_eq!(limited.completion, Completion::Limited);
     assert_eq!(limited.current().unwrap().kind, StageKind::Decoded);
@@ -1294,7 +1302,7 @@ fn export_is_bounded_and_can_cancel_during_a_large_primitive_body() {
     let mut config = Config::default();
     // The additional immutable Lifted snapshot retains the complete raw witness.
     // This fixture exercises export cancellation, independently of history refusal.
-    config.limits.max_history_entities *= 2;
+    config.limits.max_history_entities = 4_000_000;
     let mut artifact = decompile(&Input::new(bytes, Fork::Osaka), &config);
     assert_eq!(
         artifact.completion,
@@ -1317,7 +1325,7 @@ fn export_is_bounded_and_can_cancel_during_a_large_primitive_body() {
     assert!(refused.text.contains("work limit exhausted"));
     let mut callbacks = 0;
     let interrupted =
-        evm_decompile::export_text_with_observer(&artifact, &cancel, usize::MAX, |_| {
+        evm_decompile::export_text_with_observer(&artifact, &cancel, u64::MAX, |_| {
             callbacks += 1;
             if callbacks == 64 {
                 cancel.cancel();

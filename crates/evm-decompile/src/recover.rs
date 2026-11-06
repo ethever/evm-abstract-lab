@@ -6,6 +6,7 @@
 mod context;
 mod targets;
 
+use crate::budget::{constant_capacity, count as wide_count};
 use crate::{
     Block, Completion, DiagnosticCode, Edge, EdgeKind, EntityId, ExitKind, FactScope, Ir,
     Operation, Phase, Progress, Severity, SourceSpan, StageKind, Terminator, U256, Value,
@@ -74,7 +75,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
     if !owner.pay(1) {
         return false;
     }
-    if owner.artifact.input.runtime_bytecode.len() > owner.limits().max_bytecode_bytes {
+    if wide_count(owner.artifact.input.runtime_bytecode.len()) > owner.limits().max_bytecode_bytes {
         owner.stop(
             Completion::Limited,
             DiagnosticCode::Limit,
@@ -82,15 +83,18 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         );
         return false;
     }
-    if owner.limits().max_constant_set == 0 {
-        owner.stop(
-            Completion::Failed,
-            DiagnosticCode::Limit,
-            "max_constant_set must be nonzero",
-        );
-        return false;
-    }
-    if owner.limits().max_structuring_depth > crate::MAX_STRUCTURING_DEPTH {
+    let cap = match constant_capacity(owner.limits().max_constant_set) {
+        Ok(capacity) => capacity,
+        Err(error) => {
+            owner.stop(
+                Completion::Failed,
+                DiagnosticCode::Limit,
+                &error.to_string(),
+            );
+            return false;
+        }
+    };
+    if owner.limits().max_structuring_depth > wide_count(crate::MAX_STRUCTURING_DEPTH) {
         owner.stop(
             Completion::Failed,
             DiagnosticCode::Limit,
@@ -129,9 +133,9 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
                     + usize::from(!effects(i.opcode).is_pure())
             })
             .sum::<usize>();
-    if program.blocks().len() > owner.limits().max_blocks
-        || count > owner.limits().max_operations
-        || value_count > owner.limits().max_values
+    if wide_count(program.blocks().len()) > owner.limits().max_blocks
+        || wide_count(count) > owner.limits().max_operations
+        || wide_count(value_count) > owner.limits().max_values
     {
         owner.stop(
             Completion::Limited,
@@ -155,7 +159,6 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         return false;
     }
     owner.notify_phase(Phase::Recovery);
-    let cap = NonZeroUsize::new(owner.limits().max_constant_set).expect("checked nonzero");
     let algebra =
         FiniteSetAlgebra::from_spec(DomainSpec::new(cap, NonZeroUsize::MIN, NonZeroUsize::MIN));
     let blocks = source.blocks.len();
@@ -222,7 +225,21 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
                 break;
             }
         };
-        recovery.owner.artifact.statistics.evaluations += 1;
+        let Some(evaluations) = recovery
+            .owner
+            .artifact
+            .statistics
+            .evaluations
+            .checked_add(1)
+        else {
+            recovery.owner.stop(
+                Completion::Limited,
+                DiagnosticCode::Limit,
+                "block transfer evaluation counter exhausted",
+            );
+            break;
+        };
+        recovery.owner.artifact.statistics.evaluations = evaluations;
         if !recovery.transfer(index) {
             break;
         }
@@ -449,7 +466,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             .collect();
     }
     fn add_value(&mut self, value: Value) -> bool {
-        if self.ir.values.len() >= self.owner.limits().max_values {
+        if wide_count(self.ir.values.len()) >= self.owner.limits().max_values {
             self.owner.stop(
                 Completion::Limited,
                 DiagnosticCode::Limit,
@@ -565,7 +582,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         Some(ContextKey::new(original, &state.stack))
     }
     fn copy_context(&mut self, original: usize) -> Option<usize> {
-        if self.ir.blocks.len() >= self.owner.limits().max_blocks {
+        if wide_count(self.ir.blocks.len()) >= self.owner.limits().max_blocks {
             self.owner.stop(
                 Completion::Limited,
                 DiagnosticCode::Limit,
@@ -574,7 +591,10 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             return None;
         }
         let operations = self.templates.blocks[original].operations.len();
-        if self.operation_count.saturating_add(operations) > self.owner.limits().max_operations {
+        if wide_count(self.operation_count)
+            .checked_add(wide_count(operations))
+            .is_none_or(|total| total > self.owner.limits().max_operations)
+        {
             self.owner.stop(
                 Completion::Limited,
                 DiagnosticCode::Limit,

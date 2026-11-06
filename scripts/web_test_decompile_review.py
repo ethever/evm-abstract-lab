@@ -267,14 +267,7 @@ def recovery(context):
     canvas.screenshot(path=str(context.output / "faulted-copy-source-attribution.png"))
     prepare(page, canvas, "0155")
     set_control(page, canvas, "Decompile budgets", True, role="section")
-    number = ui_control(page, "Recovery iteration limit", role="number")
-    left, top, right, bottom = number["rect"]
-    page.mouse.dblclick((left + right) / 2, (top + bottom) / 2)
-    page.wait_for_function("() => document.activeElement === document.querySelector('#evm-canvas')?.nextElementSibling")
-    page.keyboard.press("Control+a")
-    page.keyboard.insert_text("0")
-    page.keyboard.press("Enter")
-    rendered_frame(page)
+    edit_control(page, canvas, "Recovery iteration limit", "0")
     limited, request = submit(context, page, canvas, "0155", "decoded-only-limited")
     assert request["limits"]["max_iterations"] == 0
     assert limited["completion"] == "limited" and [item["kind"] for item in limited["stages"]] == ["decoded"]

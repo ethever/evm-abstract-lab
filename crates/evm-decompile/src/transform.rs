@@ -4,7 +4,7 @@ mod dead_parameters;
 use crate::{
     Completion, DiagnosticCode, EdgeRedirect, EntityId, ExitKind, FactScope, Ir, Progress,
     Severity, StageKind, StructuredKind, StructuredNode, Terminator, U256, ValueFact, ValueKind,
-    artifact::Builder,
+    artifact::Builder, budget::count,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -407,9 +407,11 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
             .artifact
             .statistics
             .cloned_blocks
-            .saturating_add(total)
-            > owner.limits().max_cloned_blocks
-            || base.blocks.len().saturating_add(total) > owner.limits().max_blocks
+            .checked_add(count(total))
+            .is_none_or(|total| total > owner.limits().max_cloned_blocks)
+            || count(base.blocks.len())
+                .checked_add(count(total))
+                .is_none_or(|total| total > owner.limits().max_blocks)
         {
             owner.stop(
                 Completion::Limited,
@@ -451,14 +453,16 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
             })
             .sum::<usize>()
             .saturating_mul(entries.len() - 1);
-        if base.values.len().saturating_add(planned_values) > owner.limits().max_values
+        if count(base.values.len())
+            .checked_add(count(planned_values))
+            .is_none_or(|total| total > owner.limits().max_values)
             || base
                 .blocks
                 .iter()
-                .map(|b| b.operations.len())
-                .sum::<usize>()
-                .saturating_add(planned_operations)
-                > owner.limits().max_operations
+                .map(|b| count(b.operations.len()))
+                .sum::<u64>()
+                .checked_add(count(planned_operations))
+                .is_none_or(|total| total > owner.limits().max_operations)
         {
             owner.stop(Completion::Limited,DiagnosticCode::Limit,"node split temporary value/operation identities exceed the configured limit; prior validated stage retained");
             return;
@@ -496,15 +500,33 @@ pub(crate) fn split_irreducible(owner: &mut Builder<impl FnMut(Progress)>) {
             .iter()
             .filter(|b| !old_blocks.contains(&b.id))
             .count();
-        if ir.values.len() > owner.limits().max_values
-            || ir.blocks.iter().map(|b| b.operations.len()).sum::<usize>()
+        if count(ir.values.len()) > owner.limits().max_values
+            || ir
+                .blocks
+                .iter()
+                .map(|b| count(b.operations.len()))
+                .sum::<u64>()
                 > owner.limits().max_operations
         {
             owner.stop(Completion::Limited,DiagnosticCode::Limit,"split candidate exceeds retained value/operation limit; prior validated CFG retained");
             return;
         }
+        // The planned copy count was admitted above; publish only retained copies.
+        let Some(cloned_blocks) = owner
+            .artifact
+            .statistics
+            .cloned_blocks
+            .checked_add(count(retained_copies))
+        else {
+            owner.stop(
+                Completion::Limited,
+                DiagnosticCode::Limit,
+                "cloned block counter exhausted; prior validated CFG retained",
+            );
+            return;
+        };
         if !owner.commit(StageKind::ControlFlow, ir, ("selective_node_split","copy non-header region and redirect secondary entries; all copied definitions and edge assignments receive fresh identities"), parents, copies, redirects){return;}
-        owner.artifact.statistics.cloned_blocks += retained_copies;
+        owner.artifact.statistics.cloned_blocks = cloned_blocks;
     }
 }
 fn copy_nodes(

@@ -270,3 +270,80 @@ fn installed_cli_terminal_text_names_offset_size_and_beneficiary() {
         assert_eq!(text.matches(expected).count(), 1, "{text}");
     }
 }
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn installed_cli_accepts_wide_work_limits_and_emits_exact_numeric_configuration() {
+    for max_work in [
+        4_294_967_296_u64,
+        10_000_000_000,
+        9_007_199_254_740_993,
+        u64::MAX,
+    ] {
+        let allowance = max_work.to_string();
+        let output = run(&["--hex", "00", "--format", "json", "--max-work", &allowance]);
+        assert!(
+            output.status.success(),
+            "{allowance}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
+        assert_eq!(artifact.config.limits.max_work, max_work);
+        assert!(artifact.statistics.work > 0 && artifact.statistics.work < 1_000_000);
+        assert_eq!(artifact.statistics.blocks, 1);
+        assert_eq!(artifact.statistics.operations, 1);
+        let wire: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            wire["config"]["limits"]["max_work"].as_u64(),
+            Some(max_work)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("\"max_work\": {max_work}"))
+        );
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn installed_cli_defaults_match_shared_maximum_policy_without_spending_the_ceiling() {
+    let output = run(&["--hex", "00", "--format", "json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
+    assert_eq!(artifact.config.limits, evm_decompile::Limits::default());
+    let wire: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for field in [
+        "max_bytecode_bytes",
+        "max_blocks",
+        "max_operations",
+        "max_values",
+        "max_work",
+        "max_iterations",
+        "max_cloned_blocks",
+        "max_history_entities",
+    ] {
+        assert_eq!(
+            wire["config"]["limits"][field].as_u64(),
+            Some(u64::MAX),
+            "{field}"
+        );
+    }
+    assert_eq!(artifact.config.limits.max_constant_set, 8);
+    assert_eq!(artifact.config.limits.max_structuring_depth, 512);
+    assert!(artifact.statistics.work > 0 && artifact.statistics.work < 1_000_000);
+}
+
+#[test]
+fn installed_cli_rejects_overflow_fractional_and_negative_allowances_before_execution() {
+    for invalid in ["18446744073709551616", "-1", "0.5"] {
+        let output = run(&["--hex", "00", "--format", "json", "--max-work", invalid]);
+        assert!(!output.status.success(), "{invalid}");
+        assert!(output.stdout.is_empty(), "{invalid}");
+        assert!(!output.stderr.is_empty(), "{invalid}");
+    }
+}

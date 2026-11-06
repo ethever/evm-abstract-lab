@@ -4,6 +4,7 @@ use crate::{
     Progress, Severity, StageKind, Strategy, StructuredKind, StructuredNode, StructuredProgram,
     Terminator,
     artifact::Builder,
+    budget::count,
     transform::{dominators, ir_size, irreducible, reachable},
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -340,7 +341,7 @@ impl<P: FnMut(Progress)> Structurer<'_, P> {
         if Some(start) == stop {
             return self.sequence(Vec::new());
         }
-        if depth > self.owner.limits().max_structuring_depth {
+        if count(depth) > self.owner.limits().max_structuring_depth {
             self.owner.stop(
                 Completion::Limited,
                 DiagnosticCode::Limit,

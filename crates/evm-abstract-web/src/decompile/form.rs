@@ -12,6 +12,7 @@ pub(super) struct Form {
     fork: Fork,
     strategy: DecompileStrategy,
     limits: DecompileLimits,
+    limit_inputs: framework::NumberInputs,
     keyboard: framework::SubmitKeyboard,
     replace_editor: bool,
 }
@@ -24,6 +25,7 @@ impl Default for Form {
             fork: Fork::Osaka,
             strategy: DecompileStrategy::Dispatcher,
             limits: DecompileLimits::default(),
+            limit_inputs: framework::NumberInputs::default(),
             keyboard: framework::SubmitKeyboard::default(),
             replace_editor: false,
         }
@@ -56,6 +58,10 @@ impl Form {
         } else {
             None
         }
+    }
+
+    fn can_submit(&self, busy: bool) -> bool {
+        !busy && self.limit_inputs.valid() && self.validation().is_none()
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, busy: bool) -> Option<DecompileRequest> {
@@ -115,18 +121,20 @@ impl Form {
                 });
             });
             framework::section(ui, "Decompile budgets", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    budget(ui, "Work limit", &mut self.limits.max_work);
-                    budget(ui, "Block limit", &mut self.limits.max_blocks);
-                    budget(ui, "Operation limit", &mut self.limits.max_operations);
-                    budget(ui, "Clone limit", &mut self.limits.max_cloned_blocks);
-                    budget(ui, "History limit", &mut self.limits.max_history_entities);
-                    budget(
-                        ui,
-                        "Recovery iteration limit",
-                        &mut self.limits.max_iterations,
-                    );
-                });
+                egui::Grid::new("decompile_limits")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        for (label, value) in [
+                            ("Work limit", &mut self.limits.max_work),
+                            ("Block limit", &mut self.limits.max_blocks),
+                            ("Operation limit", &mut self.limits.max_operations),
+                            ("Clone limit", &mut self.limits.max_cloned_blocks),
+                            ("History limit", &mut self.limits.max_history_entities),
+                            ("Recovery iteration limit", &mut self.limits.max_iterations),
+                        ] {
+                            self.limit_inputs.number(ui, label, value);
+                        }
+                    });
             });
             if let Some(error) = self.validation() {
                 ui.colored_label(palette::WARNING, error);
@@ -134,7 +142,7 @@ impl Form {
             ui.horizontal_wrapped(|ui| {
                 submit = controls::action_enabled(
                     ui,
-                    !busy && self.validation().is_none(),
+                    self.can_submit(busy),
                     "Decompile",
                     Density::Regular,
                 )
@@ -146,6 +154,10 @@ impl Form {
                 ui.label(
                     egui::RichText::new(if busy {
                         "A decompiler task is active"
+                    } else if !self.limit_inputs.valid() {
+                        "Correct invalid budgets: use whole numbers from 0 to 18446744073709551615"
+                    } else if self.validation().is_some() {
+                        "Check the highlighted input"
                     } else {
                         "Ctrl+Enter to submit"
                     })
@@ -154,7 +166,7 @@ impl Form {
                 );
             });
         });
-        if (submit || keyboard_submit) && !busy && self.validation().is_none() {
+        if (submit || keyboard_submit) && self.can_submit(busy) {
             let compact: String = self
                 .bytecode
                 .chars()
@@ -184,16 +196,14 @@ impl Form {
                 "Decompiler input: {:?}; Strategy draft: {:?}; Input validation: {}",
                 self.fork,
                 self.strategy,
-                self.validation().unwrap_or("Ready")
+                if !self.limit_inputs.valid() {
+                    "Correct invalid decompile budgets"
+                } else {
+                    self.validation().unwrap_or("Ready")
+                }
             )
         } else {
             String::new()
         }
     }
-}
-
-fn budget(ui: &mut egui::Ui, label: &str, value: &mut usize) {
-    ui.label(label);
-    let response = ui.add(egui::DragValue::new(value).range(0..=usize::MAX).speed(1.0));
-    controls::observe(ui, &response, label, "number", None);
 }

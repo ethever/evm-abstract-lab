@@ -6,6 +6,7 @@
 //! that a recovered graph is closed. Historical stages are owned snapshots.
 
 mod artifact;
+mod budget;
 mod effects;
 mod execute;
 mod lift;

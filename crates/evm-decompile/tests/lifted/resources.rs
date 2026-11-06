@@ -2,7 +2,7 @@ use super::oracle::certify;
 use super::support::{Asm, calldata, checked, comparison_branch, validated};
 use evm_decompile::{
     Cancellation, Completion, Config, Input, MemoryHost, Phase, StageKind, TextExportStatus, U256,
-    decompile, decompile_with_progress, export_text, export_text_with_observer,
+    decompile, decompile_with_progress, export_text_with_observer,
 };
 
 fn shared_sum(depth: usize) -> Input {
@@ -27,7 +27,9 @@ fn truncated_shared_dag_export_never_claims_complete_semantic_source() {
         MemoryHost::new(&input, calldata(&[U256::from(3)])),
     );
     assert_eq!(host.storage[&U256::ZERO], U256::from(3) << 32);
-    let export = export_text(&artifact, &Cancellation::new());
+    // This stress oracle deliberately refuses exponential text expansion. Keep
+    // its former 100M allowance explicit now that ordinary defaults are MAX.
+    let export = export_text_with_observer(&artifact, &Cancellation::new(), 100_000_000, |_| {});
     assert_eq!(
         export.status,
         TextExportStatus::Limited,

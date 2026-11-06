@@ -1,3 +1,6 @@
+#[path = "decompile/budgets.rs"]
+mod budgets;
+
 use super::{Assets, decoded_content, exchange_with_pool, header_value, pool, read_response};
 use evm_abstract_protocol::{
     ApiErrorCode, DecompileJobReply, DecompileJobResultReply, DecompileRequest, DecompileStrategy,

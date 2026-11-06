@@ -805,6 +805,21 @@
       ]
     },
     {
+      "id": "decompile-budgets",
+      "group": "decompile",
+      "module": "web_test_decompile_budgets",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_budgets.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http_errors.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
       "id": "decompile-alignment",
       "group": "decompile",
       "module": "web_test_decompile_alignment",

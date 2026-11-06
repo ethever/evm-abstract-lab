@@ -65,7 +65,7 @@ fn decoded_source_export_obeys_explicit_work_and_cancellation() {
     assert!(limited.work <= 1);
     assert!(limited.text.contains("work limit exhausted"));
     let mut checks = 0;
-    let cancelled = export_text_with_observer(&artifact, &cancel, usize::MAX, |_| {
+    let cancelled = export_text_with_observer(&artifact, &cancel, u64::MAX, |_| {
         checks += 1;
         // Diagnostic and stage reservations precede the first two source ops.
         if checks == 4 {
@@ -160,7 +160,7 @@ fn explicit_export_cancellation_is_independent_of_cancelled_ambient_scope() {
             &own,
         );
         assert_eq!(artifact.completion, Completion::Complete);
-        let exported = export_text_with_observer(&artifact, &own, usize::MAX, |_| {});
+        let exported = export_text_with_observer(&artifact, &own, u64::MAX, |_| {});
         assert_eq!(exported.status, TextExportStatus::Complete);
         assert!(exported.work > 0);
         assert!(!own.is_cancelled());
