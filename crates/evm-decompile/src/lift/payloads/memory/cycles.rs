@@ -2,6 +2,26 @@
 use crate::{EntityId, Ir};
 use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn blocks(ir: &Ir, pay: &mut impl FnMut(usize) -> bool) -> Option<BTreeSet<EntityId>> {
+    if !pay(ir.edges.len().saturating_add(1)) {
+        return None;
+    }
+    let self_edges: BTreeSet<_> = ir
+        .edges
+        .iter()
+        .filter_map(|e| (e.from == e.to).then_some(e.from))
+        .collect();
+    let mut result = BTreeSet::new();
+    for component in components(ir, pay)? {
+        if component.len() > 1 || self_edges.contains(&component[0]) {
+            result.extend(component);
+        }
+    }
+    Some(result)
+}
+pub(super) fn components(
+    ir: &Ir,
+    pay: &mut impl FnMut(usize) -> bool,
+) -> Option<Vec<Vec<EntityId>>> {
     if !pay(ir
         .blocks
         .len()
@@ -50,7 +70,7 @@ pub(super) fn blocks(ir: &Ir, pay: &mut impl FnMut(usize) -> bool) -> Option<BTr
         }
     }
     seen.fill(false);
-    let mut result = BTreeSet::new();
+    let mut result = Vec::new();
     for root in order.into_iter().rev() {
         if seen[root] {
             continue;
@@ -70,9 +90,7 @@ pub(super) fn blocks(ir: &Ir, pay: &mut impl FnMut(usize) -> bool) -> Option<BTr
                 }
             }
         }
-        if component.len() > 1 || next[root].contains(&root) {
-            result.extend(component.into_iter().map(|i| ir.blocks[i].id));
-        }
+        result.push(component.into_iter().map(|i| ir.blocks[i].id).collect());
     }
     Some(result)
 }

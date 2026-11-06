@@ -138,7 +138,15 @@ class BrowserRegistryTests(unittest.TestCase):
         self.assertEqual(payloads, guards | {"scripts/web_test_decompile_error_payloads.py"})
         self.assertEqual({case["id"] for case in self.manifest["cases"]
                           if "scripts/web_test_decompile_error_payloads.py" in case["dependencies"]},
-                         {"decompile-error-payloads"})
+                         {"decompile-error-payloads", "decompile-loop-pointers"})
+
+    def test_loop_pointer_case_keeps_the_payload_closure_and_avoids_rpc_dependencies(self):
+        payloads = set(self.cases["decompile-error-payloads"]["dependencies"])
+        loops = set(self.cases["decompile-loop-pointers"]["dependencies"])
+        self.assertEqual(loops, payloads | {"scripts/web_test_decompile_loop_pointers.py"})
+        self.assertEqual({case["id"] for case in self.manifest["cases"]
+                          if "scripts/web_test_decompile_loop_pointers.py" in case["dependencies"]},
+                         {"decompile-loop-pointers"})
 
     def test_direct_execution_runs_every_selected_case_once_and_keeps_failure_evidence(self):
         # Exercise the actual CLI orchestration with inert acceptance functions.

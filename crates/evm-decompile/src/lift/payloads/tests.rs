@@ -103,7 +103,7 @@ fn source_edge_bounds_remain_conditional_and_close_a_symbolic_pointer() {
 }
 
 #[test]
-fn deep_acyclic_memory_address_dependencies_refuse_without_host_stack_growth() {
+fn deep_acyclic_memory_address_dependencies_finish_without_host_stack_growth() {
     let mut code = fixture()[..5].to_vec();
     for _ in 0..1_000 {
         code.extend([0x60, 1, 0x60, 64, 0x51, 0x52]);
@@ -112,7 +112,9 @@ fn deep_acyclic_memory_address_dependencies_refuse_without_host_stack_growth() {
     let artifact = decompile(&Input::new(code, Fork::Osaka), &Config::default());
     let stage = artifact.current().unwrap();
     assert_eq!(stage.kind, StageKind::Lifted, "{:?}", artifact.diagnostics);
-    assert!(stage.ir.lifted.as_ref().unwrap().reverts.is_empty());
+    let program = stage.ir.lifted.as_ref().unwrap();
+    assert_eq!(program.reverts.len(), 1);
+    assert_eq!(super::verify(&stage.ir, program, &mut |_| true), Some(true));
 }
 
 #[test]
