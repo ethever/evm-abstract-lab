@@ -414,10 +414,11 @@ fn reverting_loop_exits_and_unanchored_cycles_never_gain_finite_failure_ranks() 
             ExecutionOutcome::StepLimit,
             "concrete infinite path does not terminate at its REVERT exit"
         );
-        for run in [evm_decompile::execute_ir, evm_decompile::execute_structured] {
-            let observed = run(stage, &mut initial.clone(), &limits).unwrap();
-            assert_eq!(observed.outcome, raw.outcome);
-        }
+        let graph = evm_decompile::execute_ir(stage, &mut initial.clone(), &limits).unwrap();
+        let structured =
+            evm_decompile::execute_structured(stage, &mut initial.clone(), &limits).unwrap();
+        assert_eq!(graph.outcome, raw.outcome);
+        assert_eq!(structured.outcome, raw.outcome);
     }
 }
 
