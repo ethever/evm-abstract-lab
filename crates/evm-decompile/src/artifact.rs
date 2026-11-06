@@ -357,6 +357,22 @@ impl<P: FnMut(Progress)> Builder<P> {
             }
             let mut source = direct.get(entity).cloned().unwrap_or_default();
             for parent in &refs {
+                // Keep structural links for inspection without copying an
+                // entire shared failure/pass/containing tree's spans into
+                // every guard. Predicate, block and edge spans anchor its row;
+                // the referenced raw nodes retain their own complete origins.
+                if let Record::LiftedControl(control) = record
+                    && let Some(guard) = &control.guard
+                    && (parent.entity == control.node
+                        || parent.entity == guard.pass_node
+                        || parent.entity == guard.failure_node
+                        || guard
+                            .continuation
+                            .as_ref()
+                            .is_some_and(|c| c.sequence == parent.entity))
+                {
+                    continue;
+                }
                 if let Some(s) = prior_sources
                     .get(parent)
                     .or_else(|| direct.get(&parent.entity))
@@ -575,7 +591,9 @@ fn inferred_parents(record: &Record<'_>) -> Vec<EntityId> {
         Record::LiftedBlock(b) => vec![b.block],
         Record::LiftedStatement(s) => vec![s.operation],
         Record::LiftedTransfer(t) => vec![t.edge],
-        Record::LiftedControl(c) => vec![c.node],
+        Record::LiftedControl(c) => std::iter::once(c.node)
+            .chain(c.guard.iter().flat_map(|g| g.source_references()))
+            .collect(),
         _ => Vec::new(),
     }
 }

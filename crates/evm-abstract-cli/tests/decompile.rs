@@ -20,6 +20,8 @@ fn local_code_produces_structured_output_and_inspectable_json_without_a_world() 
         String::from_utf8_lossy(&output.stderr)
     );
     let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(artifact.schema_version, 3);
+    assert!(artifact.admits_schema());
     assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
     assert_eq!(
         artifact.config.strategy,
@@ -157,6 +159,23 @@ fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stag
         .iter()
         .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
         .expect("retained raw Structured stage");
+    let current = artifact.current().unwrap();
+    let program = current.ir.lifted.as_ref().unwrap();
+    let control = program
+        .controls
+        .iter()
+        .find(|control| control.guard.is_some())
+        .expect("CLI JSON exposes its certified guard");
+    let guard = control.guard.as_ref().unwrap();
+    assert!(guard.pass_nonzero);
+    let shared_require = program
+        .render_index(&current.ir)
+        .render_guard(control, |_| true)
+        .unwrap()
+        .unwrap();
+    let mut witness = current.ir.clone();
+    witness.lifted = None;
+    assert_eq!(witness, raw.ir);
     assert!(raw.ir.structured.is_some());
     assert!(
         raw.ir
@@ -174,6 +193,25 @@ fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stag
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(" >= "), "{text}");
     assert!(!text.contains("iszero"), "{text}");
+    assert_eq!(text.matches(&shared_require).count(), 1, "{text}");
+    assert!(!text.contains("if ("), "{text}");
+}
+
+#[test]
+fn installed_cli_keeps_a_pass_reachable_join_revert_after_the_store() {
+    // if (calldataload(0)) { sstore(0, 0x55); } else {} ; revert(0,0)
+    let bytecode = "5f356008576010565b60555f556010565b5f5ffd";
+    let output = run(&["--hex", bytecode]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    let require = text.find("require(").expect("certified empty failure");
+    let store = text.find("sstore(").unwrap();
+    let revert = text.rfind("revert(").expect("pass-reachable REVERT");
+    assert!(require < store && store < revert, "{text}");
 }
 
 #[test]

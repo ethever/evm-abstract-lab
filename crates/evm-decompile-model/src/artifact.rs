@@ -281,6 +281,22 @@ pub struct Artifact {
 }
 }
 impl Artifact {
+    /// Lightweight version admission. Full source/proof certification belongs
+    /// to core; old advertised schemas cannot opt in to new guard semantics.
+    pub fn admits_schema(&self) -> bool {
+        match self.schema_version {
+            crate::SCHEMA_VERSION => true,
+            2 => self
+                .stages
+                .iter()
+                .all(|s| s.ir.lifted.as_ref().is_none_or(|p| !p.has_guards())),
+            1 => self
+                .stages
+                .iter()
+                .all(|s| s.kind != StageKind::Lifted && s.ir.lifted.is_none()),
+            _ => false,
+        }
+    }
     /// Retrieve a historical snapshot.
     pub fn stage(&self, id: StageId) -> Option<&Stage> {
         self.stages.iter().find(|s| s.id == id)
@@ -412,6 +428,28 @@ fn node_records<'a>(node: &'a StructuredNode, map: &mut BTreeMap<EntityId, Recor
 }
 #[doc(hidden)]
 pub fn diff_ir(old: &Ir, new: &Ir) -> StageDiff {
+    // Shared facts have no duplicate record identity. Attribute rank changes to
+    // their existing high block entity so stage diffs still expose metadata
+    // changes without inventing a second occurrence for the source block.
+    let old_facts: BTreeMap<_, _> = old
+        .lifted
+        .iter()
+        .flat_map(|p| &p.failures)
+        .map(|f| (f.block, f.rank))
+        .collect();
+    let new_facts: BTreeMap<_, _> = new
+        .lifted
+        .iter()
+        .flat_map(|p| &p.failures)
+        .map(|f| (f.block, f.rank))
+        .collect();
+    let fact_changes: BTreeSet<_> = new
+        .lifted
+        .iter()
+        .flat_map(|p| &p.blocks)
+        .filter(|b| old_facts.get(&b.block) != new_facts.get(&b.block))
+        .map(|b| b.id)
+        .collect();
     let old = records(old);
     let new = records(new);
     StageDiff {
@@ -427,7 +465,10 @@ pub fn diff_ir(old: &Ir, new: &Ir) -> StageDiff {
             .collect(),
         changed: new
             .iter()
-            .filter(|(id, r)| old.get(id).is_some_and(|o| o != *r))
+            .filter(|(id, r)| {
+                old.get(id)
+                    .is_some_and(|o| o != *r || fact_changes.contains(id))
+            })
             .map(|(id, _)| *id)
             .collect(),
     }

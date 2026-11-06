@@ -47,7 +47,9 @@ def run(context):
     assert ui_control(page, "Simplified structured code", role="tab")["selected"]
     high_text = copy_code(page, canvas)
     assert " >= " in high_text and "iszero(" not in high_text, high_text
-    assert any("if (" in row["label"] and " >= " in row["label"]
+    assert control["guard"]["pass_nonzero"] and control["guard"]["payload"] == "empty_revert"
+    assert "if (" not in high_text and "revert(" not in high_text, high_text
+    assert any("require(" in row["label"] and " >= " in row["label"]
                for row in observed(page, "decompile-code"))
     canvas.screenshot(path=str(context.output / "lifted-unsigned-predicate-code.png"))
 
@@ -62,7 +64,7 @@ def run(context):
     click_control(page, canvas, "Simplified structured code", role="tab")
     source_descendant(page, canvas, artifact, current["id"], control["id"])
     selected_row(page, "decompile-code", " >= ")
-    inspector_control(page, canvas, "Control h" + control["id"], "decompile-entity-detail")
+    inspector_control(page, canvas, "Certified empty-REVERT guard h" + control["id"], "decompile-entity-detail")
     canvas.screenshot(path=str(context.output / "lifted-predicate-source-roundtrip.png"))
     assert {"stage": current["id"], "entity": control["id"]} in event["outputs"]
     origin = next(origin for origin in artifact["mappings"]["origins"]

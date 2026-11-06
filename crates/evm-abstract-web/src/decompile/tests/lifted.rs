@@ -139,7 +139,7 @@ fn lifted_default_renders_actual_unsigned_predicate_and_raw_route_keeps_iszero_c
         "{high}"
     );
     assert!(
-        high.contains("evm.revert") && high.contains("evm.stop"),
+        high.contains("require(") && high.contains("evm.stop") && !high.contains("evm.revert"),
         "{high}"
     );
     let raw = code(&click(&ctx, &mut workspace, "Structured code"));
@@ -591,11 +591,31 @@ fn model_admission_accepts_legacy_raw_and_rejects_mislabeled_or_corrupt_lifted_e
     let mut high = artifact(BOOLEAN);
     let (ctx, mut workspace) = workspace(legacy);
     assert_eq!(workspace.views.route_label(), "Structured code");
-    deliver(&mut workspace, high.clone(), 11);
+    // This real ordinary-branch projection contains no guard metadata and can
+    // represent a schema-2 producer. Keep legacy high-view coverage explicitly;
+    // certified guards are never stripped merely to recover old expectations.
+    let mut legacy_high = artifact("5f35600a576001600d565b60025b5f5500");
+    assert!(legacy_high.stages.iter().all(|stage| {
+        stage
+            .ir
+            .lifted
+            .as_ref()
+            .is_none_or(|program| !program.has_guards())
+    }));
+    legacy_high.schema_version = 2;
+    model::check_artifact(&legacy_high).unwrap();
+    deliver(&mut workspace, legacy_high, 11);
+    let legacy_code = code(&frame(&ctx, &mut workspace, vec![]));
+    assert_eq!(workspace.views.route_label(), "Simplified structured code");
+    assert!(legacy_code.contains("if (") && legacy_code.contains("sstore("));
+    assert!(!legacy_code.contains("require("));
+    deliver(&mut workspace, high.clone(), 12);
     frame(&ctx, &mut workspace, vec![]);
     assert_eq!(workspace.views.route_label(), "Simplified structured code");
-    high.schema_version = 1;
-    assert!(model::check_artifact(&high).is_err());
+    for old_version in [1, 2] {
+        high.schema_version = old_version;
+        assert!(model::check_artifact(&high).is_err());
+    }
     high.schema_version = evm_abstract_protocol::decompile_model::SCHEMA_VERSION;
     let current = high.current_stage.unwrap();
     let stage = high

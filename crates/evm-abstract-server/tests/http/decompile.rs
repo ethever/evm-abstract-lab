@@ -417,6 +417,32 @@ fn lifted_predicates_and_origins_cross_the_compressed_result_protocol() {
         artifact.diagnostics
     );
     let program = current.ir.lifted.as_ref().unwrap();
+    assert_eq!(artifact.schema_version, 3);
+    assert!(artifact.admits_schema());
+    assert!(!program.failures.is_empty());
+    let guard_control = program
+        .controls
+        .iter()
+        .find(|control| control.guard.is_some())
+        .expect("certified guard survives compressed HTTP transport");
+    let guard = guard_control.guard.as_ref().unwrap();
+    assert!(guard.pass_nonzero);
+    assert_eq!(
+        guard.payload,
+        evm_abstract_protocol::decompile_model::LiftedGuardPayload::EmptyRevert
+    );
+    let index = program.render_index(&current.ir);
+    let require = index
+        .render_guard(guard_control, |_| true)
+        .unwrap()
+        .unwrap();
+    assert!(
+        require.starts_with("require(") && require.contains(" >= ") && require.ends_with(");"),
+        "{require}"
+    );
+    assert!(index.node(guard.failure_node).is_some() && index.node(guard.pass_node).is_some());
+    let failure_target = current.ir.edge(guard.failure_edge).unwrap().to;
+    assert!(index.failure(failure_target).is_some());
     let predicate = program
         .expressions
         .iter()

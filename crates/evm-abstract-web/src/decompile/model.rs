@@ -399,14 +399,7 @@ impl ViewState {
 }
 
 pub(super) fn check_artifact(artifact: &Artifact) -> Result<(), String> {
-    let legacy_raw = artifact.schema_version == 1
-        && artifact
-            .stages
-            .iter()
-            .all(|stage| stage.kind != StageKind::Lifted && stage.ir.lifted.is_none());
-    if artifact.schema_version != evm_abstract_protocol::decompile_model::SCHEMA_VERSION
-        && !legacy_raw
-    {
+    if !artifact.admits_schema() {
         return Err(format!(
             "unsupported artifact schema {}",
             artifact.schema_version
@@ -459,6 +452,14 @@ pub(super) fn check_artifact(artifact: &Artifact) -> Result<(), String> {
         }
         if let Some(program) = &stage.ir.lifted {
             super::lifted::visit(program, &mut |id, _| check(id));
+            // Failed snapshots are inspectable too. Stored validation status
+            // cannot authorize render targets outside the guard's owned arms.
+            program.validate_guard_sources(&stage.ir).map_err(|error| {
+                format!(
+                    "invalid guard source topology in stage {:?}: {error}",
+                    stage.id
+                )
+            })?;
             if stage.validation.status != ValidationStatus::Failed {
                 program
                     .validate()

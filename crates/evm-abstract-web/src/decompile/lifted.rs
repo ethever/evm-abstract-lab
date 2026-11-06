@@ -3,8 +3,8 @@
 
 use super::{details::Details, index::StageIndex, model::EntityKind, structured};
 use evm_abstract_protocol::decompile_model::{
-    EntityId, EntityRef, LiftedExpressionKind, LiftedProgram, LiftedRenderIndex, LiftedStatement,
-    LiftedTransfer, Stage,
+    EntityId, EntityRef, LiftedControl, LiftedExpressionKind, LiftedProgram, LiftedRenderIndex,
+    LiftedStatement, LiftedTransfer, Stage,
 };
 
 pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, EntityKind)) {
@@ -29,6 +29,13 @@ pub(super) fn expression(renderer: &LiftedRenderIndex<'_>, id: EntityId) -> Stri
     renderer
         .render_expression(id, |_| true)
         .unwrap_or_else(|error| format!("unavailable_expression(x{}: {error})", id.0))
+}
+
+pub(super) fn guard(renderer: &LiftedRenderIndex<'_>, control: &LiftedControl) -> String {
+    renderer
+        .render_guard(control, |_| true)
+        .unwrap_or_else(|error| Some(format!("unavailable_guard(h{}: {error});", control.id.0)))
+        .unwrap_or_else(|| format!("unavailable_guard(h{});", control.id.0))
 }
 
 pub(super) fn statement(renderer: &LiftedRenderIndex<'_>, statement: &LiftedStatement) -> String {
@@ -157,13 +164,73 @@ pub(super) fn details(
         }
     } else {
         let control = index.control(&stage.ir, id)?;
-        lines.push(format!(
-            "Control h{} · ast{}: {}",
-            id.0,
-            control.node.0,
-            expression(renderer, control.condition)
-        ));
         references.extend([control.node, control.condition]);
+        if let Some(guard) = &control.guard {
+            lines.push(format!(
+                "Certified empty-REVERT guard h{} · ast{}: {}",
+                id.0,
+                control.node.0,
+                self::guard(renderer, control)
+            ));
+            lines.push(format!(
+                "Predicate: {} · successful source truth: {}",
+                expression(renderer, control.condition),
+                if guard.pass_nonzero {
+                    "nonzero"
+                } else {
+                    "zero"
+                }
+            ));
+            lines.push(format!(
+                "Pass: e{} → ast{} · failure: e{} → ast{} · payload: {:?}",
+                guard.pass_edge.0,
+                guard.pass_node.0,
+                guard.failure_edge.0,
+                guard.failure_node.0,
+                guard.payload,
+            ));
+            references.extend([
+                guard.block,
+                guard.pass_edge,
+                guard.pass_node,
+                guard.failure_edge,
+                guard.failure_node,
+            ]);
+            if let Some(edge) = index.edge(&stage.ir, guard.pass_edge) {
+                references.push(edge.to);
+            }
+            if let Some(edge) = index.edge(&stage.ir, guard.failure_edge) {
+                references.push(edge.to);
+                if let Some(failure) = renderer.failure(edge.to) {
+                    lines.push(format!(
+                        "Shared empty-failure proof: b{} · decreasing rank {}",
+                        failure.block.0, failure.rank
+                    ));
+                }
+            }
+            if let Some(continuation) = &guard.continuation {
+                lines.push(format!(
+                    "Failure continuation: ast{} children {}..{} · pass falls through: {} · {}",
+                    continuation.sequence.0,
+                    continuation.start,
+                    continuation.end,
+                    continuation.pass_falls_through,
+                    if continuation.pass_falls_through {
+                        "retained after pass"
+                    } else {
+                        "omitted after non-fallthrough pass"
+                    },
+                ));
+                references.push(continuation.sequence);
+            }
+        } else {
+            lines.push(format!(
+                "Control h{} · ast{}: {}",
+                id.0,
+                control.node.0,
+                expression(renderer, control.condition)
+            ));
+        }
     }
     Some(Details {
         lines,
