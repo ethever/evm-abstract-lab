@@ -29,12 +29,14 @@ pub(super) fn discover(
     if !pay(ir.blocks.len().saturating_mul(4).saturating_add(1)) {
         return None;
     }
+    let mut payloads = vec![None; ir.blocks.len()];
     let mut ranks = vec![None; ir.blocks.len()];
     let mut remaining: Vec<_> = graph.successors.iter().map(Vec::len).collect();
     let mut largest = vec![0_u32; ir.blocks.len()];
     let mut ready = VecDeque::new();
     for (i, rule) in graph.rules.iter().enumerate() {
-        if *rule == Rule::Empty {
+        if let Rule::Terminal(payload) = *rule {
+            payloads[i] = Some(payload);
             ranks[i] = Some(0);
             ready.push_back(i);
         }
@@ -50,6 +52,16 @@ pub(super) fn discover(
             remaining[*predecessor] -= 1;
             largest[*predecessor] = largest[*predecessor].max(ranks[done]?);
             if remaining[*predecessor] == 0 {
+                let Some(payload) = payloads[graph.successors[*predecessor][0]] else {
+                    continue;
+                };
+                if graph.successors[*predecessor]
+                    .iter()
+                    .any(|s| payloads[*s] != Some(payload))
+                {
+                    continue;
+                }
+                payloads[*predecessor] = Some(payload);
                 ranks[*predecessor] = Some(largest[*predecessor].checked_add(1)?);
                 ready.push_back(*predecessor);
             }
@@ -64,7 +76,7 @@ pub(super) fn discover(
         if !pay(1) {
             return None;
         }
-        overlays.push(guard(ir, &graph, &ranks, &source, control.node));
+        overlays.push(guard(ir, &graph, &ranks, &payloads, &source, control.node));
     }
     for (control, overlay) in program.controls.iter_mut().zip(overlays) {
         control.guard = overlay;
@@ -72,11 +84,12 @@ pub(super) fn discover(
     program.failures = ir
         .blocks
         .iter()
-        .zip(ranks)
-        .filter_map(|(block, rank)| {
-            rank.map(|rank| LiftedFailure {
+        .zip(ranks.into_iter().zip(payloads))
+        .filter_map(|(block, (rank, payload))| {
+            Some(LiftedFailure {
                 block: block.id,
-                rank,
+                rank: rank?,
+                payload: payload?,
             })
         })
         .collect();
@@ -88,6 +101,7 @@ fn guard(
     ir: &Ir,
     graph: &Graph<'_>,
     ranks: &[Option<u32>],
+    payloads: &[Option<LiftedGuardPayload>],
     source: &Source<'_>,
     node: EntityId,
 ) -> Option<LiftedGuard> {
@@ -191,7 +205,7 @@ fn guard(
         failure_edge,
         pass_node: pass.id,
         failure_node: failure.id,
-        payload: LiftedGuardPayload::EmptyRevert,
+        payload: payloads[*graph.blocks.get(&graph.edges.get(&failure_edge)?.to)?]?,
         continuation,
     })
 }

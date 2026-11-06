@@ -1,7 +1,8 @@
 //! Object-only enum payloads and bounded flat arena admission.
 use super::{
-    LiftedBlock, LiftedControl, LiftedExpression, LiftedExpressionKind, LiftedFailure,
-    LiftedProgram, LiftedRelation, LiftedTransfer, MAX_LIFTED_RECORDS,
+    LiftedBlock, LiftedConstruction, LiftedControl, LiftedErrorPayload, LiftedExpression,
+    LiftedExpressionKind, LiftedFailure, LiftedProgram, LiftedRelation, LiftedRevert,
+    LiftedTransfer, MAX_LIFTED_RECORDS,
 };
 use crate::{EntityId, U256};
 use serde::de::{SeqAccess, Visitor};
@@ -72,10 +73,68 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Bounded<T> {
         deserializer.deserialize_seq(Items(std::marker::PhantomData))
     }
 }
+
+/// New variable-size arenas are charged while reading, before the complete
+/// program's cross-arena validation. One bounded item may be decoded to learn
+/// its weight; an oversized prefix never allocates the remaining arena.
+#[derive(Serialize)]
+pub struct Weighted<T>(Vec<T>);
+impl<T> Default for Weighted<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+pub trait WireWeight {
+    fn wire_weight(&self) -> usize;
+}
+impl WireWeight for LiftedErrorPayload {
+    fn wire_weight(&self) -> usize {
+        1_usize
+            .saturating_add(self.message.len())
+            .saturating_add(self.bytes.len())
+    }
+}
+impl WireWeight for LiftedRevert {
+    fn wire_weight(&self) -> usize {
+        8_usize.saturating_add(self.writes.len())
+    }
+}
+impl WireWeight for LiftedConstruction {
+    fn wire_weight(&self) -> usize {
+        6
+    }
+}
+impl<'de, T: Deserialize<'de> + WireWeight> Deserialize<'de> for Weighted<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Items<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de> + WireWeight> Visitor<'de> for Items<T> {
+            type Value = Weighted<T>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bounded weighted semantic arena")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+                let mut items = Vec::new();
+                let mut used = 0_usize;
+                while let Some(item) = access.next_element::<T>()? {
+                    used = used.saturating_add(item.wire_weight());
+                    if used > MAX_LIFTED_RECORDS {
+                        return Err(serde::de::Error::custom("weighted semantic arena limit"));
+                    }
+                    items.push(item);
+                }
+                Ok(Weighted(items))
+            }
+        }
+        deserializer.deserialize_seq(Items(std::marker::PhantomData))
+    }
+}
 strict_record! { pub struct ProgramWire {
     pub expressions: Bounded<LiftedExpression>, pub blocks: Bounded<LiftedBlock>,
     pub transfers: Bounded<LiftedTransfer>, pub controls: Bounded<LiftedControl>,
     pub failures: Bounded<LiftedFailure> = Bounded::default(),
+    pub payloads: Weighted<LiftedErrorPayload> = Weighted::default(),
+    pub reverts: Weighted<LiftedRevert> = Weighted::default(),
+    pub constructions: Weighted<LiftedConstruction> = Weighted::default(),
 } }
 impl<'de> Deserialize<'de> for LiftedProgram {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -86,8 +145,14 @@ impl<'de> Deserialize<'de> for LiftedProgram {
             transfers: wire.transfers.0,
             controls: wire.controls.0,
             failures: wire.failures.0,
+            payloads: wire.payloads.0,
+            reverts: wire.reverts.0,
+            constructions: wire.constructions.0,
         };
         program.validate().map_err(serde::de::Error::custom)?;
         Ok(program)
     }
 }
+
+#[cfg(test)]
+mod tests;

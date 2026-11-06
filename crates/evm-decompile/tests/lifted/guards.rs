@@ -231,11 +231,31 @@ fn pass_side_effect_before_shared_join_revert_remains_visible_and_executes() {
 }
 
 #[test]
+fn canonical_empty_error_string_is_distinct_from_empty_revert() {
+    let input = direct(false, Failure::Error);
+    let artifact = checked(&input);
+    assert_eq!(guards(&artifact), 1);
+    let (_, program) = lifted(&artifact);
+    assert_eq!(program.payloads.len(), 1);
+    assert!(program.payloads[0].message.is_empty());
+    assert_eq!(program.payloads[0].bytes.len(), 68);
+    let text = render_text(&artifact);
+    assert!(text.contains(", \"\");"), "{text}");
+    for value in [0_u64, 1] {
+        super::oracle::certify(
+            &input,
+            &artifact,
+            MemoryHost::new(&input, calldata(&[U256::from(value)])),
+        );
+    }
+    assert_unchanged_witness(&artifact);
+}
+
+#[test]
 fn nonempty_error_panic_forwarded_data_and_failure_observations_stay_conditional() {
     for failure in [
         Failure::Payload,
         Failure::Panic,
-        Failure::Error,
         Failure::Forwarded,
         Failure::Call,
         Failure::Sload,
@@ -475,6 +495,7 @@ fn a_false_eof_branch_is_a_successful_halt_not_a_missing_failure_successor() {
             .push(evm_decompile::LiftedFailure {
                 block: eof.id,
                 rank: 1,
+                payload: evm_decompile::LiftedGuardPayload::EmptyRevert,
             });
         invented
             .ir

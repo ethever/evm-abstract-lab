@@ -277,6 +277,10 @@ impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
         self.semantic(|renderer, owner| renderer.render_guard(control, |work| owner.pay(work)))
             .flatten()
     }
+    fn high_revert(&mut self, block: EntityId) -> Option<String> {
+        self.semantic(|renderer, owner| renderer.render_revert(block, |work| owner.pay(work)))
+            .flatten()
+    }
     fn high_statement(&mut self, statement: &LiftedStatement) -> Option<String> {
         self.semantic(|renderer, owner| {
             renderer.render_statement(statement, |work| owner.pay(work))
@@ -353,9 +357,29 @@ fn expression(ir: &RenderIndex<'_, impl FnMut(u64)>, id: EntityId) -> String {
 }
 fn body(out: &mut String, block: &Block, ir: &mut RenderIndex<'_, impl FnMut(u64)>, depth: usize) {
     if let Some(high) = ir.lifted_block(block.id) {
-        for statement in &high.statements {
+        let construction = ir
+            .lifted_renderer
+            .as_ref()
+            .and_then(|renderer| renderer.construction(block.id))
+            .map(|plan| (plan.start, plan.end));
+        let mut compact = false;
+        for (position, statement) in high.statements.iter().enumerate() {
             if !ir.pay(1 + statement.inputs.len() + statement.outputs.len()) {
                 return;
+            }
+            if let Some((start, end)) = construction {
+                if position == start {
+                    if let Some(text) = ir.high_revert(block.id) {
+                        indent(out, depth);
+                        let _ = writeln!(out, "{text}");
+                        compact = true;
+                    } else if ir.stopped {
+                        return;
+                    }
+                }
+                if compact && (start..end).contains(&position) {
+                    continue;
+                }
             }
             // The last faulting primitive remains inspectable in the semantic
             // model, while the control line reports its exceptional completion.

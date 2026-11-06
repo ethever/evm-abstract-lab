@@ -589,6 +589,11 @@ fn inferred_parents(record: &Record<'_>) -> Vec<EntityId> {
             _ => Vec::new(),
         },
         Record::LiftedBlock(b) => vec![b.block],
+        Record::LiftedRevert(r) => std::iter::once(r.block)
+            .chain([r.operation, r.memory, r.offset, r.size])
+            .chain(r.writes.iter().copied())
+            .collect(),
+        Record::LiftedConstruction(c) => vec![c.block],
         Record::LiftedStatement(s) => vec![s.operation],
         Record::LiftedTransfer(t) => vec![t.edge],
         Record::LiftedControl(c) => std::iter::once(c.node)

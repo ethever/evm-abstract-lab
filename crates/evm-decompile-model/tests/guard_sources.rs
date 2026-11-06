@@ -158,7 +158,9 @@ fn fixture() -> Ir {
             failures: vec![LiftedFailure {
                 block: id(120),
                 rank: 0,
+                payload: evm_decompile_model::LiftedGuardPayload::EmptyRevert,
             }],
+            ..LiftedProgram::default()
         }),
         ..Ir::default()
     }

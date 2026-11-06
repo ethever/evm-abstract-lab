@@ -38,6 +38,9 @@ pub(super) enum EntityKind {
     LiftedStatement,
     LiftedTransfer,
     LiftedControl,
+    LiftedPayload,
+    LiftedRevert,
+    LiftedConstruction,
 }
 
 #[derive(Default)]

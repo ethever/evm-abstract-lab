@@ -4,25 +4,25 @@ use super::*;
 use crate::decompile::{index::StageIndex, structured::HighDisplayOptions};
 
 #[derive(Default)]
-struct Runtime {
+pub(super) struct Runtime {
     bytes: Vec<u8>,
     labels: std::collections::BTreeMap<&'static str, usize>,
     jumps: Vec<(usize, &'static str)>,
 }
 
 impl Runtime {
-    fn emit(&mut self, bytes: &[u8]) {
+    pub(super) fn emit(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
     }
-    fn label(&mut self, name: &'static str) {
+    pub(super) fn label(&mut self, name: &'static str) {
         assert!(self.labels.insert(name, self.bytes.len()).is_none());
         self.emit(&[0x5b]);
     }
-    fn jump(&mut self, name: &'static str, conditional: bool) {
+    pub(super) fn jump(&mut self, name: &'static str, conditional: bool) {
         self.emit(&[0x60, 0, if conditional { 0x57 } else { 0x56 }]);
         self.jumps.push((self.bytes.len() - 2, name));
     }
-    fn finish(mut self) -> String {
+    pub(super) fn finish(mut self) -> String {
         for (position, name) in self.jumps {
             self.bytes[position] = u8::try_from(self.labels[name]).unwrap();
         }
@@ -45,11 +45,11 @@ fn nested_guards() -> String {
     runtime.finish()
 }
 
-fn rows_with(stage: &Stage, display: HighDisplayOptions) -> Vec<structured::Line> {
+pub(super) fn rows_with(stage: &Stage, display: HighDisplayOptions) -> Vec<structured::Line> {
     structured::lifted_lines_indexed(stage, &StageIndex::new(&stage.ir), display)
 }
 
-fn click_code(ctx: &Context, workspace: &mut Workspace, label: &str) -> Frame {
+pub(super) fn click_code(ctx: &Context, workspace: &mut Workspace, label: &str) -> Frame {
     let visible = frame(ctx, workspace, vec![]);
     // Status glyphs expose the same marked label. Click the real code Label,
     // whose interaction region owns selection, rather than its marker widget.

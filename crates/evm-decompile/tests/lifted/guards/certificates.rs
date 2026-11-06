@@ -143,6 +143,7 @@ fn a_loop_cannot_be_certified_by_inventing_a_positive_or_zero_failure_rank() {
             .push(LiftedFailure {
                 block: loop_block.id,
                 rank,
+                payload: evm_decompile::LiftedGuardPayload::EmptyRevert,
             });
         wrong
             .ir
@@ -243,9 +244,15 @@ fn guard_identity_and_absorbed_failure_operations_remain_navigable_in_raw_histor
 #[test]
 fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     let artifact = checked(&direct(false, Failure::Empty(U256::ZERO)));
-    assert_eq!(artifact.schema_version, 3);
+    assert_eq!(artifact.schema_version, 4);
     assert!(artifact.admits_schema());
-    for version in [1, 2, 4] {
+    let mut legacy = artifact.clone();
+    legacy.schema_version = 3;
+    assert!(legacy.admits_schema());
+    let encoded = serde_json::to_string(&legacy).unwrap();
+    assert_eq!(serde_json::from_str::<Artifact>(&encoded).unwrap(), legacy);
+    assert!(!encoded.contains("\"payloads\"") && !encoded.contains("\"constructions\""));
+    for version in [1, 2, 5] {
         let mut old = artifact.clone();
         old.schema_version = version;
         assert!(

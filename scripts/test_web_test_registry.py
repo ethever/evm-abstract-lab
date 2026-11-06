@@ -132,6 +132,14 @@ class BrowserRegistryTests(unittest.TestCase):
         self.assertNotIn("scripts/web_test_runtimes.py",
                          self.cases["root-terminal-coverage"]["dependencies"])
 
+    def test_error_payload_case_has_an_exact_independent_python_closure(self):
+        guards = set(self.cases["decompile-guards"]["dependencies"])
+        payloads = set(self.cases["decompile-error-payloads"]["dependencies"])
+        self.assertEqual(payloads, guards | {"scripts/web_test_decompile_error_payloads.py"})
+        self.assertEqual({case["id"] for case in self.manifest["cases"]
+                          if "scripts/web_test_decompile_error_payloads.py" in case["dependencies"]},
+                         {"decompile-error-payloads"})
+
     def test_direct_execution_runs_every_selected_case_once_and_keeps_failure_evidence(self):
         # Exercise the actual CLI orchestration with inert acceptance functions.
         # This checks scheduling/reporting, without a browser or native server.

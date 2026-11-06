@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Rule {
-    Empty,
+    Terminal(crate::LiftedGuardPayload),
     Transparent,
     Refused,
 }
@@ -45,6 +45,8 @@ impl<'a> Graph<'a> {
         let edges: BTreeMap<_, _> = ir.edges.iter().map(|e| (e.id, e)).collect();
         let high: BTreeMap<_, _> = program.blocks.iter().map(|b| (b.block, b)).collect();
         let expressions: BTreeMap<_, _> = program.expressions.iter().map(|e| (e.id, e)).collect();
+        let plans: BTreeMap<_, _> = program.constructions.iter().map(|c| (c.block, c)).collect();
+        let reverts: BTreeMap<_, _> = program.reverts.iter().map(|r| (r.id, r)).collect();
         let mut rules = vec![Rule::Refused; ir.blocks.len()];
         let mut successors = vec![Vec::new(); ir.blocks.len()];
         let mut predecessors = vec![Vec::new(); ir.blocks.len()];
@@ -67,21 +69,32 @@ impl<'a> Graph<'a> {
                     .is_some_and(|e| matches!(e.kind, crate::LiftedExpressionKind::Word(v) if v == crate::U256::ZERO))
                 && block.operations.last().is_some_and(|o| o.opcode == 0xfd
                     && matches!(&block.terminator, Terminator::Exit { values, .. } if *values == o.inputs));
+            let payload = plans
+                .get(&block.id)
+                .filter(|p| p.start == 0 && p.end == lifted.statements.len())
+                .and_then(|p| reverts.get(&p.revert))
+                .filter(|r| r.block == block.id)
+                .map(|r| crate::LiftedGuardPayload::ErrorString(r.payload));
             // All reads remain primitive witnesses. Even a discarded SLOAD or
             // CALLDATASIZE forbids erasing this failed-path observation.
             let transparent = block.operations.iter().enumerate().all(|(position, op)| {
                 if empty && position + 1 == block.operations.len() {
                     return true;
                 }
-                op.effects.is_pure()
-                    && (evm_bytecode::word::arity(op.opcode).is_some()
-                        || matches!(op.opcode, 0x50 | 0x56 | 0x57 | 0x5b | 0x5f..=0x9f))
+                (payload.is_some() && crate::lift::payloads::capsule_operation(op))
+                    || op.effects.is_pure()
+                        && (evm_bytecode::word::arity(op.opcode).is_some()
+                            || matches!(op.opcode, 0x50 | 0x56 | 0x57 | 0x5b | 0x5f..=0x9f))
             });
             if !transparent {
                 continue;
             }
             if empty {
-                rules[i] = Rule::Empty;
+                rules[i] = Rule::Terminal(crate::LiftedGuardPayload::EmptyRevert);
+                continue;
+            }
+            if let Some(payload) = payload {
+                rules[i] = Rule::Terminal(payload);
                 continue;
             }
             let known = match &block.terminator {

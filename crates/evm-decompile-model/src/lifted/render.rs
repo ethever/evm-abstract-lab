@@ -22,6 +22,9 @@ pub struct LiftedRenderIndex<'a> {
     nodes: BTreeMap<EntityId, &'a StructuredNode>,
     failures: BTreeMap<EntityId, &'a LiftedFailure>,
     omissions: BTreeMap<(EntityId, usize), usize>,
+    payloads: BTreeMap<EntityId, &'a super::LiftedErrorPayload>,
+    reverts: BTreeMap<EntityId, &'a super::LiftedRevert>,
+    constructions: BTreeMap<EntityId, &'a super::LiftedConstruction>,
     guard_source_error: Option<LiftedRenderError>,
 }
 /// Bounded expression export failure, independent of artifact recovery coverage.
@@ -58,7 +61,9 @@ impl<'a> LiftedRenderIndex<'a> {
                 sources.nodes,
                 sources.omissions,
                 sources.error.map(|error| match error {
-                    LiftedModelError::GuardSource(id) => LiftedRenderError::InvalidGuardSource(id),
+                    LiftedModelError::GuardSource(id) | LiftedModelError::Payload(id) => {
+                        LiftedRenderError::InvalidGuardSource(id)
+                    }
                     _ => LiftedRenderError::Limit,
                 }),
             ),
@@ -87,6 +92,9 @@ impl<'a> LiftedRenderIndex<'a> {
             nodes,
             failures: program.failures.iter().map(|f| (f.block, f)).collect(),
             omissions,
+            payloads: program.payloads.iter().map(|p| (p.id, p)).collect(),
+            reverts: program.reverts.iter().map(|r| (r.block, r)).collect(),
+            constructions: program.constructions.iter().map(|c| (c.block, c)).collect(),
             guard_source_error,
         }
     }
@@ -127,6 +135,49 @@ impl<'a> LiftedRenderIndex<'a> {
     pub fn sequence_end(&self, sequence: EntityId, position: usize) -> Option<usize> {
         self.omissions.get(&(sequence, position)).copied()
     }
+    /// Shared byte identity, quarantined when source admission fails.
+    pub fn payload(&self, id: EntityId) -> Option<&'a super::LiftedErrorPayload> {
+        self.guard_source_error
+            .is_none()
+            .then(|| self.payloads.get(&id).copied())
+            .flatten()
+    }
+    /// Terminal proof over the original block's memory version.
+    pub fn revert(&self, block: EntityId) -> Option<&'a super::LiftedRevert> {
+        self.guard_source_error
+            .is_none()
+            .then(|| self.reverts.get(&block).copied())
+            .flatten()
+    }
+    /// Exact lazy source statement interval; no global primitive deletion.
+    pub fn construction(&self, block: EntityId) -> Option<&'a super::LiftedConstruction> {
+        self.guard_source_error
+            .is_none()
+            .then(|| self.constructions.get(&block).copied())
+            .flatten()
+    }
+    /// Compact statement representing the original lazy construction and faults.
+    pub fn render_revert(
+        &self,
+        block: EntityId,
+        mut reserve: impl FnMut(usize) -> bool,
+    ) -> Result<Option<String>, LiftedRenderError> {
+        self.validate_guard_sources()?;
+        if self.construction(block).is_none() {
+            return Ok(None);
+        }
+        let proof = self
+            .revert(block)
+            .ok_or(LiftedRenderError::MissingWitness(block))?;
+        let payload = self
+            .payload(proof.payload)
+            .ok_or(LiftedRenderError::MissingWitness(proof.payload))?;
+        let mut out = String::new();
+        append(&mut out, "revert(", &mut reserve)?;
+        quoted(&mut out, &payload.message, &mut reserve)?;
+        append(&mut out, ");", &mut reserve)?;
+        Ok(Some(out))
+    }
     /// Compact guard statement; pass transfers remain in the raw pass arm.
     pub fn render_guard(
         &self,
@@ -149,6 +200,13 @@ impl<'a> LiftedRenderIndex<'a> {
         append(&mut out, &condition, &mut reserve)?;
         if !guard.pass_nonzero {
             append(&mut out, ")", &mut reserve)?;
+        }
+        if let super::LiftedGuardPayload::ErrorString(id) = guard.payload {
+            let payload = self
+                .payload(id)
+                .ok_or(LiftedRenderError::MissingWitness(id))?;
+            append(&mut out, ", ", &mut reserve)?;
+            quoted(&mut out, &payload.message, &mut reserve)?;
         }
         append(&mut out, ");", &mut reserve)?;
         Ok(Some(out))
@@ -461,4 +519,25 @@ impl LiftedProgram {
             .render_transfer(transfer, |_| true)
             .unwrap_or_else(|_| Some(format!("transfer_limit(t{});", transfer.id.0)))
     }
+}
+
+fn quoted(
+    out: &mut String,
+    message: &str,
+    reserve: &mut impl FnMut(usize) -> bool,
+) -> Result<(), LiftedRenderError> {
+    append(out, "\"", reserve)?;
+    for c in message.chars() {
+        let text = match c {
+            '"' => "\\\"".to_owned(),
+            '\\' => "\\\\".to_owned(),
+            '\n' => "\\n".to_owned(),
+            '\r' => "\\r".to_owned(),
+            '\t' => "\\t".to_owned(),
+            c if c.is_control() => format!("\\u{:04x}", u32::from(c)),
+            c => c.to_string(),
+        };
+        append(out, &text, reserve)?;
+    }
+    append(out, "\"", reserve)
 }

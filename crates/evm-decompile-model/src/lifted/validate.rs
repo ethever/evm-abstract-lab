@@ -98,9 +98,50 @@ impl LiftedProgram {
         }
         let blocks: BTreeSet<_> = self.blocks.iter().map(|b| b.block).collect();
         let edges: BTreeSet<_> = self.transfers.iter().map(|t| t.edge).collect();
+        let payloads: BTreeSet<_> = self.payloads.iter().map(|p| p.id).collect();
+        for payload in &self.payloads {
+            if !payload.is_canonical() {
+                return Err(LiftedModelError::Payload(payload.id));
+            }
+        }
+        let valid_payload = |p: super::LiftedGuardPayload| match p {
+            super::LiftedGuardPayload::EmptyRevert => true,
+            super::LiftedGuardPayload::ErrorString(id) => payloads.contains(&id),
+        };
+        let mut revert_blocks = BTreeSet::new();
+        let mut reverts = BTreeMap::new();
+        for r in &self.reverts {
+            if !payloads.contains(&r.payload)
+                || !blocks.contains(&r.block)
+                || !revert_blocks.insert(r.block)
+                || r.writes.is_empty()
+                || r.writes.len() > super::MAX_ERROR_PAYLOAD_BYTES
+                || [r.operation, r.memory, r.offset, r.size]
+                    .iter()
+                    .any(|id| id.0 == 0)
+                || r.writes.iter().any(|id| id.0 == 0)
+            {
+                return Err(LiftedModelError::Payload(r.id));
+            }
+            reverts.insert(r.id, r);
+        }
+        let high: BTreeMap<_, _> = self.blocks.iter().map(|b| (b.block, b)).collect();
+        let mut construction_blocks = BTreeSet::new();
+        for c in &self.constructions {
+            if !construction_blocks.insert(c.block)
+                || c.start >= c.end
+                || !high
+                    .get(&c.block)
+                    .is_some_and(|b| c.end == b.statements.len())
+                || !reverts.get(&c.revert).is_some_and(|r| r.block == c.block)
+            {
+                return Err(LiftedModelError::Payload(c.id));
+            }
+        }
         let mut failures = BTreeSet::new();
         for f in &self.failures {
-            if f.block.0 == 0
+            if !valid_payload(f.payload)
+                || f.block.0 == 0
                 || !blocks.contains(&f.block)
                 || !failures.insert(f.block)
                 || f.rank as usize >= blocks.len()
@@ -115,7 +156,8 @@ impl LiftedProgram {
                 return Err(LiftedModelError::Guard(c.node));
             }
             if let Some(g) = &c.guard
-                && (c.node.0 == 0
+                && (!valid_payload(g.payload)
+                    || c.node.0 == 0
                     || g.source_references().any(|id| id.0 == 0)
                     || !blocks.contains(&g.block)
                     || g.pass_node.0 == 0

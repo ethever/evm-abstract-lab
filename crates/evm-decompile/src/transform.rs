@@ -137,7 +137,7 @@ pub(crate) fn ir_size(ir: &Ir) -> usize {
         units = units.saturating_add(lifted.record_count());
         // Metadata has no new record identity, but its references and scalar
         // certificate fields consume retained history just like owned records.
-        units = units.saturating_add(lifted.failures.len().saturating_mul(2));
+        units = units.saturating_add(lifted.failures.len().saturating_mul(3));
         for guard in lifted.controls.iter().filter_map(|c| c.guard.as_ref()) {
             units = units.saturating_add(8);
             if guard.continuation.is_some() {
