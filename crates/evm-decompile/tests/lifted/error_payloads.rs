@@ -75,6 +75,8 @@ fn assert_message(artifact: &Artifact, message: &[u8]) {
 
 #[path = "error_payloads/guards.rs"]
 mod guards;
+#[path = "error_payloads/loops.rs"]
+mod loops;
 #[path = "error_payloads/memory.rs"]
 mod memory;
 #[path = "error_payloads/strings.rs"]

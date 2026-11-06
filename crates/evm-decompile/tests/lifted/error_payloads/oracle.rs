@@ -44,11 +44,53 @@ enum Flow {
 
 type Observation = (Option<usize>, u8, Vec<U256>, Vec<U256>);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Invocation {
+    opcode: u8,
+    inputs: Vec<U256>,
+    output_count: usize,
+    memory_limit: usize,
+    result: Result<Vec<U256>, ExecutionError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordingHost {
+    state: MemoryHost,
+    invocations: Vec<Invocation>,
+}
+
+impl RecordingHost {
+    fn new(state: MemoryHost) -> Self {
+        Self {
+            state,
+            invocations: Vec::new(),
+        }
+    }
+}
+
+impl SemanticHost for RecordingHost {
+    fn execute(&mut self, primitive: Primitive<'_>) -> Result<Vec<U256>, ExecutionError> {
+        let mut invocation = Invocation {
+            opcode: primitive.opcode,
+            inputs: primitive.inputs.to_vec(),
+            output_count: primitive.output_count,
+            memory_limit: primitive.memory_limit,
+            result: Ok(Vec::new()),
+        };
+        let result = self.state.execute(primitive);
+        // Primitive does not carry a PC. The complete request/result prefix,
+        // including its final Err, is retained even when execution has no trace.
+        invocation.result = result.clone();
+        self.invocations.push(invocation);
+        result
+    }
+}
+
 struct Machine<'a> {
     stage: &'a Stage,
     program: &'a LiftedProgram,
     index: LiftedRenderIndex<'a>,
-    host: MemoryHost,
+    host: RecordingHost,
     values: BTreeMap<EntityId, U256>,
     current: EntityId,
     observations: Vec<Observation>,
@@ -221,7 +263,7 @@ impl Machine<'_> {
                         values: values.clone(),
                     };
                     assert_eq!(
-                        reverted(&outcome, &self.host).unwrap(),
+                        reverted(&outcome, &self.host.state).unwrap(),
                         payload.bytes,
                         "terminal proof disagrees with independently executed actual memory"
                     );
@@ -270,7 +312,7 @@ impl Machine<'_> {
                 Terminator::Exit { .. } => {
                     let outcome = self.exit(self.current);
                     let actual =
-                        reverted(&outcome, &self.host).expect("guard must reject by revert");
+                        reverted(&outcome, &self.host.state).expect("guard must reject by revert");
                     match payload {
                         LiftedGuardPayload::EmptyRevert => assert!(actual.is_empty()),
                         LiftedGuardPayload::ErrorString(id) => {
@@ -431,14 +473,14 @@ pub(super) fn certify(
         max_memory_bytes: memory_limit,
         ..ExecutionLimits::default()
     };
-    let mut raw_host = host.clone();
+    let mut raw_host = RecordingHost::new(host.clone());
     let raw = execute_bytecode(input, &mut raw_host, &limits);
     for stage in artifact
         .stages
         .iter()
         .filter(|stage| stage.kind != StageKind::Decoded)
     {
-        let mut graph_host = host.clone();
+        let mut graph_host = RecordingHost::new(host.clone());
         let graph = execute_ir(stage, &mut graph_host, &limits);
         assert_eq!(
             raw.as_ref().map(|e| &e.outcome),
@@ -446,10 +488,10 @@ pub(super) fn certify(
         );
         assert_eq!(
             raw_host, graph_host,
-            "original IR changed memory or first-fault state"
+            "IR changed primitive requests/results, fault prefix or host state"
         );
         if stage.ir.structured.is_some() {
-            let mut source_host = host.clone();
+            let mut source_host = RecordingHost::new(host.clone());
             let source = execute_structured(stage, &mut source_host, &limits);
             assert_eq!(
                 raw.as_ref().map(|e| &e.outcome),
@@ -466,7 +508,7 @@ pub(super) fn certify(
         stage,
         program,
         index,
-        host,
+        host: RecordingHost::new(host),
         values: BTreeMap::new(),
         current: stage.ir.entry.unwrap(),
         observations: Vec::new(),
@@ -490,7 +532,7 @@ pub(super) fn certify(
     );
     assert_eq!(
         machine.host, raw_host,
-        "capsule changed original memory / call / storage state"
+        "normalized capsule changed primitive requests/results, fault prefix or host state"
     );
     if let Ok(raw) = &raw {
         let observations: Vec<_> = raw
@@ -504,5 +546,5 @@ pub(super) fn certify(
             "normalized view lost or reordered an observation"
         );
     }
-    (normalized, machine.host, machine.capsules)
+    (normalized, machine.host.state, machine.capsules)
 }

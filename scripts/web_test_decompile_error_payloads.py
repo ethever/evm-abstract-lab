@@ -144,7 +144,9 @@ def navigate_witnesses(page, canvas, artifact, current, program, text, standalon
     inspector_control(page, canvas, "Certified Error(string) payload h" + payload["id"],
                       "decompile-entity-detail")
 
-    controls = [control for control in program["controls"] if control.get("guard")]
+    if_nodes = {node["id"] for node in current["ir"]["structured"]["nodes"] if "if" in node["kind"]}
+    controls = [control for control in program["controls"] if control["node"] in if_nodes and control.get("guard")
+                and control["guard"]["payload"] == {"error_string": payload["id"]}]
     if controls:
         control = controls[0]
         source_descendant(page, canvas, artifact, current["id"], control["id"])

@@ -1,19 +1,22 @@
 //! Demand-driven source equations, with exact load identity and conservative joins.
 //! Only source constants and total word operators establish numeric facts. Open
-//! predecessor sets are refused; cyclic cell equations need an external constant
-//! anchor. Unknown allocation arithmetic never becomes a pointer convention.
+//! predecessor sets are refused. Cyclic cell equations use either the existing
+//! constant-anchor fast path or independently replayed bounded recurrences.
+//! Unknown allocation arithmetic never becomes a pointer convention.
 use crate::{EntityId, FactScope, Ir, Operation, U256, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod cycles;
 mod edge;
 mod invariant;
+mod relations;
 mod word;
 const MAX_DEPTH: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Identity {
     Value(EntityId),
     Content(EntityId, U256),
+    Affine(usize),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Word {
@@ -65,6 +68,7 @@ pub(super) struct Memory<'a, P> {
     blocks: BTreeMap<EntityId, &'a crate::Block>,
     incoming: BTreeMap<EntityId, Vec<&'a crate::Edge>>,
     words: BTreeMap<EntityId, Word>,
+    certified: BTreeMap<EntityId, Word>,
     loads: BTreeMap<(EntityId, U256), Option<Word>>,
     active_words: BTreeSet<EntityId>,
     active_loads: BTreeSet<(EntityId, U256)>,
@@ -90,9 +94,11 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
             incoming.entry(edge.to).or_default().push(edge);
         }
         let cyclic_blocks = cycles::blocks(ir, &mut pay)?;
+        let certified = relations::analyze(ir, &mut pay)?;
         Some(Self {
             ir,
             cyclic_blocks,
+            certified,
             blocks: ir.blocks.iter().map(|b| (b.id, b)).collect(),
             operation_blocks: ir
                 .blocks

@@ -6,6 +6,9 @@ impl<P: FnMut(usize) -> bool> Memory<'_, P> {
         if !self.charge(1) || depth > MAX_DEPTH || self.recursion >= MAX_DEPTH {
             return None;
         }
+        if let Some(word) = self.certified.get(&id) {
+            return Some(*word);
+        }
         if let Some(word) = self.words.get(&id) {
             return Some(*word);
         }

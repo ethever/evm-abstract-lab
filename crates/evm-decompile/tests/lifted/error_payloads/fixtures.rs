@@ -1,59 +1,11 @@
 use evm_decompile::{Fork, Input, U256};
-use std::collections::BTreeMap;
 
 pub(super) const DS_MATH: &[u8] = b"ds-math-mul-overflow";
 pub(super) const TRANSFER: &[u8] = b"TransferHelper: TRANSFER_FAILED";
 
-#[derive(Default)]
-pub(super) struct Asm {
-    bytes: Vec<u8>,
-    labels: BTreeMap<&'static str, usize>,
-    fixups: Vec<(usize, &'static str)>,
-}
-
-impl Asm {
-    pub(super) fn op(&mut self, opcode: u8) -> &mut Self {
-        self.bytes.push(opcode);
-        self
-    }
-
-    pub(super) fn number(&mut self, value: u64) -> &mut Self {
-        self.word(U256::from(value))
-    }
-
-    pub(super) fn word(&mut self, value: U256) -> &mut Self {
-        let bytes = value.to_be_bytes::<32>();
-        let first = bytes.iter().position(|b| *b != 0).unwrap_or(31);
-        self.bytes.push(0x5f + u8::try_from(32 - first).unwrap());
-        self.bytes.extend_from_slice(&bytes[first..]);
-        self
-    }
-
-    pub(super) fn target(&mut self, label: &'static str) -> &mut Self {
-        self.bytes.push(0x61);
-        self.fixups.push((self.bytes.len(), label));
-        self.bytes.extend([0, 0]);
-        self
-    }
-
-    pub(super) fn dest(&mut self, label: &'static str) -> &mut Self {
-        self.labels.insert(label, self.bytes.len());
-        self.op(0x5b)
-    }
-
-    fn data(&mut self, label: &'static str, bytes: &[u8]) {
-        self.labels.insert(label, self.bytes.len());
-        self.bytes.extend_from_slice(bytes);
-    }
-
-    pub(super) fn finish(mut self) -> Input {
-        for (offset, label) in self.fixups {
-            self.bytes[offset..offset + 2]
-                .copy_from_slice(&u16::try_from(self.labels[label]).unwrap().to_be_bytes());
-        }
-        Input::new(self.bytes, Fork::Osaka)
-    }
-}
+#[path = "fixtures/asm.rs"]
+mod assembly;
+pub(super) use assembly::Asm;
 
 pub(super) fn initialize(asm: &mut Asm, pointer: u16) {
     asm.number(u64::from(pointer)).number(64).op(0x52);

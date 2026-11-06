@@ -7,6 +7,8 @@ use guards::{Runtime, click_code, rows_with};
 
 const MESSAGE: &str = "ds-math-mul-overflow";
 
+mod loop_pointers;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shape {
     Nonzero,
