@@ -1,7 +1,8 @@
 //! Render actual dispatcher decisions and scoped edge transfers. Labels are
 //! qualified by their AST owner, not frontend-created semantic entities.
 use super::{
-    Line, Scope, StageIndex, body, emit, projected_target, projected_terminator, transfer, value,
+    Line, Scope, StageIndex, body, emit, exit_owner, projected_target, projected_terminator,
+    transfer, value,
 };
 use evm_abstract_protocol::decompile_model::{
     DispatchCase, DispatchTransition, EntityId, Ir, Terminator,
@@ -288,14 +289,13 @@ impl Dispatch<'_> {
                 emit(output, owner, indent, "}");
             }
             _ => {
-                let owner = if self.context.scope.lifted.is_some() {
-                    self.context
-                        .index
-                        .source_block(self.context.ir, block)
-                        .map_or(block, |block| block.id)
-                } else {
-                    block
-                };
+                let owner = exit_owner(
+                    block,
+                    block,
+                    self.context.ir,
+                    self.context.index,
+                    self.context.scope.lifted,
+                );
                 emit(
                     output,
                     owner,

@@ -9,9 +9,11 @@ use serde::{Deserialize, Serialize};
 
 mod codec;
 mod evaluate;
+mod payload;
 mod render;
 mod sources;
 mod validate;
+pub use payload::{LiftedConstruction, LiftedErrorPayload, LiftedRevert, MAX_ERROR_PAYLOAD_BYTES};
 pub use render::{LiftedRenderError, LiftedRenderIndex};
 
 /// Hard transport admission ceiling, independent of an attempt's smaller limits.
@@ -205,14 +207,17 @@ pub struct LiftedTransfer {
 }
 }
 strict_record! {
-/// A shared, well-founded empty-failure fact over a source block.
+/// A shared, well-founded exact-payload failure fact over a source block.
 /// This is metadata on the existing witness, not a new artifact entity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiftedFailure {
     /// Source block in the unchanged primitive witness.
     pub block: EntityId,
-    /// Zero for empty REVERT; otherwise one plus the largest successor rank.
+    /// Zero for a certified terminal REVERT; otherwise one plus the largest successor rank.
     pub rank: u32,
+    /// Exact byte payload identity; legacy schema-3 facts describe empty REVERT.
+    #[serde(skip_serializing_if = "LiftedGuardPayload::is_empty")]
+    pub payload: LiftedGuardPayload = LiftedGuardPayload::EmptyRevert,
 }
 }
 /// Mechanically certified failure payload semantics.
@@ -221,6 +226,14 @@ pub struct LiftedFailure {
 pub enum LiftedGuardPayload {
     /// REVERT whose size is exactly zero, independent of its offset.
     EmptyRevert,
+    /// Canonical Error(string) byte payload in the shared payload arena.
+    ErrorString(EntityId),
+}
+impl LiftedGuardPayload {
+    /// Whether this is the legacy zero-length payload.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::EmptyRevert)
+    }
 }
 strict_record! {
 /// Occurrence-local following failure suffix, never a global node deletion.
@@ -305,6 +318,15 @@ pub struct LiftedProgram {
     /// Shared ranked failure facts; no per-guard transitive closure copies.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<LiftedFailure>,
+    /// Shared byte identities, independent of source construction identities.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub payloads: Vec<LiftedErrorPayload>,
+    /// Terminal byte certificates over exact primitive memory versions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reverts: Vec<LiftedRevert>,
+    /// Exact source statement ranges retaining lazy original fault semantics.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub constructions: Vec<LiftedConstruction>,
 }
 /// A typed evaluation result; callers cannot confuse word 2 with truth true.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,6 +351,8 @@ pub enum LiftedModelError {
     Guard(EntityId),
     /// A guard target or suffix does not match its owned source occurrence.
     GuardSource(EntityId),
+    /// Invalid bounded payload, terminal witness, or construction reference.
+    Payload(EntityId),
 }
 impl std::fmt::Display for LiftedModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -338,6 +362,18 @@ impl std::fmt::Display for LiftedModelError {
 impl std::error::Error for LiftedModelError {}
 
 impl LiftedProgram {
+    /// Whether schema-4 payload or construction semantics are present.
+    pub fn has_payloads(&self) -> bool {
+        !self.payloads.is_empty()
+            || !self.reverts.is_empty()
+            || !self.constructions.is_empty()
+            || self.failures.iter().any(|f| !f.payload.is_empty())
+            || self
+                .controls
+                .iter()
+                .filter_map(|c| c.guard.as_ref())
+                .any(|g| !g.payload.is_empty())
+    }
     /// Whether the artifact uses schema-3 guard semantics or their proof table.
     pub fn has_guards(&self) -> bool {
         !self.failures.is_empty() || self.controls.iter().any(|c| c.guard.is_some())
@@ -347,6 +383,14 @@ impl LiftedProgram {
         self.entity_ids()
             .count()
             .saturating_add(self.failures.len())
+            .saturating_add(self.payloads.iter().fold(0_usize, |n, p| {
+                n.saturating_add(p.message.len())
+                    .saturating_add(p.bytes.len())
+            }))
+            .saturating_add(self.reverts.iter().fold(0_usize, |n, r| {
+                n.saturating_add(r.writes.len()).saturating_add(7)
+            }))
+            .saturating_add(self.constructions.len().saturating_mul(5))
             .saturating_add(
                 self.controls
                     .iter()
@@ -383,5 +427,8 @@ impl LiftedProgram {
             )
             .chain(self.transfers.iter().map(|t| t.id))
             .chain(self.controls.iter().map(|c| c.id))
+            .chain(self.payloads.iter().map(|p| p.id))
+            .chain(self.reverts.iter().map(|r| r.id))
+            .chain(self.constructions.iter().map(|c| c.id))
     }
 }

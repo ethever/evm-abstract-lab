@@ -20,7 +20,7 @@ fn local_code_produces_structured_output_and_inspectable_json_without_a_world() 
         String::from_utf8_lossy(&output.stderr)
     );
     let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(artifact.schema_version, 3);
+    assert_eq!(artifact.schema_version, 4);
     assert!(artifact.admits_schema());
     assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
     assert_eq!(
@@ -384,4 +384,143 @@ fn installed_cli_rejects_overflow_fractional_and_negative_allowances_before_exec
         assert!(output.stdout.is_empty(), "{invalid}");
         assert!(!output.stderr.is_empty(), "{invalid}");
     }
+}
+
+#[test]
+fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_witnesses() {
+    for (bytecode, message) in [
+        (
+            include_str!(
+                "../../evm-decompile/tests/fixtures/error-payloads/router-ds-math-guard.hex"
+            )
+            .trim(),
+            "ds-math-mul-overflow",
+        ),
+        (
+            include_str!(
+                "../../evm-decompile/tests/fixtures/error-payloads/router-transfer-guard.hex"
+            )
+            .trim(),
+            "TransferHelper: TRANSFER_FAILED",
+        ),
+    ] {
+        let output = run(&["--hex", bytecode, "--format", "json"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(artifact.schema_version, 4);
+        assert!(artifact.admits_schema());
+        let current = artifact.current().unwrap();
+        let program = current.ir.lifted.as_ref().unwrap();
+        let payload = program
+            .payloads
+            .iter()
+            .find(|p| p.message == message)
+            .unwrap();
+        assert_eq!(payload.bytes.len(), 100);
+        assert!(
+            payload.bytes[68 + message.len()..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        let control = program
+            .controls
+            .iter()
+            .find(|c| {
+                c.guard.as_ref().is_some_and(|g| {
+                    g.payload == evm_decompile::LiftedGuardPayload::ErrorString(payload.id)
+                })
+            })
+            .unwrap();
+        let index = program.render_index(&current.ir);
+        index.validate_guard_sources().unwrap();
+        let require = index.render_guard(control, |_| true).unwrap().unwrap();
+        let guard = control.guard.as_ref().unwrap();
+        assert!(guard.pass_nonzero);
+        let raw = artifact
+            .stages
+            .iter()
+            .find(|s| s.kind == evm_decompile::StageKind::Structured)
+            .unwrap();
+        let mut witness = current.ir.clone();
+        witness.lifted = None;
+        assert_eq!(witness, raw.ir);
+        let proof = program
+            .reverts
+            .iter()
+            .find(|r| r.payload == payload.id)
+            .unwrap();
+        let construction = index.construction(proof.block).unwrap();
+        assert_eq!(construction.revert, proof.id);
+        assert_eq!(proof.writes.len(), 4);
+        for id in std::iter::once(payload.id).chain([proof.id, construction.id]) {
+            assert!(
+                artifact
+                    .origin(evm_decompile::EntityRef {
+                        stage: current.id,
+                        entity: id
+                    })
+                    .is_some()
+            );
+        }
+        let text = run(&["--hex", bytecode]);
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert_eq!(text.matches(&require).count(), 1, "{text}");
+        assert_eq!(text.matches(message).count(), 1, "{text}");
+        assert_eq!(
+            text.matches("mstore(").count(),
+            1,
+            "only the original prefix store remains visible: {text}"
+        );
+        assert!(
+            !text.contains("mload("),
+            "failure-only loads must be inside the lazy capsule: {text}"
+        );
+    }
+}
+
+#[test]
+fn installed_cli_standalone_error_collapses_the_actual_constructor_and_bad_padding_stays_raw() {
+    let bytecode =
+        include_str!("../../evm-decompile/tests/fixtures/error-payloads/router-ds-math-guard.hex")
+            .trim();
+    // Prefix and complete unrelocated 102-byte Router02 constructor, without
+    // the fixture's admission branch or successful SSTORE arm.
+    let standalone = format!("6080604052{}", &bytecode[24..228]);
+    let text = run(&["--hex", &standalone]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert_eq!(
+        text.matches("revert(\"ds-math-mul-overflow\");").count(),
+        1,
+        "{text}"
+    );
+    assert!(
+        !text.contains("mstore("),
+        "standalone construction is one lazy capsule: {text}"
+    );
+    let needle = "64732d6d6174682d6d756c2d6f766572666c6f77000000000000000000000000";
+    assert!(bytecode.contains(needle));
+    let corrupt_word = format!("{}01{}", &needle[..40], &needle[42..]);
+    let corrupt = bytecode.replacen(needle, &corrupt_word, 1);
+    let json = run(&["--hex", &corrupt, "--format", "json"]);
+    assert!(json.status.success());
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&json.stdout).unwrap();
+    let program = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
+    assert!(program.payloads.is_empty() && program.constructions.is_empty());
+    let text = run(&["--hex", &corrupt]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        !text.contains("require(") && !text.contains("revert(\""),
+        "{text}"
+    );
+    assert!(
+        text.contains("mstore(") && text.contains("revert(offset"),
+        "{text}"
+    );
 }

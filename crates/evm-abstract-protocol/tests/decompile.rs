@@ -106,6 +106,7 @@ fn lifted_stage_with_deep_flat_expression_dag_roundtrips_in_the_result_envelope(
         transfers: vec![],
         controls: vec![],
         failures: vec![],
+        ..LiftedProgram::default()
     });
     stage.ir.lifted.as_ref().unwrap().validate().unwrap();
     artifact.current_stage = Some(stage.id);
@@ -192,7 +193,12 @@ fn guard_reply() -> evm_abstract_protocol::DecompileJobResultReply {
                 }),
             }),
         }],
-        failures: vec![LiftedFailure { block, rank: 0 }],
+        failures: vec![LiftedFailure {
+            block,
+            rank: 0,
+            payload: LiftedGuardPayload::EmptyRevert,
+        }],
+        ..LiftedProgram::default()
     });
     stage.ir.lifted.as_ref().unwrap().validate().unwrap();
     DecompileJobResultReply {
@@ -207,7 +213,9 @@ fn guard_reply() -> evm_abstract_protocol::DecompileJobResultReply {
 #[test]
 fn schema_three_guard_plan_roundtrips_losslessly_in_the_protocol_envelope() {
     use evm_abstract_protocol::DecompileJobResultReply;
-    let reply = guard_reply();
+    let mut reply = guard_reply();
+    // Empty guards retain the legacy v3 representation, with no new fields.
+    reply.result.as_mut().unwrap().artifact.schema_version = 3;
     let wire = serde_json::to_vec(&reply).unwrap();
     let restored: DecompileJobResultReply = serde_json::from_slice(&wire).unwrap();
     assert_eq!(restored, reply);
@@ -218,6 +226,142 @@ fn schema_three_guard_plan_roundtrips_losslessly_in_the_protocol_envelope() {
         let mut legacy = artifact.clone();
         legacy.schema_version = version;
         assert!(!legacy.admits_schema());
+    }
+}
+
+fn error_reply() -> evm_abstract_protocol::DecompileJobResultReply {
+    use evm_abstract_protocol::decompile_model::{
+        LiftedConstruction, LiftedErrorPayload, LiftedGuardPayload, LiftedRevert, LiftedStatement,
+    };
+    let mut reply = guard_reply();
+    let program = reply
+        .result
+        .as_mut()
+        .unwrap()
+        .artifact
+        .stages
+        .last_mut()
+        .unwrap()
+        .ir
+        .lifted
+        .as_mut()
+        .unwrap();
+    let message = "ds-math-mul-overflow";
+    let mut bytes = vec![0_u8; 100];
+    bytes[..4].copy_from_slice(&[8, 0xc3, 0x79, 0xa0]);
+    bytes[35] = 32;
+    bytes[67] = 20;
+    bytes[68..88].copy_from_slice(message.as_bytes());
+    let payload = EntityId(900_001);
+    let proof = EntityId(900_002);
+    let block = program.blocks[0].block;
+    program.payloads.push(LiftedErrorPayload {
+        id: payload,
+        message: message.into(),
+        bytes,
+    });
+    program.blocks[0].statements.push(LiftedStatement {
+        id: EntityId(900_004),
+        operation: EntityId(900_005),
+        inputs: vec![],
+        outputs: vec![],
+    });
+    program.reverts.push(LiftedRevert {
+        id: proof,
+        block,
+        operation: EntityId(900_005),
+        memory: EntityId(900_006),
+        offset: EntityId(900_007),
+        size: EntityId(900_008),
+        payload,
+        writes: vec![EntityId(900_009)],
+    });
+    program.constructions.push(LiftedConstruction {
+        id: EntityId(900_003),
+        block,
+        start: 0,
+        end: 1,
+        revert: proof,
+    });
+    program.failures[0].payload = LiftedGuardPayload::ErrorString(payload);
+    program.controls[0].guard.as_mut().unwrap().payload = LiftedGuardPayload::ErrorString(payload);
+    program.validate().unwrap();
+    reply
+}
+
+#[test]
+fn schema_four_exact_error_bytes_and_lazy_construction_links_survive_the_result_envelope() {
+    use evm_abstract_protocol::DecompileJobResultReply;
+    let reply = error_reply();
+    let encoded = serde_json::to_vec(&reply).unwrap();
+    let restored: DecompileJobResultReply = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(restored, reply);
+    let artifact = &restored.result.as_ref().unwrap().artifact;
+    assert_eq!(artifact.schema_version, 4);
+    assert!(artifact.admits_schema());
+    for old in [1, 2, 3] {
+        let mut wrong = artifact.clone();
+        wrong.schema_version = old;
+        assert!(
+            !wrong.admits_schema(),
+            "nonempty payload advertised as v{old}"
+        );
+    }
+    let program = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
+    assert_eq!(program.payloads[0].bytes.len(), 100);
+    assert_eq!(&program.payloads[0].bytes[88..], &[0_u8; 12]);
+    assert_eq!(program.constructions[0].revert, program.reverts[0].id);
+}
+
+#[test]
+fn nested_payload_proofs_are_strict_even_inside_the_protocol_result() {
+    use evm_abstract_protocol::DecompileJobResultReply;
+    let reply = error_reply();
+    let wire = serde_json::to_value(&reply).unwrap();
+    let position = wire["result"]["Ok"]["artifact"]["stages"]
+        .as_array()
+        .unwrap()
+        .len()
+        - 1;
+    for arena in ["payloads", "reverts", "constructions"] {
+        let path = format!("/result/Ok/artifact/stages/{position}/ir/lifted/{arena}/0");
+        let object = wire.pointer(&path).unwrap().as_object().unwrap();
+        for (field, value) in object {
+            let mut missing = wire.clone();
+            missing
+                .pointer_mut(&path)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                serde_json::from_value::<DecompileJobResultReply>(missing).is_err(),
+                "missing {arena}.{field}"
+            );
+            let mut null = wire.clone();
+            null.pointer_mut(&path).unwrap()[field] = serde_json::json!(null);
+            assert!(
+                serde_json::from_value::<DecompileJobResultReply>(null).is_err(),
+                "null {arena}.{field}"
+            );
+            let text = serde_json::to_string(&wire).unwrap();
+            let record = serde_json::to_string(object).unwrap();
+            let duplicate = format!("{{{field:?}:{value},{}", &record[1..]);
+            assert!(text.contains(&record));
+            assert!(
+                serde_json::from_str::<DecompileJobResultReply>(
+                    &text.replacen(&record, &duplicate, 1)
+                )
+                .is_err()
+            );
+        }
+        let mut unknown = wire.clone();
+        unknown.pointer_mut(&path).unwrap()["unexpected_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<DecompileJobResultReply>(unknown).is_err());
+        let mut positional = wire.clone();
+        *positional.pointer_mut(&path).unwrap() =
+            serde_json::json!(object.values().collect::<Vec<_>>());
+        assert!(serde_json::from_value::<DecompileJobResultReply>(positional).is_err());
     }
 }
 

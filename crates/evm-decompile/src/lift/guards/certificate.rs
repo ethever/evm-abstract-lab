@@ -1,8 +1,6 @@
 //! Local failure-rank and occurrence certificates, independent of discovery.
 use super::{Graph, Rule, source::Source};
-use crate::{
-    EntityId, Ir, LiftedGuard, LiftedGuardPayload, LiftedProgram, StructuredKind, Terminator,
-};
+use crate::{EntityId, Ir, LiftedGuard, LiftedProgram, StructuredKind, Terminator};
 
 /// Independent certificate admission: no calls to discover or its worklist.
 /// Absence/completeness is additionally checked by the normal-form certificate.
@@ -20,6 +18,7 @@ pub(in crate::lift) fn verify(
     {
         return None;
     }
+    let mut payloads = vec![None; ir.blocks.len()];
     let mut ranks = vec![None; ir.blocks.len()];
     let mut previous = None;
     for fact in &program.failures {
@@ -29,6 +28,7 @@ pub(in crate::lift) fn verify(
         if previous.is_some_and(|p| p >= fact.block) || ranks[index].replace(fact.rank).is_some() {
             return Some(false);
         }
+        payloads[index] = Some(fact.payload);
         previous = Some(fact.block);
     }
     for (index, rank) in ranks.iter().enumerate() {
@@ -37,13 +37,15 @@ pub(in crate::lift) fn verify(
             return None;
         }
         let valid = match graph.rules[index] {
-            Rule::Empty => *rank == 0,
+            Rule::Terminal(payload) => *rank == 0 && payloads[index] == Some(payload),
             Rule::Transparent => {
                 let mut max = 0;
                 let mut valid = *rank > 0 && !graph.successors[index].is_empty();
                 for next in &graph.successors[index] {
                     match ranks[*next] {
-                        Some(child) if child < *rank => max = max.max(child),
+                        Some(child) if child < *rank && payloads[*next] == payloads[index] => {
+                            max = max.max(child)
+                        }
                         _ => valid = false,
                     }
                 }
@@ -61,7 +63,7 @@ pub(in crate::lift) fn verify(
             return None;
         }
         if let Some(actual) = &control.guard {
-            if !verify_guard(ir, &graph, &ranks, &source, control.node, actual) {
+            if !verify_guard(ir, &graph, &ranks, &payloads, &source, control.node, actual) {
                 return Some(false);
             }
             let Some(high) = graph.high.get(&actual.block) else {
@@ -81,6 +83,7 @@ fn verify_guard(
     ir: &Ir,
     graph: &Graph<'_>,
     ranks: &[Option<u32>],
+    payloads: &[Option<crate::LiftedGuardPayload>],
     source: &Source<'_>,
     node: EntityId,
     proof: &LiftedGuard,
@@ -110,11 +113,7 @@ fn verify_guard(
     else {
         return false;
     };
-    if condition != raw_condition
-        || then_edges.len() != 1
-        || !invalid_targets.is_empty()
-        || proof.payload != LiftedGuardPayload::EmptyRevert
-    {
+    if condition != raw_condition || then_edges.len() != 1 || !invalid_targets.is_empty() {
         return false;
     }
     let (pass, failed, pass_edge, failed_edge) = if proof.pass_nonzero {
@@ -140,7 +139,7 @@ fn verify_guard(
         || !graph
             .blocks
             .get(&failed_raw.to)
-            .is_some_and(|i| ranks[*i].is_some())
+            .is_some_and(|i| ranks[*i].is_some() && payloads[*i] == Some(proof.payload))
         || !graph
             .blocks
             .get(&pass_raw.to)

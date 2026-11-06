@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod captured;
 #[path = "lifted/copies.rs"]
 mod copies;
+#[path = "lifted/error_payloads.rs"]
+mod error_payloads;
 #[path = "lifted/guards.rs"]
 mod guards;
 #[path = "lifted/named_operands.rs"]

@@ -2,8 +2,9 @@
 //! is retained: syntax locations use parent/child coordinates in linear space.
 
 use evm_abstract_protocol::decompile_model::{
-    Block, DispatchTransition, Edge, EntityId, Ir, LiftedBlock, LiftedControl, LiftedExpression,
-    LiftedStatement, LiftedTransfer, Operation, StructuredKind, StructuredNode, Value,
+    Block, DispatchTransition, Edge, EntityId, Ir, LiftedBlock, LiftedConstruction, LiftedControl,
+    LiftedErrorPayload, LiftedExpression, LiftedRevert, LiftedStatement, LiftedTransfer, Operation,
+    StructuredKind, StructuredNode, Value,
 };
 use std::collections::BTreeMap;
 
@@ -20,6 +21,9 @@ pub(super) struct StageIndex {
     statements: BTreeMap<EntityId, (usize, usize)>,
     lifted_transfers: BTreeMap<EntityId, usize>,
     controls: BTreeMap<EntityId, usize>,
+    payloads: BTreeMap<EntityId, usize>,
+    reverts: BTreeMap<EntityId, usize>,
+    constructions: BTreeMap<EntityId, usize>,
     source_blocks: BTreeMap<EntityId, usize>,
     source_edges: BTreeMap<EntityId, usize>,
     source_nodes: BTreeMap<EntityId, usize>,
@@ -108,6 +112,24 @@ impl StageIndex {
                     index.semantic_owners.insert(control.id, block);
                 }
             }
+            index.payloads = program
+                .payloads
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.id, i))
+                .collect();
+            for (position, revert) in program.reverts.iter().enumerate() {
+                index.reverts.insert(revert.id, position);
+                if let Some(owner) = index.blocks.get(&revert.block) {
+                    index.semantic_owners.insert(revert.id, *owner);
+                }
+            }
+            for (position, construction) in program.constructions.iter().enumerate() {
+                index.constructions.insert(construction.id, position);
+                if let Some(owner) = index.blocks.get(&construction.block) {
+                    index.semantic_owners.insert(construction.id, *owner);
+                }
+            }
         }
         index
     }
@@ -188,6 +210,18 @@ impl StageIndex {
     }
     pub fn control<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedControl> {
         ir.lifted.as_ref()?.controls.get(*self.controls.get(&id)?)
+    }
+    pub fn payload<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedErrorPayload> {
+        ir.lifted.as_ref()?.payloads.get(*self.payloads.get(&id)?)
+    }
+    pub fn revert<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedRevert> {
+        ir.lifted.as_ref()?.reverts.get(*self.reverts.get(&id)?)
+    }
+    pub fn construction<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedConstruction> {
+        ir.lifted
+            .as_ref()?
+            .constructions
+            .get(*self.constructions.get(&id)?)
     }
     pub fn source_block<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedBlock> {
         ir.lifted

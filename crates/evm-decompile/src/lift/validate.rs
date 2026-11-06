@@ -18,9 +18,15 @@ pub(crate) fn certify(ir: &Ir, cancel: &Cancellation) -> ValidationCheck {
     if let Err(error) = program.validate() {
         return fail(error.to_string());
     }
+    if super::payloads::verify(ir, program, &mut |_| !cancel.is_cancelled()) != Some(true) {
+        return fail(
+            "constant-memory payload, byte replay or lazy construction certificate failed"
+                .to_owned(),
+        );
+    }
     if super::guards::verify(ir, program, &mut |_| !cancel.is_cancelled()) != Some(true) {
         return fail(
-            "empty-REVERT rank, source route or fallthrough certificate failed".to_owned(),
+            "exact-payload failure rank, source route or fallthrough certificate failed".to_owned(),
         );
     }
     // Rebuild the scoped normal form from primitive definitions. Only arena IDs
@@ -56,7 +62,7 @@ pub(crate) fn certify(ir: &Ir, cancel: &Cancellation) -> ValidationCheck {
     remap_program(&mut canonical, &ids);
     let passed = canonical == expected.program && !cancel.is_cancelled();
     ValidationCheck { name: "lifted_semantic_projection".to_owned(), passed,
-        message: if passed { "checked typed scoped normal forms, anchored identity-copy equations, strict raw entry availability, retained primitive bindings, simultaneous live transfers and independent empty-REVERT rank/source/fallthrough certificates against raw witness" } else { "semantic projection differs from the certified normal form of its primitive witness" }.to_owned() }
+        message: if passed { "checked typed scoped normal forms, anchored identity-copy equations, strict raw entry availability, retained primitive bindings, simultaneous live transfers and independent constant-memory byte replay and exact-payload rank/source/fallthrough certificates against raw witness" } else { "semantic projection differs from the certified normal form of its primitive witness" }.to_owned() }
 }
 
 /// Publication has no independent wire proof record: validate these direct

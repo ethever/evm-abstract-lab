@@ -60,7 +60,9 @@ fn program() -> LiftedProgram {
         failures: vec![LiftedFailure {
             block: EntityId(102),
             rank: 0,
+            payload: LiftedGuardPayload::EmptyRevert,
         }],
+        ..LiftedProgram::default()
     }
 }
 

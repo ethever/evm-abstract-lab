@@ -58,7 +58,7 @@ impl<'a> GuardSources<'a> {
         blocks: &BTreeMap<EntityId, &LiftedBlock>,
         edges: &BTreeMap<EntityId, &Edge>,
     ) -> Result<(), LiftedModelError> {
-        let guarded = program.controls.iter().any(|c| c.guard.is_some());
+        let guarded = program.controls.iter().any(|c| c.guard.is_some()) || program.has_payloads();
         let root = ir.structured.as_ref().map(|s| &s.root);
         if guarded && (root.is_none() || program.record_count() > super::MAX_LIFTED_RECORDS) {
             return Err(LiftedModelError::GuardSource(
@@ -117,6 +117,7 @@ impl<'a> GuardSources<'a> {
                 _ => {}
             }
         }
+        super::payload::check_sources(program, ir, &self.nodes)?;
         if !guarded {
             return Ok(());
         }
@@ -291,7 +292,7 @@ impl LiftedProgram {
     /// Check guard source ownership/normal fallthrough without re-proving failure
     /// semantics. Applies regardless of an artifact's recorded validation status.
     pub fn validate_guard_sources(&self, ir: &Ir) -> Result<(), LiftedModelError> {
-        if self.controls.iter().all(|c| c.guard.is_none()) {
+        if self.controls.iter().all(|c| c.guard.is_none()) && !self.has_payloads() {
             return Ok(());
         }
         let expressions = self.expressions.iter().map(|e| (e.id, e)).collect();

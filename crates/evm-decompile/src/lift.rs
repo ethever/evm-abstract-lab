@@ -15,6 +15,7 @@ mod aliases;
 mod availability;
 mod guards;
 mod liveness;
+mod payloads;
 mod simplify;
 mod validate;
 pub(crate) use validate::certify;
@@ -75,7 +76,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
         .collect();
     ir.lifted = Some(projection.program);
     owner.commit(StageKind::Lifted, ir,
-        ("lift_semantic_expressions", "typed scoped EVM expressions, live simultaneous transfers and occurrence-local empty-REVERT guards certified against unchanged primitive witness"),
+        ("lift_semantic_expressions", "typed scoped EVM expressions, live simultaneous transfers and lazy exact-payload REVERT guards certified against unchanged primitive witness"),
         parents, Vec::new(), Vec::new());
 }
 
@@ -323,9 +324,24 @@ fn project(ir: &Ir, mut pay: impl FnMut(usize) -> bool) -> Option<Projection<'_>
         }
     }
     p.prune()?;
-    // Guard metadata is established only after every high body/control and the
-    // joint semantic liveness result are available. Predicates, transfers and
-    // absorbed REVERT statements remain witnesses and liveness roots.
+    // Payload and guard metadata use the final high bodies/control and joint
+    // liveness result. Every original construction/REVERT statement stays in
+    // the arena as the lazy source, state dependency and fault witness.
+    {
+        let parents = &mut p.result.parents;
+        let next = &mut p.next;
+        payloads::discover(
+            ir,
+            &mut p.result.program,
+            |source| {
+                let id = EntityId(*next);
+                *next += 1;
+                parents.insert(id, source.into_iter().collect());
+                id
+            },
+            &mut p.pay,
+        )?;
+    }
     guards::discover(ir, &mut p.result.program, &mut p.pay)?;
     for control in &p.result.program.controls {
         if let Some(guard) = &control.guard {
@@ -479,8 +495,29 @@ fn remap_program(program: &mut LiftedProgram, ids: &BTreeMap<EntityId, EntityId>
             id(v);
         }
     }
+    for payload in &mut program.payloads {
+        id(&mut payload.id);
+    }
+    for revert in &mut program.reverts {
+        id(&mut revert.id);
+        id(&mut revert.payload);
+    }
+    for construction in &mut program.constructions {
+        id(&mut construction.id);
+        id(&mut construction.revert);
+    }
+    for failure in &mut program.failures {
+        if let crate::LiftedGuardPayload::ErrorString(payload) = &mut failure.payload {
+            id(payload);
+        }
+    }
     for c in &mut program.controls {
         id(&mut c.id);
         id(&mut c.condition);
+        if let Some(guard) = &mut c.guard
+            && let crate::LiftedGuardPayload::ErrorString(payload) = &mut guard.payload
+        {
+            id(payload);
+        }
     }
 }

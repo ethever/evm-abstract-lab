@@ -58,6 +58,7 @@ pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &
             .push(structured::terminator(&block.terminator));
         refs.extend(block.parameters.iter().copied());
         refs.extend([block.memory_parameter, block.effect_parameter]);
+        refs.extend(block.terminator.edges());
         refs.extend(index.source_block(&stage.ir, id).map(|block| block.id));
     } else if let Some(op) = index.operation(&stage.ir, id) {
         details.lines.push(format!(

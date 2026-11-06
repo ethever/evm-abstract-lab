@@ -334,13 +334,7 @@ fn render(
                     ),
                     term => projected_terminator(block.id, term, ir, index, scope.lifted),
                 };
-                let owner = if scope.lifted.is_some() {
-                    index
-                        .source_block(ir, block.id)
-                        .map_or(node.id, |block| block.id)
-                } else {
-                    node.id
-                };
+                let owner = exit_owner(block.id, node.id, ir, index, scope.lifted);
                 emit(output, owner, indent, text);
             } else {
                 emit(
@@ -451,7 +445,15 @@ fn body(
             );
             return RenderSummary::CONTENT;
         };
-        for statement in &semantic.statements {
+        // A terminal payload proof alone never authorizes hiding stores. Use
+        // only the admitted lazy capsule, and retain witnesses if formatting
+        // cannot produce its complete replacement.
+        let construction = super::lifted::compact_revert(renderer, block.id)
+            .and_then(|_| renderer.construction(block.id));
+        for (position, statement) in semantic.statements.iter().enumerate() {
+            if construction.is_some_and(|plan| (plan.start..plan.end).contains(&position)) {
+                continue;
+            }
             if let Some(op) = index.operation(ir, statement.operation) {
                 if let Some(reason) = fault_reason(op, ir, index) {
                     emit(
@@ -601,6 +603,27 @@ fn projected_target(
     }
 }
 
+fn exit_owner(
+    block: EntityId,
+    fallback: EntityId,
+    ir: &Ir,
+    index: &StageIndex,
+    lifted: Option<&LiftedRenderIndex<'_>>,
+) -> EntityId {
+    if let Some(renderer) = lifted
+        && super::lifted::compact_revert(renderer, block).is_some()
+        && let Some(construction) = renderer.construction(block)
+    {
+        construction.id
+    } else if lifted.is_some() {
+        index
+            .source_block(ir, block)
+            .map_or(fallback, |block| block.id)
+    } else {
+        fallback
+    }
+}
+
 fn projected_terminator(
     block: EntityId,
     term: &Terminator,
@@ -664,6 +687,11 @@ fn projected_terminator(
             )
         }
         Terminator::Exit { kind, .. } => {
+            if *kind == ExitKind::Revert
+                && let Some(text) = super::lifted::compact_revert(renderer, block)
+            {
+                return text;
+            }
             let (opcode, name) = match kind {
                 ExitKind::Stop => (0x00, "evm.stop"),
                 ExitKind::Return => (0xf3, "evm.return"),

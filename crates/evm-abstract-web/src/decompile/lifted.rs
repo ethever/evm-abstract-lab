@@ -3,8 +3,8 @@
 
 use super::{details::Details, index::StageIndex, model::EntityKind, structured};
 use evm_abstract_protocol::decompile_model::{
-    EntityId, EntityRef, LiftedControl, LiftedExpressionKind, LiftedProgram, LiftedRenderIndex,
-    LiftedStatement, LiftedTransfer, Stage,
+    EntityId, EntityRef, LiftedConstruction, LiftedControl, LiftedExpressionKind,
+    LiftedGuardPayload, LiftedProgram, LiftedRenderIndex, LiftedStatement, LiftedTransfer, Stage,
 };
 
 pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, EntityKind)) {
@@ -23,6 +23,19 @@ pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, 
     for control in &program.controls {
         visitor(control.id, EntityKind::LiftedControl);
     }
+    for payload in &program.payloads {
+        visitor(payload.id, EntityKind::LiftedPayload);
+    }
+    for revert in &program.reverts {
+        visitor(revert.id, EntityKind::LiftedRevert);
+    }
+    for construction in &program.constructions {
+        visitor(construction.id, EntityKind::LiftedConstruction);
+    }
+}
+
+pub(super) fn compact_revert(renderer: &LiftedRenderIndex<'_>, block: EntityId) -> Option<String> {
+    renderer.render_revert(block, |_| true).ok().flatten()
 }
 
 pub(super) fn expression(renderer: &LiftedRenderIndex<'_>, id: EntityId) -> String {
@@ -97,6 +110,74 @@ pub(super) fn details(
                 references.extend(arguments.iter().copied());
             }
         }
+    } else if let Some(payload) = index.payload(&stage.ir, id) {
+        lines.push(format!(
+            "{} Error(string) payload h{} · {} ABI bytes",
+            if renderer.payload(id).is_some() {
+                "Certified"
+            } else {
+                "Unadmitted"
+            },
+            id.0,
+            payload.bytes.len(),
+        ));
+        lines.push(format!("Exact UTF-8 message: {:?}", payload.message));
+        lines.push(format!(
+            "Canonical ABI bytes: 0x{}",
+            payload
+                .bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ));
+    } else if let Some(revert) = index.revert(&stage.ir, id) {
+        lines.push(format!(
+            "{} Error(string) REVERT h{} · b{} · o{}",
+            if renderer.revert(revert.block).is_some() {
+                "Certified"
+            } else {
+                "Unadmitted"
+            },
+            id.0,
+            revert.block.0,
+            revert.operation.0,
+        ));
+        lines.push(format!(
+            "Terminal memory m{} · offset v{} · size v{} · payload h{}",
+            revert.memory.0, revert.offset.0, revert.size.0, revert.payload.0,
+        ));
+        lines.push(format!(
+            "Ordered byte-write witnesses: {}",
+            revert
+                .writes
+                .iter()
+                .map(|operation| format!("o{}", operation.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        references.extend([
+            revert.block,
+            revert.operation,
+            revert.memory,
+            revert.offset,
+            revert.size,
+            revert.payload,
+        ]);
+        references.extend(revert.writes.iter().copied());
+        if let Some(construction) = renderer.construction(revert.block) {
+            references.push(construction.id);
+        } else {
+            lines.push("Compact construction proof unavailable; original memory operations and raw REVERT are retained.".into());
+        }
+    } else if let Some(construction) = index.construction(&stage.ir, id) {
+        construction_details(
+            stage,
+            index,
+            renderer,
+            construction,
+            &mut lines,
+            &mut references,
+        );
     } else if let Some(block) = index.lifted_block(&stage.ir, id) {
         lines.push(format!(
             "High-level block h{} → b{} · live parameters ({}) · {} statements",
@@ -110,6 +191,17 @@ pub(super) fn details(
         references.extend(block.statements.iter().map(|statement| statement.id));
         references.extend(block.condition.iter().chain(&block.target).copied());
         references.extend(block.exit_values.iter().copied());
+        if let Some(source) = index.block(&stage.ir, block.block) {
+            references.extend(source.terminator.edges());
+        }
+        if let Some(revert) = renderer.revert(block.block) {
+            references.push(revert.id);
+            if let Some(construction) = renderer.construction(block.block) {
+                references.push(construction.id);
+            } else {
+                lines.push("Payload bytes are certified at REVERT; construction proof unavailable. Raw memory operations and REVERT are retained.".into());
+            }
+        }
         if let Some(condition) = block.condition {
             lines.push(format!("Predicate: {}", expression(renderer, condition)));
         }
@@ -166,11 +258,24 @@ pub(super) fn details(
         let control = index.control(&stage.ir, id)?;
         references.extend([control.node, control.condition]);
         if let Some(guard) = &control.guard {
+            let admitted = renderer.guard(control.node).is_some();
+            let kind = match guard.payload {
+                LiftedGuardPayload::EmptyRevert => "empty-REVERT",
+                LiftedGuardPayload::ErrorString(payload) => {
+                    references.push(payload);
+                    "Error(string)"
+                }
+            };
             lines.push(format!(
-                "Certified empty-REVERT guard h{} · ast{}: {}",
+                "{} {kind} guard h{} · ast{}: {}",
+                if admitted { "Certified" } else { "Unadmitted" },
                 id.0,
                 control.node.0,
-                self::guard(renderer, control)
+                if admitted {
+                    self::guard(renderer, control)
+                } else {
+                    "source proof unavailable; raw If retained".into()
+                }
             ));
             lines.push(format!(
                 "Predicate: {} · successful source truth: {}",
@@ -203,10 +308,26 @@ pub(super) fn details(
                 references.push(edge.to);
                 if let Some(failure) = renderer.failure(edge.to) {
                     lines.push(format!(
-                        "Shared empty-failure proof: b{} · decreasing rank {}",
-                        failure.block.0, failure.rank
+                        "Shared {}-failure proof: b{} · decreasing rank {}",
+                        if matches!(guard.payload, LiftedGuardPayload::EmptyRevert) {
+                            "empty"
+                        } else {
+                            "error"
+                        },
+                        failure.block.0,
+                        failure.rank
                     ));
                 }
+                if let Some(construction) = renderer.construction(edge.to) {
+                    references.push(construction.id);
+                    references.push(construction.revert);
+                }
+            }
+            if let LiftedGuardPayload::ErrorString(payload) = guard.payload {
+                if let Some(payload) = renderer.payload(payload) {
+                    lines.push(format!("Exact UTF-8 message: {:?}", payload.message));
+                }
+                lines.push("Lazy failure construction retains original memory expansion, operation order and exceptional faults; evaluated only on the original failure route.".into());
             }
             if let Some(continuation) = &guard.continuation {
                 lines.push(format!(
@@ -242,4 +363,38 @@ pub(super) fn details(
             })
             .collect(),
     })
+}
+
+fn construction_details(
+    stage: &Stage,
+    index: &StageIndex,
+    renderer: &LiftedRenderIndex<'_>,
+    construction: &LiftedConstruction,
+    lines: &mut Vec<String>,
+    references: &mut Vec<EntityId>,
+) {
+    let admitted = renderer.construction(construction.block) == Some(construction);
+    lines.push(format!(
+        "{} lazy failure construction h{} · b{} · statements {}..{}",
+        if admitted { "Certified" } else { "Unadmitted" },
+        construction.id.0,
+        construction.block.0,
+        construction.start,
+        construction.end,
+    ));
+    if admitted {
+        lines.push("Original operations, memory expansion and exceptional faults execute only on the original failure route.".into());
+    } else {
+        lines.push(
+            "Source proof unavailable; original construction and raw REVERT are retained.".into(),
+        );
+    }
+    references.extend([construction.block, construction.revert]);
+    if let Some(block) = index.source_block(&stage.ir, construction.block)
+        && let Some(statements) = block.statements.get(construction.start..construction.end)
+    {
+        for statement in statements {
+            references.extend([statement.id, statement.operation]);
+        }
+    }
 }

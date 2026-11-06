@@ -220,6 +220,7 @@ impl Views {
                         | EntityKind::LiftedStatement
                         | EntityKind::LiftedTransfer
                         | EntityKind::LiftedControl
+                        | EntityKind::LiftedConstruction
                 )
             );
             if semantic_code {

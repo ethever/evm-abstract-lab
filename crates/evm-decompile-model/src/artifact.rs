@@ -282,14 +282,19 @@ pub struct Artifact {
 }
 impl Artifact {
     /// Lightweight version admission. Full source/proof certification belongs
-    /// to core; old advertised schemas cannot opt in to new guard semantics.
+    /// to core; older advertised schemas cannot opt in to newer semantic fields.
     pub fn admits_schema(&self) -> bool {
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
-            2 => self
+            3 => self
                 .stages
                 .iter()
-                .all(|s| s.ir.lifted.as_ref().is_none_or(|p| !p.has_guards())),
+                .all(|s| s.ir.lifted.as_ref().is_none_or(|p| !p.has_payloads())),
+            2 => self.stages.iter().all(|s| {
+                s.ir.lifted
+                    .as_ref()
+                    .is_none_or(|p| !p.has_guards() && !p.has_payloads())
+            }),
             1 => self
                 .stages
                 .iter()
@@ -353,6 +358,9 @@ pub enum Record<'a> {
     LiftedStatement(&'a crate::LiftedStatement),
     LiftedTransfer(&'a crate::LiftedTransfer),
     LiftedControl(&'a crate::LiftedControl),
+    LiftedPayload(&'a crate::LiftedErrorPayload),
+    LiftedRevert(&'a crate::LiftedRevert),
+    LiftedConstruction(&'a crate::LiftedConstruction),
 }
 #[doc(hidden)]
 pub fn records(ir: &Ir) -> BTreeMap<EntityId, Record<'_>> {
@@ -384,6 +392,15 @@ pub fn records(ir: &Ir) -> BTreeMap<EntityId, Record<'_>> {
         }
         for transfer in &lifted.transfers {
             map.insert(transfer.id, Record::LiftedTransfer(transfer));
+        }
+        for payload in &lifted.payloads {
+            map.insert(payload.id, Record::LiftedPayload(payload));
+        }
+        for revert in &lifted.reverts {
+            map.insert(revert.id, Record::LiftedRevert(revert));
+        }
+        for construction in &lifted.constructions {
+            map.insert(construction.id, Record::LiftedConstruction(construction));
         }
         for control in &lifted.controls {
             map.insert(control.id, Record::LiftedControl(control));
@@ -428,20 +445,20 @@ fn node_records<'a>(node: &'a StructuredNode, map: &mut BTreeMap<EntityId, Recor
 }
 #[doc(hidden)]
 pub fn diff_ir(old: &Ir, new: &Ir) -> StageDiff {
-    // Shared facts have no duplicate record identity. Attribute rank changes to
+    // Shared facts have no duplicate record identity. Attribute fact changes to
     // their existing high block entity so stage diffs still expose metadata
     // changes without inventing a second occurrence for the source block.
     let old_facts: BTreeMap<_, _> = old
         .lifted
         .iter()
         .flat_map(|p| &p.failures)
-        .map(|f| (f.block, f.rank))
+        .map(|f| (f.block, (f.rank, f.payload)))
         .collect();
     let new_facts: BTreeMap<_, _> = new
         .lifted
         .iter()
         .flat_map(|p| &p.failures)
-        .map(|f| (f.block, f.rank))
+        .map(|f| (f.block, (f.rank, f.payload)))
         .collect();
     let fact_changes: BTreeSet<_> = new
         .lifted
