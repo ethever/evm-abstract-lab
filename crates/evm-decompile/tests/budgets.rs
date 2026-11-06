@@ -27,16 +27,23 @@ fn legacy_config() -> Config {
 }
 
 #[test]
-fn explicit_legacy_configuration_preserves_its_pre_widening_artifact_identity() {
+fn explicit_legacy_configuration_changes_identity_only_with_declared_schema() {
     let config = legacy_config();
     let artifact = decompile(&Input::new(vec![0], Fork::Osaka), &config);
     assert_eq!(artifact.completion, Completion::Complete);
     assert_eq!(artifact.config, config);
-    // Frozen from base 2bc96535, schema 2, Osaka STOP and all ten explicit
-    // former defaults. Changing implicit defaults must not rekey this request.
+    // Preserve the frozen schema-2 key from base 2bc96535. The same explicit
+    // request gets a new key solely because current producers declare schema 3.
+    let mut schema_two = b"osaka\0\0".to_vec();
+    schema_two.extend_from_slice(format!("schema=2;config={config:?}").as_bytes());
+    assert_eq!(
+        format!("{:x}", alloy_primitives::keccak256(schema_two)),
+        "3c2f30491ba389dd359ad41295e2c42732a631ed7c827b94272b443d4427e3b8"
+    );
+    assert_eq!(artifact.schema_version, 3);
     assert_eq!(
         artifact.id.0,
-        "3c2f30491ba389dd359ad41295e2c42732a631ed7c827b94272b443d4427e3b8"
+        "1cbc4f5e0e58c2624819ab4a8a6bd995420398b147f8bbade434acfb4b5e5dfd"
     );
 }
 

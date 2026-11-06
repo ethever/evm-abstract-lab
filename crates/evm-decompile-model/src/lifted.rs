@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 mod codec;
 mod evaluate;
 mod render;
+mod sources;
 mod validate;
 pub use render::{LiftedRenderError, LiftedRenderIndex};
 
@@ -204,6 +205,78 @@ pub struct LiftedTransfer {
 }
 }
 strict_record! {
+/// A shared, well-founded empty-failure fact over a source block.
+/// This is metadata on the existing witness, not a new artifact entity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiftedFailure {
+    /// Source block in the unchanged primitive witness.
+    pub block: EntityId,
+    /// Zero for empty REVERT; otherwise one plus the largest successor rank.
+    pub rank: u32,
+}
+}
+/// Mechanically certified failure payload semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiftedGuardPayload {
+    /// REVERT whose size is exactly zero, independent of its offset.
+    EmptyRevert,
+}
+strict_record! {
+/// Occurrence-local following failure suffix, never a global node deletion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiftedGuardContinuation {
+    /// Exact containing source Sequence.
+    pub sequence: EntityId,
+    /// Inclusive child position immediately after the source If.
+    pub start: usize,
+    /// Exclusive end of that Sequence.
+    pub end: usize,
+    /// Conservative normal fallthrough of the raw successful fragment. False
+    /// certifies a local structured cut; unknown escapes conservatively use true.
+    pub pass_falls_through: bool,
+}
+}
+strict_record! {
+/// Certified formatting overlay attached to an existing source If occurrence.
+/// The successful arm retains its original simultaneous edge assignments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiftedGuard {
+    /// Source conditional block.
+    pub block: EntityId,
+    /// Whether nonzero source truth is the successful route.
+    pub pass_nonzero: bool,
+    /// Successful raw edge, evaluated only after require.
+    pub pass_edge: EntityId,
+    /// Failed raw edge into the shared failure proof.
+    pub failure_edge: EntityId,
+    /// Exact raw successful If arm root to render after require.
+    pub pass_node: EntityId,
+    /// Exact raw failed If arm root, retained for inspection.
+    pub failure_node: EntityId,
+    /// Proven failure payload category.
+    pub payload: LiftedGuardPayload,
+    /// Plan for an immediate following Sequence suffix. An inherited ancestor
+    /// suffix has no omission plan and remains visible for all other arms.
+    pub continuation: Option<LiftedGuardContinuation>,
+}
+}
+impl LiftedGuard {
+    /// Direct witness occurrences. Following edges/nodes reaches the shared
+    /// failure route without copying all transitive failure ancestry per guard.
+    pub fn source_references(&self) -> impl Iterator<Item = EntityId> + '_ {
+        [
+            self.block,
+            self.pass_edge,
+            self.failure_edge,
+            self.pass_node,
+            self.failure_node,
+        ]
+        .into_iter()
+        .chain(self.continuation.as_ref().map(|c| c.sequence))
+    }
+}
+strict_record! {
 /// Predicate binding for a source structured If or conditional While.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiftedControl {
@@ -213,6 +286,9 @@ pub struct LiftedControl {
     pub node: EntityId,
     /// Typed truth expression, evaluated in its source block scope.
     pub condition: EntityId,
+    /// Optional certified guard using this same semantic and source identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard: Option<LiftedGuard> = None,
 }
 }
 /// Immutable high-level projection, certified against its source primitive IR.
@@ -226,6 +302,9 @@ pub struct LiftedProgram {
     pub transfers: Vec<LiftedTransfer>,
     /// Typed conditions attached to reused structured control topology.
     pub controls: Vec<LiftedControl>,
+    /// Shared ranked failure facts; no per-guard transitive closure copies.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<LiftedFailure>,
 }
 /// A typed evaluation result; callers cannot confuse word 2 with truth true.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +325,10 @@ pub enum LiftedModelError {
     Operand(EntityId),
     /// A result/operand sort or pure opcode arity is invalid.
     Type(EntityId),
+    /// Malformed guard overlay or shared failure metadata.
+    Guard(EntityId),
+    /// A guard target or suffix does not match its owned source occurrence.
+    GuardSource(EntityId),
 }
 impl std::fmt::Display for LiftedModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -255,6 +338,23 @@ impl std::fmt::Display for LiftedModelError {
 impl std::error::Error for LiftedModelError {}
 
 impl LiftedProgram {
+    /// Whether the artifact uses schema-3 guard semantics or their proof table.
+    pub fn has_guards(&self) -> bool {
+        !self.failures.is_empty() || self.controls.iter().any(|c| c.guard.is_some())
+    }
+    /// Transport/history record units, including metadata without new identities.
+    pub fn record_count(&self) -> usize {
+        self.entity_ids()
+            .count()
+            .saturating_add(self.failures.len())
+            .saturating_add(
+                self.controls
+                    .iter()
+                    .filter_map(|c| c.guard.as_ref())
+                    .map(|g| 1 + usize::from(g.continuation.is_some()))
+                    .sum::<usize>(),
+            )
+    }
     /// Lookup convenience; callers rendering many rows can build their own index.
     pub fn expression(&self, id: EntityId) -> Option<&LiftedExpression> {
         self.expressions.iter().find(|e| e.id == id)

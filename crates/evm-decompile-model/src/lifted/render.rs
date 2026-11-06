@@ -1,9 +1,10 @@
 //! Shared semantic formatting for lightweight consumers and CLI export.
 use super::{
-    LiftedBlock, LiftedControl, LiftedExpression, LiftedExpressionKind, LiftedProgram,
-    LiftedRelation, LiftedStatement, LiftedTransfer, MAX_LIFTED_EXPRESSION_TEXT,
+    LiftedBlock, LiftedControl, LiftedExpression, LiftedExpressionKind, LiftedFailure, LiftedGuard,
+    LiftedProgram, LiftedRelation, LiftedStatement, LiftedTransfer, MAX_LIFTED_EXPRESSION_TEXT,
 };
-use crate::{EntityId, Ir};
+use super::{LiftedModelError, sources::GuardSources};
+use crate::{EntityId, Ir, StructuredNode};
 use std::collections::BTreeMap;
 
 mod primitive;
@@ -18,6 +19,10 @@ pub struct LiftedRenderIndex<'a> {
     blocks: BTreeMap<EntityId, &'a LiftedBlock>,
     transfers: BTreeMap<EntityId, &'a LiftedTransfer>,
     controls: BTreeMap<EntityId, &'a LiftedControl>,
+    nodes: BTreeMap<EntityId, &'a StructuredNode>,
+    failures: BTreeMap<EntityId, &'a LiftedFailure>,
+    omissions: BTreeMap<(EntityId, usize), usize>,
+    guard_source_error: Option<LiftedRenderError>,
 }
 /// Bounded expression export failure, independent of artifact recovery coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +33,8 @@ pub enum LiftedRenderError {
     MissingExpression(EntityId),
     /// A source primitive or edge binding is absent.
     MissingWitness(EntityId),
+    /// Guard metadata would escape its owned source arm or forge a suffix cut.
+    InvalidGuardSource(EntityId),
 }
 impl std::fmt::Display for LiftedRenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -38,24 +45,57 @@ impl std::error::Error for LiftedRenderError {}
 
 impl<'a> LiftedRenderIndex<'a> {
     fn new(program: &'a LiftedProgram, ir: Option<&'a Ir>) -> Self {
+        let expressions = program.expressions.iter().map(|e| (e.id, e)).collect();
+        let edges = ir
+            .into_iter()
+            .flat_map(|ir| &ir.edges)
+            .map(|e| (e.id, e))
+            .collect();
+        let blocks = program.blocks.iter().map(|b| (b.block, b)).collect();
+        let sources = ir.map(|ir| GuardSources::new(program, ir, &expressions, &blocks, &edges));
+        let (nodes, omissions, guard_source_error) = match sources {
+            Some(sources) => (
+                sources.nodes,
+                sources.omissions,
+                sources.error.map(|error| match error {
+                    LiftedModelError::GuardSource(id) => LiftedRenderError::InvalidGuardSource(id),
+                    _ => LiftedRenderError::Limit,
+                }),
+            ),
+            None => (
+                BTreeMap::new(),
+                BTreeMap::new(),
+                program
+                    .controls
+                    .iter()
+                    .find(|c| c.guard.is_some())
+                    .map(|c| LiftedRenderError::MissingWitness(c.node)),
+            ),
+        };
         Self {
-            expressions: program.expressions.iter().map(|e| (e.id, e)).collect(),
+            expressions,
             operations: ir
                 .into_iter()
                 .flat_map(|ir| &ir.blocks)
                 .flat_map(|b| &b.operations)
                 .map(|o| (o.id, o))
                 .collect(),
-            edges: ir
-                .into_iter()
-                .flat_map(|ir| &ir.edges)
-                .map(|e| (e.id, e))
-                .collect(),
-            blocks: program.blocks.iter().map(|b| (b.block, b)).collect(),
+            edges,
+            blocks,
             transfers: program.transfers.iter().map(|t| (t.edge, t)).collect(),
             controls: program.controls.iter().map(|c| (c.node, c)).collect(),
+            nodes,
+            failures: program.failures.iter().map(|f| (f.block, f)).collect(),
+            omissions,
+            guard_source_error,
         }
     }
+    /// Structural guard admission for this index, independent of stored Passed
+    /// status or core's semantic failure proof. Invalid overlays are quarantined.
+    pub fn validate_guard_sources(&self) -> Result<(), LiftedRenderError> {
+        self.guard_source_error.map_or(Ok(()), Err)
+    }
+
     /// Semantic body for a source block without scanning the block arena.
     pub fn block(&self, source: EntityId) -> Option<&'a LiftedBlock> {
         self.blocks.get(&source).copied()
@@ -66,7 +106,52 @@ impl<'a> LiftedRenderIndex<'a> {
     }
     /// Semantic predicate binding for a source AST node.
     pub fn control(&self, source: EntityId) -> Option<&'a LiftedControl> {
-        self.controls.get(&source).copied()
+        self.controls
+            .get(&source)
+            .copied()
+            .filter(|c| c.guard.is_none() || self.guard_source_error.is_none())
+    }
+    /// Certified guard at this exact source If occurrence.
+    pub fn guard(&self, source: EntityId) -> Option<&'a LiftedGuard> {
+        self.control(source)?.guard.as_ref()
+    }
+    /// Raw source occurrence retained for executing the certified successful arm.
+    pub fn node(&self, source: EntityId) -> Option<&'a StructuredNode> {
+        self.nodes.get(&source).copied()
+    }
+    /// Shared failure proof fact without rescanning all facts.
+    pub fn failure(&self, source: EntityId) -> Option<&'a LiftedFailure> {
+        self.failures.get(&source).copied()
+    }
+    /// Exclusive end of a certified, unreachable following failure suffix.
+    pub fn sequence_end(&self, sequence: EntityId, position: usize) -> Option<usize> {
+        self.omissions.get(&(sequence, position)).copied()
+    }
+    /// Compact guard statement; pass transfers remain in the raw pass arm.
+    pub fn render_guard(
+        &self,
+        control: &LiftedControl,
+        mut reserve: impl FnMut(usize) -> bool,
+    ) -> Result<Option<String>, LiftedRenderError> {
+        let Some(guard) = &control.guard else {
+            return Ok(None);
+        };
+        self.validate_guard_sources()?;
+        if self.controls.get(&control.node).copied() != Some(control) {
+            return Err(LiftedRenderError::InvalidGuardSource(control.node));
+        }
+        let condition = self.render_expression(control.condition, &mut reserve)?;
+        let mut out = String::new();
+        append(&mut out, "require(", &mut reserve)?;
+        if !guard.pass_nonzero {
+            append(&mut out, "!(", &mut reserve)?;
+        }
+        append(&mut out, &condition, &mut reserve)?;
+        if !guard.pass_nonzero {
+            append(&mut out, ")", &mut reserve)?;
+        }
+        append(&mut out, ");", &mut reserve)?;
+        Ok(Some(out))
     }
 
     /// Render a typed expression with bounded, iterative DAG expansion.

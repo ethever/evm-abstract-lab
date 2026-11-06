@@ -16,6 +16,8 @@ use std::{
 };
 
 mod annotations;
+mod guard_sources;
+mod guards;
 mod named_operands;
 
 // A calldata branch joins a live word after MSTORE/MLOAD/SSTORE/SLOAD. The

@@ -1,7 +1,7 @@
 //! Object-only enum payloads and bounded flat arena admission.
 use super::{
-    LiftedBlock, LiftedControl, LiftedExpression, LiftedExpressionKind, LiftedProgram,
-    LiftedRelation, LiftedTransfer, MAX_LIFTED_RECORDS,
+    LiftedBlock, LiftedControl, LiftedExpression, LiftedExpressionKind, LiftedFailure,
+    LiftedProgram, LiftedRelation, LiftedTransfer, MAX_LIFTED_RECORDS,
 };
 use crate::{EntityId, U256};
 use serde::de::{SeqAccess, Visitor};
@@ -45,6 +45,11 @@ impl<'de> Deserialize<'de> for LiftedExpressionKind {
 }
 #[derive(Serialize)]
 pub struct Bounded<T>(Vec<T>);
+impl<T> Default for Bounded<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Bounded<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Items<T>(std::marker::PhantomData<T>);
@@ -70,6 +75,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Bounded<T> {
 strict_record! { pub struct ProgramWire {
     pub expressions: Bounded<LiftedExpression>, pub blocks: Bounded<LiftedBlock>,
     pub transfers: Bounded<LiftedTransfer>, pub controls: Bounded<LiftedControl>,
+    pub failures: Bounded<LiftedFailure> = Bounded::default(),
 } }
 impl<'de> Deserialize<'de> for LiftedProgram {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -79,6 +85,7 @@ impl<'de> Deserialize<'de> for LiftedProgram {
             blocks: wire.blocks.0,
             transfers: wire.transfers.0,
             controls: wire.controls.0,
+            failures: wire.failures.0,
         };
         program.validate().map_err(serde::de::Error::custom)?;
         Ok(program)

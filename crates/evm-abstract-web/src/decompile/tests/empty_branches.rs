@@ -145,7 +145,7 @@ fn without_dependencies(stage: &Stage, lines: Vec<Row>) -> Vec<Row> {
 }
 
 #[test]
-fn real_revert_guard_omits_only_hidden_token_else_and_preserves_continuation() {
+fn real_revert_guard_replaces_conditional_and_preserves_pass_continuation() {
     let artifact = artifact(REVERT_GUARD);
     let original = artifact.clone();
     let stage = artifact.current().unwrap();
@@ -166,57 +166,37 @@ fn real_revert_guard_omits_only_hidden_token_else_and_preserves_continuation() {
     let raw = rows(structured::lines(stage));
     let debug = high(stage, true);
     let normal = high(stage, false);
-    let predicate = format!("if ({}) {{", program.render_expression(control.condition));
+    let guard = control
+        .guard
+        .as_ref()
+        .expect("actual empty-REVERT certificate");
+    let predicate = program
+        .render_index(&stage.ir)
+        .render_guard(control, |_| true)
+        .unwrap()
+        .unwrap();
     let control_rows: Vec<_> = normal.iter().filter(|line| line.0 == control.id).collect();
     assert_eq!(
         control_rows,
-        [&(control.id, 0, predicate), &(control.id, 0, "}".into())],
-        "keep the original predicate and its enclosing If"
+        [&(control.id, 0, predicate)],
+        "the shared formatter owns polarity and the existing control owns the row"
     );
-    let debug_else = debug.iter().position(|line| line.2 == "} else {").unwrap();
-    assert_eq!(debug[debug_else].0, control.id);
-    assert_eq!(debug[debug_else].1, 0);
-    assert_eq!(debug[debug_else + 1].0, transfer.id);
-    assert_eq!(debug[debug_else + 1].1, 1);
-    assert_eq!(debug[debug_else + 2].0, transfer.id);
-    assert_eq!(debug[debug_else + 2].1, 1);
-    assert_eq!(debug[debug_else + 3], (control.id, 0, "}".into()));
-    let mut expected = without_dependencies(stage, debug.clone());
-    expected.retain(|line| !(line.0 == control.id && line.2 == "} else {"));
-    assert_eq!(normal, expected);
-
-    let revert_block = stage
-        .ir
-        .blocks
-        .iter()
-        .find(|block| {
-            matches!(
-                block.terminator,
-                Terminator::Exit {
-                    kind: ExitKind::Revert,
-                    ..
-                }
-            )
-        })
-        .unwrap();
-    let revert_owner = program.block(revert_block.id).unwrap().id;
-    let revert = normal
-        .iter()
-        .position(|line| {
-            *line
-                == (
-                    revert_owner,
-                    1,
-                    "evm.revert(offset = 0x0, size = 0x0);".into(),
-                )
-        })
-        .unwrap();
+    let guard_position = debug.iter().position(|line| line.0 == control.id).unwrap();
+    assert_eq!(debug[guard_position + 1].0, transfer.id);
+    assert_eq!(debug[guard_position + 1].1, 0);
+    assert_eq!(debug[guard_position + 2].0, transfer.id);
+    assert_eq!(debug[guard_position + 2].1, 0);
+    let failure_transfer = program.transfer(guard.failure_edge).unwrap().id;
+    assert!(!debug.iter().any(|line| line.0 == failure_transfer));
+    assert!(!debug.iter().any(|line| line.2 == "} else {"));
+    assert_eq!(normal, without_dependencies(stage, debug.clone()));
     assert_eq!(
         normal
             .iter()
             .filter(|line| line.2.contains("evm.revert("))
             .count(),
-        1
+        0,
+        "the certified failure is represented by require, independent of metadata options"
     );
     let store = program
         .blocks
@@ -233,10 +213,9 @@ fn real_revert_guard_omits_only_hidden_token_else_and_preserves_continuation() {
     let store_position = normal.iter().position(|line| line.0 == store.id).unwrap();
     assert_eq!(
         normal[store_position].1, 0,
-        "continuation stays outside the If"
+        "pass continuation stays at the guard's indentation"
     );
-    assert!(revert < store_position);
-    assert!(normal[revert + 1..store_position].contains(&(control.id, 0, "}".into())));
+    assert!(normal.iter().position(|line| line.0 == control.id).unwrap() < store_position);
     assert!(
         normal[store_position]
             .2
@@ -249,6 +228,12 @@ fn real_revert_guard_omits_only_hidden_token_else_and_preserves_continuation() {
     );
 
     let raw_else = raw.iter().position(|line| line.2 == "} else {").unwrap();
+    assert_eq!(
+        raw.iter()
+            .filter(|line| line.2.contains("evm.revert("))
+            .count(),
+        1
+    );
     let edge = stage.ir.edge(edge).unwrap();
     let target = stage.ir.block(edge.to).unwrap();
     assert_eq!(
@@ -397,6 +382,7 @@ fn renderer_stage(otherwise: StructuredNode) -> Stage {
                     id: EntityId(103),
                     node: EntityId(10),
                     condition: EntityId(102),
+                    guard: None,
                 }],
                 ..LiftedProgram::default()
             }),
@@ -498,6 +484,7 @@ fn an_inner_if_remains_substantive_after_its_own_empty_else_is_omitted() {
             id: EntityId(106),
             node: EntityId(20),
             condition: EntityId(102),
+            guard: None,
         });
     for dependencies in [false, true] {
         assert_eq!(

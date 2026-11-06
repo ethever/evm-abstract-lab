@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod aliases;
 mod availability;
+mod guards;
 mod liveness;
 mod simplify;
 mod validate;
@@ -53,7 +54,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
     if !owner.pay(projection_work.saturating_mul(2)) {
         return;
     }
-    if projection.program.entity_ids().count() > crate::MAX_LIFTED_RECORDS {
+    if projection.program.record_count() > crate::MAX_LIFTED_RECORDS {
         owner.stop(
             Completion::Limited,
             DiagnosticCode::Limit,
@@ -74,7 +75,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
         .collect();
     ir.lifted = Some(projection.program);
     owner.commit(StageKind::Lifted, ir,
-        ("lift_semantic_expressions", "typed scoped EVM expressions, available identity copies and live logical transfers certified against unchanged primitive witness"),
+        ("lift_semantic_expressions", "typed scoped EVM expressions, live simultaneous transfers and occurrence-local empty-REVERT guards certified against unchanged primitive witness"),
         parents, Vec::new(), Vec::new());
 }
 
@@ -315,12 +316,28 @@ fn project(ir: &Ir, mut pay: impl FnMut(usize) -> bool) -> Option<Projection<'_>
                     id,
                     node: n.id,
                     condition,
+                    guard: None,
                 });
             }
             children(n, &mut pending);
         }
     }
     p.prune()?;
+    // Guard metadata is established only after every high body/control and the
+    // joint semantic liveness result are available. Predicates, transfers and
+    // absorbed REVERT statements remain witnesses and liveness roots.
+    guards::discover(ir, &mut p.result.program, &mut p.pay)?;
+    for control in &p.result.program.controls {
+        if let Some(guard) = &control.guard {
+            if !(p.pay)(8) {
+                return None;
+            }
+            p.result
+                .parents
+                .get_mut(&control.id)?
+                .extend(guard.source_references());
+        }
+    }
     if !p
         .result
         .proof

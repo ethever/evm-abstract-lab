@@ -90,9 +90,17 @@ fn all_option_combinations_keep_exact_semantic_rows_effect_order_and_empty_else_
             if bytecode == "5f35600a57602a5f55005b5f5ffd" {
                 assert_eq!(
                     clean.iter().filter(|line| line.text == "} else {").count(),
-                    usize::from(dependencies),
-                    "only state-token visibility can make this else substantive"
+                    0,
+                    "a certified guard stays flattened under every metadata option"
                 );
+                assert_eq!(
+                    clean
+                        .iter()
+                        .filter(|line| line.text.starts_with("require("))
+                        .count(),
+                    1
+                );
+                assert!(!clean.iter().any(|line| line.text.contains("revert(")));
             }
         }
         assert_eq!(rows(&structured::lines(stage)), raw);

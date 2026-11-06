@@ -18,6 +18,11 @@ pub(crate) fn certify(ir: &Ir, cancel: &Cancellation) -> ValidationCheck {
     if let Err(error) = program.validate() {
         return fail(error.to_string());
     }
+    if super::guards::verify(ir, program, &mut |_| !cancel.is_cancelled()) != Some(true) {
+        return fail(
+            "empty-REVERT rank, source route or fallthrough certificate failed".to_owned(),
+        );
+    }
     // Rebuild the scoped normal form from primitive definitions. Only arena IDs
     // are alpha-renamed; source references, operand order and every semantic
     // record remain in the comparison. This checks reconstruction of the same
@@ -51,7 +56,7 @@ pub(crate) fn certify(ir: &Ir, cancel: &Cancellation) -> ValidationCheck {
     remap_program(&mut canonical, &ids);
     let passed = canonical == expected.program && !cancel.is_cancelled();
     ValidationCheck { name: "lifted_semantic_projection".to_owned(), passed,
-        message: if passed { "checked typed scoped normal forms, anchored identity-copy equations, strict raw entry availability, retained primitive bindings and simultaneous live transfers against raw witness" } else { "semantic projection differs from the certified normal form of its primitive witness" }.to_owned() }
+        message: if passed { "checked typed scoped normal forms, anchored identity-copy equations, strict raw entry availability, retained primitive bindings, simultaneous live transfers and independent empty-REVERT rank/source/fallthrough certificates against raw witness" } else { "semantic projection differs from the certified normal form of its primitive witness" }.to_owned() }
 }
 
 /// Publication has no independent wire proof record: validate these direct
@@ -90,6 +95,17 @@ pub(super) fn source_correspondences(
                     || !parents.contains(argument)
                     || !parents.contains(&projection.proof.canonical(*parameter)))
             {
+                return Some(false);
+            }
+        }
+    }
+    for control in &projection.program.controls {
+        if let Some(guard) = &control.guard {
+            if !pay(8) {
+                return None;
+            }
+            let parents = projection.parents.get(&control.id)?;
+            if !guard.source_references().all(|id| parents.contains(&id)) {
                 return Some(false);
             }
         }

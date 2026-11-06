@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 impl LiftedProgram {
     /// Bounded acyclic/type admission. Witness correspondence is checked by core.
     pub fn validate(&self) -> Result<(), LiftedModelError> {
-        if self.entity_ids().count() > MAX_LIFTED_RECORDS {
+        if self.record_count() > MAX_LIFTED_RECORDS {
             return Err(LiftedModelError::RecordLimit);
         }
         let mut ids = BTreeSet::new();
@@ -94,6 +94,47 @@ impl LiftedProgram {
         for c in &self.controls {
             if !predicate(&c.condition) {
                 return Err(LiftedModelError::Type(c.id));
+            }
+        }
+        let blocks: BTreeSet<_> = self.blocks.iter().map(|b| b.block).collect();
+        let edges: BTreeSet<_> = self.transfers.iter().map(|t| t.edge).collect();
+        let mut failures = BTreeSet::new();
+        for f in &self.failures {
+            if f.block.0 == 0
+                || !blocks.contains(&f.block)
+                || !failures.insert(f.block)
+                || f.rank as usize >= blocks.len()
+            {
+                return Err(LiftedModelError::Guard(f.block));
+            }
+        }
+        let mut controls = BTreeSet::new();
+        let mut omissions = BTreeSet::new();
+        for c in &self.controls {
+            if !controls.insert(c.node) {
+                return Err(LiftedModelError::Guard(c.node));
+            }
+            if let Some(g) = &c.guard
+                && (c.node.0 == 0
+                    || g.source_references().any(|id| id.0 == 0)
+                    || !blocks.contains(&g.block)
+                    || g.pass_node.0 == 0
+                    || g.failure_node.0 == 0
+                    || g.pass_node == g.failure_node
+                    || g.pass_node == c.node
+                    || g.failure_node == c.node
+                    || g.pass_edge == g.failure_edge
+                    || !edges.contains(&g.pass_edge)
+                    || !edges.contains(&g.failure_edge)
+                    || g.continuation.as_ref().is_some_and(|s| {
+                        s.sequence.0 == 0
+                            || s.start == 0
+                            || s.start >= s.end
+                            || s.end > crate::MAX_STRUCTURED_WIRE_NODES
+                            || !omissions.insert((s.sequence, s.start))
+                    }))
+            {
+                return Err(LiftedModelError::Guard(c.node));
             }
         }
         Ok(())

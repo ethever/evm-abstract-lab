@@ -165,7 +165,17 @@ fn render(
                 );
             }
             summary = RenderSummary::default();
-            for (position, child) in nodes.iter().enumerate() {
+            let mut position = 0;
+            while let Some(child) = nodes.get(position) {
+                if let Some(end) = scope
+                    .lifted
+                    .and_then(|renderer| renderer.sequence_end(node.id, position))
+                {
+                    // Omission is occurrence-local and certified by the model;
+                    // display preferences never change the executed plan.
+                    position = end;
+                    continue;
+                }
                 let following = nodes
                     .get(position + 1)
                     .map(|next| index.first_block(ir, next))
@@ -179,6 +189,7 @@ fn render(
                     output,
                 )
                 .has_content;
+                position += 1;
             }
         }
         StructuredKind::Block { block } => {
@@ -194,6 +205,26 @@ fn render(
             then_branch,
             else_branch,
         } => {
+            if let Some(renderer) = scope.lifted
+                && let Some(guard) = renderer.guard(node.id)
+                && let Some(control) = renderer.control(node.id)
+            {
+                let text = super::lifted::guard(renderer, control);
+                emit(output, control.id, indent, text);
+                if let Some(pass) = renderer.node(guard.pass_node) {
+                    // The selected arm owns its original Transfer, including
+                    // simultaneous word bindings after the successful guard.
+                    render(pass, ir, index, scope, indent, output);
+                } else {
+                    emit(
+                        output,
+                        control.id,
+                        indent,
+                        format!("unavailable_guard_pass(ast{});", guard.pass_node.0),
+                    );
+                }
+                return RenderSummary::CONTENT;
+            }
             let (owner, predicate) = predicate(node.id, *condition, ir, index, scope.lifted);
             emit(output, owner, indent, format!("if ({predicate}) {{"));
             render(then_branch, ir, index, scope, indent + 1, output);

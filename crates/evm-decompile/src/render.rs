@@ -19,7 +19,7 @@ pub enum TextExportStatus {
     Complete,
     /// The owner cancelled before export completed.
     Cancelled,
-    /// The export work allowance refused further output.
+    /// Resource bounds or invalid source metadata prevented complete export.
     Limited,
 }
 /// Typed text export result; consumers need not interpret interruption comments.
@@ -122,6 +122,18 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
     index.edges = stage.ir.edges.iter().map(|e| (e.id, e)).collect();
     index.lifted = stage.ir.lifted.as_ref();
     index.lifted_renderer = stage.ir.lifted.as_ref().map(|p| p.render_index(&stage.ir));
+    if let Some(error) = index
+        .lifted_renderer
+        .as_ref()
+        .and_then(|renderer| renderer.validate_guard_sources().err())
+    {
+        let _ = writeln!(out, "// invalid lifted guard source topology: {error}");
+        return TextExport {
+            text: out,
+            status: TextExportStatus::Limited,
+            work: count(index.budget.used()),
+        };
+    }
     if let Some(s) = &stage.ir.structured {
         syntax(&mut out, &s.root, &mut index, 0);
     } else {
@@ -260,6 +272,10 @@ impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
     fn high_expression(&mut self, id: EntityId) -> String {
         self.semantic(|renderer, owner| renderer.render_expression(id, |work| owner.pay(work)))
             .unwrap_or_else(|| format!("expression_limit(e{})", id.0))
+    }
+    fn high_guard(&mut self, control: &LiftedControl) -> Option<String> {
+        self.semantic(|renderer, owner| renderer.render_guard(control, |work| owner.pay(work)))
+            .flatten()
     }
     fn high_statement(&mut self, statement: &LiftedStatement) -> Option<String> {
         self.semantic(|renderer, owner| {
@@ -491,7 +507,20 @@ fn syntax(
     match &n.kind {
         StructuredKind::Sequence(v) => {
             let outer_next = ir.next_block;
-            for (position, n) in v.iter().enumerate() {
+            let sequence = n.id;
+            let mut position = 0;
+            while let Some(n) = v.get(position) {
+                if let Some(end) = ir
+                    .lifted_renderer
+                    .as_ref()
+                    .and_then(|renderer| renderer.sequence_end(sequence, position))
+                {
+                    if !ir.pay(1) {
+                        break;
+                    }
+                    position = end;
+                    continue;
+                }
                 ir.next_block = v
                     .get(position + 1)
                     .map(|next| ir.first_block(next))
@@ -500,6 +529,7 @@ fn syntax(
                 if ir.stopped {
                     break;
                 }
+                position += 1;
             }
             ir.next_block = outer_next;
         }
@@ -514,6 +544,28 @@ fn syntax(
             then_branch,
             else_branch,
         } => {
+            if let Some(control) = ir.lifted_control(n.id)
+                && let Some(guard) = &control.guard
+            {
+                let Some(text) = ir.high_guard(control) else {
+                    return;
+                };
+                indent(out, depth);
+                let _ = writeln!(out, "{text}");
+                let pass = ir
+                    .lifted_renderer
+                    .as_ref()
+                    .and_then(|renderer| renderer.node(guard.pass_node));
+                if let Some(pass) = pass {
+                    syntax(out, pass, ir, depth);
+                } else {
+                    // A missing certified witness is an interrupted export,
+                    // never a successful rendering of only the require row.
+                    ir.stopped = true;
+                    ir.status = TextExportStatus::Limited;
+                }
+                return;
+            }
             indent(out, depth);
             let condition = ir
                 .lifted_control(n.id)

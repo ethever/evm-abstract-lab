@@ -14,7 +14,9 @@ from web_test_harness import (click_control, rendered_frame, set_control,
 MEMORY = "5f356080526080515f5500"
 LIVE_PHI = "5f35600a576001600d565b60025b6003015f5500"
 EMPTY_TRANSFER = "60096007600b5600005b005b5056"
-REVERT_GUARD = "5f35600a57602a5f55005b3d5ffd"
+REVERT_GUARD = "5f35600a57602a5f55005b5f5ffd"
+# The retained RETURNDATASIZE observation excludes this otherwise similar arm.
+ORDINARY_EMPTY_ELSE = "5f35600a57602a5f55005b3d5ffd"
 TOGGLE = "Show state dependencies"
 STRUCTURE = "Show structure annotations"
 ALIASES = re.compile(r"(?m)^\s*[mq]\d+\s*=")
@@ -192,10 +194,11 @@ def run(context):
                     "reading_lines": len(reading.splitlines()),
                     "detailed_lines": len(detailed.splitlines())})
 
-    # A terminal true arm leaves only its false-edge tokens in the else arm.
+    # An ordinary terminal true arm leaves only false-edge tokens in the else.
+    # RETURNDATASIZE remains observable here, so this is not an empty guard.
     # Hiding those tokens must also omit the empty syntax, while retaining the
     # actual revert and the following storage write outside the conditional.
-    artifact, _ = submit(context, page, canvas, REVERT_GUARD, "dependencies-empty-else")
+    artifact, _ = submit(context, page, canvas, ORDINARY_EMPTY_ELSE, "dependencies-empty-else")
     current = stage(artifact, "lifted")
     admitted = len(posts)
     result_url = publication_urls[-1]
@@ -243,6 +246,61 @@ def run(context):
     assert retained.ok and retained.json()["result"]["Ok"]["artifact"] == artifact
     assert len(posts) == admitted, posts
     results.append({"artifact": artifact["id"], "omitted_else_edge": edge,
+                    "reading_lines": len(reading.splitlines()),
+                    "detailed_lines": len(detailed.splitlines())})
+
+    # A proved empty failure becomes require. Metadata restores only the pass
+    # transfer, after the require, and never executes failed-path tokens.
+    artifact, _ = submit(context, page, canvas, REVERT_GUARD, "dependencies-require")
+    current = stage(artifact, "lifted")
+    admitted = len(posts)
+    result_url = publication_urls[-1]
+    high(page, canvas)
+    control = next(item for item in current["ir"]["lifted"]["controls"] if item.get("guard"))
+    guard = control["guard"]
+    assert not guard["pass_nonzero"] and guard["continuation"] is None, guard
+    reading = painted_copy(page, canvas)
+    clean(reading)
+    assert reading.count("require(!(") == 1 and "if (" not in reading, reading
+    assert "revert(" not in reading and "} else {" not in reading, reading
+    rows = reading.splitlines()
+    require = next(i for i, text in enumerate(rows) if text.startswith("require("))
+    store = next(i for i, text in enumerate(rows) if text.startswith("sstore("))
+    assert require < store and rows[store] == "sstore(slot = 0x0, value = 0x2a);", reading
+    assert rows[-1] == "evm.stop();", reading
+    predicate = rows[require]
+    failure = next(item for item in current["ir"]["lifted"]["transfers"]
+                   if item["edge"] == guard["failure_edge"])
+    for dependencies in [True, False]:
+        set_control(page, canvas, TOGGLE, dependencies)
+        text = painted_copy(page, canvas)
+        assert text.splitlines().count(predicate) == 1, text
+        assert "if (" not in text and "revert(" not in text and "} else {" not in text, text
+        assert "token on e" + guard["failure_edge"] not in text, text
+        if dependencies:
+            detailed = text
+            tokens = [i for i, line in enumerate(text.splitlines())
+                      if "token on e" + guard["pass_edge"] in line]
+            assert len(tokens) == 2 and all(i > text.splitlines().index(predicate) for i in tokens), text
+        source_descendant(page, canvas, artifact, current["id"], failure["id"])
+        ui_control(page, "IR", role="tab", selected=True)
+        selected_row(page, "decompile-ir", "Live transfer h" + failure["id"])
+        high(page, canvas)
+        assert painted_copy(page, canvas) == text
+    assert painted_copy(page, canvas) == reading
+    click_control(page, canvas, "Structured code", role="tab")
+    raw = copy_code(page, canvas)
+    assert "if (" in raw and "} else {" in raw and "evm.revert(" in raw, raw
+    for edge in [guard["pass_edge"], guard["failure_edge"]]:
+        assert "memory token on e" + edge in raw and "effect token on e" + edge in raw, raw
+    high(page, canvas)
+    assert painted_copy(page, canvas) == reading
+    retained = page.request.get(result_url)
+    assert retained.ok and retained.json()["result"]["Ok"]["artifact"] == artifact
+    assert len(posts) == admitted, posts
+    canvas.screenshot(path=str(context.output / "dependencies-require-metadata-invariant.png"))
+    results.append({"artifact": artifact["id"], "guard": control["id"],
+                    "hidden_failure_transfer": failure["id"],
                     "reading_lines": len(reading.splitlines()),
                     "detailed_lines": len(detailed.splitlines())})
 
