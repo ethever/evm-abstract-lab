@@ -81,7 +81,7 @@ fn runtime(coefficient: u8, step: u8, guard: bool, mutation: Mutation) -> String
         code.emit(&[0x50, 0x50, 0x50, 0x00]);
     } else {
         // Keep an observable prefix before the capsule: this exit must remain
-        // a compact revert rather than becoming a guard on the loop test.
+        // its original constructor and terminal on the loop exit.
         code.emit(&[0x80, 0x5f, 0x55]);
         code.emit(&error_tail(MESSAGE, &[], false));
     }
@@ -177,14 +177,16 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
                 text.contains("while (") && text.contains("evm.staticcall("),
                 "{text}"
             );
-            assert!(!text.contains("evm.revert(offset ="), "{text}");
+            assert!(text.contains("evm.revert(offset ="), "{text}");
             assert_eq!(
                 text.matches("evm.mstore(offset = 0x40,").count(),
                 3,
                 "{text}"
             );
             assert!(
-                lines.iter().all(|line| !elided.contains(&line.entity)),
+                elided
+                    .iter()
+                    .all(|entity| lines.iter().any(|line| line.entity == *entity)),
                 "{text}"
             );
             for statement in &retained {
@@ -211,7 +213,7 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
                     "the live counter must cross the pass edge"
                 );
                 let tuple = program.render_transfer(transfer, &stage.ir).unwrap();
-                let require = lines
+                let failed_if = lines
                     .iter()
                     .position(|line| line.entity == control.id)
                     .unwrap();
@@ -226,14 +228,24 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
                     .find(|(_, line)| line.text.contains("evm.sstore("))
                     .map(|(position, _)| position)
                     .unwrap();
-                assert!(require < passed && passed < stored, "{text}");
-                assert!(lines[require].text.ends_with(&format!(", \"{MESSAGE}\");")));
+                assert!(failed_if < passed && passed < stored, "{text}");
+                assert!(lines[failed_if].text.starts_with("if ("));
             } else {
-                assert!(
-                    text.contains(&format!("evm.revert(\"{MESSAGE}\");")),
-                    "{text}"
-                );
-                assert!(text.find("evm.sstore(").unwrap() < text.find("evm.revert(\"").unwrap());
+                assert!(text.contains("evm.revert(offset ="), "{text}");
+                let terminal = block
+                    .statements
+                    .iter()
+                    .find(|statement| statement.operation == program.reverts[0].operation)
+                    .unwrap();
+                let exit = lines
+                    .iter()
+                    .position(|line| line.entity == terminal.id)
+                    .unwrap();
+                let stored = lines
+                    .iter()
+                    .position(|line| line.text.contains("evm.sstore("))
+                    .unwrap();
+                assert!(stored < exit, "{text}");
             }
         }
     }
@@ -282,7 +294,7 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
     };
     assert!(workspace.state.navigate(&artifact, at));
     frame(&ctx, &mut workspace, vec![]);
-    assert_eq!(workspace.views.route_label(), "IR");
+    assert_eq!(workspace.views.route_label(), "Simplified structured code");
     assert_eq!(rows(&structured::lines(stage)), raw);
     assert_eq!(artifact, original);
 }

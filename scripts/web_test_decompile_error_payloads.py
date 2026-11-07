@@ -1,15 +1,14 @@
-"""Certified Error(string) display over real HTTP, Wasm, clipboard and source UI."""
+"""Retained Error(string) construction over HTTP, Wasm, clipboard and source UI."""
 
-import json
 import re
 
-from web_test_decompile_alignment import copy_code
+from web_test_decompile_alignment import code_label, copy_code
 from web_test_decompile_guards import (ANNOTATIONS, DEPENDENCIES, Runtime,
                                        guard_rows, high, painted_copy, projection)
 from web_test_decompile_helpers import (choose_stage, inspector_control,
                                        open_decompiler, submit)
 from web_test_decompile_review import selected_row, source_descendant
-from web_test_harness import click_control, set_control, ui_control, webgpu_evidence
+from web_test_harness import click_control, resize_view, set_control, ui_control, webgpu_evidence
 
 
 MESSAGE = "ds-math-mul-overflow"
@@ -90,19 +89,19 @@ def runtime(message=MESSAGE, shape="nonzero", **options):
     return code.finish()
 
 
-def compact_rows(text):
+def failure_rows(text):
     return [line for line in text.splitlines()
-            if line.lstrip().startswith(("require(", 'evm.revert("'))]
+            if line.lstrip().startswith(("if (", "evm.revert(offset ="))]
 
 
 def options_invariance(page, canvas, program, text):
-    expected = compact_rows(text)
+    expected = failure_rows(text)
     assert program.get("constructions")
     for dependencies, annotations in [(False, True), (True, False), (True, True), (False, False)]:
         set_control(page, canvas, DEPENDENCIES, dependencies)
         set_control(page, canvas, ANNOTATIONS, annotations)
         displayed = painted_copy(page, canvas)
-        assert compact_rows(displayed) == expected, displayed
+        assert failure_rows(displayed) == expected, displayed
         assert displayed.count("evm.mstore(") == text.count("evm.mstore("), displayed
         assert displayed.count("evm.sstore(") == text.count("evm.sstore("), displayed
     assert painted_copy(page, canvas) == text
@@ -123,11 +122,11 @@ def navigate_witnesses(page, canvas, artifact, current, program, text, standalon
 
     for statement in [writes[0], statements[-1]]:
         source_descendant(page, canvas, artifact, current["id"], statement["id"])
-        ui_control(page, "IR", role="tab", selected=True)
-        selected_row(page, "decompile-ir", "h" + statement["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", "evm.mstore(" if statement in writes else "evm.revert(")
 
     source_descendant(page, canvas, artifact, current["id"], plan["id"])
-    ui_control(page, "Simplified structured code" if standalone else "IR", role="tab", selected=True)
+    ui_control(page, "IR", role="tab", selected=True)
     capsule = inspector_control(page, canvas, "Certified lazy failure construction h" + plan["id"],
                                 "decompile-entity-detail")
     assert f"statements {plan['start']}..{plan['end']}" in capsule["label"]
@@ -169,8 +168,43 @@ def navigate_witnesses(page, canvas, artifact, current, program, text, standalon
     assert painted_copy(page, canvas) == text
 
 
+def construction_rows(page, canvas, artifact, current, program, plan, text, navigate=False):
+    block = next(block for block in program["blocks"] if block["block"] == plan["block"])
+    statements = block["statements"][plan["start"]:plan["end"]]
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    primitives = [statement for statement in statements
+                  if operations[statement["operation"]]["opcode"] in {0x51, 0x52, 0x53, 0xfd}]
+    assert any(operations[statement["operation"]]["opcode"] == 0x51 for statement in primitives)
+    assert sum(operations[statement["operation"]]["opcode"] == 0x52 for statement in primitives) >= 4
+    assert "evm.mload(" in text and text.count("evm.mstore(") >= 5, text
+    if not navigate:
+        return
+    after = -1
+    lines = text.splitlines()
+    for statement in primitives:
+        operation = operations[statement["operation"]]
+        spelling = "evm." + operation["name"].lower() + "("
+        source_descendant(page, canvas, artifact, current["id"], statement["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        row = selected_row(page, "decompile-code", spelling)
+        inspector_control(page, canvas, "Statement h" + statement["id"] + " ", "decompile-entity-detail")
+        source = code_label(row["label"])[1]
+        after = next(index for index in range(after + 1, len(lines)) if lines[index] == source)
+        assert source.startswith("    "), (statement, text)
+        click_control(page, canvas, row["label"], role="decompile-code", id=row["id"])
+        selected_row(page, "decompile-code", spelling)
+    # Every original primitive was selected and occurs in source order before
+    # the failed If closes; normal storage continuation is outside that body.
+    closed = next(index for index in range(after + 1, len(lines)) if lines[index] == "}")
+    store = lines.index("evm.sstore(slot = 0x0, value = 0x2a);")
+    assert after < closed < store, text
+    assert painted_copy(page, canvas) == text
+
+
 def run(context):
     page, canvas, _, _ = open_decompiler(context)
+    resize_view(page, 1920, 3000)
     posts, publications, results = [], [], []
     page.on("request", lambda request: posts.append(request.url)
             if request.method == "POST" and "/api/" in request.url else None)
@@ -193,31 +227,27 @@ def run(context):
         high(page, canvas)
         text = painted_copy(page, canvas)
         assert len(guard_rows(text)) == len(controls), text
-        assert "if (" not in text and "evm.revert(offset =" not in text, text
+        assert "require(" not in text and "evm.revert(offset =" in text and 'evm.revert("' not in text, text
         if shape in {"nonzero", "zero"}:
             assert controls[0]["guard"]["pass_nonzero"] == (shape == "nonzero")
             value = re.search(r"(?m)^(v\d+) = evm\.calldataload\(offset = 0x0\);$", text)
             assert value, text
             condition = "(" + value[1] + " != 0)"
-            predicate = condition if shape == "nonzero" else "!(" + condition + ")"
-            assert guard_rows(text) == [f'require({predicate}, "{message}");'], text
-        if message == ESCAPED:
-            # A literal newline/NUL must never split a code row or clipboard line.
-            assert '\\"' in text and '\\\\' in text and "\\n" in text and "\x00" not in text, text
-            assert len([line for line in text.splitlines() if line.startswith('evm.revert("')]) == 1, text
-            assert 'evm.revert(' + json.dumps(ESCAPED, ensure_ascii=False) + ');' in text.splitlines(), text
-        else:
-            assert all(line.endswith(', "' + message + '");') for line in guard_rows(text)), text
-        if shape in {"standalone", "join"}:
-            assert len([line for line in text.splitlines() if line.startswith('evm.revert("')]) == 1, text
-        else:
-            assert not any(line.startswith('evm.revert("') for line in text.splitlines()), text
+            predicate = "!(" + condition + ")" if shape == "nonzero" else condition
+            assert guard_rows(text) == [f'if ({predicate}) {{'], text
+            assert "} else {" not in text, text
+        # Payload facts remain exact while code preserves the actual loads,
+        # stores and terminal operands. No message literal can split a code row.
+        assert "\x00" not in text, text
+        for plan in program["constructions"]:
+            construction_rows(page, canvas, artifact, current, program, plan, text, shape == "nonzero")
         if shape == "join":
             guard, = controls
             assert guard["guard"]["continuation"]["pass_falls_through"], guard
-            assert text.index("require(") < text.index("evm.sstore(") < text.index('evm.revert("'), text
-        if shape != "standalone":
-            assert text.count("evm.sstore(") == 1 and text.rindex("require(") < text.index("evm.sstore("), text
+            assert text.index("if (") < text.index("evm.sstore(") < text.index("evm.revert(offset ="), text
+        elif shape != "standalone":
+            assert text.count("evm.sstore(") == 1 and text.rindex("if (") < text.index("evm.sstore("), text
+            assert "evm.sstore(slot = 0x0, value = 0x2a);" in text.splitlines(), text
         options_invariance(page, canvas, program, text)
         if shape in {"nonzero", "standalone"} and message == MESSAGE:
             navigate_witnesses(page, canvas, artifact, current, program, text, shape == "standalone")
@@ -240,7 +270,7 @@ def run(context):
             set_control(page, canvas, ANNOTATIONS, annotations)
             text = painted_copy(page, canvas)
             assert "if (" in text and "evm.mstore(" in text and "evm.revert(offset =" in text, text
-            assert not compact_rows(text), text
+            assert 'evm.revert("' not in text and "require(" not in text, text
         results.append({"rejected": name, "artifact": artifact["id"]})
     gpu = webgpu_evidence(page)
     page.close()

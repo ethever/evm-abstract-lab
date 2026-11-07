@@ -1,11 +1,11 @@
-//! An independent display interpreter: typed inputs are evaluated separately,
-//! certified capsules replay original primitives, and ABI bytes are built here.
+//! An independent display interpreter: execute the explicit failure-first plan
+//! with original constructor primitives, and build/check ABI bytes separately.
 //! No producer search or production semantic certificate checker is an oracle.
 use evm_decompile::{
     Artifact, EntityId, ExecutionError, ExecutionLimits, ExecutionOutcome, ExitKind, Input,
-    LiftedGuardPayload, LiftedProgram, LiftedRenderIndex, LiftedValue, MemoryHost, Primitive,
-    SemanticHost, Stage, StageKind, StructuredKind, StructuredNode, Terminator, U256,
-    execute_bytecode, execute_ir, execute_structured,
+    LiftedProgram, LiftedRenderIndex, LiftedValue, MemoryHost, Primitive, SemanticHost, Stage,
+    StageKind, StructuredKind, StructuredNode, Terminator, U256, execute_bytecode, execute_ir,
+    execute_structured,
 };
 use std::collections::BTreeMap;
 
@@ -144,8 +144,9 @@ impl Machine<'_> {
             if construction.is_some_and(|plan| plan.start == position) {
                 self.capsules += 1;
             }
-            // Grouping statements into a capsule never changes their execution
-            // order, concrete memory allocation, side effects or first fault.
+            // The counter records source certificate coverage. The explicit
+            // rendering plan executes every original statement in this interval,
+            // preserving allocation, side effects, ordering and first fault.
             let operation = raw
                 .operations
                 .iter()
@@ -281,73 +282,39 @@ impl Machine<'_> {
         }
     }
 
-    // A failed compact require invokes the original failure route lazily. Its
-    // source graph remains the capsule semantics, including all fault points.
-    fn failure(&mut self, payload: LiftedGuardPayload) -> Result<Flow, ExecutionError> {
-        loop {
-            self.block(self.current)?;
-            let block = self.stage.ir.block(self.current).unwrap();
-            match &block.terminator {
-                Terminator::Fallthrough { edge } => self.transfer(*edge),
-                Terminator::Jump {
-                    edges,
-                    unresolved: false,
-                    ..
-                } if edges.len() == 1 => {
-                    self.transfer(edges[0]);
-                }
-                Terminator::Branch {
-                    then_edges,
-                    else_edge: Some(other),
-                    unresolved: false,
-                    ..
-                } if then_edges.len() == 1 => {
-                    let condition = self.program.block(self.current).unwrap().condition.unwrap();
-                    self.transfer(if self.predicate(condition) {
-                        then_edges[0]
-                    } else {
-                        *other
-                    });
-                }
-                Terminator::Exit { .. } => {
-                    let outcome = self.exit(self.current);
-                    let actual =
-                        reverted(&outcome, &self.host.state).expect("guard must reject by revert");
-                    match payload {
-                        LiftedGuardPayload::EmptyRevert => assert!(actual.is_empty()),
-                        LiftedGuardPayload::ErrorString(id) => {
-                            let message = self.index.payload(id).unwrap();
-                            assert_eq!(
-                                actual,
-                                abi(message.message.as_bytes()),
-                                "guard propagated a different error identity"
-                            );
-                        }
-                    }
-                    return Ok(Flow::End(outcome));
-                }
-                other => panic!("certified failure escaped its closed source route {other:?}"),
+    // Independently execute the exact source occurrences selected by the
+    // rendering plan. Payload certificates never replace their constructors.
+    fn sequence(
+        &mut self,
+        sequence: EntityId,
+        children: &[StructuredNode],
+        range: std::ops::Range<usize>,
+    ) -> Result<Flow, ExecutionError> {
+        let boundary = self.stage.ir.structured.as_ref().unwrap().root.id;
+        let mut position = range.start;
+        while position < range.end {
+            if position > range.start
+                && let Some(end) = self
+                    .index
+                    .failure_first_sequence_end(sequence, position, boundary)
+            {
+                assert!(end > position && end <= range.end);
+                position = end;
+                continue;
             }
+            let flow = self.syntax(&children[position])?;
+            if flow != Flow::Next {
+                return Ok(flow);
+            }
+            position += 1;
         }
+        Ok(Flow::Next)
     }
 
     fn syntax(&mut self, node: &StructuredNode) -> Result<Flow, ExecutionError> {
         match &node.kind {
             StructuredKind::Sequence(children) => {
-                let mut position = 0;
-                while position < children.len() {
-                    if let Some(end) = self.index.sequence_end(node.id, position) {
-                        assert!(end > position && end <= children.len());
-                        position = end;
-                        continue;
-                    }
-                    let flow = self.syntax(&children[position])?;
-                    if flow != Flow::Next {
-                        return Ok(flow);
-                    }
-                    position += 1;
-                }
-                Ok(Flow::Next)
+                self.sequence(node.id, children, 0..children.len())
             }
             StructuredKind::Block { block } => {
                 self.block(*block)?;
@@ -364,14 +331,29 @@ impl Machine<'_> {
             } => {
                 let control = self.program.control(node.id).unwrap();
                 let condition = self.predicate(control.condition);
-                if let Some(guard) = self.index.guard(node.id) {
-                    if condition != guard.pass_nonzero {
-                        self.transfer(guard.failure_edge);
-                        self.failure(guard.payload)
-                    } else {
-                        let pass = self.index.node(guard.pass_node).unwrap();
-                        self.syntax(pass)
+                let boundary = self.stage.ir.structured.as_ref().unwrap().root.id;
+                if let Some(plan) = self.index.failure_first(node.id, boundary).cloned() {
+                    if condition == plan.failure_nonzero() {
+                        let flow = self.syntax(self.index.node(plan.failure_node()).unwrap())?;
+                        if flow != Flow::Next {
+                            return Ok(flow);
+                        }
+                        if let Some((sequence, range)) =
+                            self.index.failure_first_suffix_range(&plan)
+                        {
+                            let StructuredKind::Sequence(children) =
+                                &self.index.node(sequence).unwrap().kind
+                            else {
+                                unreachable!()
+                            };
+                            let flow = self.sequence(sequence, children, range)?;
+                            if flow != Flow::Next {
+                                return Ok(flow);
+                            }
+                        }
+                        panic!("admitted explicit failure fell into its success continuation");
                     }
+                    self.syntax(self.index.node(plan.success_node()).unwrap())
                 } else {
                     self.syntax(if condition { then_branch } else { else_branch })
                 }
@@ -532,7 +514,7 @@ pub(super) fn certify(
     );
     assert_eq!(
         machine.host, raw_host,
-        "normalized capsule changed primitive requests/results, fault prefix or host state"
+        "explicit failure-first source changed primitive requests/results, fault prefix or host state"
     );
     if let Ok(raw) = &raw {
         let observations: Vec<_> = raw

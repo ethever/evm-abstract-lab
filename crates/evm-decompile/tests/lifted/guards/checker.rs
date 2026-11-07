@@ -341,7 +341,6 @@ struct Machine<'a> {
     current: EntityId,
     position: usize,
     decisions: usize,
-    rejected: bool,
     branch: Option<bool>,
 }
 
@@ -437,25 +436,37 @@ impl Machine<'_> {
         }
         self.current = edge.to;
     }
+    fn sequence(
+        &mut self,
+        sequence: EntityId,
+        children: &[StructuredNode],
+        range: std::ops::Range<usize>,
+    ) -> Flow {
+        let boundary = self.stage.ir.structured.as_ref().unwrap().root.id;
+        let mut position = range.start;
+        while position < range.end {
+            if position > range.start
+                && let Some(end) = self
+                    .index
+                    .failure_first_sequence_end(sequence, position, boundary)
+            {
+                assert!(end > position && end <= range.end);
+                position = end;
+                continue;
+            }
+            match self.syntax(&children[position]) {
+                Flow::Normal => {}
+                other => return other,
+            }
+            position += 1;
+        }
+        Flow::Normal
+    }
     fn syntax(&mut self, node: &StructuredNode) -> Flow {
         assert!(self.position <= self.raw.trace.len());
         match &node.kind {
             StructuredKind::Sequence(children) => {
-                let mut position = 0;
-                while position < children.len() {
-                    // Consume the exact shared render plan, then independently
-                    // execute what that normalized view makes visible.
-                    if let Some(end) = self.index.sequence_end(node.id, position) {
-                        position = end;
-                        continue;
-                    }
-                    match self.syntax(&children[position]) {
-                        Flow::Normal => {}
-                        other => return other,
-                    }
-                    position += 1;
-                }
-                Flow::Normal
+                self.sequence(node.id, children, 0..children.len())
             }
             StructuredKind::Block { block } => self.block(*block),
             StructuredKind::Transfer { edge } => {
@@ -468,15 +479,28 @@ impl Machine<'_> {
                 ..
             } => {
                 let test = self.test(node.id);
-                if let Some(guard) = &self.program.control(node.id).unwrap().guard {
-                    if test != guard.pass_nonzero {
-                        self.rejected = true;
-                        return Flow::End(ExecutionOutcome::Exit {
-                            kind: ExitKind::Revert,
-                            values: vec![U256::ZERO, U256::ZERO],
-                        });
+                let boundary = self.stage.ir.structured.as_ref().unwrap().root.id;
+                if let Some(plan) = self.index.failure_first(node.id, boundary).cloned() {
+                    if test == plan.failure_nonzero() {
+                        let failed = self.syntax(self.source[&plan.failure_node()]);
+                        if !matches!(failed, Flow::Normal) {
+                            return failed;
+                        }
+                        if let Some((sequence, range)) =
+                            self.index.failure_first_suffix_range(&plan)
+                        {
+                            let StructuredKind::Sequence(children) = &self.source[&sequence].kind
+                            else {
+                                unreachable!()
+                            };
+                            let failed = self.sequence(sequence, children, range);
+                            if !matches!(failed, Flow::Normal) {
+                                return failed;
+                            }
+                        }
+                        panic!("admitted explicit failure fell into its success continuation");
                     }
-                    self.syntax(self.source[&guard.pass_node])
+                    self.syntax(self.source[&plan.success_node()])
                 } else {
                     self.syntax(if test { then_branch } else { else_branch })
                 }
@@ -580,14 +604,12 @@ pub(super) fn partial_success(input: &Input, artifact: &Artifact, host: MemoryHo
         current: stage.ir.entry.unwrap(),
         position: 0,
         decisions: 0,
-        rejected: false,
         branch: None,
     };
     let Flow::End(outcome) = machine.syntax(root) else {
         panic!("normalized source lost its partial escape")
     };
     assert_eq!(outcome, graph.outcome);
-    assert!(!machine.rejected);
     assert_eq!(machine.position, raw.trace.len());
     assert_eq!(machine.decisions, 1);
     assert_eq!(machine.host, raw_host);
@@ -617,7 +639,6 @@ pub(super) fn certify(
         current: stage.ir.entry.unwrap(),
         position: 0,
         decisions: 0,
-        rejected: false,
         branch: None,
     };
     let Flow::End(outcome) = machine.syntax(root) else {
@@ -631,22 +652,8 @@ pub(super) fn certify(
             .count(),
         "conditions must be evaluated once in original branch order"
     );
-    if machine.rejected {
-        assert!(
-            matches!(raw.outcome, ExecutionOutcome::Exit { kind: ExitKind::Revert, ref values } if values[1] == U256::ZERO)
-        );
-        assert_eq!(
-            outcome,
-            ExecutionOutcome::Exit {
-                kind: ExitKind::Revert,
-                values: vec![U256::ZERO, U256::ZERO]
-            }
-        );
-        assert!(raw.trace[machine.position..].iter().all(|op| op.effects.is_pure() || (op.opcode == 0xfd && op.inputs[1] == U256::ZERO)), "guard failed before a retained observation on its failure path");
-    } else {
-        assert_eq!(outcome, raw.outcome);
-        assert_eq!(machine.position, raw.trace.len());
-    }
+    assert_eq!(outcome, raw.outcome);
+    assert_eq!(machine.position, raw.trace.len());
     assert_eq!(
         machine.host, observed,
         "normalized source changed memory/storage/calls or observation captures"

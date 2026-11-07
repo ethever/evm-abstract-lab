@@ -9,11 +9,27 @@ fn real_constant_mstore_words_cover_twenty_plus_twelve_and_thirty_one_plus_one()
         assert_message(&artifact, message);
         assert_eq!(lifted(&artifact).1.constructions.len(), 1);
         let text = render_text(&artifact);
-        let expected = format!(
-            "evm.revert({});",
-            serde_json::to_string(std::str::from_utf8(message).unwrap()).unwrap()
+        assert_eq!(text.matches("evm.revert(offset = ").count(), 1, "{text}");
+        let (stage, program) = lifted(&artifact);
+        let stores = program
+            .blocks
+            .iter()
+            .flat_map(|b| &b.statements)
+            .filter(|s| {
+                stage
+                    .ir
+                    .blocks
+                    .iter()
+                    .flat_map(|b| &b.operations)
+                    .any(|op| op.id == s.operation && op.opcode == 0x52)
+            })
+            .count();
+        assert_eq!(
+            text.matches("evm.mstore(").count(),
+            stores,
+            "constructor stores must remain visible: {text}"
         );
-        assert_eq!(text.matches(&expected).count(), 1, "{text}");
+        assert!(text.contains("evm.mload("), "{text}");
         let (outcome, host, capsules) = oracle::certify(
             &input,
             &artifact,

@@ -463,3 +463,49 @@ fn actual_array_allocation_and_call_output_fault_prefixes_match_normalized_execu
         assert_eq!(outcome, Err(evm_decompile::ExecutionError::MemoryLimit));
     }
 }
+
+#[test]
+fn router_default_failure_first_covers_certified_sites_and_keeps_normal_code_flat() {
+    let (_, artifact) = router();
+    let ir = &artifact.current().unwrap().ir;
+    let high = ir.lifted.as_ref().unwrap();
+    // Definitions expand canonical bodies; remove only call substitution for
+    // this source-occurrence coverage check, keeping every semantic certificate.
+    let mut expanded = high.clone();
+    expanded.invocations.clear();
+    expanded.procedures.clear();
+    let index = expanded.render_index(ir);
+    index.validate_failure_first_sources().unwrap();
+    let boundary = ir.structured.as_ref().unwrap().root.id;
+    let mut sites = 0;
+    for control in &expanded.controls {
+        if control.guard.is_some() {
+            sites += 1;
+            assert!(
+                index.failure_first(control.node, boundary).is_some(),
+                "certified source guard {:?} lost explicit failure-first projection",
+                control.node
+            );
+        }
+    }
+    assert!(
+        sites >= 1_000,
+        "whole Router source coverage, not one constructor slice"
+    );
+    let text = evm_decompile::render_text(artifact);
+    assert!(!text.contains("require("));
+    let depth = text
+        .lines()
+        .map(|line| (line.len() - line.trim_start().len()) / 4)
+        .max()
+        .unwrap();
+    assert!(
+        depth <= 12,
+        "normal Router code regressed into deep failed-else nesting: {depth}"
+    );
+    assert!(
+        text.contains("evm.mload(")
+            && text.contains("evm.mstore(")
+            && text.contains("evm.revert(offset = ")
+    );
+}

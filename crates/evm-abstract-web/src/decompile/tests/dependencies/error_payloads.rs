@@ -109,7 +109,7 @@ fn runtime(shape: Shape, message: &str, after: &[u8], padding: bool) -> String {
 }
 
 #[test]
-fn certified_error_strings_share_compact_rows_and_keep_pass_reachable_join_occurrences() {
+fn certified_error_strings_retain_source_rows_and_pass_reachable_join_occurrences() {
     for shape in [
         Shape::Nonzero,
         Shape::Zero,
@@ -184,28 +184,43 @@ fn certified_error_strings_share_compact_rows_and_keep_pass_reachable_join_occur
                 assert_eq!(
                     lines
                         .iter()
-                        .filter(|line| line.text.starts_with("require("))
+                        .filter(|line| line.text.starts_with("if ("))
                         .count(),
                     controls.len(),
                     "{text}"
                 );
                 assert!(
-                    !text.contains("if (") && !text.contains("evm.revert(offset ="),
+                    !text.contains("require(") && text.contains("evm.revert(offset ="),
                     "{text}"
                 );
                 for plan in &program.constructions {
                     let block = program.block(plan.block).unwrap();
+                    let mut after = 0;
                     for statement in &block.statements[plan.start..plan.end] {
-                        assert!(
-                            !lines.iter().any(|line| line.entity == statement.id),
-                            "construction replayed: {text}"
+                        let (position, row) = lines
+                            .iter()
+                            .enumerate()
+                            .skip(after)
+                            .find(|(_, line)| line.entity == statement.id)
+                            .unwrap_or_else(|| panic!("source constructor missing: {text}"));
+                        assert_eq!(
+                            row.indent,
+                            usize::from(!matches!(shape, Shape::Standalone | Shape::Join)),
+                            "{text}"
                         );
+                        after = position + 1;
                     }
                 }
-                let compact = format!("evm.revert(\"{MESSAGE}\");");
-                let count = usize::from(matches!(shape, Shape::Standalone | Shape::Join));
+                let count = if matches!(shape, Shape::Nested | Shape::SeparateConstructors) {
+                    2
+                } else {
+                    1
+                };
                 assert_eq!(
-                    lines.iter().filter(|line| line.text == compact).count(),
+                    lines
+                        .iter()
+                        .filter(|line| line.text.contains("evm.revert(offset ="))
+                        .count(),
                     count,
                     "{text}"
                 );
@@ -220,8 +235,11 @@ fn certified_error_strings_share_compact_rows_and_keep_pass_reachable_join_occur
                             .unwrap()
                             .pass_falls_through
                     );
-                    assert!(text.find("require(").unwrap() < text.find("evm.sstore(").unwrap());
-                    assert!(text.find("evm.sstore(").unwrap() < text.find(&compact).unwrap());
+                    assert!(text.find("if (").unwrap() < text.find("evm.sstore(").unwrap());
+                    assert!(
+                        text.find("evm.sstore(").unwrap()
+                            < text.find("evm.revert(offset =").unwrap()
+                    );
                 }
             }
         }
@@ -232,7 +250,7 @@ fn certified_error_strings_share_compact_rows_and_keep_pass_reachable_join_occur
 }
 
 #[test]
-fn capsules_have_complete_inspector_links_clipboard_and_original_ir_navigation() {
+fn constructors_have_complete_inspector_links_clipboard_and_source_navigation() {
     for shape in [Shape::Nonzero, Shape::Standalone] {
         let artifact = artifact(&runtime(shape, MESSAGE, &[], false));
         let stage = artifact.current().unwrap();
@@ -251,7 +269,7 @@ fn capsules_have_complete_inspector_links_clipboard_and_original_ir_navigation()
         let visible = normal
             .iter()
             .find(|line| {
-                line.text.starts_with("require(") || line.text.starts_with("evm.revert(\"")
+                line.text.starts_with("if (") || line.text.starts_with("evm.revert(offset =")
             })
             .unwrap();
         let label = labels(&frame(&ctx, &mut workspace, vec![]), "decompile-code")
@@ -317,24 +335,17 @@ fn capsules_have_complete_inspector_links_clipboard_and_original_ir_navigation()
             );
             assert!(workspace.state.navigate(&artifact, at));
             let result = frame(&ctx, &mut workspace, vec![]);
-            assert_eq!(workspace.views.route_label(), "IR");
+            assert_eq!(workspace.views.route_label(), "Simplified structured code");
             assert!(
                 result
                     .controls
                     .iter()
-                    .any(|row| row["role"] == "decompile-ir" && row["selected"] == true)
+                    .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
             );
         }
         assert!(workspace.state.navigate(&artifact, at));
         frame(&ctx, &mut workspace, vec![]);
-        assert_eq!(
-            workspace.views.route_label(),
-            if shape == Shape::Standalone {
-                "Simplified structured code"
-            } else {
-                "IR"
-            }
-        );
+        assert_eq!(workspace.views.route_label(), "IR");
         let raw = structured::lines(stage);
         click(&ctx, &mut workspace, "Structured code");
         assert_eq!(
@@ -407,10 +418,14 @@ fn exact_escaping_and_live_operations_before_the_capsule_remain_visible() {
     let escaped = "quote\" slash\\ line\n雪\0";
     let artifact = artifact(&runtime(Shape::Standalone, escaped, &[], false));
     let stage = artifact.current().unwrap();
+    assert_eq!(
+        stage.ir.lifted.as_ref().unwrap().payloads[0].message,
+        escaped
+    );
     assert!(
         high(stage, false)
             .iter()
-            .any(|line| line.text == "evm.revert(\"quote\\\" slash\\\\ line\\n雪\\u0000\");")
+            .all(|line| !line.text.contains(['\n', '\0']))
     );
     assert_eq!(
         stage.ir.lifted.as_ref().unwrap().payloads[0].bytes,
@@ -434,12 +449,9 @@ fn exact_escaping_and_live_operations_before_the_capsule_remain_visible() {
             text.contains("evm.mload(offset = 0x200)") && text.contains("evm.sstore("),
             "{text}"
         );
-        assert!(
-            text.contains(&format!("evm.revert(\"{MESSAGE}\");")),
-            "{text}"
-        );
+        assert!(text.contains("evm.revert(offset ="), "{text}");
         assert!(text.find("evm.mstore(").unwrap() < text.find("evm.mload(").unwrap());
-        assert!(text.find("evm.sstore(").unwrap() < text.find("evm.revert(\"").unwrap());
+        assert!(text.find("evm.sstore(").unwrap() < text.find("evm.revert(offset =").unwrap());
     }
 }
 
@@ -458,12 +470,13 @@ fn one_word_and_multiword_messages_use_the_same_consumer_plan() {
             assert!(
                 lines
                     .iter()
-                    .any(|line| line.text == format!("evm.revert(\"{message}\");"))
+                    .any(|line| line.text.contains("evm.revert(offset ="))
             );
+            assert!(lines.iter().any(|line| line.text.contains("evm.mstore(")));
             assert!(
                 !lines
                     .iter()
-                    .any(|line| line.text.contains("evm.revert(offset ="))
+                    .any(|line| line.text.starts_with("evm.revert(\""))
             );
         }
     }
@@ -564,16 +577,16 @@ fn shared_nested_materializations_keep_one_source_certificate_and_two_guard_occu
     );
     for dependencies in [false, true] {
         let text = copied_text(&high(stage, dependencies));
-        assert_eq!(text.matches("require(").count(), 2, "{text}");
+        assert_eq!(text.matches("if (").count(), 2, "{text}");
         assert!(
-            !text.contains("if (") && !text.contains("evm.revert(offset ="),
+            !text.contains("require(") && text.matches("evm.revert(offset =").count() == 2,
             "{text}"
         );
     }
 }
 
 #[test]
-fn dispatcher_terminal_capsule_uses_its_compact_line_as_the_navigation_owner() {
+fn dispatcher_terminal_keeps_original_constructor_and_terminal_navigation() {
     use evm_abstract_protocol::decompile_model::DispatchCase;
     let mut artifact = artifact(&runtime(Shape::Standalone, MESSAGE, &[], false));
     let current = artifact.current_stage.unwrap();
@@ -615,17 +628,32 @@ fn dispatcher_terminal_capsule_uses_its_compact_line_as_the_navigation_owner() {
                     .iter()
                     .any(|line| line.text.contains("dispatch_state_"))
             );
-            let compact: Vec<_> = lines
+            let terminal = stage
+                .ir
+                .lifted
+                .as_ref()
+                .unwrap()
+                .block(plan.block)
+                .unwrap()
+                .statements
                 .iter()
-                .filter(|line| line.text == format!("evm.revert(\"{MESSAGE}\");"))
+                .find(|statement| {
+                    stage
+                        .ir
+                        .blocks
+                        .iter()
+                        .flat_map(|block| &block.operations)
+                        .any(|operation| {
+                            operation.id == statement.operation && operation.opcode == 0xfd
+                        })
+                })
+                .unwrap();
+            let exits: Vec<_> = lines
+                .iter()
+                .filter(|line| line.text.contains("evm.revert(offset ="))
                 .collect();
-            assert_eq!(compact.len(), 1);
-            assert_eq!(compact[0].entity, plan.id);
-            assert!(
-                !lines
-                    .iter()
-                    .any(|line| line.text.contains("evm.revert(offset ="))
-            );
+            assert_eq!(exits.len(), 1);
+            assert_eq!(exits[0].entity, terminal.id);
             for statement in &stage
                 .ir
                 .lifted
@@ -635,13 +663,23 @@ fn dispatcher_terminal_capsule_uses_its_compact_line_as_the_navigation_owner() {
                 .unwrap()
                 .statements[plan.start..plan.end]
             {
-                assert!(!lines.iter().any(|line| line.entity == statement.id));
+                assert!(lines.iter().any(|line| line.entity == statement.id));
             }
         }
     }
     let at = EntityRef {
         stage: stage.id,
-        entity: plan.id,
+        entity: stage
+            .ir
+            .lifted
+            .as_ref()
+            .unwrap()
+            .block(plan.block)
+            .unwrap()
+            .statements
+            .last()
+            .unwrap()
+            .id,
     };
     let (ctx, mut workspace) = setup(artifact.clone());
     assert!(workspace.state.navigate(&artifact, at));

@@ -19,6 +19,139 @@ const SHARED_TOKEN_ELSE: &str = concat!(
     "80600355806004555b6001019056",
 );
 
+// Two return-address contexts share an If whose failed arm reads memory,
+// writes the returned bytes, and reverts; the successful arm resumes its caller.
+const SHARED_FAILURE: &str = concat!(
+    "6100095f3561001c565b60015561001760203561001c565b600255005b8061004257",
+    "80604052805f5560206040a06005546001016005556006546007556001019056",
+    "5b604051602a905260205ffd",
+);
+
+#[test]
+fn shared_failure_definition_keeps_original_memory_body_and_terminal_source_rows() {
+    let artifact = artifact(SHARED_FAILURE);
+    let original = artifact.clone();
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    let procedure = program
+        .procedures
+        .iter()
+        .find(|procedure| {
+            matches!(
+                renderer.node(procedure.body).unwrap().kind,
+                StructuredKind::If { .. }
+            )
+        })
+        .unwrap();
+    assert!(
+        program
+            .invocations
+            .iter()
+            .filter(|call| call.procedure == procedure.id)
+            .count()
+            >= 2
+    );
+    let raw = rows(&structured::lines(stage));
+    let mut selected_statements = Vec::new();
+    for dependencies in [false, true] {
+        let expected = renderer
+            .render_procedure_body(procedure, dependencies, |_| true)
+            .unwrap();
+        assert_eq!(
+            expected
+                .iter()
+                .filter(|row| row.text.starts_with("if ("))
+                .count(),
+            1
+        );
+        assert!(
+            !expected
+                .iter()
+                .any(|row| row.text == "} else {" || row.text.starts_with("require("))
+        );
+        let mut positions = Vec::new();
+        for opcode in [0x51, 0x52, 0xfd] {
+            let (position, row) = expected
+                .iter()
+                .enumerate()
+                .find(|(_, row)| {
+                    program
+                        .blocks
+                        .iter()
+                        .flat_map(|block| &block.statements)
+                        .find(|statement| statement.id == row.entity)
+                        .is_some_and(|statement| {
+                            stage
+                                .ir
+                                .blocks
+                                .iter()
+                                .flat_map(|block| &block.operations)
+                                .any(|operation| {
+                                    operation.id == statement.operation
+                                        && operation.opcode == opcode
+                                })
+                        })
+                })
+                .unwrap();
+            assert_eq!(row.depth, 1);
+            positions.push(position);
+            if !dependencies {
+                selected_statements.push(row.entity);
+            }
+        }
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        for annotations in [false, true] {
+            let lines = with_display(
+                stage,
+                structured::HighDisplayOptions {
+                    show_state_dependencies: dependencies,
+                    show_structure_annotations: annotations,
+                },
+            );
+            for row in expected
+                .iter()
+                .filter(|row| annotations || !row.is_structure_annotation)
+            {
+                assert!(lines.iter().any(|line| line.entity == row.entity
+                    && line.indent == row.depth + 1
+                    && line.text == row.text));
+            }
+        }
+    }
+    let normal = high(stage, false);
+    let (ctx, mut workspace) = setup(artifact.clone());
+    assert_painted(&frame(&ctx, &mut workspace, vec![]), &normal);
+    assert_eq!(
+        click(&ctx, &mut workspace, "Copy structured text").copied,
+        [copied_text(&normal)]
+    );
+    for entity in selected_statements {
+        let at = EntityRef {
+            stage: stage.id,
+            entity,
+        };
+        let source = artifact.origin(at).unwrap().source[0].pc;
+        assert!(
+            workspace
+                .state
+                .source_descendants(&artifact, source)
+                .contains(&at)
+        );
+        assert!(workspace.state.navigate(&artifact, at));
+        let selected = frame(&ctx, &mut workspace, vec![]);
+        assert_eq!(workspace.views.route_label(), "Simplified structured code");
+        assert!(
+            selected
+                .controls
+                .iter()
+                .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+        );
+    }
+    assert_eq!(rows(&structured::lines(stage)), raw);
+    assert_eq!(artifact, original);
+}
+
 fn with_display(stage: &Stage, display: structured::HighDisplayOptions) -> Vec<structured::Line> {
     structured::lifted_lines_indexed(
         stage,
