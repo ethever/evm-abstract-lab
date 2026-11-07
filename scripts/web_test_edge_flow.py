@@ -6,6 +6,7 @@ from playwright.sync_api import expect
 import json
 import math
 import time
+from web_test_edge_flow_sampling import capture_interval, sampling_readiness
 from web_test_graph_helpers import graph_content, graph_mode, graph_overview, graph_scope, pick_graph_instance, symbol
 from web_test_harness import resize_view, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_fixture, layout_page, layout_submission
@@ -34,11 +35,12 @@ def flow_pixels(page, screenshot: bytes, regions, screenshot_box):
             const markers=[];
             for(let start=0;start<mask.length;start++) {
                 if(!mask[start]) continue;
-                let read=0,write=1,sumX=0,sumY=0;
+                let read=0,write=1,sumX=0,sumY=0,minX=width,minY=height,maxX=0,maxY=0;
                 queue[0]=start;mask[start]=0;
                 while(read<write) {
                     const at=queue[read++],x=at%width,y=Math.floor(at/width);
                     sumX+=x;sumY+=y;
+                    minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);
                     for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) {
                         const nx=x+dx,ny=y+dy;
                         if(nx<0 || nx>=width || ny<0 || ny>=height) continue;
@@ -47,7 +49,9 @@ def flow_pixels(page, screenshot: bytes, regions, screenshot_box):
                     }
                 }
                 if(write>=3*scale*scale) markers.push({
-                    center:[box[0]+(left+sumX/write)/scale,box[1]+(top+sumY/write)/scale],pixels:write});
+                    center:[box[0]+(left+sumX/write)/scale,box[1]+(top+sumY/write)/scale],pixels:write,
+                    bounds:[box[0]+(left+minX)/scale,box[1]+(top+minY)/scale,
+                            box[0]+(left+maxX+1)/scale,box[1]+(top+maxY+1)/scale]});
             }
             const digest=await crypto.subtle.digest('SHA-256',pixels);
             result[name]={markers,bounds:region,hash:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
@@ -55,8 +59,11 @@ def flow_pixels(page, screenshot: bytes, regions, screenshot_box):
         return result;
     }""", {"png":base64.b64encode(screenshot).decode(),"regions":regions,"box":screenshot_box})
 
-def flow_frames(page, canvas, output: Path, name: str, regions):
+def flow_frames(page, canvas, output: Path, name: str, regions, moving_regions=None):
     captures=[]
+    frames=[]
+    moving_regions=tuple(regions if moving_regions is None else moving_regions)
+    assert moving_regions and set(moving_regions)<=regions.keys(),moving_regions
     viewport=page.viewport_size
     box=[0,0,viewport["width"],viewport["height"]]
     canvas.screenshot(path=str(output/f"{name}-scene.png"))
@@ -64,10 +71,12 @@ def flow_frames(page, canvas, output: Path, name: str, regions):
     max_interval=min(56,min(region[3]-region[1] for region in regions.values()))/(2*60)
     assert max_interval>0,regions
     # Observe real compositor frames without changing the application's clock.
-    # Each direction comparison uses only differences between Chromium capture
-    # timestamps. Python monotonic time bounds collection, and is never equated
-    # with these timestamps, animation phase, or backend report timings.
+    # Capture the complete paced budget before decoding pixels. Readiness is
+    # direction-independent, and neither oracle can select when sampling stops.
     cdp=page.context.new_cdp_session(page)
+    pending_acks=[]
+    interval=capture_interval(max_interval)
+    next_ack=start+interval
     def captured_frame(event):
         timestamp=event["metadata"].get("timestamp")
         assert type(timestamp) in (int,float) and math.isfinite(timestamp),event["metadata"]
@@ -77,36 +86,55 @@ def flow_frames(page, canvas, output: Path, name: str, regions):
                           "capture_timestamp_seconds":timestamp,
                           "animation_clock":"Chromium screencast metadata.timestamp",
                           "screenshot_box":box},base64.b64decode(event["data"])))
-        cdp.send("Page.screencastFrameAck",{"sessionId":event["sessionId"]})
+        pending_acks.append(event["sessionId"])
+    def materialize():
+        # Decode the immutable batch after screencasting stops. Raw PNGs and
+        # timestamps are already on disk if decoding later fails.
+        for index in range(len(frames),len(captures)):
+            metadata,png=captures[index]
+            frame={**metadata,"animation_seconds":metadata["capture_timestamp_seconds"]-captures[0][0]["capture_timestamp_seconds"]}
+            frame["regions"]=flow_pixels(page,png,regions,box)
+            frames.append(frame)
     cdp.on("Page.screencastFrame",captured_frame)
     try:
         cdp.send("Page.startScreencast",{"format":"png","everyNthFrame":1})
         while len(captures)<24 and time.monotonic()-start<12:
             page.wait_for_timeout(25)  # Dispatch actual compositor frame events.
-            valid_pairs=sum(0<after[0]["capture_timestamp_seconds"]-before[0]["capture_timestamp_seconds"]<max_interval
-                            for before,after in zip(captures,captures[1:]))
-            # Six timing-valid pairs provide several opportunities to see a head
-            # fully inside the gap. Direction still requires its own two different
-            # advancing frame pairs below; timing or presence alone cannot pass it.
-            if len(captures)>=10 and valid_pairs>=6: break
+            if pending_acks and time.monotonic()>=next_ack:
+                # Backpressure the capture stream, not the application clock.
+                # Keep every delivered frame, including all reverse motion.
+                cdp.send("Page.screencastFrameAck",{"sessionId":pending_acks.pop(0)})
+                next_ack=time.monotonic()+interval
     finally:
         try:
             cdp.send("Page.stopScreencast")
         finally:
             cdp.detach()
-    valid_pairs=sum(0<after[0]["capture_timestamp_seconds"]-before[0]["capture_timestamp_seconds"]<max_interval
-                    for before,after in zip(captures,captures[1:]))
-    assert len(captures)>=10 and valid_pairs>=6,(
+            # Persist raw captures even when pixel processing or readiness fails.
+            # A failed compositor-cadence assertion must retain its timestamps.
+            for index,(_,png) in enumerate(captures):
+                (output/f"{name}-{index:02}.png").write_bytes(png)
+            (output/f"{name}-capture-metadata.json").write_text(
+                json.dumps([metadata for metadata,_ in captures],indent=2)+"\n")
+            (output/f"{name}-frames.json").write_text(json.dumps(frames,indent=2)+"\n")
+    # PNG decoding runs after capture so it cannot stall ACKs or the renderer.
+    # Include every frame delivered while stopping, without filtering direction.
+    try:
+        materialize()
+    finally:
+        (output/f"{name}-frames.json").write_text(json.dumps(frames,indent=2)+"\n")
+    readiness=sampling_readiness(frames,moving_regions,max_interval)
+    readiness.update(moving_regions=moving_regions,deadline_seconds=12,frame_limit=24,
+                     capture_interval_seconds=interval,head_period_seconds=56/60,
+                     elapsed_seconds=time.monotonic()-start)
+    (output/f"{name}-frames.json").write_text(json.dumps(frames,indent=2)+"\n")
+    (output/f"{name}-sampling.json").write_text(json.dumps(readiness,indent=2)+"\n")
+    assert len(frames)>=10 and len(readiness["timing_pairs"])>=6,(
         "insufficient real compositor frames inside the anti-aliasing interval",
-        len(captures),valid_pairs,max_interval)
-    frames=[]
-    origin=captures[0][0]["capture_timestamp_seconds"]
-    for index,(frame,png) in enumerate(captures):
-        frame["animation_seconds"]=frame["capture_timestamp_seconds"]-origin
-        (output/f"{name}-{index:02}.png").write_bytes(png)
-        frame["regions"]=flow_pixels(page,png,regions,box)
-        frames.append(frame)
+        len(frames),len(readiness["timing_pairs"]),max_interval)
+    assert readiness["ready"],("insufficient unclipped marker displacement pairs",readiness)
     return frames
+
 
 def assert_flow_direction(frames, region: str, direction):
     """Track nearby heads between actual frames; wraparound starts a new head."""
@@ -228,7 +256,8 @@ def edge_flow_interactions(browser, url: str, output: Path):
     outgoing=assert_flow_direction(incident,"outgoing",[0,1])
     select(3)
     changed=flow_frames(page,canvas,output,"flow-chain-selected-last",
-                        {**regions,"new_incoming":vertical_edge_region(cards[2],cards[3])})
+                        {**regions,"new_incoming":vertical_edge_region(cards[2],cards[3])},
+                        moving_regions=("new_incoming",))
     for name in regions:
         assert len({frame["regions"][name]["hash"] for frame in changed})==1, f"old {name} edge kept animating"
         assert all(not frame["regions"][name]["markers"] for frame in changed), f"old {name} edge remained highlighted"
