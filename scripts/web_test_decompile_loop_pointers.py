@@ -118,18 +118,33 @@ def run(context):
         guards = [control for control in program["controls"] if control["node"] in if_nodes and control.get("guard")
                   and control["guard"]["payload"] == {"error_string": payload["id"]}]
         assert len(guards) == int(guarded), guards
+        bounds, = [control for control in program["controls"] if control.get("guard")
+                   and control["guard"]["payload"] == "empty_revert"]
+        bound_block = next(block for block in current["ir"]["blocks"] if block["id"] == bounds["guard"]["block"])
+        assert bound_block["source"]["pc"] == 0, bound_block
         loops = [node for node in current["ir"]["structured"]["nodes"] if "while" in node["kind"]]
         assert len(loops) == 1, loops
         high(page, canvas)
         text = painted_copy(page, canvas)
         assert "while (" in text and "evm.staticcall(" in text, text
         assert text.count("evm.mstore(offset = 0x40,") == 3, text
-        assert ("evm.revert(offset =" in text) != guarded and ("require(" in text) == guarded, text
+        requirements = [line for line in text.splitlines() if line.lstrip().startswith("require(")]
+        error_requirements = [line for line in requirements if f', "{MESSAGE}");' in line]
+        assert len(requirements) == 1 + int(guarded) and len(error_requirements) == int(guarded), text
+        assert text.count("evm.revert(offset =") == int(not guarded), text
+        assert "evm.revert(offset = 0x0, size = 0x0)" not in text, text
+        # Both fixtures keep their independent initial length bound compact.
+        source_descendant(page, canvas, artifact, current["id"], bounds["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        bound_required = code_label(selected_row(page, "decompile-code", "require(")["label"])[1]
+        assert bound_required in requirements and bound_required not in error_requirements, text
+        assert text.index(bound_required) < text.index("while ("), text
         if guarded:
             assert guards[0]["guard"]["pass_nonzero"], guards
             source_descendant(page, canvas, artifact, current["id"], guards[0]["id"])
             ui_control(page, "Simplified structured code", role="tab", selected=True)
             required = code_label(selected_row(page, "decompile-code", "require(")["label"])[1]
+            assert error_requirements == [required], text
             store_at = text.index("evm.sstore(", text.index(required))
             transfer = next(transfer for transfer in program["transfers"]
                             if transfer["edge"] == guards[0]["guard"]["pass_edge"])
@@ -141,12 +156,27 @@ def run(context):
             assert text.index(required) < text.index(tuple_text) < store_at, text
         else:
             assert "evm.revert(offset =" in text, text
+            operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                          for operation in block["operations"]}
+            construction_block = next(block for block in program["blocks"] if block["block"] == plan["block"])
+            store, = [statement for statement in construction_block["statements"][:plan["start"]]
+                      if operations[statement["operation"]]["opcode"] == 0x55]
+            source_descendant(page, canvas, artifact, current["id"], store["id"])
+            ui_control(page, "Simplified structured code", role="tab", selected=True)
+            store_row = code_label(selected_row(page, "decompile-code", "evm.sstore(")["label"])[1]
             terminal_statement = next(statement for block in program["blocks"] for statement in block["statements"]
                                       if statement["operation"] == terminal["operation"])
             source_descendant(page, canvas, artifact, current["id"], terminal_statement["id"])
             ui_control(page, "Simplified structured code", role="tab", selected=True)
             terminal_row = code_label(selected_row(page, "decompile-code", "evm.revert(offset =")["label"])[1]
-            assert text.index("evm.sstore(") < text.index(terminal_row), text
+            # The effectful loop exit retains its exact original primitive order.
+            constructor = construction_block["statements"][plan["start"]:plan["end"]]
+            trace = [operations[statement["operation"]]["name"] for statement in constructor]
+            assert trace == ["MLOAD", "MSTORE", "MSTORE", "MSTORE", "MSTORE", "MLOAD", "REVERT"], trace
+            start, end = text.index(store_row), text.index(terminal_row)
+            assert start < end, text
+            copied_trace = re.findall(r"\bevm\.([a-z0-9]+)\(", text[start:end + len(terminal_row)])
+            assert [name.upper() for name in copied_trace] == ["SSTORE", *trace], text
         retained = live_rows(page, program, current, guarded)
         for dependencies, annotations in [(True, False), (False, True), (True, True), (False, False)]:
             set_control(page, canvas, DEPENDENCIES, dependencies)
