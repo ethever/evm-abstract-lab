@@ -95,7 +95,7 @@ fn valid_inherited_and_immediate_continuations_and_legacy_projection_stay_admitt
         assert!(
             high(stage, false)
                 .iter()
-                .any(|row| row.text.starts_with("require("))
+                .any(|row| row.text.starts_with("if ("))
         );
         if code == NESTED {
             assert_eq!(

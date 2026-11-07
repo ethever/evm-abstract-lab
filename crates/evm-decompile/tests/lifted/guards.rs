@@ -60,7 +60,8 @@ fn direct_guards_preserve_both_polarities_empty_bytes_and_pass_store() {
             assert_eq!(guards(&artifact), 1, "{}", render_text(&artifact));
             checker::certificate(lifted(&artifact).0);
             let text = render_text(&artifact);
-            assert_eq!(text.matches("require(").count(), 1, "{text}");
+            assert_eq!(text.matches("if (").count(), 1, "{text}");
+            assert!(!text.contains("require("), "{text}");
             for value in [U256::ZERO, U256::from(1), U256::from(2), U256::MAX] {
                 let (raw, host) = certify(
                     &input,
@@ -129,8 +130,8 @@ fn actual_nested_decoder_sequence_flattens_and_preserves_signed_wrapping_checks_
         checker::certificate(lifted(&artifact).0);
         let text = render_text(&artifact);
         assert!(
-            !text.contains("if ("),
-            "nested failure-only checks must flatten: {text}"
+            text.contains("if (") && !text.contains("} else {"),
+            "nested failure-only checks must use flat explicit failed arms: {text}"
         );
         assert!(
             text.contains("evm.slt("),
@@ -199,12 +200,12 @@ fn pass_side_effect_before_shared_join_revert_remains_visible_and_executes() {
     assert!(guards(&artifact) >= 1, "{}", render_text(&artifact));
     checker::certificate(lifted(&artifact).0);
     let text = render_text(&artifact);
-    let require = text.find("require(").unwrap();
+    let failure_if = text.find("if (").unwrap();
     let store = text.find("evm.sstore(").unwrap();
     let revert = text
         .rfind("evm.revert(")
         .expect("join REVERT still executes on the pass path");
-    assert!(require < store && store < revert, "{text}");
+    assert!(failure_if < store && store < revert, "{text}");
     for value in [0_u64, 1] {
         let (raw, host) = certify(
             &input,
@@ -240,7 +241,10 @@ fn canonical_empty_error_string_is_distinct_from_empty_revert() {
     assert!(program.payloads[0].message.is_empty());
     assert_eq!(program.payloads[0].bytes.len(), 68);
     let text = render_text(&artifact);
-    assert!(text.contains(", \"\");"), "{text}");
+    assert!(
+        text.contains("evm.mstore(") && text.contains("evm.revert("),
+        "{text}"
+    );
     for value in [0_u64, 1] {
         super::oracle::certify(
             &input,
@@ -509,17 +513,17 @@ fn a_false_eof_branch_is_a_successful_halt_not_a_missing_failure_successor() {
 }
 
 #[test]
-fn observations_before_require_bind_once_and_keep_their_old_storage_value() {
+fn observations_before_failed_if_bind_once_and_keep_their_old_storage_value() {
     let input = fixtures::old_capture();
     let artifact = checked(&input);
     assert_eq!(guards(&artifact), 1);
     let text = render_text(&artifact);
     assert!(
-        text.find("evm.sload(").unwrap() < text.find("require(").unwrap(),
+        text.find("evm.sload(").unwrap() < text.find("if (").unwrap(),
         "{text}"
     );
     assert!(
-        text.find("require(").unwrap() < text.find("evm.sstore(").unwrap(),
+        text.find("if (").unwrap() < text.find("evm.sstore(").unwrap(),
         "{text}"
     );
     for value in [0_u64, 1, 3] {
@@ -551,8 +555,8 @@ fn nested_guards_inherit_a_shared_outer_join_without_omitting_its_revert() {
     );
     checker::certificate(lifted(&artifact).0);
     let text = render_text(&artifact);
-    assert_eq!(text.matches("require(").count(), 2, "{text}");
-    assert!(!text.contains("if ("), "{text}");
+    assert_eq!(text.matches("if (").count(), 2, "{text}");
+    assert!(!text.contains("require("), "{text}");
     assert!(
         text.find("evm.sstore(").unwrap() < text.rfind("evm.revert(").unwrap(),
         "{text}"
@@ -583,10 +587,7 @@ fn a_closed_empty_failure_can_guard_a_success_route_with_an_explicit_partial_jum
     validated(&artifact);
     assert_eq!(guards(&artifact), 1, "{}", render_text(&artifact));
     let text = render_text(&artifact);
-    assert!(
-        text.contains("require(") && text.contains("partial"),
-        "{text}"
-    );
+    assert!(text.contains("if (") && text.contains("partial"), "{text}");
     let (stage, program) = lifted(&artifact);
     let guard = program
         .controls
@@ -665,4 +666,89 @@ fn guards_inside_loops_keep_live_pass_phi_and_simultaneous_backedge_swaps() {
         .arguments
         .swap(0, 1);
     assert_eq!(validate_stage(&wrong).status, ValidationStatus::Failed);
+}
+
+#[test]
+fn a_stop_inside_an_unconditional_success_loop_keeps_suffix_projection_conservative() {
+    let mut asm = Asm::default();
+    asm.op(0x5f).op(0x35).target("success").op(0x57);
+    // An actual failed-path observation prevents the old require certificate.
+    asm.push(9).op(0x54).op(0x50).op(0x5f).op(0x5f).op(0xfd);
+    asm.dest("success")
+        .push(32)
+        .op(0x35)
+        .dest("header")
+        .op(0x80)
+        .op(0x15)
+        .target("done")
+        .op(0x57)
+        .push(1)
+        .op(0x90)
+        .op(0x03)
+        .target("header")
+        .op(0x56)
+        .dest("done")
+        .op(0x50)
+        .push(0x55)
+        .op(0x5f)
+        .op(0x55)
+        .op(0x00);
+    let input = asm.finish();
+    let artifact = checked(&input);
+    let (stage, program) = lifted(&artifact);
+    let root = &stage.ir.structured.as_ref().unwrap().root;
+    let index = program.render_index(&stage.ir);
+    let entry = stage.ir.entry.unwrap();
+    let control = program
+        .controls
+        .iter()
+        .find(|c| program.expression(c.condition).unwrap().block == entry)
+        .unwrap();
+    assert!(
+        control.guard.is_none(),
+        "the explicit source plan must accept nontransparent failure bodies"
+    );
+    assert!(
+        index.failure_first(control.node, root.id).is_none(),
+        "a STOP inside a loop does not close the loop's own normal fallthrough"
+    );
+    let source = index.node(control.node).unwrap();
+    let StructuredKind::If { then_branch, .. } = &source.kind else {
+        unreachable!()
+    };
+    let mut pending = vec![&**then_branch];
+    let mut has_loop = false;
+    while let Some(node) = pending.pop() {
+        match &node.kind {
+            StructuredKind::Sequence(v) => pending.extend(v),
+            StructuredKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => pending.extend([&**then_branch, &**else_branch]),
+            StructuredKind::While { .. } => has_loop = true,
+            _ => {}
+        }
+    }
+    assert!(
+        has_loop,
+        "the nofallthrough premise must cover a real natural loop"
+    );
+    for pass in [0_u64, 1] {
+        for count in [0_u64, 1, 3] {
+            let mut host =
+                MemoryHost::new(&input, calldata(&[U256::from(pass), U256::from(count)]));
+            host.storage.insert(U256::from(9), U256::from(0x42));
+            let (execution, observed) = certify(&input, &artifact, host);
+            assert_eq!(
+                execution
+                    .trace
+                    .iter()
+                    .filter(|op| op.opcode == 0x54)
+                    .count(),
+                usize::from(pass == 0)
+            );
+            assert_eq!(observed.storage.contains_key(&U256::ZERO), pass != 0);
+        }
+    }
 }

@@ -15,8 +15,8 @@ MEMORY = "5f356080526080515f5500"
 LIVE_PHI = "5f35600a576001600d565b60025b6003015f5500"
 EMPTY_TRANSFER = "60096007600b5600005b005b5056"
 REVERT_GUARD = "5f35600a57602a5f55005b5f5ffd"
-# The retained RETURNDATASIZE observation excludes this otherwise similar arm.
-ORDINARY_EMPTY_ELSE = "5f35600a57602a5f55005b3d5ffd"
+# Both paths stop normally; the true arm observes RETURNDATASIZE.
+ORDINARY_EMPTY_ELSE = "5f35600a57602a5f55005b3d5000"
 TOGGLE = "Show state dependencies"
 STRUCTURE = "Show structure annotations"
 ALIASES = re.compile(r"(?m)^\s*[mq]\d+\s*=")
@@ -195,9 +195,9 @@ def run(context):
                     "detailed_lines": len(detailed.splitlines())})
 
     # An ordinary terminal true arm leaves only false-edge tokens in the else.
-    # RETURNDATASIZE remains observable here, so this is not an empty guard.
+    # Both alternatives stop normally, so this remains an ordinary branch.
     # Hiding those tokens must also omit the empty syntax, while retaining the
-    # actual revert and the following storage write outside the conditional.
+    # true STOP and the following storage write outside the conditional.
     artifact, _ = submit(context, page, canvas, ORDINARY_EMPTY_ELSE, "dependencies-empty-else")
     current = stage(artifact, "lifted")
     admitted = len(posts)
@@ -207,10 +207,11 @@ def run(context):
     clean(reading)
     assert "} else {" not in reading, reading
     assert reading.count("if (") == 1, reading
-    for operation in ["evm.returndatasize(", "evm.revert(", "evm.sstore(", "evm.stop("]:
+    for operation in ["evm.returndatasize(", "evm.sstore("]:
         assert reading.count(operation) == 1, reading
+    assert reading.count("evm.stop(") == 2 and "evm.revert(" not in reading, reading
     rows = reading.splitlines()
-    revert = next(i for i, text in enumerate(rows) if "evm.revert(" in text)
+    revert = next(i for i, text in enumerate(rows) if "evm.stop(" in text)
     store = next(i for i, text in enumerate(rows) if "evm.sstore(" in text)
     assert rows[revert].startswith("    ") and not rows[store].startswith(" "), reading
     assert revert < store and "}" in rows[revert + 1:store], reading
@@ -249,9 +250,9 @@ def run(context):
                     "reading_lines": len(reading.splitlines()),
                     "detailed_lines": len(detailed.splitlines())})
 
-    # A proved empty failure becomes require. Metadata restores only the pass
-    # transfer, after the require, and never executes failed-path tokens.
-    artifact, _ = submit(context, page, canvas, REVERT_GUARD, "dependencies-require")
+    # Explicit failure keeps its own transfers inside then; successful edge
+    # bindings continue after the closing brace in every display mode.
+    artifact, _ = submit(context, page, canvas, REVERT_GUARD, "dependencies-failed-if")
     current = stage(artifact, "lifted")
     admitted = len(posts)
     result_url = publication_urls[-1]
@@ -261,30 +262,33 @@ def run(context):
     assert not guard["pass_nonzero"] and guard["continuation"] is None, guard
     reading = painted_copy(page, canvas)
     clean(reading)
-    assert reading.count("require(!(") == 1 and "if (" not in reading, reading
-    assert "evm.revert(" not in reading and "} else {" not in reading, reading
+    assert reading.count("if (") == 1 and "require(" not in reading, reading
+    assert "    evm.revert(" in reading and "} else {" not in reading, reading
     rows = reading.splitlines()
-    require = next(i for i, text in enumerate(rows) if text.startswith("require("))
+    failed_if = next(i for i, text in enumerate(rows) if text.startswith("if ("))
     store = next(i for i, text in enumerate(rows) if text.startswith("evm.sstore("))
-    assert require < store and rows[store] == "evm.sstore(slot = 0x0, value = 0x2a);", reading
+    assert failed_if < store and rows[store] == "evm.sstore(slot = 0x0, value = 0x2a);", reading
     assert rows[-1] == "evm.stop();", reading
-    predicate = rows[require]
+    predicate = rows[failed_if]
     failure = next(item for item in current["ir"]["lifted"]["transfers"]
                    if item["edge"] == guard["failure_edge"])
     for dependencies in [True, False]:
         set_control(page, canvas, TOGGLE, dependencies)
         text = painted_copy(page, canvas)
         assert text.splitlines().count(predicate) == 1, text
-        assert "if (" not in text and "evm.revert(" not in text and "} else {" not in text, text
-        assert "token on e" + guard["failure_edge"] not in text, text
+        assert "require(" not in text and "    evm.revert(" in text and "} else {" not in text, text
+        failure_tokens = [line for line in text.splitlines() if "token on e" + guard["failure_edge"] in line]
+        assert len(failure_tokens) == 2 * int(dependencies), text
+        assert all(line.startswith("    ") for line in failure_tokens), text
         if dependencies:
             detailed = text
             tokens = [i for i, line in enumerate(text.splitlines())
                       if "token on e" + guard["pass_edge"] in line]
             assert len(tokens) == 2 and all(i > text.splitlines().index(predicate) for i in tokens), text
         source_descendant(page, canvas, artifact, current["id"], failure["id"])
-        ui_control(page, "IR", role="tab", selected=True)
-        selected_row(page, "decompile-ir", "Live transfer h" + failure["id"])
+        ui_control(page, "Simplified structured code" if dependencies else "IR", role="tab", selected=True)
+        selected_row(page, "decompile-code" if dependencies else "decompile-ir",
+                     "memory token on e" + guard["failure_edge"] if dependencies else "Live transfer h" + failure["id"])
         high(page, canvas)
         assert painted_copy(page, canvas) == text
     assert painted_copy(page, canvas) == reading
@@ -298,9 +302,9 @@ def run(context):
     retained = page.request.get(result_url)
     assert retained.ok and retained.json()["result"]["Ok"]["artifact"] == artifact
     assert len(posts) == admitted, posts
-    canvas.screenshot(path=str(context.output / "dependencies-require-metadata-invariant.png"))
+    canvas.screenshot(path=str(context.output / "dependencies-failed-if-metadata-invariant.png"))
     results.append({"artifact": artifact["id"], "guard": control["id"],
-                    "hidden_failure_transfer": failure["id"],
+                    "failed_arm_transfer": failure["id"],
                     "reading_lines": len(reading.splitlines()),
                     "detailed_lines": len(detailed.splitlines())})
 

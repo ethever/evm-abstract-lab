@@ -19,6 +19,9 @@ SHARED = ("60075f35601e565b6001556002556016602035601e565b60035560045500"
 # Kept byte-for-byte equal to the relocatable core token_only_else fixture.
 TOKEN_ONLY_ELSE = ("61000a60003561001d565b60015561001860203561001d565b600255005b80604052"
                    "806000558061002f57610041565b8060605260206040a080600355806004555b6001019056")
+SHARED_FAILURE = ("6100095f3561001c565b60015561001760203561001c565b600255005b8061004257"
+                  "80604052805f5560206040a06005546001016005556006546007556001019056"
+                  "5b604051602a905260205ffd")
 UNSHARED = "5f356040525f546001015f5500"
 DEPENDENCIES = "Show state dependencies"
 ANNOTATIONS = "Show structure annotations"
@@ -253,6 +256,70 @@ def token_only_else(context, page, canvas):
             "raw_rows": len(raw_rows), "raw_windows": len(raw_samples)}
 
 
+def failure_definition(context, page, canvas):
+    artifact, _ = submit(context, page, canvas, SHARED_FAILURE, "shared-procedures-failed-if")
+    current, program = raw_witness(artifact)
+    nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
+    procedure = next(procedure for procedure in program["procedures"] if "if" in nodes[procedure["body"]])
+    assert sum(call["procedure"] == procedure["id"] for call in program["invocations"]) >= 2
+    high(page, canvas)
+    reading = painted_copy(page, canvas)
+    lines = reading.splitlines()
+    begin = next(index for index, line in enumerate(lines)
+                 if line.startswith("procedure shared_" + procedure["id"] + "("))
+    end = next(index for index in range(begin + 1, len(lines)) if lines[index] == "}")
+    body = lines[begin + 1:end]
+    assert sum(line.startswith("    if (") for line in body) == 1, reading
+    assert not any("require(" in line or "} else {" in line for line in body), reading
+    load = next(index for index, line in enumerate(body) if "evm.mload(" in line)
+    store = next(index for index, line in enumerate(body) if "evm.mstore(" in line)
+    revert = next(index for index, line in enumerate(body) if "evm.revert(offset =" in line)
+    assert load < store < revert and all(body[index].startswith("        ") for index in [load, store, revert]), reading
+    for dependencies, annotations in [(True, False), (True, True), (False, True), (False, False)]:
+        set_control(page, canvas, DEPENDENCIES, dependencies)
+        set_control(page, canvas, ANNOTATIONS, annotations)
+        text = painted_copy(page, canvas)
+        projected = without_state(text, current) if dependencies else text.splitlines()
+        assert without_structure("\n".join(projected)) == reading.splitlines(), text
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    statements = {statement["operation"]: statement for block in program["blocks"]
+                  for statement in block["statements"]}
+    pending, failed_blocks = [nodes[procedure["body"]]["if"]["then_branch"]], set()
+    while pending:
+        kind = nodes[pending.pop()]
+        if "sequence" in kind:
+            pending.extend(kind["sequence"])
+        elif "block" in kind:
+            failed_blocks.add(kind["block"]["block"])
+    candidates = [statement for block in program["blocks"] if block["block"] in failed_blocks
+                  for statement in block["statements"]
+                  if operations[statement["operation"]]["opcode"] in {0x51, 0x52, 0xfd}]
+    selected = []
+    # Canonical source statements retain code anchors in the definition. The
+    # second caller's distinct substitutions remain available through IR.
+    for opcode in [0x51, 0x52, 0xfd]:
+        found = False
+        for statement in candidates:
+            if operations[statement["operation"]]["opcode"] != opcode:
+                continue
+            source_descendant(page, canvas, artifact, current["id"], statement["id"])
+            if not ui_control(page, "Simplified structured code", role="tab")["selected"]:
+                continue
+            spelling = "evm." + operations[statement["operation"]]["name"].lower() + "("
+            row = selected_row(page, "decompile-code", spelling)
+            inspector_control(page, canvas, "Statement h" + statement["id"] + " ", "decompile-entity-detail")
+            click_control(page, canvas, row["label"], role="decompile-code", id=row["id"])
+            selected.append(statement["id"])
+            found = True
+            break
+        assert found, (opcode, reading)
+    high(page, canvas)
+    assert painted_copy(page, canvas) == reading
+    canvas.screenshot(path=str(context.output / "shared-procedures-failed-if.png"))
+    return {"artifact": artifact["id"], "procedure": procedure["id"], "source_statements": selected}
+
+
 def run(context):
     page, canvas, _, _ = open_decompiler(context)
     # Native canvas rows remain virtualized. This compact fixture fits even
@@ -336,6 +403,7 @@ def run(context):
         corrupt_publication(context, page, canvas, artifact, reading, mutation)
 
     empty_else = token_only_else(context, page, canvas)
+    failed_if = failure_definition(context, page, canvas)
 
     loop_code = (SOURCE_ROOT / "crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex").read_text().strip()
     loop_artifact, _ = submit(context, page, canvas, loop_code, "shared-procedures-loop-state")
@@ -375,6 +443,6 @@ def run(context):
     return {"artifact": artifact["id"], "procedures": len(program["procedures"]),
             "invocations": len(program["invocations"]), "raw_bytes": raw_bytes,
             "high_bytes": high_bytes, "loop_artifact": loop_artifact["id"],
-            "empty_else": empty_else,
+            "empty_else": empty_else, "failed_if": failed_if,
             "definition_state_rows": len(state_tokens),
             "rejected_artifact": rejected["id"], "webgpu": gpu}

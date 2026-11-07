@@ -1,4 +1,4 @@
-"""Certified guards through real publications, painted code and witness links."""
+"""Explicit failure branches through publications, painted code and source links."""
 
 import re
 
@@ -94,7 +94,38 @@ def projection(artifact):
 
 
 def guard_rows(text):
-    return [line for line in text.splitlines() if line.lstrip().startswith("require(")]
+    return [line for line in text.splitlines() if line.lstrip().startswith("if (")]
+
+
+def normal_join_witness(current, program):
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    expressions = {expression["id"]: expression for expression in program["expressions"]}
+    stores = [(block, statement) for block in program["blocks"] for statement in block["statements"]
+              if operations[statement["operation"]]["opcode"] == 0x55]
+    (join, store), = stores
+    parameter, = join["parameters"]
+    assert expressions[store["inputs"][0]]["kind"] == {"word": "0x0"}
+    assert expressions[store["inputs"][1]]["kind"] == {"value": parameter}
+    edges = {edge["id"]: edge for edge in current["ir"]["edges"]}
+    transfers = {transfer["edge"]: transfer for transfer in program["transfers"]}
+    nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
+    branch, = [kind["if"] for kind in nodes.values() if isinstance(kind, dict) and "if" in kind]
+    arms = []
+    for arm in [branch["then_branch"], branch["else_branch"]]:
+        pending, incoming = [arm], []
+        while pending:
+            kind = nodes[pending.pop()]
+            if "sequence" in kind:
+                pending.extend(kind["sequence"])
+            elif "transfer" in kind and edges[kind["transfer"]["edge"]]["to"] == join["block"]:
+                incoming.append(transfers[kind["transfer"]["edge"]])
+        transfer, = incoming
+        argument, = transfer["arguments"]
+        literal = expressions[argument]["kind"]["word"]
+        arms.append((transfer, f"(v{parameter}) = ({literal});"))
+    assert {expressions[transfer["arguments"][0]]["kind"]["word"] for transfer, _ in arms} == {"0x1", "0x2"}
+    return parameter, store, arms
 
 
 def run(context):
@@ -124,9 +155,9 @@ def run(context):
         loaded = re.search(r"(?m)^(v\d+) = evm\.calldataload\(offset = 0x0\);$", text)
         assert loaded, text
         predicate = "(" + loaded[1] + " != 0)"
-        expected = f"require({predicate});" if nonzero else f"require(!({predicate}));"
+        expected = f"if (!({predicate})) {{" if nonzero else f"if ({predicate}) {{"
         assert guard_rows(text) == [expected], text
-        assert "if (" not in text and "evm.revert(" not in text, text
+        assert "require(" not in text and "    evm.revert(" in text and "} else {" not in text, text
         lines = text.splitlines()
         assert lines.index(expected) < lines.index("evm.sstore(slot = 0x0, value = 0x2a);")
         assert lines[-1] == "evm.stop();", text
@@ -146,7 +177,7 @@ def run(context):
         assert f"b{failure} · decreasing rank {rank}" in proof["label"], proof
         if guard["continuation"]:
             plan = inspector_control(page, canvas, "Failure continuation:", "decompile-entity-detail")
-            assert "omitted after non-fallthrough pass" in plan["label"], plan
+            assert "moved into explicit failed arm" in plan["label"], plan
 
         # Each bounded direct proof reference is an actual navigable entity.
         references = [control["node"], control["condition"], guard["block"],
@@ -173,23 +204,26 @@ def run(context):
                 set_control(page, canvas, ANNOTATIONS, annotations)
                 detailed = painted_copy(page, canvas)
                 assert guard_rows(detailed) == [expected], detailed
-                assert "if (" not in detailed and "evm.revert(" not in detailed, detailed
-                assert "token on e" + guard["failure_edge"] not in detailed, detailed
+                assert "require(" not in detailed and "    evm.revert(" in detailed, detailed
+                failure_tokens = [line for line in detailed.splitlines()
+                                  if "token on e" + guard["failure_edge"] in line]
+                assert len(failure_tokens) == 2 * int(dependencies), detailed
+                assert all(line.startswith("    ") for line in failure_tokens), detailed
                 if dependencies:
                     tokens = [i for i, line in enumerate(detailed.splitlines())
                               if "token on e" + guard["pass_edge"] in line]
-                    assert len(tokens) == 2 and all(i > detailed.splitlines().index(expected) for i in tokens)
+                    assert len(tokens) == 2 and all(i > detailed.splitlines().index("}") for i in tokens)
         set_control(page, canvas, DEPENDENCIES, False)
         set_control(page, canvas, ANNOTATIONS, False)
         assert painted_copy(page, canvas) == text
 
-        # Absorbed high REVERT statements still open their own retained IR row.
+        # The retained REVERT statement owns its explicit high terminal row.
         operations = {op["id"]: op for block in current["ir"]["blocks"] for op in block["operations"]}
         absorbed = next(statement for block in program["blocks"] for statement in block["statements"]
                         if operations[statement["operation"]]["opcode"] == 0xfd)
         source_descendant(page, canvas, artifact, current["id"], absorbed["id"])
-        ui_control(page, "IR", role="tab", selected=True)
-        selected_row(page, "decompile-ir", "h" + absorbed["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", "evm.revert(")
         source_descendant(page, canvas, artifact, current["id"], guard["failure_node"])
         ui_control(page, "Structured code", role="tab", selected=True)
         selected_row(page, "decompile-code", "")
@@ -205,7 +239,7 @@ def run(context):
         assert retained.ok and retained.json()["result"]["Ok"]["artifact"] == artifact
         assert len(posts) == admitted, posts
         canvas.screenshot(path=str(context.output / (name + "-navigation.png")))
-        results.append({"artifact": artifact["id"], "guard": control["id"], "require": expected,
+        results.append({"artifact": artifact["id"], "guard": control["id"], "failed_if": expected,
                         "failure_rank": rank, "proof_references": references})
 
     artifact, _ = submit(context, page, canvas, decoder(), "guard-abi-decoder")
@@ -214,11 +248,11 @@ def run(context):
     text = painted_copy(page, canvas)
     controls = [control for control in program["controls"] if control.get("guard")]
     assert len(controls) >= 4 and len(guard_rows(text)) == len(controls), text
-    assert all(line.startswith("require(") for line in guard_rows(text)), text
-    assert "if (" not in text and "evm.revert(" not in text, text
+    assert all(line.startswith("if (") for line in guard_rows(text)), text
+    assert "require(" not in text and "evm.revert(" in text, text
     assert "evm.slt(" in text and " - 0x4)" in text, text
     assert text.count("evm.sstore(") == 2 and text.count("evm.call(") == 1, text
-    assert text.rindex("require(") < text.index("evm.sstore(") < text.index("evm.call("), text
+    assert text.rindex("if (") < text.index("evm.sstore(") < text.index("evm.call("), text
     # This is the native decoder's actual nested If/following-tail shape.
     nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
     assert sum("if" in kind for kind in nodes.values() if isinstance(kind, dict)) >= 4
@@ -229,7 +263,7 @@ def run(context):
         set_control(page, canvas, ANNOTATIONS, annotations)
         detailed = copy_code(page, canvas)
         assert guard_rows(detailed) == guard_rows(text), detailed
-        assert "if (" not in detailed and "evm.revert(" not in detailed, detailed
+        assert "require(" not in detailed and "evm.revert(" in detailed, detailed
     click_control(page, canvas, "Structured code", role="tab")
     raw = copy_code(page, canvas)
     assert raw.count("if (") >= 4 and "evm.revert(" in raw and "require(" not in raw, raw
@@ -244,26 +278,27 @@ def run(context):
     high(page, canvas)
     text = painted_copy(page, canvas)
     lines = text.splitlines()
-    require, = guard_rows(text)
-    store = "evm.sstore(slot = 0x0, value = 0x2a);"
+    failed_if, = guard_rows(text)
+    store = "    evm.sstore(slot = 0x0, value = 0x2a);"
     revert = "evm.revert(offset = 0x0, size = 0x0);"
-    assert lines.index(require) < lines.index(store) < lines.index(revert), text
-    assert text.count("evm.revert(") == 1 and "if (" not in text, text
-    row = next(row for row in observed(page, "decompile-code") if require in row["label"])
+    assert lines.index(failed_if) < lines.index(store) < lines.index(revert), text
+    assert text.count("evm.revert(") == 1 and "require(" not in text, text
+    row = next(row for row in observed(page, "decompile-code") if failed_if in row["label"])
     click_control(page, canvas, row["label"], role="decompile-code", id=row["id"])
     plan = inspector_control(page, canvas, "Failure continuation:", "decompile-entity-detail")
     assert "pass falls through: true · retained after pass" in plan["label"], plan
     set_control(page, canvas, DEPENDENCIES, True)
     detailed = painted_copy(page, canvas)
-    assert guard_rows(detailed) == [require] and detailed.count(revert) == 1, detailed
-    assert detailed.index(require) < detailed.index(store[:-1]) < detailed.index(revert[:-1]), detailed
+    assert guard_rows(detailed) == [failed_if] and detailed.count(revert) == 1, detailed
+    assert detailed.index(failed_if) < detailed.index(store[:-1]) < detailed.index(revert[:-1]), detailed
     set_control(page, canvas, DEPENDENCIES, False)
     results.append({"artifact": artifact["id"], "retained_join_revert": True})
 
     for name, failure, operation in [("payload", "60015ffd", "size = 0x1"),
                                       ("store", "602a5f555f5ffd", "evm.sstore("),
-                                      ("observation", "33505f5ffd", "evm.caller(")]:
-        artifact, _ = submit(context, page, canvas, rejected_failure(failure), "guard-excluded-" + name)
+                                      ("observation", "33505f5ffd", "evm.caller("),
+                                      ("call-memory", "5f" * 7 + "f150604051602a905260205ffd", "evm.call(")]:
+        artifact, _ = submit(context, page, canvas, rejected_failure(failure), "failure-with-" + name)
         current, program = projection(artifact)
         assert not any(control.get("guard") for control in program["controls"]), program
         high(page, canvas)
@@ -271,11 +306,58 @@ def run(context):
             set_control(page, canvas, DEPENDENCIES, dependencies)
             text = painted_copy(page, canvas)
             assert "require(" not in text and "if (" in text and "evm.revert(" in text, text
-            assert operation in text, text
+            assert operation in text and "} else {" not in text, text
+            assert text.splitlines()[-1] == "evm.stop();", text
+            assert any(line.startswith("    ") and operation in line for line in text.splitlines()), text
             if name != "payload":
                 assert text.index(operation) < text.index("evm.revert("), text
+            if name == "call-memory":
+                assert text.index("evm.call(") < text.index("evm.mload(") < text.index("evm.mstore(") < text.index("evm.revert("), text
         set_control(page, canvas, DEPENDENCIES, False)
-        results.append({"artifact": artifact["id"], "excluded_failure": name})
+        results.append({"artifact": artifact["id"], "retained_failure_effect": name})
+
+    # Exceptional halt retains INVALID identity and never becomes REVERT.
+    artifact, _ = submit(context, page, canvas, rejected_failure("fe"), "failure-invalid")
+    current, program = projection(artifact)
+    high(page, canvas)
+    invalid_text = painted_copy(page, canvas)
+    assert len(guard_rows(invalid_text)) == 1 and "require(" not in invalid_text, invalid_text
+    assert "exception(" in invalid_text and "evm.revert(" not in invalid_text, invalid_text
+    assert "} else {" not in invalid_text and invalid_text.splitlines()[-1] == "evm.stop();", invalid_text
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    terminal = next(statement for block in program["blocks"] for statement in block["statements"]
+                    if operations[statement["operation"]]["opcode"] == 0xfe)
+    source_descendant(page, canvas, artifact, current["id"], terminal["id"])
+    ui_control(page, "Simplified structured code", role="tab", selected=True)
+    selected_row(page, "decompile-code", "exception(")
+    results.append({"artifact": artifact["id"], "invalid_statement": terminal["id"]})
+
+    # Two normal alternatives keep their live branch tuple and else.
+    artifact, _ = submit(context, page, canvas,
+                         "5f35600a576001600d565b60025b5f5500", "failure-normal-branch")
+    current, program = projection(artifact)
+    high(page, canvas)
+    ordinary = painted_copy(page, canvas)
+    assert "} else {" in ordinary, ordinary
+    assert ordinary.count("evm.sstore(") == 1 and "evm.revert(" not in ordinary, ordinary
+    parameter, store, arms = normal_join_witness(current, program)
+    rows = [line.strip() for line in ordinary.splitlines()]
+    separator = rows.index("} else {")
+    stored = rows.index(f"evm.sstore(slot = 0x0, value = v{parameter});")
+    assert rows.index(arms[0][1]) < separator < rows.index(arms[1][1]) < stored, ordinary
+    for transfer, assignment in arms:
+        assert rows.count(assignment) == 1, ordinary
+        source_descendant(page, canvas, artifact, current["id"], transfer["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", assignment)
+    source_descendant(page, canvas, artifact, current["id"], store["id"])
+    ui_control(page, "Simplified structured code", role="tab", selected=True)
+    selected_row(page, "decompile-code", f"value = v{parameter}")
+    assert painted_copy(page, canvas) == ordinary
+    results.append({"artifact": artifact["id"], "ordinary_branch": True,
+                    "join_parameter": parameter, "store_statement": store["id"],
+                    "arm_transfers": [transfer["id"] for transfer, _ in arms]})
 
     gpu = webgpu_evidence(page)
     page.close()

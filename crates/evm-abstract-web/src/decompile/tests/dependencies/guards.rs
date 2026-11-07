@@ -86,7 +86,7 @@ pub(super) fn click_code(ctx: &Context, workspace: &mut Workspace, label: &str) 
 }
 
 #[test]
-fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
+fn live_pass_edge_tuple_executes_once_after_failed_if_before_the_joined_store() {
     let mut runtime = Runtime::default();
     runtime.emit(&[0x5f, 0x35]);
     runtime.jump("other", true);
@@ -122,7 +122,7 @@ fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
         .unwrap();
     for dependencies in [false, true] {
         let lines = high(stage, dependencies);
-        let require = lines
+        let failed_if = lines
             .iter()
             .position(|line| line.entity == control.id)
             .unwrap();
@@ -138,11 +138,11 @@ fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
             .map(|(position, _)| position)
             .unwrap();
         assert!(
-            require < assigned && assigned < store,
+            failed_if < assigned && assigned < store,
             "{}",
             copied_text(&lines)
         );
-        assert_eq!(lines[require].indent, lines[assigned].indent);
+        assert_eq!(lines[failed_if].indent, lines[assigned].indent);
         let target = program
             .block(stage.ir.edge(guard.pass_edge).unwrap().to)
             .unwrap();
@@ -173,7 +173,10 @@ fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
             "the outer ordinary branch must remain"
         );
         let failure = program.transfer(guard.failure_edge).unwrap();
-        assert!(!lines.iter().any(|line| line.entity == failure.id));
+        assert_eq!(
+            lines.iter().any(|line| line.entity == failure.id),
+            dependencies
+        );
     }
 }
 
@@ -244,10 +247,19 @@ fn guards_preserve_loop_continues_and_dispatcher_state_actions() {
         for dependencies in [false, true] {
             let lines = high(stage, dependencies);
             let text = copied_text(&lines);
+            let control = stage
+                .ir
+                .lifted
+                .as_ref()
+                .unwrap()
+                .controls
+                .iter()
+                .find(|control| control.guard.is_some())
+                .unwrap();
             assert_eq!(
                 lines
                     .iter()
-                    .filter(|line| line.text.starts_with("require("))
+                    .filter(|line| line.entity == control.id && line.text.starts_with("if ("))
                     .count(),
                 1,
                 "{text}"
@@ -270,7 +282,7 @@ fn guards_preserve_loop_continues_and_dispatcher_state_actions() {
             } else {
                 let guard = lines
                     .iter()
-                    .find(|line| line.text.starts_with("require("))
+                    .find(|line| line.entity == control.id && line.text.starts_with("if ("))
                     .unwrap();
                 let continued = lines.iter().find(|line| line.text == "continue;").unwrap();
                 assert_eq!(guard.indent, continued.indent);
@@ -281,7 +293,7 @@ fn guards_preserve_loop_continues_and_dispatcher_state_actions() {
                     "preserve the actual source loop exits, including STOP exits"
                 );
             }
-            assert!(!text.contains("evm.revert("), "{text}");
+            assert!(text.contains("evm.revert("), "{text}");
         }
         assert_eq!(rows(&structured::lines(stage)), rows(&raw));
     }
@@ -295,7 +307,7 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
     let normal = high(stage, false);
     let guards: Vec<_> = normal
         .iter()
-        .filter(|line| line.text.starts_with("require("))
+        .filter(|line| line.text.starts_with("if ("))
         .collect();
     assert_eq!(guards.len(), 2, "{}", copied_text(&normal));
     assert!(guards.iter().all(|line| line.indent == 0));
@@ -323,10 +335,18 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
             .iter()
             .any(|line| line.indent == 0 && line.text == "evm.stop();")
     );
-    assert!(
-        !normal
+    assert_eq!(
+        normal
             .iter()
-            .any(|line| line.text.contains("evm.revert(") || line.text.starts_with("if ("))
+            .filter(|line| line.text.contains("evm.revert("))
+            .count(),
+        2
+    );
+    assert!(
+        normal
+            .iter()
+            .filter(|line| line.text.contains("evm.revert("))
+            .all(|line| line.indent == 1)
     );
     for dependencies in [false, true] {
         for annotations in [false, true] {
@@ -340,7 +360,7 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
             assert_eq!(
                 lines
                     .iter()
-                    .filter(|line| line.text.starts_with("require("))
+                    .filter(|line| line.text.starts_with("if ("))
                     .map(|line| (line.entity, line.indent, &line.text))
                     .collect::<Vec<_>>(),
                 guards
@@ -348,7 +368,13 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
                     .map(|line| (line.entity, line.indent, &line.text))
                     .collect::<Vec<_>>(),
             );
-            assert!(!lines.iter().any(|line| line.text.contains("evm.revert(")));
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.text.contains("evm.revert("))
+                    .count(),
+                2
+            );
         }
     }
     let raw = structured::lines(stage);
@@ -388,7 +414,7 @@ fn pass_that_falls_into_joined_revert_keeps_the_revert_after_its_store() {
         let lines = high(stage, dependencies);
         let guard = lines
             .iter()
-            .position(|line| line.text.starts_with("require("))
+            .position(|line| line.text.starts_with("if ("))
             .unwrap();
         let store = lines
             .iter()
@@ -405,7 +431,7 @@ fn pass_that_falls_into_joined_revert_keeps_the_revert_after_its_store() {
                 lines[store].indent,
                 lines[revert].indent
             ],
-            [0, 0, 0]
+            [0, 1, 0]
         );
         assert_eq!(
             lines
@@ -467,7 +493,7 @@ fn payload_or_observation_on_failure_keeps_the_conditional_and_its_effects() {
 }
 
 #[test]
-fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation() {
+fn both_polarities_share_failed_if_rows_clipboard_inspector_and_source_navigation() {
     for (bytecode, pass_nonzero) in [
         ("5f35600a57602a5f55005b5f5ffd", false),
         ("5f356008575f5ffd5b602a5f5500", true),
@@ -502,23 +528,21 @@ fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation(
                 "the true failure arm is closed directly"
             );
         }
-        let predicate = renderer
-            .render_expression(control.condition, |_| true)
+        let plan = renderer
+            .failure_first(control.node, stage.ir.structured.as_ref().unwrap().root.id)
             .unwrap();
-        let expected = renderer.render_guard(control, |_| true).unwrap().unwrap();
-        assert_eq!(
-            expected,
-            if pass_nonzero {
-                format!("require({predicate});")
-            } else {
-                format!("require(!({predicate}));")
-            }
+        assert_eq!(plan.failure_nonzero(), !pass_nonzero);
+        let expected = format!(
+            "if ({}) {{",
+            renderer
+                .render_failure_first_condition(plan, |_| true)
+                .unwrap()
         );
         let normal = high(stage, false);
         assert_eq!(
             normal
                 .iter()
-                .filter(|line| line.entity == control.id)
+                .filter(|line| line.entity == control.id && line.text.starts_with("if ("))
                 .map(|line| (line.indent, line.text.as_str()))
                 .collect::<Vec<_>>(),
             [(0, expected.as_str())]
@@ -533,7 +557,10 @@ fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation(
                         show_structure_annotations: annotations,
                     },
                 );
-                assert!(!lines.iter().any(|line| line.entity == failed_transfer.id));
+                assert_eq!(
+                    lines.iter().any(|line| line.entity == failed_transfer.id),
+                    dependencies
+                );
                 assert_eq!(lines.iter().filter(|line| line.text == expected).count(), 1);
             }
         }
@@ -586,7 +613,7 @@ fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation(
                 .iter()
                 .filter(|row| row["label"]
                     .as_str()
-                    .is_some_and(|label| label.contains("require(")))
+                    .is_some_and(|label| label.contains("if (")))
                 .collect::<Vec<_>>()
         );
         let details = workspace.state.details(&artifact, at);
@@ -645,20 +672,18 @@ fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation(
                     && row["label"].as_str().unwrap().ends_with(&expected))
         );
 
-        // An absorbed failure statement has no high row. Navigation must find
-        // its own IR witness, not an empty fallback or the guard's row.
+        // The terminal keeps its own source-linked high row inside the failed
+        // arm, alongside the constructor statements and edge transfers.
         let absorbed_at = EntityRef {
             stage: stage.id,
             entity: absorbed.id,
         };
         assert!(workspace.state.navigate(&artifact, absorbed_at));
         let ir = frame(&ctx, &mut workspace, vec![]);
-        assert_eq!(workspace.views.route_label(), "IR");
-        assert!(
-            ir.controls
-                .iter()
-                .any(|row| row["role"] == "decompile-ir" && row["selected"] == true)
-        );
+        assert_eq!(workspace.views.route_label(), "Simplified structured code");
+        assert!(ir.controls.iter().any(|row| row["role"] == "decompile-code"
+            && row["selected"] == true
+            && row["label"].as_str().unwrap().contains("evm.revert(")));
         assert_eq!(workspace.state.selected.as_ref().unwrap().at, absorbed_at);
         let raw = structured::lines(stage);
         assert_painted(&click(&ctx, &mut workspace, "Structured code"), &raw);
@@ -678,4 +703,192 @@ fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation(
         assert_eq!(workspace.views.route_label(), "Structured code");
         assert_eq!(workspace.artifact.as_ref(), Some(&original));
     }
+}
+
+#[test]
+fn failed_then_keeps_call_load_store_terminal_order_and_exceptional_identity() {
+    let mut failure = vec![0x5f; 7];
+    failure.extend([
+        0xf1, 0x50, 0x60, 0x40, 0x51, 0x60, 0x2a, 0x90, 0x52, 0x60, 0x20, 0x5f, 0xfd,
+    ]);
+    for (failure, opcodes) in [
+        (failure, vec![0xf1, 0x51, 0x52, 0xfd]),
+        (vec![0xfe], vec![0xfe]),
+    ] {
+        let mut runtime = Runtime::default();
+        runtime.emit(&[0x5f, 0x35]);
+        runtime.jump("success", true);
+        runtime.emit(&failure);
+        runtime.label("success");
+        runtime.emit(&[0x60, 0x2a, 0x5f, 0x55, 0x00]);
+        let artifact = artifact(&runtime.finish());
+        let stage = artifact.current().unwrap();
+        let program = stage.ir.lifted.as_ref().unwrap();
+        let renderer = program.render_index(&stage.ir);
+        let control = program
+            .controls
+            .iter()
+            .find(|control| {
+                renderer
+                    .failure_first(control.node, stage.ir.structured.as_ref().unwrap().root.id)
+                    .is_some()
+            })
+            .unwrap();
+        for dependencies in [false, true] {
+            let lines = high(stage, dependencies);
+            let text = copied_text(&lines);
+            assert!(!text.contains("require(") && !text.contains("} else {"));
+            let header = lines
+                .iter()
+                .position(|line| line.entity == control.id && line.text.starts_with("if ("))
+                .unwrap();
+            let closed = lines
+                .iter()
+                .enumerate()
+                .skip(header + 1)
+                .find(|(_, line)| line.entity == control.id && line.text == "}")
+                .unwrap()
+                .0;
+            let mut previous = header;
+            for opcode in &opcodes {
+                let statement = program
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.statements)
+                    .find(|statement| {
+                        stage
+                            .ir
+                            .blocks
+                            .iter()
+                            .flat_map(|block| &block.operations)
+                            .any(|operation| {
+                                operation.id == statement.operation && operation.opcode == *opcode
+                            })
+                    })
+                    .unwrap();
+                let (position, row) = lines
+                    .iter()
+                    .enumerate()
+                    .skip(previous + 1)
+                    .find(|(_, line)| line.entity == statement.id && !line.text.starts_with("//"))
+                    .unwrap();
+                assert_eq!(row.indent, 1, "{text}");
+                assert!(position < closed, "{text}");
+                previous = position;
+            }
+            let stored = lines
+                .iter()
+                .position(|line| line.text.contains("evm.sstore("))
+                .unwrap();
+            assert!(closed < stored && lines[stored].indent == 0, "{text}");
+            if opcodes == [0xfe] {
+                assert!(
+                    text.contains("exception(") && !text.contains("evm.revert("),
+                    "{text}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn relocated_failure_suffix_keeps_nested_failure_terminals_once_per_source_occurrence() {
+    let mut runtime = Runtime::default();
+    runtime.emit(&[0x5f, 0x35]);
+    runtime.jump("success", true);
+    runtime.emit(&[0x60, 0x20, 0x35]);
+    runtime.jump("invalid", true);
+    runtime.emit(&[0x60, 0x01, 0x5f, 0xfd]);
+    runtime.label("success");
+    runtime.emit(&[0x00]);
+    runtime.label("invalid");
+    runtime.emit(&[0xfe]);
+    let artifact = artifact(&runtime.finish());
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    assert!(program.controls.iter().any(|control| {
+        renderer
+            .failure_first(control.node, stage.ir.structured.as_ref().unwrap().root.id)
+            .is_some_and(|plan| renderer.failure_first_suffix(plan).is_some())
+    }));
+    let original = rows(&structured::lines(stage));
+    for dependencies in [false, true] {
+        let lines = high(stage, dependencies);
+        let text = copied_text(&lines);
+        assert_eq!(text.matches("evm.revert(").count(), 1, "{text}");
+        assert_eq!(text.matches("exception(").count(), 1, "{text}");
+        assert_eq!(text.matches("evm.stop()").count(), 1, "{text}");
+        assert_eq!(lines.last().unwrap().text, "evm.stop();");
+        assert_eq!(lines.last().unwrap().indent, 0);
+    }
+    assert_eq!(rows(&structured::lines(stage)), original);
+}
+
+#[test]
+fn diagnostic_predicate_failure_keeps_the_entire_relocated_failed_arm() {
+    use evm_abstract_protocol::decompile_model::LiftedExpressionKind;
+
+    let mut artifact = artifact("5f356008575f5ffd5b602a5f5500");
+    let current = artifact.current_stage.unwrap();
+    let stage = artifact
+        .stages
+        .iter_mut()
+        .find(|stage| stage.id == current)
+        .unwrap();
+    let program = stage.ir.lifted.as_mut().unwrap();
+    let condition = program.controls[0].condition;
+    // Exercise diagnostic rendering of a rejected snapshot. Removing the
+    // compatibility certificates keeps this test on the independent source
+    // planner; malformed expression references still fail publication checks.
+    program.failures.clear();
+    for control in &mut program.controls {
+        control.guard = None;
+    }
+    program
+        .expressions
+        .iter_mut()
+        .find(|expression| expression.id == condition)
+        .unwrap()
+        .kind = LiftedExpressionKind::NonZero(EntityId(u64::MAX));
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    let plan = renderer
+        .failure_first(
+            program.controls[0].node,
+            stage.ir.structured.as_ref().unwrap().root.id,
+        )
+        .unwrap();
+    assert!(renderer.failure_first_suffix(plan).is_some());
+    assert!(
+        renderer
+            .render_failure_first_condition(plan, |_| true)
+            .is_err()
+    );
+    let lines = high(stage, false);
+    let text = copied_text(&lines);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.indent == 0 && line.text.starts_with("if (unavailable_predicate(")),
+        "{text}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.indent == 1 && line.text.contains("evm.revert("))
+            .count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.indent == 0 && line.text.contains("evm.sstore("))
+            .count(),
+        1,
+        "{text}"
+    );
+    assert!(!text.contains("} else {"), "{text}");
+    assert!(model::check_artifact(&artifact).is_err());
 }

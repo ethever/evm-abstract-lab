@@ -267,6 +267,7 @@
         "crates/evm-abstract-web/tests/fixtures/layout/linear-chain.json",
         "scripts/test-web-browser.py",
         "scripts/web_test_edge_flow.py",
+        "scripts/web_test_edge_flow_sampling.py",
         "scripts/web_test_graph_helpers.py",
         "scripts/web_test_harness.py",
         "scripts/web_test_http_errors.py",

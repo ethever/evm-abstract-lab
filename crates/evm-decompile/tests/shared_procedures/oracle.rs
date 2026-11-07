@@ -4,11 +4,12 @@
 use super::support::{RecordingHost, source_execution};
 use crate::expressions;
 use evm_decompile::{
-    Artifact, EntityId, ExecutionError, ExecutionLimits, ExecutionOutcome, ExitKind, Input,
-    LiftedProgram, LiftedValue, MemoryHost, Primitive, SemanticHost, SharedInvocation, Stage,
-    StructuredKind as Kind, StructuredNode, Terminator, U256, ValueKind,
+    Artifact, EntityId, ExecutionError, ExecutionLimits, ExecutionOutcome, ExitKind,
+    FailureFirstIf, Input, LiftedProgram, LiftedRenderIndex, LiftedValue, MemoryHost, Primitive,
+    SemanticHost, SharedInvocation, Stage, StructuredKind as Kind, StructuredNode, Terminator,
+    U256, ValueKind,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 type Observation = (Option<usize>, u8, Vec<U256>, Vec<U256>);
 
@@ -46,16 +47,20 @@ pub(super) struct Report {
     pub outcome: Result<ExecutionOutcome, ExecutionError>,
     pub host: RecordingHost,
     pub calls: Vec<EntityId>,
+    pub planned: Vec<EntityId>,
     observations: Vec<Observation>,
 }
 
 struct Machine<'a> {
     stage: &'a Stage,
     high: &'a LiftedProgram,
+    render: LiftedRenderIndex<'a>,
+    definition_render: LiftedRenderIndex<'a>,
     nodes: BTreeMap<EntityId, &'a StructuredNode>,
     host: RecordingHost,
     limits: &'a ExecutionLimits,
     calls: Vec<EntityId>,
+    planned: Vec<EntityId>,
     steps: usize,
     observations: Vec<Observation>,
 }
@@ -361,6 +366,66 @@ impl<'a> Machine<'a> {
         })
     }
 
+    fn scope(&self, frame: &Frame<'a>) -> EntityId {
+        frame.invocation.map_or_else(
+            || self.stage.ir.structured.as_ref().unwrap().root.id,
+            |call| {
+                self.high
+                    .procedures
+                    .iter()
+                    .find(|p| p.id == call.procedure)
+                    .unwrap()
+                    .body
+            },
+        )
+    }
+    fn plan(&self, source: EntityId, frame: &Frame<'a>) -> Option<FailureFirstIf> {
+        let index = if frame.invocation.is_some() {
+            &self.definition_render
+        } else {
+            &self.render
+        };
+        index.failure_first(source, self.scope(frame)).cloned()
+    }
+    fn sequence(
+        &mut self,
+        owner: EntityId,
+        children: &'a [StructuredNode],
+        range: std::ops::Range<usize>,
+        frame: &mut Frame<'a>,
+    ) -> Result<Flow, ExecutionError> {
+        let mut escaped = None;
+        let mut position = range.start;
+        while position < range.end {
+            let index = if frame.invocation.is_some() {
+                &self.definition_render
+            } else {
+                &self.render
+            };
+            if position > range.start
+                && let Some(end) =
+                    index.failure_first_sequence_end(owner, position, self.scope(frame))
+            {
+                assert!(end > position && end <= range.end);
+                position = end;
+                continue;
+            }
+            let child = &children[position];
+            if let Some(target) = escaped.take()
+                && child.entry_block(&self.stage.ir) != Some(target)
+            {
+                return Ok(Flow::Escaped(target));
+            }
+            match self.syntax(child, frame)? {
+                Flow::Next => {}
+                Flow::Escaped(target) => escaped = Some(target),
+                other => return Ok(other),
+            }
+            position += 1;
+        }
+        Ok(escaped.map_or(Flow::Next, Flow::Escaped))
+    }
+
     fn syntax(
         &mut self,
         node: &'a StructuredNode,
@@ -376,22 +441,7 @@ impl<'a> Machine<'a> {
             return self.invoke(call, frame);
         }
         match &node.kind {
-            Kind::Sequence(children) => {
-                let mut escaped = None;
-                for child in children {
-                    if let Some(target) = escaped.take()
-                        && child.entry_block(&self.stage.ir) != Some(target)
-                    {
-                        return Ok(Flow::Escaped(target));
-                    }
-                    match self.syntax(child, frame)? {
-                        Flow::Next => {}
-                        Flow::Escaped(target) => escaped = Some(target),
-                        other => return Ok(other),
-                    }
-                }
-                Ok(escaped.map_or(Flow::Next, Flow::Escaped))
-            }
+            Kind::Sequence(children) => self.sequence(node.id, children, 0..children.len(), frame),
             Kind::Block { block } => self.block(*block, frame),
             Kind::Transfer { edge } => {
                 self.transfer(*edge, frame)?;
@@ -401,14 +451,34 @@ impl<'a> Machine<'a> {
                 then_branch,
                 else_branch,
                 ..
-            } => self.syntax(
-                if self.predicate(self.high.control(node.id).unwrap().condition, frame) {
-                    then_branch
+            } => {
+                let condition =
+                    self.predicate(self.high.control(node.id).unwrap().condition, frame);
+                if let Some(plan) = self.plan(node.id, frame) {
+                    self.planned.push(frame.actual(node.id));
+                    if condition == plan.failure_nonzero() {
+                        let flow = self.syntax(self.nodes[&plan.failure_node()], frame)?;
+                        if flow != Flow::Next {
+                            return Ok(flow);
+                        }
+                        if let Some((sequence, range)) =
+                            self.render.failure_first_suffix_range(&plan)
+                        {
+                            let Kind::Sequence(children) = &self.nodes[&sequence].kind else {
+                                unreachable!()
+                            };
+                            let flow = self.sequence(sequence, children, range, frame)?;
+                            if flow != Flow::Next {
+                                return Ok(flow);
+                            }
+                        }
+                        panic!("rendered failure fell into the successful procedure continuation");
+                    }
+                    self.syntax(self.nodes[&plan.success_node()], frame)
                 } else {
-                    else_branch
-                },
-                frame,
-            ),
+                    self.syntax(if condition { then_branch } else { else_branch }, frame)
+                }
+            }
             Kind::While {
                 header,
                 condition,
@@ -491,13 +561,19 @@ pub(super) fn run(stage: &Stage, host: MemoryHost, limits: &ExecutionLimits) -> 
     high.validate_shared_sources(&stage.ir, |_| true)
         .expect("direct supplied source-certificate admission");
     let root = &stage.ir.structured.as_ref().unwrap().root;
+    let mut expanded = high.clone();
+    expanded.invocations.clear();
+    expanded.procedures.clear();
     let mut machine = Machine {
         stage,
         high,
+        render: high.render_index(&stage.ir),
+        definition_render: expanded.render_base_index_with_budget(&stage.ir, |_| true),
         nodes: nodes(root),
         host: RecordingHost::new(host),
         limits,
         calls: Vec::new(),
+        planned: Vec::new(),
         steps: 0,
         observations: Vec::new(),
     };
@@ -516,6 +592,7 @@ pub(super) fn run(stage: &Stage, host: MemoryHost, limits: &ExecutionLimits) -> 
         outcome,
         host: machine.host,
         calls: machine.calls,
+        planned: machine.planned,
         observations: machine.observations,
     }
 }
@@ -528,6 +605,21 @@ pub(super) fn certify(
 ) -> Report {
     let (expected, expected_host, raw) = source_execution(input, artifact, host.clone(), limits);
     let report = run(artifact.current().unwrap(), host, limits);
+    let decisions: BTreeSet<_> = artifact
+        .current()
+        .unwrap()
+        .ir
+        .lifted
+        .as_ref()
+        .unwrap()
+        .controls
+        .iter()
+        .map(|c| c.node)
+        .collect();
+    assert!(
+        report.planned.iter().all(|node| decisions.contains(node)),
+        "normalized decisions must retain their actual source If occurrence"
+    );
     assert_eq!(
         report.outcome, expected,
         "actual invocation/definition execution outcome"

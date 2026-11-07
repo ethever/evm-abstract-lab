@@ -52,7 +52,12 @@ def focus_inspector_value(page, canvas):
     assert bounds["y"] <= top < bottom <= bounds["y"] + bounds["height"], control
     # An already active editor's real DOM input can cover the canvas here.
     # Dispatch to the observed field location so browser hit-testing owns it.
+    before = page.evaluate("window.__webgpuEvidence.submissions")
     page.mouse.dblclick((left + right) / 2, (top + bottom) / 2)
+    # rAF can advance while eframe still has a prepared pre-input frame. Let
+    # the double-click enter native text mode before the following single-click.
+    page.wait_for_function("""before => window.__webgpuEvidence.submissions >=
+        Math.max(before, window.__webTestInputFrame ?? before) + 2""", arg=before, polling=25)
     settle_gesture(page)
     return focus_text_control(page, canvas, "inspector_ssa_value")
 

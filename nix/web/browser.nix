@@ -57,6 +57,7 @@ let
     lib.unique (
       [
         "scripts/web_test_cases.json"
+        "scripts/test_web_edge_flow_sampling.py"
         "scripts/test_web_test_registry.py"
       ]
       # The global completeness check must see newly added, unregistered case
@@ -90,11 +91,13 @@ in
   web-browser-registry =
     pkgs.runCommand "evm-abstract-web-browser-registry"
       {
-        nativeBuildInputs = [ pkgs.python3 ];
+        # Sampling regressions import the browser oracle without launching it.
+        nativeBuildInputs = [ browserPython ];
       }
       ''
         python -B ${registrySource}/scripts/test-web-browser.py --validate-manifest
         python -B ${registrySource}/scripts/test_web_test_registry.py
+        python -B ${registrySource}/scripts/test_web_edge_flow_sampling.py
         touch "$out"
       '';
 }

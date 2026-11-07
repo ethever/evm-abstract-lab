@@ -24,6 +24,7 @@ struct Scope<'a> {
     lifted: Option<&'a LiftedRenderIndex<'a>>,
     work: Option<&'a super::lifted::work::Work>,
     shared: bool,
+    boundary: Option<EntityId>,
     display: HighDisplayOptions,
 }
 impl Scope<'_> {
@@ -122,6 +123,7 @@ fn render_lines(
                 lifted: renderer.as_ref(),
                 work: Some(&work),
                 shared,
+                boundary: Some(program.root.id),
                 display,
                 ..Scope::default()
             },
@@ -197,12 +199,11 @@ fn render(
             summary = RenderSummary::default();
             let mut position = 0;
             while let Some(child) = nodes.get(position) {
-                if let Some(end) = scope
-                    .lifted
-                    .and_then(|renderer| renderer.sequence_end(node.id, position))
-                {
-                    // Omission is occurrence-local and certified by the model;
-                    // display preferences never change the executed plan.
+                if let Some(end) = scope.lifted.and_then(|renderer| {
+                    renderer.failure_first_sequence_end(node.id, position, scope.boundary?)
+                }) {
+                    // This source suffix was moved into its failed arm by the
+                    // shared plan. Preferences never change its ownership.
                     position = end;
                     continue;
                 }
@@ -235,23 +236,67 @@ fn render(
             else_branch,
         } => {
             if let Some(renderer) = scope.lifted
-                && let Some(guard) = renderer.guard(node.id)
-                && let Some(control) = renderer.control(node.id)
+                && let Some(boundary) = scope.boundary
+                && let Some(plan) = renderer.failure_first(node.id, boundary)
+                && let Some(failure) = renderer.node(plan.failure_node())
+                && let Some(success) = renderer.node(plan.success_node())
             {
-                let text = super::lifted::guard(renderer, control);
-                emit(output, control.id, indent, text);
-                if let Some(pass) = renderer.node(guard.pass_node) {
-                    // The selected arm owns its original Transfer, including
-                    // simultaneous word bindings after the successful guard.
-                    render(pass, ir, index, scope, indent, output);
-                } else {
-                    emit(
+                let owner = renderer
+                    .control(node.id)
+                    .map_or(node.id, |control| control.id);
+                // The suffix skip and this layout are one admitted decision.
+                // A formatting refusal must keep every planned source row.
+                let condition = renderer
+                    .render_failure_first_condition(plan, |_| true)
+                    .unwrap_or_else(|error| {
+                        format!("unavailable_predicate(ast{}: {error})", node.id.0)
+                    });
+                emit(output, owner, indent, format!("if ({condition}) {{"));
+                let suffix = renderer.failure_first_suffix(plan).unwrap_or_default();
+                render(
+                    failure,
+                    ir,
+                    index,
+                    Scope {
+                        following: suffix.first().and_then(|next| index.first_block(ir, next)),
+                        ..scope
+                    },
+                    indent + 1,
+                    output,
+                );
+                let suffix_range = renderer.failure_first_suffix_range(plan);
+                let mut position = 0;
+                while let Some(child) = suffix.get(position) {
+                    if position > 0
+                        && let Some((sequence, range)) = &suffix_range
+                        && let Some(end) = renderer.failure_first_sequence_end(
+                            *sequence,
+                            range.start + position,
+                            boundary,
+                        )
+                    {
+                        position = end - range.start;
+                        continue;
+                    }
+                    render(
+                        child,
+                        ir,
+                        index,
+                        Scope {
+                            following: suffix
+                                .get(position + 1)
+                                .and_then(|next| index.first_block(ir, next)),
+                            ..scope
+                        },
+                        indent + 1,
                         output,
-                        control.id,
-                        indent,
-                        format!("unavailable_guard_pass(ast{});", guard.pass_node.0),
                     );
+                    position += 1;
                 }
+                emit(output, owner, indent, "}");
+                // The success arm retains its original simultaneous bindings
+                // and continues at the failed If's indentation.
+                render(success, ir, index, scope, indent, output);
                 return RenderSummary::CONTENT;
             }
             let (owner, predicate) = predicate(node.id, *condition, ir, index, scope.lifted);
@@ -474,15 +519,10 @@ fn body(
             );
             return RenderSummary::CONTENT;
         };
-        // A terminal payload proof alone never authorizes hiding stores. Use
-        // only the admitted lazy capsule, and retain witnesses if formatting
-        // cannot produce its complete replacement.
-        let construction = super::lifted::compact_revert(renderer, block.id)
-            .and_then(|_| renderer.construction(block.id));
-        for (position, statement) in semantic.statements.iter().enumerate() {
-            if construction.is_some_and(|plan| (plan.start..plan.end).contains(&position)) {
-                continue;
-            }
+        // Payload certificates describe the original memory operations. Keep
+        // those operations in their source arm instead of replacing them with
+        // an eagerly evaluated error argument or a compact terminal.
+        for statement in &semantic.statements {
             if let Some(op) = index.operation(ir, statement.operation) {
                 if let Some(reason) = fault_reason(op, ir, index) {
                     emit(
@@ -639,15 +679,18 @@ fn exit_owner(
     index: &StageIndex,
     lifted: Option<&LiftedRenderIndex<'_>>,
 ) -> EntityId {
-    if let Some(renderer) = lifted
-        && super::lifted::compact_revert(renderer, block).is_some()
-        && let Some(construction) = renderer.construction(block)
-    {
-        construction.id
-    } else if lifted.is_some() {
-        index
-            .source_block(ir, block)
-            .map_or(fallback, |block| block.id)
+    if lifted.is_some() {
+        index.source_block(ir, block).map_or(fallback, |block| {
+            block
+                .statements
+                .iter()
+                .find(|statement| {
+                    index
+                        .operation(ir, statement.operation)
+                        .is_some_and(|operation| operation.effects.terminate)
+                })
+                .map_or(block.id, |statement| statement.id)
+        })
     } else {
         fallback
     }
@@ -715,16 +758,9 @@ fn projected_terminator(
                 },
             )
         }
-        Terminator::Exit { kind, .. } => {
-            if *kind == ExitKind::Revert
-                && let Some(text) = super::lifted::compact_revert(renderer, block)
-            {
-                return text;
-            }
-            renderer
-                .render_exit(*kind, &semantic.exit_values, |_| true)
-                .unwrap_or_else(|error| format!("unavailable_exit(b{}: {error});", block.0))
-        }
+        Terminator::Exit { kind, .. } => renderer
+            .render_exit(*kind, &semantic.exit_values, |_| true)
+            .unwrap_or_else(|error| format!("unavailable_exit(b{}: {error});", block.0)),
         Terminator::Pending => "partial_exit(\"recovery pending\");".into(),
         Terminator::Fallthrough { edge } => format!("follow e{};", edge.0),
         Terminator::Trap { reason } => format!("exception({reason:?});"),

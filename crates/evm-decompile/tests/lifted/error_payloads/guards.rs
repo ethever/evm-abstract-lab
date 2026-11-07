@@ -9,8 +9,13 @@ fn both_guard_polarities_execute_failure_construction_only_on_rejection() {
             assert_message(&artifact, message);
             assert_eq!(error_guards(&artifact), 1, "{}", render_text(&artifact));
             let text = render_text(&artifact);
-            assert_eq!(text.matches("require(").count(), 1, "{text}");
-            assert!(text.contains(std::str::from_utf8(message).unwrap()));
+            assert_eq!(text.matches("if (").count(), 1, "{text}");
+            assert!(!text.contains("require("), "{text}");
+            assert!(
+                text.contains("evm.mload(") && text.contains("evm.mstore("),
+                "{text}"
+            );
+            assert!(text.contains("evm.revert(offset = "), "{text}");
             for word in [U256::ZERO, U256::from(1), U256::from(2), U256::MAX] {
                 let (outcome, host, capsules) = oracle::certify(
                     &input,
@@ -125,7 +130,7 @@ fn shared_and_nested_pass_reachable_tails_preserve_storage_before_error() {
         assert_message(&artifact, DS_MATH);
         let text = render_text(&artifact);
         let store = text.find("evm.sstore(").unwrap();
-        let tail = text.rfind("evm.revert(\"ds-math-mul-overflow\");").unwrap();
+        let tail = text.rfind("evm.revert(").unwrap();
         assert!(store < tail, "pass-reachable tail was removed: {text}");
         for (outer, inner) in [(0_u64, 0_u64), (0, 1), (1, 0), (1, 1)] {
             let (outcome, host, _) = oracle::certify(
@@ -305,7 +310,7 @@ fn nested_guard_can_share_one_constructor_reached_by_two_original_jumps() {
 }
 
 #[test]
-fn dispatcher_terminal_cases_reuse_certified_construction_without_erasing_state_transitions() {
+fn dispatcher_terminal_cases_retain_certified_constructors_and_state_transitions() {
     let input = fixtures::dispatcher();
     let artifact = checked(&input);
     assert_message(&artifact, DS_MATH);
@@ -324,7 +329,7 @@ fn dispatcher_terminal_cases_reuse_certified_construction_without_erasing_state_
         index.construction(terminal).is_some(),
         "valid dispatcher terminal case needs a source construction plan"
     );
-    assert!(render_text(&artifact).contains("evm.revert(\"ds-math-mul-overflow\");"));
+    assert!(render_text(&artifact).contains("evm.revert(offset = "));
     for words in [[0_u64, 0_u64, 0_u64], [1, 0, 0], [1, 1, 0], [0, 0, 1]] {
         let words = words.map(U256::from);
         let (outcome, host, capsules) = oracle::certify(
@@ -422,10 +427,10 @@ fn a_pass_reachable_error_join_remains_after_the_actual_external_call() {
     assert_message(&artifact, DS_MATH);
     assert!(error_guards(&artifact) > 0);
     let text = render_text(&artifact);
-    let require = text.find("require(").unwrap();
+    let failure_if = text.find("if (").unwrap();
     let call = text.find("evm.call(").unwrap();
-    let tail = text.rfind("evm.revert(\"ds-math-mul-overflow\");").unwrap();
-    assert!(require < call && call < tail, "{text}");
+    let tail = text.rfind("evm.revert(").unwrap();
+    assert!(failure_if < call && call < tail, "{text}");
     for pass in [0_u64, 1] {
         let mut host = MemoryHost::new(&input, calldata(&[U256::from(pass)]));
         host.responses.push_back(ExternalResponse {

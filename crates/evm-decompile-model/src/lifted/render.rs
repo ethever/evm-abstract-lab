@@ -7,7 +7,10 @@ use super::{LiftedModelError, sources::GuardSources};
 use crate::{EntityId, ExitKind, Ir, StructuredNode};
 use std::collections::BTreeMap;
 
+mod failure_first;
 pub(crate) mod primitive;
+pub use failure_first::FailureFirstIf;
+use failure_first::FailureFirstIndex;
 use primitive::{CallName, append};
 
 /// Reusable indexes for rendering many semantic rows without rescanning arenas.
@@ -31,6 +34,7 @@ pub struct LiftedRenderIndex<'a> {
     reverts: BTreeMap<EntityId, &'a super::LiftedRevert>,
     constructions: BTreeMap<EntityId, &'a super::LiftedConstruction>,
     guard_source_error: Option<LiftedRenderError>,
+    failure_first: Result<FailureFirstIndex, LiftedRenderError>,
 }
 /// Bounded expression export failure, independent of artifact recovery coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,7 +127,7 @@ impl<'a> LiftedRenderIndex<'a> {
             ),
             None => (None, None),
         };
-        Self {
+        let mut result = Self {
             program,
             shared_source,
             shared_error,
@@ -147,7 +151,16 @@ impl<'a> LiftedRenderIndex<'a> {
             reverts: program.reverts.iter().map(|r| (r.block, r)).collect(),
             constructions: program.constructions.iter().map(|c| (c.block, c)).collect(),
             guard_source_error,
-        }
+            failure_first: Ok(FailureFirstIndex::default()),
+        };
+        result.failure_first = if let Some(error) = guard_source_error {
+            Err(error)
+        } else if let Some(ir) = ir {
+            FailureFirstIndex::new(&result, ir, &mut pay)
+        } else {
+            Ok(FailureFirstIndex::default())
+        };
+        result
     }
     fn refused(program: &'a LiftedProgram) -> Self {
         Self {
@@ -169,6 +182,7 @@ impl<'a> LiftedRenderIndex<'a> {
             reverts: BTreeMap::new(),
             constructions: BTreeMap::new(),
             guard_source_error: Some(LiftedRenderError::Limit),
+            failure_first: Err(LiftedRenderError::Limit),
         }
     }
     /// Structural guard admission for this index, independent of stored Passed

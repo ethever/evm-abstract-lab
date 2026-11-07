@@ -58,7 +58,7 @@ def runtime(coefficient=0x60, step=0x67, guard=True, mutation=None):
     if guard:
         code.emit("50505000")
     else:
-        code.emit("805f55")  # observable prefix prevents a loop-test require
+        code.emit("805f55")  # observable prefix remains before the loop-exit construction
         code.emit(error_tail(MESSAGE))
     code.label("reject")
     code.emit("5f5ffd")
@@ -80,12 +80,10 @@ def semantic_rows(text):
 def live_rows(page, program, current):
     plan, = program["constructions"]
     block = next(block for block in program["blocks"] if block["block"] == plan["block"])
-    elided = {statement["id"] for statement in block["statements"][plan["start"]:plan["end"]]}
     operations = {operation["id"]: operation for block in current["ir"]["blocks"]
                   for operation in block["operations"]}
     retained = [statement for block in program["blocks"] for statement in block["statements"]
-                if operations[statement["operation"]]["opcode"] in {0x52, 0xfa}
-                and statement["id"] not in elided]
+                if operations[statement["operation"]]["opcode"] in {0x52, 0xfa}]
     assert len(retained) >= 7, retained
     text = "\n".join(code_label(row["label"])[1] for row in observed(page, "decompile-code"))
     for opcode, spelling in [(0x52, "evm.mstore("), (0xfa, "evm.staticcall(")]:
@@ -96,14 +94,14 @@ def live_rows(page, program, current):
 
 def run(context):
     page, canvas, _, _ = open_decompiler(context)
-    resize_view(page, 1920, 2400)
+    resize_view(page, 1920, 3200)
     posts, publications, results = [], [], []
     page.on("request", lambda request: posts.append(request.url)
             if request.method == "POST" and "/api/" in request.url else None)
     page.on("response", lambda response: publications.append(response.url)
             if "/api/decompile/" in response.url and response.url.endswith("/result") else None)
     for coefficient, step, guarded in [(0x60, 0x67, True), (0x70, 0x59, False)]:
-        name = "loop-pointer-" + ("require" if guarded else "revert")
+        name = "loop-pointer-" + ("failed-if" if guarded else "revert")
         artifact, _ = submit(context, page, canvas, runtime(coefficient, step, guarded), name)
         current, program = projection(artifact)
         admitted, result_url = len(posts), publications[-1]
@@ -125,11 +123,12 @@ def run(context):
         text = painted_copy(page, canvas)
         assert "while (" in text and "evm.staticcall(" in text, text
         assert text.count("evm.mstore(offset = 0x40,") == 3, text
-        assert "evm.revert(offset =" not in text, text
+        assert "evm.revert(offset =" in text and "require(" not in text, text
         if guarded:
             assert guards[0]["guard"]["pass_nonzero"], guards
-            required = next(line for line in text.splitlines()
-                            if line.lstrip().startswith("require(") and MESSAGE in line)
+            source_descendant(page, canvas, artifact, current["id"], guards[0]["id"])
+            ui_control(page, "Simplified structured code", role="tab", selected=True)
+            required = code_label(selected_row(page, "decompile-code", "if (")["label"])[1]
             store_at = text.index("evm.sstore(", text.index(required))
             transfer = next(transfer for transfer in program["transfers"]
                             if transfer["edge"] == guards[0]["guard"]["pass_edge"])
@@ -140,8 +139,13 @@ def run(context):
             tuple_text = code_label(row["label"])[1]
             assert text.index(required) < text.index(tuple_text) < store_at, text
         else:
-            assert f'evm.revert("{MESSAGE}");' in text, text
-            assert text.index("evm.sstore(") < text.index(f'evm.revert("{MESSAGE}");'), text
+            assert "evm.revert(offset =" in text, text
+            terminal_statement = next(statement for block in program["blocks"] for statement in block["statements"]
+                                      if statement["operation"] == terminal["operation"])
+            source_descendant(page, canvas, artifact, current["id"], terminal_statement["id"])
+            ui_control(page, "Simplified structured code", role="tab", selected=True)
+            terminal_row = code_label(selected_row(page, "decompile-code", "evm.revert(offset =")["label"])[1]
+            assert text.index("evm.sstore(") < text.index(terminal_row), text
         retained = live_rows(page, program, current)
         for dependencies, annotations in [(True, False), (False, True), (True, True), (False, False)]:
             set_control(page, canvas, DEPENDENCIES, dependencies)
@@ -178,7 +182,7 @@ def run(context):
                         "coefficient": coefficient, "step": step, "source_n_bounds": [2, 7]})
 
     # Raw failure construction plus every state/structure row is taller than
-    # its compact positive. Keep the complete annotated fixture in view.
+    # its certified positive. Keep the complete annotated fixture in view.
     resize_view(page, 1920, 3200)
     for mutation in ["alias", "wrap"]:
         name = "loop-pointer-rejected-" + mutation

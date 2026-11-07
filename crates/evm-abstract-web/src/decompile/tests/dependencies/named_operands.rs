@@ -173,7 +173,16 @@ fn published_terminal_rows_use_named_semantic_values_but_raw_exits_stay_position
                 );
                 let exits: Vec<_> = lines.iter().filter(|line| line.text == expected).collect();
                 assert_eq!(exits.len(), 1, "{bytecode}: {}", copied_text(&lines));
-                assert_eq!(exits[0].entity, semantic.id);
+                let owner = semantic
+                    .statements
+                    .iter()
+                    .find(|statement| {
+                        block.operations.iter().any(|operation| {
+                            operation.id == statement.operation && operation.effects.terminate
+                        })
+                    })
+                    .map_or(semantic.id, |statement| statement.id);
+                assert_eq!(exits[0].entity, owner);
                 assert_eq!(exits[0].indent, 0);
             }
         }

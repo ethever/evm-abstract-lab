@@ -139,7 +139,7 @@ fn lifted_default_renders_actual_unsigned_predicate_and_raw_route_keeps_iszero_c
         "{high}"
     );
     assert!(
-        high.contains("require(") && high.contains("evm.stop") && !high.contains("evm.revert"),
+        high.contains("if (") && high.contains("evm.stop") && high.contains("evm.revert"),
         "{high}"
     );
     let raw = code(&click(&ctx, &mut workspace, "Structured code"));

@@ -3,8 +3,8 @@
 
 use super::{details::Details, index::StageIndex, model::EntityKind, structured};
 use evm_abstract_protocol::decompile_model::{
-    EntityId, EntityRef, LiftedConstruction, LiftedControl, LiftedExpressionKind,
-    LiftedGuardPayload, LiftedProgram, LiftedRenderIndex, LiftedStatement, LiftedTransfer, Stage,
+    EntityId, EntityRef, LiftedConstruction, LiftedExpressionKind, LiftedGuardPayload,
+    LiftedProgram, LiftedRenderIndex, LiftedStatement, LiftedTransfer, Stage,
 };
 
 pub(super) mod shared;
@@ -43,21 +43,10 @@ pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, 
     }
 }
 
-pub(super) fn compact_revert(renderer: &LiftedRenderIndex<'_>, block: EntityId) -> Option<String> {
-    renderer.render_revert(block, |_| true).ok().flatten()
-}
-
 pub(super) fn expression(renderer: &LiftedRenderIndex<'_>, id: EntityId) -> String {
     renderer
         .render_expression(id, |_| true)
         .unwrap_or_else(|error| format!("unavailable_expression(x{}: {error})", id.0))
-}
-
-pub(super) fn guard(renderer: &LiftedRenderIndex<'_>, control: &LiftedControl) -> String {
-    renderer
-        .render_guard(control, |_| true)
-        .unwrap_or_else(|error| Some(format!("unavailable_guard(h{}: {error});", control.id.0)))
-        .unwrap_or_else(|| format!("unavailable_guard(h{});", control.id.0))
 }
 
 pub(super) fn statement(renderer: &LiftedRenderIndex<'_>, statement: &LiftedStatement) -> String {
@@ -180,7 +169,7 @@ pub(super) fn details(
         if let Some(construction) = renderer.construction(revert.block) {
             references.push(construction.id);
         } else {
-            lines.push("Compact construction proof unavailable; original memory operations and raw REVERT are retained.".into());
+            lines.push("Original construction proof unavailable; original memory operations and raw REVERT are retained.".into());
         }
     } else if let Some(construction) = index.construction(&stage.ir, id) {
         construction_details(
@@ -270,6 +259,23 @@ pub(super) fn details(
     } else {
         let control = index.control(&stage.ir, id)?;
         references.extend([control.node, control.condition]);
+        let failure_first = stage
+            .ir
+            .structured
+            .as_ref()
+            .and_then(|source| renderer.failure_first(control.node, source.root.id));
+        let failure_header = failure_first.and_then(|plan| {
+            renderer
+                .render_failure_first_condition(plan, |_| true)
+                .ok()
+                .map(|condition| format!("if ({condition}) {{"))
+        });
+        if let Some(plan) = failure_first {
+            references.extend([plan.failure_node(), plan.success_node()]);
+            if let Some(suffix) = renderer.failure_first_suffix(plan) {
+                references.extend(suffix.iter().map(|node| node.id));
+            }
+        }
         if let Some(guard) = &control.guard {
             let admitted = renderer.guard(control.node).is_some();
             let kind = match guard.payload {
@@ -284,11 +290,7 @@ pub(super) fn details(
                 if admitted { "Certified" } else { "Unadmitted" },
                 id.0,
                 control.node.0,
-                if admitted {
-                    self::guard(renderer, control)
-                } else {
-                    "source proof unavailable; raw If retained".into()
-                }
+                failure_header.unwrap_or_else(|| "original source If retained".into())
             ));
             lines.push(format!(
                 "Predicate: {} · successful source truth: {}",
@@ -349,20 +351,33 @@ pub(super) fn details(
                     continuation.start,
                     continuation.end,
                     continuation.pass_falls_through,
-                    if continuation.pass_falls_through {
-                        "retained after pass"
+                    if failure_first
+                        .and_then(|plan| renderer.failure_first_suffix(plan))
+                        .is_some()
+                    {
+                        "moved into explicit failed arm"
                     } else {
-                        "omitted after non-fallthrough pass"
+                        "retained after pass"
                     },
                 ));
                 references.push(continuation.sequence);
             }
         } else {
-            lines.push(format!(
-                "Control h{} · ast{}: {}",
-                id.0,
-                control.node.0,
-                expression(renderer, control.condition)
+            lines.push(failure_header.map_or_else(
+                || {
+                    format!(
+                        "Control h{} · ast{}: {}",
+                        id.0,
+                        control.node.0,
+                        expression(renderer, control.condition)
+                    )
+                },
+                |header| {
+                    format!(
+                        "Failure-first If h{} · ast{}: {header}",
+                        id.0, control.node.0
+                    )
+                },
             ));
         }
     }
@@ -396,7 +411,7 @@ fn construction_details(
         construction.end,
     ));
     if admitted {
-        lines.push("Original operations, memory expansion and exceptional faults execute only on the original failure route.".into());
+        lines.push("Original operations, memory expansion and exceptional faults remain explicit on the original failure route.".into());
     } else {
         lines.push(
             "Source proof unavailable; original construction and raw REVERT are retained.".into(),

@@ -48,8 +48,8 @@ def run(context):
     high_text = copy_code(page, canvas)
     assert " >= " in high_text and "evm.iszero(" not in high_text, high_text
     assert control["guard"]["pass_nonzero"] and control["guard"]["payload"] == "empty_revert"
-    assert "if (" not in high_text and "evm.revert(" not in high_text, high_text
-    assert any("require(" in row["label"] and " >= " in row["label"]
+    assert "if (" in high_text and "    evm.revert(" in high_text and "require(" not in high_text, high_text
+    assert any("if (" in row["label"] and " >= " in row["label"]
                for row in observed(page, "decompile-code"))
     canvas.screenshot(path=str(context.output / "lifted-unsigned-predicate-code.png"))
 

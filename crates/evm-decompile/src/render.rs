@@ -92,6 +92,7 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
         status: TextExportStatus::Complete,
         loops: Vec::new(),
         next_block: None,
+        boundary: EntityId(0),
         lifted: None,
         lifted_renderer: None,
     };
@@ -122,6 +123,11 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
     index.blocks = stage.ir.blocks.iter().map(|b| (b.id, b)).collect();
     index.edges = stage.ir.edges.iter().map(|e| (e.id, e)).collect();
     index.lifted = stage.ir.lifted.as_ref();
+    index.boundary = stage
+        .ir
+        .structured
+        .as_ref()
+        .map_or(EntityId(0), |s| s.root.id);
     index.lifted_renderer = stage
         .ir
         .lifted
@@ -272,6 +278,7 @@ struct RenderIndex<'a, P: FnMut(u64)> {
     status: TextExportStatus,
     loops: Vec<LoopControl>,
     next_block: Option<EntityId>,
+    boundary: EntityId,
     lifted: Option<&'a LiftedProgram>,
     lifted_renderer: Option<LiftedRenderIndex<'a>>,
 }
@@ -317,14 +324,6 @@ impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
     fn high_expression(&mut self, id: EntityId) -> String {
         self.semantic(|renderer, owner| renderer.render_expression(id, |work| owner.pay(work)))
             .unwrap_or_else(|| format!("expression_limit(e{})", id.0))
-    }
-    fn high_guard(&mut self, control: &LiftedControl) -> Option<String> {
-        self.semantic(|renderer, owner| renderer.render_guard(control, |work| owner.pay(work)))
-            .flatten()
-    }
-    fn high_revert(&mut self, block: EntityId) -> Option<String> {
-        self.semantic(|renderer, owner| renderer.render_revert(block, |work| owner.pay(work)))
-            .flatten()
     }
     fn high_statement(&mut self, statement: &LiftedStatement) -> Option<String> {
         self.semantic(|renderer, owner| {
@@ -397,29 +396,9 @@ fn expression(ir: &RenderIndex<'_, impl FnMut(u64)>, id: EntityId) -> String {
 }
 fn body(out: &mut String, block: &Block, ir: &mut RenderIndex<'_, impl FnMut(u64)>, depth: usize) {
     if let Some(high) = ir.lifted_block(block.id) {
-        let construction = ir
-            .lifted_renderer
-            .as_ref()
-            .and_then(|renderer| renderer.construction(block.id))
-            .map(|plan| (plan.start, plan.end));
-        let mut compact = false;
-        for (position, statement) in high.statements.iter().enumerate() {
+        for statement in &high.statements {
             if !ir.pay(1 + statement.inputs.len() + statement.outputs.len()) {
                 return;
-            }
-            if let Some((start, end)) = construction {
-                if position == start {
-                    if let Some(text) = ir.high_revert(block.id) {
-                        indent(out, depth);
-                        let _ = writeln!(out, "{text}");
-                        compact = true;
-                    } else if ir.stopped {
-                        return;
-                    }
-                }
-                if compact && (start..end).contains(&position) {
-                    continue;
-                }
             }
             // The last faulting primitive remains inspectable in the semantic
             // model, while the control line reports its exceptional completion.
@@ -585,33 +564,7 @@ fn syntax(
     let mut summary = RenderSummary::CONTENT;
     match &n.kind {
         StructuredKind::Sequence(v) => {
-            summary = RenderSummary::default();
-            let outer_next = ir.next_block;
-            let sequence = n.id;
-            let mut position = 0;
-            while let Some(n) = v.get(position) {
-                if let Some(end) = ir
-                    .lifted_renderer
-                    .as_ref()
-                    .and_then(|renderer| renderer.sequence_end(sequence, position))
-                {
-                    if !ir.pay(1) {
-                        break;
-                    }
-                    position = end;
-                    continue;
-                }
-                ir.next_block = v
-                    .get(position + 1)
-                    .map(|next| ir.first_block(next))
-                    .unwrap_or(outer_next);
-                summary.include(syntax(out, n, ir, depth));
-                if ir.stopped {
-                    break;
-                }
-                position += 1;
-            }
-            ir.next_block = outer_next;
+            summary = syntax_sequence(out, n.id, v, 0..v.len(), ir, depth);
         }
         StructuredKind::Block { block } => {
             let start = out.len();
@@ -630,26 +583,53 @@ fn syntax(
             then_branch,
             else_branch,
         } => {
-            if let Some(control) = ir.lifted_control(n.id)
-                && let Some(guard) = &control.guard
+            if let Some(plan) = ir
+                .lifted_renderer
+                .as_ref()
+                .and_then(|renderer| renderer.failure_first(n.id, ir.boundary))
+                .cloned()
             {
-                let Some(text) = ir.high_guard(control) else {
+                let Some(condition) = ir.semantic(|renderer, owner| {
+                    renderer.render_failure_first_condition(&plan, |work| owner.pay(work))
+                }) else {
                     return RenderSummary::CONTENT;
                 };
                 indent(out, depth);
-                let _ = writeln!(out, "{text}");
-                let pass = ir
+                let _ = writeln!(out, "if ({condition}) {{");
+                let failure = ir
                     .lifted_renderer
                     .as_ref()
-                    .and_then(|renderer| renderer.node(guard.pass_node));
-                if let Some(pass) = pass {
-                    syntax(out, pass, ir, depth);
-                } else {
-                    // A missing certified witness is an interrupted export,
-                    // never a successful rendering of only the require row.
+                    .and_then(|renderer| renderer.node(plan.failure_node()));
+                let success = ir
+                    .lifted_renderer
+                    .as_ref()
+                    .and_then(|renderer| renderer.node(plan.success_node()));
+                let (Some(failure), Some(success)) = (failure, success) else {
                     ir.stopped = true;
                     ir.status = TextExportStatus::Limited;
+                    return RenderSummary::CONTENT;
+                };
+                syntax(out, failure, ir, depth + 1);
+                let suffix = ir
+                    .lifted_renderer
+                    .as_ref()
+                    .and_then(|renderer| renderer.failure_first_suffix_range(&plan))
+                    .and_then(|(sequence, range)| {
+                        let node = ir.lifted_renderer.as_ref()?.node(sequence)?;
+                        let StructuredKind::Sequence(children) = &node.kind else {
+                            return None;
+                        };
+                        Some((sequence, children.as_slice(), range))
+                    });
+                if let Some((sequence, children, range)) = suffix {
+                    syntax_sequence(out, sequence, children, range, ir, depth + 1);
+                    if ir.stopped {
+                        return RenderSummary::CONTENT;
+                    }
                 }
+                indent(out, depth);
+                out.push_str("}\n");
+                syntax(out, success, ir, depth);
                 return RenderSummary::CONTENT;
             }
             indent(out, depth);
@@ -814,6 +794,47 @@ fn syntax(
             out.push_str("}\n");
         }
     }
+    summary
+}
+
+fn syntax_sequence(
+    out: &mut String,
+    sequence: EntityId,
+    children: &[StructuredNode],
+    range: std::ops::Range<usize>,
+    ir: &mut RenderIndex<'_, impl FnMut(u64)>,
+    depth: usize,
+) -> RenderSummary {
+    let mut summary = RenderSummary::default();
+    let outer_next = ir.next_block;
+    let mut position = range.start;
+    while position < range.end {
+        if position > range.start
+            && let Some(end) = ir
+                .lifted_renderer
+                .as_ref()
+                .and_then(|r| r.failure_first_sequence_end(sequence, position, ir.boundary))
+        {
+            if !ir.pay(1) {
+                break;
+            }
+            position = end;
+            continue;
+        }
+        let Some(node) = children.get(position) else {
+            break;
+        };
+        ir.next_block = children
+            .get(position + 1)
+            .map(|next| ir.first_block(next))
+            .unwrap_or(outer_next);
+        summary.include(syntax(out, node, ir, depth));
+        if ir.stopped {
+            break;
+        }
+        position += 1;
+    }
+    ir.next_block = outer_next;
     summary
 }
 

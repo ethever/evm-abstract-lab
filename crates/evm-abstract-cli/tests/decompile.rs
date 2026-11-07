@@ -238,11 +238,19 @@ fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stag
         .expect("CLI JSON exposes its certified guard");
     let guard = control.guard.as_ref().unwrap();
     assert!(guard.pass_nonzero);
-    let shared_require = program
-        .render_index(&current.ir)
-        .render_guard(control, |_| true)
-        .unwrap()
+    let index = program.render_index(&current.ir);
+    let plan = index
+        .failure_first(
+            control.node,
+            current.ir.structured.as_ref().unwrap().root.id,
+        )
         .unwrap();
+    let failed_if = format!(
+        "if ({}) {{",
+        index
+            .render_failure_first_condition(plan, |_| true)
+            .unwrap()
+    );
     let mut witness = current.ir.clone();
     witness.lifted = None;
     assert_eq!(witness, raw.ir);
@@ -263,8 +271,9 @@ fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stag
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(" >= "), "{text}");
     assert!(!text.contains("iszero"), "{text}");
-    assert_eq!(text.matches(&shared_require).count(), 1, "{text}");
-    assert!(!text.contains("if ("), "{text}");
+    assert_eq!(text.matches(&failed_if).count(), 1, "{text}");
+    assert!(!text.contains("require("), "{text}");
+    assert!(!text.contains("} else {"), "{text}");
 }
 
 #[test]
@@ -278,10 +287,10 @@ fn installed_cli_keeps_a_pass_reachable_join_revert_after_the_store() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = String::from_utf8(output.stdout).unwrap();
-    let require = text.find("require(").expect("certified empty failure");
+    let failure_if = text.find("if (").expect("explicit source conditional");
     let store = text.find("evm.sstore(").unwrap();
     let revert = text.rfind("evm.revert(").expect("pass-reachable REVERT");
-    assert!(require < store && store < revert, "{text}");
+    assert!(failure_if < store && store < revert, "{text}");
 }
 
 #[test]
@@ -507,7 +516,18 @@ fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_w
             .unwrap();
         let index = program.render_index(&current.ir);
         index.validate_guard_sources().unwrap();
-        let require = index.render_guard(control, |_| true).unwrap().unwrap();
+        let plan = index
+            .failure_first(
+                control.node,
+                current.ir.structured.as_ref().unwrap().root.id,
+            )
+            .unwrap();
+        let failed_if = format!(
+            "if ({}) {{",
+            index
+                .render_failure_first_condition(plan, |_| true)
+                .unwrap()
+        );
         let guard = control.guard.as_ref().unwrap();
         assert!(guard.pass_nonzero);
         let raw = artifact
@@ -539,22 +559,23 @@ fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_w
         let text = run(&["--hex", bytecode]);
         assert!(text.status.success());
         let text = String::from_utf8(text.stdout).unwrap();
-        assert_eq!(text.matches(&require).count(), 1, "{text}");
-        assert_eq!(text.matches(message).count(), 1, "{text}");
+        assert_eq!(text.matches(&failed_if).count(), 1, "{text}");
+        assert!(!text.contains("require("), "{text}");
+        assert!(text.contains("evm.revert(offset = "), "{text}");
         assert_eq!(
             text.matches("evm.mstore(").count(),
-            1,
-            "only the original prefix store remains visible: {text}"
+            proof.writes.len() + 1,
+            "retain the prefix and every original constructor store: {text}"
         );
         assert!(
-            !text.contains("evm.mload("),
-            "failure-only loads must be inside the lazy capsule: {text}"
+            text.contains("evm.mload("),
+            "retain the original failure-only loads: {text}"
         );
     }
 }
 
 #[test]
-fn installed_cli_standalone_error_collapses_the_actual_constructor_and_bad_padding_stays_raw() {
+fn installed_cli_retains_the_actual_constructor_and_bad_padding_stays_raw() {
     let bytecode =
         include_str!("../../evm-decompile/tests/fixtures/error-payloads/router-ds-math-guard.hex")
             .trim();
@@ -564,15 +585,10 @@ fn installed_cli_standalone_error_collapses_the_actual_constructor_and_bad_paddi
     let text = run(&["--hex", &standalone]);
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();
-    assert_eq!(
-        text.matches("evm.revert(\"ds-math-mul-overflow\");")
-            .count(),
-        1,
-        "{text}"
-    );
+    assert_eq!(text.matches("evm.revert(offset = ").count(), 1, "{text}");
     assert!(
-        !text.contains("evm.mstore("),
-        "standalone construction is one lazy capsule: {text}"
+        text.contains("evm.mstore(") && text.contains("evm.mload("),
+        "standalone construction retains its primitive source body: {text}"
     );
     let needle = "64732d6d6174682d6d756c2d6f766572666c6f77000000000000000000000000";
     assert!(bytecode.contains(needle));
@@ -594,4 +610,62 @@ fn installed_cli_standalone_error_collapses_the_actual_constructor_and_bad_paddi
         text.contains("evm.mstore(") && text.contains("evm.revert(offset"),
         "{text}"
     );
+}
+
+#[test]
+fn installed_cli_keeps_observing_and_invalid_failed_arms_explicit_in_both_polarities() {
+    for (bytecode, failure_nonzero, invalid) in [
+        ("34600a575f54505f5ffd5b00", false, false),
+        ("34600557005b5f54505f5ffd", true, false),
+        ("346007575f5ffe5b00", false, true),
+    ] {
+        let json = run(&["--hex", bytecode, "--format", "json"]);
+        assert!(
+            json.status.success(),
+            "{}",
+            String::from_utf8_lossy(&json.stderr)
+        );
+        let artifact: evm_decompile::Artifact = serde_json::from_slice(&json.stdout).unwrap();
+        let stage = artifact.current().unwrap();
+        let high = stage.ir.lifted.as_ref().unwrap();
+        let root = &stage.ir.structured.as_ref().unwrap().root;
+        let index = high.render_index(&stage.ir);
+        let plan = high
+            .controls
+            .iter()
+            .find_map(|c| index.failure_first(c.node, root.id))
+            .unwrap();
+        assert_eq!(plan.failure_nonzero(), failure_nonzero);
+        let failed_if = format!(
+            "if ({}) {{",
+            index
+                .render_failure_first_condition(plan, |_| true)
+                .unwrap()
+        );
+        let text = run(&["--hex", bytecode]);
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert_eq!(text.matches(&failed_if).count(), 1, "{text}");
+        assert!(
+            !text.contains("require(") && !text.contains("} else {"),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("evm.callvalue(").count(),
+            1,
+            "condition capture executes once: {text}"
+        );
+        if invalid {
+            assert!(text.contains("trap("), "{text}");
+            assert!(!text.contains("evm.revert("), "{text}");
+        } else {
+            assert_eq!(text.matches("evm.sload(").count(), 1, "{text}");
+            assert_eq!(text.matches("evm.revert(").count(), 1, "{text}");
+        }
+        assert_eq!(
+            text.lines().filter(|s| s.starts_with("evm.stop(")).count(),
+            1,
+            "normal STOP must be outside the failed arm: {text}"
+        );
+    }
 }

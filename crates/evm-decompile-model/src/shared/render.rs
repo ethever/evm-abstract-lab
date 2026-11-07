@@ -11,7 +11,7 @@ mod tests;
 /// One complete semantic row with its original source-navigation entity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedRenderRow {
-    /// Source operation or syntax node; the raw body remains inspectable.
+    /// Original statement or syntax entity; its raw witness remains inspectable.
     pub entity: EntityId,
     /// Complete row text, excluding indentation/newline.
     pub text: String,
@@ -246,6 +246,7 @@ impl<'a> LiftedRenderIndex<'a> {
             .ok_or(E::InvalidSharedSource(p.id))?;
         enum Task {
             Node(EntityId, usize, Option<EntityId>),
+            Sequence(EntityId, usize, usize, usize, Option<EntityId>),
             Text(EntityId, String, usize),
             Transfer(EntityId, usize),
             Else(EntityId, EntityId, usize, Option<EntityId>),
@@ -256,6 +257,32 @@ impl<'a> LiftedRenderIndex<'a> {
         while let Some(task) = todo.pop() {
             paid(&mut pay, 1)?;
             match task {
+                Task::Sequence(id, start, end, depth, loop_id) => {
+                    let node = source.nodes.get(&id).ok_or(E::MissingWitness(id))?;
+                    let K::Sequence(children) = &node.kind else {
+                        return Err(E::MissingWitness(id));
+                    };
+                    let mut pos = start;
+                    let mut selected = Vec::new();
+                    while pos < end {
+                        paid(&mut pay, 1)?;
+                        if pos > start
+                            && let Some(next) =
+                                self.failure_first_expanded_sequence_end(id, pos, p.body)
+                        {
+                            pos = next;
+                            continue;
+                        }
+                        selected.push(children.get(pos).ok_or(E::MissingWitness(id))?.id);
+                        pos += 1;
+                    }
+                    todo.extend(
+                        selected
+                            .into_iter()
+                            .rev()
+                            .map(|id| Task::Node(id, depth, loop_id)),
+                    );
+                }
                 Task::Text(id, text, depth) => output.emit(id, text, depth, false, &mut pay)?,
                 Task::Else(owner, body, depth, loop_id) => {
                     let checkpoint = output.begin_else(owner, depth, &mut pay)?;
@@ -295,23 +322,7 @@ impl<'a> LiftedRenderIndex<'a> {
                     let node = source.nodes.get(&id).ok_or(E::MissingWitness(id))?;
                     match &node.kind {
                         K::Sequence(children) => {
-                            let mut pos = 0;
-                            let mut selected = Vec::new();
-                            while let Some(n) = children.get(pos) {
-                                paid(&mut pay, 1)?;
-                                if let Some(end) = self.sequence_end(id, pos) {
-                                    pos = end;
-                                    continue;
-                                }
-                                selected.push(n.id);
-                                pos += 1;
-                            }
-                            todo.extend(
-                                selected
-                                    .into_iter()
-                                    .rev()
-                                    .map(|id| Task::Node(id, depth, loop_id)),
-                            );
+                            todo.push(Task::Sequence(id, 0, children.len(), depth, loop_id));
                         }
                         K::Block { block } => {
                             let b = source.blocks.get(block).ok_or(E::MissingWitness(*block))?;
@@ -323,27 +334,8 @@ impl<'a> LiftedRenderIndex<'a> {
                                 &mut pay,
                             )?;
                             let high = self.block(*block).ok_or(E::MissingWitness(*block))?;
-                            let construction = self.construction(*block);
-                            let mut compact = false;
-                            for (position, statement) in high.statements.iter().enumerate() {
+                            for statement in &high.statements {
                                 paid(&mut pay, 1)?;
-                                if let Some(c) = construction {
-                                    if position == c.start
-                                        && let Some(text) = self.render_revert(*block, &mut pay)?
-                                    {
-                                        output.emit(
-                                            statement.operation,
-                                            text,
-                                            depth,
-                                            false,
-                                            &mut pay,
-                                        )?;
-                                        compact = true;
-                                    }
-                                    if compact && (c.start..c.end).contains(&position) {
-                                        continue;
-                                    }
-                                }
                                 if matches!(b.terminator, T::Trap { .. })
                                     && b.operations
                                         .last()
@@ -354,7 +346,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                 let text = self.render_statement_with_dependencies(
                                     statement, state, &mut pay,
                                 )?;
-                                output.emit(statement.operation, text, depth, false, &mut pay)?;
+                                output.emit(statement.id, text, depth, false, &mut pay)?;
                             }
                         }
                         K::Transfer { edge } => todo.push(Task::Transfer(*edge, depth)),
@@ -364,12 +356,30 @@ impl<'a> LiftedRenderIndex<'a> {
                             ..
                         } => {
                             let control = self.control(id).ok_or(E::MissingWitness(id))?;
-                            if let Some(g) = self.guard(id) {
-                                let text = self
-                                    .render_guard(control, &mut pay)?
-                                    .ok_or(E::MissingWitness(id))?;
-                                output.emit(id, text, depth, false, &mut pay)?;
-                                todo.push(Task::Node(g.pass_node, depth, loop_id));
+                            if let Some(plan) = self.failure_first_expanded(id, p.body) {
+                                let condition =
+                                    self.render_failure_first_condition(plan, &mut pay)?;
+                                output.emit(
+                                    id,
+                                    format!("if ({condition}) {{"),
+                                    depth,
+                                    false,
+                                    &mut pay,
+                                )?;
+                                todo.push(Task::Node(plan.success_node(), depth, loop_id));
+                                todo.push(Task::Text(id, "}".to_owned(), depth));
+                                if let Some((sequence, range)) =
+                                    self.failure_first_suffix_range(plan)
+                                {
+                                    todo.push(Task::Sequence(
+                                        sequence,
+                                        range.start,
+                                        range.end,
+                                        depth + 1,
+                                        loop_id,
+                                    ));
+                                }
+                                todo.push(Task::Node(plan.failure_node(), depth + 1, loop_id));
                             } else {
                                 output.emit(
                                     id,
@@ -449,7 +459,9 @@ impl<'a> LiftedRenderIndex<'a> {
                             let b = source.blocks[block];
                             match &b.terminator {
                                 T::Trap { reason } => output.emit(
-                                    id,
+                                    self.block(*block)
+                                        .and_then(|b| b.statements.last())
+                                        .map_or(id, |s| s.id),
                                     format!("trap({reason:?});"),
                                     depth,
                                     false,

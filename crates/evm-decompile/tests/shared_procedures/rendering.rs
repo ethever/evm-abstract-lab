@@ -184,7 +184,7 @@ fn shared_token_only_else_is_hidden_without_state_dependencies() {
             _ => None,
         })
         .flat_map(|block| &high.block(block).unwrap().statements)
-        .map(|statement| statement.operation)
+        .map(|statement| statement.id)
         .collect();
     assert_eq!(operations.len(), expected.len());
     let visible: Vec<_> = hidden
@@ -275,5 +275,70 @@ fn shared_else_display_retains_observable_effects_and_actual_branch_execution() 
                 assert_eq!(report.host.state.storage[&U256::from(5)], U256::ZERO);
             }
         }
+    }
+}
+
+#[test]
+fn shared_failed_if_reorders_the_canonical_body_and_executes_each_binding() {
+    // Same fixture is exercised through the browser renderer and HTTP smoke.
+    let code = alloy_primitives::hex::decode(concat!(
+        "6100095f3561001c565b60015561001760203561001c565b600255005b8061004257",
+        "80604052805f5560206040a060055460010160055560065460075560010190565b",
+        "604051602a905260205ffd"
+    ))
+    .unwrap();
+    let input = evm_decompile::Input::new(code, evm_decompile::Fork::Osaka);
+    let artifact = checked(&input);
+    let ir = &artifact.current().unwrap().ir;
+    let high = ir.lifted.as_ref().unwrap();
+    let index = high.render_index(ir);
+    let procedure = high
+        .procedures
+        .iter()
+        .find(|p| matches!(index.node(p.body).unwrap().kind, StructuredKind::If { .. }))
+        .expect("failure If is a real canonical shared definition");
+    let rows = index
+        .render_procedure_body(procedure, false, |_| true)
+        .unwrap();
+    assert!(
+        rows.iter()
+            .any(|r| r.depth == 0 && r.text.starts_with("if ("))
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r.text.contains("require(") || r.text == "} else {")
+    );
+    let failed: Vec<_> = rows
+        .iter()
+        .filter(|r| r.depth == 1 && !r.is_structure_annotation)
+        .collect();
+    for primitive in ["evm.mload(", "evm.mstore(", "evm.revert("] {
+        assert_eq!(
+            failed.iter().filter(|r| r.text.contains(primitive)).count(),
+            1,
+            "{rows:#?}"
+        );
+    }
+    assert!(
+        failed
+            .windows(2)
+            .all(|pair| pair[0].entity != pair[1].entity)
+    );
+    for arguments in [[0, 0], [0, 1], [1, 0], [1, 1]] {
+        let report = oracle::certify(
+            &input,
+            &artifact,
+            MemoryHost::new(&input, fixtures::words(&arguments.map(U256::from))),
+            &ExecutionLimits::default(),
+        );
+        assert!(
+            !report.planned.is_empty(),
+            "execute the new plan, rather than merely the old source oracle"
+        );
+        assert!(
+            matches!(report.outcome.unwrap(), evm_decompile::ExecutionOutcome::Exit { kind, .. }
+            if kind == if arguments == [0, 0] { evm_decompile::ExitKind::Stop } else { evm_decompile::ExitKind::Revert })
+        );
     }
 }

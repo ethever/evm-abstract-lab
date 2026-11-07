@@ -112,9 +112,10 @@ fn valid_direct_and_shared_join_guards_continue_to_export_completely() {
     for join in [false, true] {
         let artifact = fixture(join);
         let export = export_text(&artifact, &Cancellation::default());
-        assert!(export.text.contains("require("));
+        assert!(export.text.contains("if ("));
+        assert!(!export.text.contains("require("));
         if join {
-            assert!(export.text.find("require(") < export.text.find("evm.sstore("));
+            assert!(export.text.find("if (") < export.text.find("evm.sstore("));
             assert!(export.text.find("evm.sstore(") < export.text.rfind("evm.revert("));
         }
     }
