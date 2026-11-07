@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 /// The render boundary checks exact payload propagation once for the shared
 /// failure graph. A recorded Passed marker cannot select another error merely
 /// by changing a guard's payload reference.
-pub(super) fn check_failure_payloads(
+pub(in crate::lifted) fn check_failure_payloads(
     program: &LiftedProgram,
     ir: &Ir,
     raw: &BTreeMap<EntityId, &crate::Block>,
@@ -33,9 +33,13 @@ pub(super) fn check_failure_payloads(
                 LiftedGuardPayload::EmptyRevert => {
                     let body = high.get(&block.id).ok_or_else(fail)?;
                     if body.exit_values.len()!=2
-                        || !expressions.get(&body.exit_values[1]).is_some_and(|e|matches!(e.kind,crate::LiftedExpressionKind::Word(v) if v==crate::U256::ZERO))
-                        || !matches!(block.terminator,Terminator::Exit {kind:crate::ExitKind::Revert,..})
-                        || block.operations.last().is_none_or(|o|o.opcode!=0xfd)
+                        || !expressions.get(&body.exit_values[1]).is_some_and(|e| e.block == block.id
+                            && e.ty == crate::LiftedType::Word256
+                            && matches!(e.kind,crate::LiftedExpressionKind::Word(v) if v==crate::U256::ZERO))
+                        || block.operations.last().is_none_or(|o| {
+                            o.opcode != 0xfd || !capsule_operation(o)
+                                || !matches!(&block.terminator, Terminator::Exit {kind:crate::ExitKind::Revert, values} if *values == o.inputs)
+                        })
                         || block.operations[..block.operations.len().saturating_sub(1)].iter().any(|o|!o.effects.is_pure() || !capsule_operation(o))
                     {return Err(fail());}
                 }

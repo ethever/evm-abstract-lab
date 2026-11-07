@@ -1,4 +1,4 @@
-"""Retained Error(string) construction over HTTP, Wasm, clipboard and source UI."""
+"""Mixed require and retained Error(string) construction through the real browser."""
 
 import re
 
@@ -21,7 +21,7 @@ def abi_bytes(message):
             + len(data).to_bytes(32, "big") + data + bytes((-len(data)) % 32))
 
 
-def error_tail(message, alias=False, padding=False):
+def error_tail(message, alias=False, padding=False, observation=False):
     """Real overlapping MSTOREs through p and a second slot-64 pointer load."""
     data = message.encode("utf-8")
     assert 0 < len(data) < 128
@@ -39,6 +39,8 @@ def error_tail(message, alias=False, padding=False):
     if alias:
         # Arbitrary calldata address may overwrite payload or pointer slot.
         code.extend(bytes.fromhex("5f5f3552"))
+    if observation:
+        code.extend(bytes.fromhex("3350"))
     size = len(abi_bytes(message))
     code.extend(bytes([0x50, 0x60, size]) + bytes.fromhex("604051fd"))
     return code.hex()
@@ -89,9 +91,27 @@ def runtime(message=MESSAGE, shape="nonzero", **options):
     return code.finish()
 
 
+def mixed_runtime():
+    code = Runtime()
+    code.emit("60806040525f35")
+    code.jump("empty-pass")
+    code.emit("5f5ffd")
+    code.label("empty-pass")
+    code.emit("602035")
+    code.jump("payload-pass")
+    code.emit(error_tail(MESSAGE, observation=True))
+    code.label("payload-pass")
+    code.emit("604035")
+    code.jump("normal")
+    code.emit("fe")
+    code.label("normal")
+    code.emit("602a5f5500")
+    return code.finish()
+
+
 def failure_rows(text):
     return [line for line in text.splitlines()
-            if line.lstrip().startswith(("if (", "evm.revert(offset ="))]
+            if line.lstrip().startswith(("require(", "if (", "evm.revert(offset ="))]
 
 
 def options_invariance(page, canvas, program, text):
@@ -122,8 +142,9 @@ def navigate_witnesses(page, canvas, artifact, current, program, text, standalon
 
     for statement in [writes[0], statements[-1]]:
         source_descendant(page, canvas, artifact, current["id"], statement["id"])
-        ui_control(page, "Simplified structured code", role="tab", selected=True)
-        selected_row(page, "decompile-code", "evm.mstore(" if statement in writes else "evm.revert(")
+        ui_control(page, "Simplified structured code" if standalone else "IR", role="tab", selected=True)
+        if standalone:
+            selected_row(page, "decompile-code", "evm.mstore(" if statement in writes else "evm.revert(")
 
     source_descendant(page, canvas, artifact, current["id"], plan["id"])
     ui_control(page, "IR", role="tab", selected=True)
@@ -227,26 +248,29 @@ def run(context):
         high(page, canvas)
         text = painted_copy(page, canvas)
         assert len(guard_rows(text)) == len(controls), text
-        assert "require(" not in text and "evm.revert(offset =" in text and 'evm.revert("' not in text, text
+        assert all(line.startswith("require(") for line in guard_rows(text)), text
+        retained = shape in {"standalone", "join"}
+        assert ("evm.revert(offset =" in text) == retained and 'evm.revert("' not in text, text
         if shape in {"nonzero", "zero"}:
             assert controls[0]["guard"]["pass_nonzero"] == (shape == "nonzero")
             value = re.search(r"(?m)^(v\d+) = evm\.calldataload\(offset = 0x0\);$", text)
             assert value, text
-            condition = "(" + value[1] + " != 0)"
-            predicate = "!(" + condition + ")" if shape == "nonzero" else condition
-            assert guard_rows(text) == [f'if ({predicate}) {{'], text
+            predicate = "(" + value[1] + (" != 0)" if shape == "nonzero" else " == 0)")
+            assert guard_rows(text) == [f'require({predicate}, "{MESSAGE}");'], text
             assert "} else {" not in text, text
-        # Payload facts remain exact while code preserves the actual loads,
-        # stores and terminal operands. No message literal can split a code row.
         assert "\x00" not in text, text
         for plan in program["constructions"]:
-            construction_rows(page, canvas, artifact, current, program, plan, text, shape == "nonzero")
+            if retained:
+                construction_rows(page, canvas, artifact, current, program, plan, text)
+            else:
+                assert text.count("evm.mstore(") == 1, text  # Original pointer initialization.
+                assert "evm.mload(" not in text, text
         if shape == "join":
             guard, = controls
             assert guard["guard"]["continuation"]["pass_falls_through"], guard
-            assert text.index("if (") < text.index("evm.sstore(") < text.index("evm.revert(offset ="), text
+            assert text.index("require(") < text.index("evm.sstore(") < text.index("evm.revert(offset ="), text
         elif shape != "standalone":
-            assert text.count("evm.sstore(") == 1 and text.rindex("if (") < text.index("evm.sstore("), text
+            assert text.count("evm.sstore(") == 1 and text.rindex("require(") < text.index("evm.sstore("), text
             assert "evm.sstore(slot = 0x0, value = 0x2a);" in text.splitlines(), text
         options_invariance(page, canvas, program, text)
         if shape in {"nonzero", "standalone"} and message == MESSAGE:
@@ -258,6 +282,60 @@ def run(context):
         results.append({"shape": shape, "message": message, "artifact": artifact["id"],
                         "payload": payload, "capsules": program["constructions"],
                         "guards": len(controls), "code": text})
+
+    # One publication must expose both choices together. The observation keeps
+    # every original error-building primitive in the explicit failure arm.
+    artifact, _ = submit(context, page, canvas, mixed_runtime(), "hybrid-require-explicit-invalid")
+    current, program = projection(artifact)
+    high(page, canvas)
+    text = painted_copy(page, canvas)
+    requirements = [line for line in guard_rows(text) if line.startswith("require(")]
+    failures = [line for line in guard_rows(text) if line.startswith("if (")]
+    assert len(requirements) == 1 and len(failures) == 2, text
+    assert len([control for control in program["controls"] if control.get("guard")]) == 1
+    assert text.count("evm.revert(offset =") == 1 and text.count("evm.invalid();") == 1, text
+    assert "exception(" not in text and "} else {" not in text and "!(!(" not in text, text
+    assert text.splitlines()[-2:] == ["evm.sstore(slot = 0x0, value = 0x2a);", "evm.stop();"], text
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    body = next(block for block in program["blocks"]
+                if any(operations[statement["operation"]]["opcode"] == 0x33 for statement in block["statements"]))
+    retained = [statement for statement in body["statements"]
+                if operations[statement["operation"]]["opcode"] in {0x51, 0x52, 0x33, 0xfd}]
+    assert len(retained) >= 7
+    terminal = next(statement for block in program["blocks"] for statement in block["statements"]
+                    if operations[statement["operation"]]["opcode"] == 0xfe)
+    previous = -1
+    for statement in retained + [terminal]:
+        spelling = "evm." + operations[statement["operation"]]["name"].lower() + "("
+        source_descendant(page, canvas, artifact, current["id"], statement["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        row = selected_row(page, "decompile-code", spelling)
+        source = code_label(row["label"])[1]
+        assert source.startswith("    "), (statement, text)
+        previous = next(index for index in range(previous + 1, len(text.splitlines()))
+                        if text.splitlines()[index] == source)
+        inspector_control(page, canvas, "Statement h" + statement["id"] + " ", "decompile-entity-detail")
+    control, = [control for control in program["controls"] if control.get("guard")]
+    source_descendant(page, canvas, artifact, current["id"], control["id"])
+    selected_row(page, "decompile-code", requirements[0])
+    source_descendant(page, canvas, artifact, current["id"], control["guard"]["failure_node"])
+    ui_control(page, "Structured code", role="tab", selected=True)
+    raw = copy_code(page, canvas)
+    assert "require(" not in raw and "evm.invalid();" in raw and raw.count("evm.revert(") >= 2, raw
+    high(page, canvas)
+    for dependencies, annotations in [(True, False), (False, True), (True, True), (False, False)]:
+        set_control(page, canvas, DEPENDENCIES, dependencies)
+        set_control(page, canvas, ANNOTATIONS, annotations)
+        displayed = painted_copy(page, canvas)
+        assert guard_rows(displayed) == guard_rows(text), displayed
+        assert displayed.count("evm.mstore(") == text.count("evm.mstore("), displayed
+        assert displayed.count("evm.invalid();") == 1, displayed
+    assert painted_copy(page, canvas) == text
+    canvas.screenshot(path=str(context.output / "hybrid-require-explicit-invalid-review.png"))
+    results.append({"artifact": artifact["id"], "mixed": True, "code": text,
+                    "require": control["id"], "explicit_statements": [statement["id"] for statement in retained],
+                    "invalid_statement": terminal["id"]})
 
     for name, options in [("alias", {"alias": True}), ("padding", {"padding": True})]:
         artifact, _ = submit(context, page, canvas, runtime(**options), "error-string-rejected-" + name)

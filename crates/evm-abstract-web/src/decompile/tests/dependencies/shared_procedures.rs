@@ -28,6 +28,121 @@ const SHARED_FAILURE: &str = concat!(
 );
 
 #[test]
+fn shared_success_body_keeps_certified_checks_in_their_actual_caller_scopes() {
+    let mut runtime = guards::Runtime::default();
+    runtime.address("first-return");
+    runtime.emit(&[0x5f, 0x35]);
+    runtime.jump("helper", false);
+    runtime.label("first-return");
+    runtime.emit(&[0x60, 0x01, 0x55]);
+    runtime.address("second-return");
+    runtime.emit(&[0x60, 0x20, 0x35]);
+    runtime.jump("helper", false);
+    runtime.label("second-return");
+    runtime.emit(&[0x60, 0x02, 0x55, 0x00]);
+    runtime.label("helper");
+    runtime.emit(&[0x80]);
+    runtime.jump("success", true);
+    runtime.emit(&[0x5f, 0x5f, 0xfd]);
+    runtime.label("success");
+    // Observable work gives the repeated checked helper a real sharing gain.
+    runtime.emit(&[
+        0x80, 0x60, 0x40, 0x52, 0x80, 0x5f, 0x55, 0x60, 0x20, 0x60, 0x40, 0xa0,
+    ]);
+    runtime.emit(&[0x60, 0x05, 0x54, 0x60, 0x01, 0x01, 0x60, 0x05, 0x55]);
+    runtime.emit(&[
+        0x60, 0x06, 0x54, 0x60, 0x07, 0x55, 0x60, 0x01, 0x01, 0x90, 0x56,
+    ]);
+    let artifact = artifact(&runtime.finish());
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    let [procedure] = program.procedures.as_slice() else {
+        panic!("the repeated successful helper must share")
+    };
+    let canonical = renderer
+        .render_procedure_body(procedure, false, |_| true)
+        .unwrap();
+    assert!(
+        !canonical
+            .iter()
+            .any(|row| row.text.starts_with("require(") || row.text.contains("evm.revert("))
+    );
+    assert!(
+        program
+            .invocations
+            .iter()
+            .filter(|call| call.procedure == procedure.id)
+            .count()
+            >= 2
+    );
+    let normal = high(stage, false);
+    assert_eq!(
+        normal
+            .iter()
+            .filter(|line| line.text.starts_with("require(") && line.indent == 0)
+            .count(),
+        2
+    );
+    assert!(!copied_text(&normal).contains("evm.revert("));
+    let (ctx, mut workspace) = setup(artifact.clone());
+    assert_painted(&frame(&ctx, &mut workspace, vec![]), &normal);
+    assert_eq!(
+        click(&ctx, &mut workspace, "Copy structured text").copied,
+        [copied_text(&normal)]
+    );
+    for control in program
+        .controls
+        .iter()
+        .filter(|control| control.guard.is_some())
+    {
+        let required = renderer.render_guard(control, |_| true).unwrap().unwrap();
+        let at = EntityRef {
+            stage: stage.id,
+            entity: control.id,
+        };
+        assert!(workspace.state.navigate(&artifact, at));
+        let visible = frame(&ctx, &mut workspace, vec![]);
+        assert_eq!(workspace.views.route_label(), "Simplified structured code");
+        assert!(
+            visible
+                .controls
+                .iter()
+                .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+        );
+        let details = workspace.state.details(&artifact, at);
+        assert!(
+            details
+                .lines
+                .iter()
+                .any(|line| line.starts_with("Certified empty-REVERT guard")
+                    && line.contains(&required)),
+            "{:?}",
+            details.lines
+        );
+        for entity in [
+            control.condition,
+            control.node,
+            control.guard.as_ref().unwrap().failure_node,
+        ] {
+            assert!(details.references.contains(&EntityRef {
+                stage: stage.id,
+                entity
+            }));
+        }
+        assert!(workspace.state.navigate(
+            &artifact,
+            EntityRef {
+                stage: stage.id,
+                entity: control.node
+            }
+        ));
+        frame(&ctx, &mut workspace, vec![]);
+        assert_eq!(workspace.views.route_label(), "Structured code");
+    }
+}
+
+#[test]
 fn shared_failure_definition_keeps_original_memory_body_and_terminal_source_rows() {
     let artifact = artifact(SHARED_FAILURE);
     let original = artifact.clone();
@@ -125,6 +240,28 @@ fn shared_failure_definition_keeps_original_memory_body_and_terminal_source_rows
     assert_eq!(
         click(&ctx, &mut workspace, "Copy structured text").copied,
         [copied_text(&normal)]
+    );
+    let body = renderer
+        .render_procedure_body(procedure, false, |_| true)
+        .unwrap();
+    let branch = body
+        .iter()
+        .find(|row| row.text.starts_with("if ("))
+        .unwrap();
+    let details = workspace.state.details(
+        &artifact,
+        EntityRef {
+            stage: stage.id,
+            entity: program.control(branch.entity).unwrap().id,
+        },
+    );
+    assert!(
+        details
+            .lines
+            .iter()
+            .any(|line| line.starts_with("Failure-first If") && line.contains(&branch.text)),
+        "{:?}",
+        details.lines
     );
     for entity in selected_statements {
         let at = EntityRef {

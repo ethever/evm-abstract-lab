@@ -145,7 +145,7 @@ fn without_dependencies(stage: &Stage, lines: Vec<Row>) -> Vec<Row> {
 }
 
 #[test]
-fn real_revert_guard_keeps_failed_if_and_flattens_pass_continuation() {
+fn real_revert_guard_uses_require_and_flattens_pass_continuation() {
     let artifact = artifact(REVERT_GUARD);
     let original = artifact.clone();
     let stage = artifact.current().unwrap();
@@ -171,43 +171,19 @@ fn real_revert_guard_keeps_failed_if_and_flattens_pass_continuation() {
         .as_ref()
         .expect("actual empty-REVERT certificate");
     let renderer = program.render_index(&stage.ir);
-    let plan = renderer
-        .failure_first(branch.id, stage.ir.structured.as_ref().unwrap().root.id)
-        .unwrap();
-    let predicate = format!(
-        "if ({}) {{",
-        renderer
-            .render_failure_first_condition(plan, |_| true)
-            .unwrap()
-    );
-    let control_rows: Vec<_> = normal
-        .iter()
-        .filter(|line| line.0 == control.id && line.2.starts_with("if ("))
-        .collect();
+    let predicate = renderer.render_guard(control, |_| true).unwrap().unwrap();
+    let control_rows: Vec<_> = normal.iter().filter(|line| line.0 == control.id).collect();
     assert_eq!(control_rows, [&(control.id, 0, predicate)]);
-    let closed = debug
-        .iter()
-        .position(|line| line.0 == control.id && line.2 == "}")
-        .unwrap();
-    assert_eq!(debug[closed + 1].0, transfer.id);
-    assert_eq!(debug[closed + 1].1, 0);
-    assert_eq!(debug[closed + 2].0, transfer.id);
-    assert_eq!(debug[closed + 2].1, 0);
+    let required = debug.iter().position(|line| line.0 == control.id).unwrap();
+    assert_eq!(debug[required + 1].0, transfer.id);
+    assert_eq!(debug[required + 1].1, 0);
+    assert_eq!(debug[required + 2].0, transfer.id);
+    assert_eq!(debug[required + 2].1, 0);
     let failure_transfer = program.transfer(guard.failure_edge).unwrap().id;
-    assert!(
-        debug
-            .iter()
-            .any(|line| line.0 == failure_transfer && line.1 == 1)
-    );
+    assert!(!debug.iter().any(|line| line.0 == failure_transfer));
     assert!(!debug.iter().any(|line| line.2 == "} else {"));
     assert_eq!(normal, without_dependencies(stage, debug.clone()));
-    assert_eq!(
-        normal
-            .iter()
-            .filter(|line| line.2.contains("evm.revert(") && line.1 == 1)
-            .count(),
-        1
-    );
+    assert!(!normal.iter().any(|line| line.2.contains("evm.revert(")));
     let store = program
         .blocks
         .iter()

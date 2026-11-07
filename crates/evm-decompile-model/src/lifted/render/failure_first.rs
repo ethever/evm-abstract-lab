@@ -15,7 +15,7 @@ pub struct FailureFirstIf {
     failure_node: EntityId,
     success_node: EntityId,
     failure_nonzero: bool,
-    suffix: Option<(EntityId, usize, usize)>,
+    pub(super) suffix: Option<(EntityId, usize, usize)>,
 }
 impl FailureFirstIf {
     /// Original source If occurrence.
@@ -39,9 +39,11 @@ impl FailureFirstIf {
 #[derive(Default)]
 pub(super) struct FailureFirstIndex {
     plans: BTreeMap<EntityId, FailureFirstIf>,
+    directions: BTreeMap<(EntityId, bool), FailureFirstIf>,
     ranges: BTreeMap<EntityId, (usize, usize)>,
-    cuts: BTreeMap<(EntityId, usize), EntityId>,
+    pub(super) cuts: BTreeMap<(EntityId, usize), EntityId>,
     calls: BTreeSet<EntityId>,
+    pub(super) require_scopes: BTreeMap<EntityId, EntityId>,
 }
 
 const FALL: u8 = 1;
@@ -156,18 +158,19 @@ impl FailureFirstIndex {
         }
         let mut order = Vec::new();
         let mut positions = BTreeMap::new();
+        let mut follows = BTreeMap::new();
         enum Visit<'a> {
-            Enter(&'a StructuredNode, usize),
+            Enter(&'a StructuredNode, usize, Option<(EntityId, usize)>),
             Leave(EntityId, usize),
         }
-        let mut pending = vec![Visit::Enter(root, 1)];
+        let mut pending = vec![Visit::Enter(root, 1, None)];
         while let Some(visit) = pending.pop() {
             paid(pay, 4)?;
             match visit {
                 Visit::Leave(id, start) => {
                     result.ranges.insert(id, (start, order.len()));
                 }
-                Visit::Enter(node, depth) => {
+                Visit::Enter(node, depth, follow) => {
                     if depth > crate::MAX_STRUCTURED_WIRE_DEPTH
                         || order.len() >= crate::MAX_STRUCTURED_WIRE_NODES
                         || !nodes.get(&node.id).is_some_and(|n| std::ptr::eq(*n, node))
@@ -175,6 +178,9 @@ impl FailureFirstIndex {
                         return Ok(Self::default());
                     }
                     let start = order.len();
+                    if let Some(follow) = follow {
+                        follows.insert(node.id, follow);
+                    }
                     order.push(node);
                     pending.push(Visit::Leave(node.id, start));
                     match &node.kind {
@@ -182,7 +188,12 @@ impl FailureFirstIndex {
                             paid(pay, v.len().saturating_mul(4))?;
                             for (position, child) in v.iter().enumerate().rev() {
                                 positions.insert(child.id, (node.id, position));
-                                pending.push(Visit::Enter(child, depth + 1));
+                                let next = if position + 1 < v.len() {
+                                    Some((node.id, position + 1))
+                                } else {
+                                    follow
+                                };
+                                pending.push(Visit::Enter(child, depth + 1, next));
                             }
                         }
                         K::If {
@@ -190,17 +201,19 @@ impl FailureFirstIndex {
                             else_branch,
                             ..
                         } => {
-                            pending.push(Visit::Enter(else_branch, depth + 1));
-                            pending.push(Visit::Enter(then_branch, depth + 1));
+                            pending.push(Visit::Enter(else_branch, depth + 1, follow));
+                            pending.push(Visit::Enter(then_branch, depth + 1, follow));
                         }
                         K::While { header, body, .. } => {
-                            pending.push(Visit::Enter(body, depth + 1));
-                            pending.push(Visit::Enter(header, depth + 1));
+                            pending.push(Visit::Enter(body, depth + 1, None));
+                            pending.push(Visit::Enter(header, depth + 1, None));
                         }
                         K::Indirect { arms, .. } => {
                             paid(pay, arms.len().saturating_mul(4))?;
                             pending.extend(
-                                arms.iter().rev().map(|a| Visit::Enter(&a.body, depth + 1)),
+                                arms.iter()
+                                    .rev()
+                                    .map(|a| Visit::Enter(&a.body, depth + 1, follow)),
                             );
                         }
                         _ => {}
@@ -384,6 +397,30 @@ impl FailureFirstIndex {
         // exclude these roots conservatively without trusting their certificates.
         paid(pay, program.invocations.len().saturating_mul(2))?;
         result.calls = program.invocations.iter().map(|i| i.source).collect();
+        // A compact guard must own the entire failed source route in the
+        // rendered scope, including a suffix inherited through enclosing Ifs.
+        // The ranked payload/effect certificate is admitted independently by
+        // the selected control plan; these are only source closure facts.
+        for control in &program.controls {
+            paid(pay, 4)?;
+            let Some(guard) = &control.guard else {
+                continue;
+            };
+            let Some(&failed) = summaries.get(&guard.failure_node) else {
+                continue;
+            };
+            let scope = if failed.closed_failure() {
+                Some(control.node)
+            } else {
+                follows.get(&control.node).and_then(|&(sequence, start)| {
+                    let tail = *suffixes.get(&(sequence, start))?;
+                    failed.then(tail).closed_failure().then_some(sequence)
+                })
+            };
+            if let Some(scope) = scope {
+                result.require_scopes.insert(control.node, scope);
+            }
+        }
         for node in order {
             paid(pay, 8)?;
             let K::If {
@@ -441,14 +478,22 @@ impl FailureFirstIndex {
                     }
                     Some((sequence, start, v.len()))
                 };
-                chosen = Some(FailureFirstIf {
+                let plan = FailureFirstIf {
                     source: node.id,
                     failure_node: failure.id,
                     success_node: success.id,
                     failure_nonzero,
                     suffix,
-                });
-                break;
+                };
+                // Both arms can be finite failures while only one has the
+                // compact guard's exact payload/effect certificate. Keep each
+                // structural direction independent of the display preference.
+                result
+                    .directions
+                    .insert((node.id, failure_nonzero), plan.clone());
+                if chosen.is_none() {
+                    chosen = Some(plan);
+                }
             }
             if let Some(plan) = chosen {
                 if let Some((sequence, start, _)) = plan.suffix {
@@ -459,7 +504,7 @@ impl FailureFirstIndex {
         }
         Ok(result)
     }
-    fn contains(&self, boundary: EntityId, source: EntityId) -> bool {
+    pub(super) fn contains(&self, boundary: EntityId, source: EntityId) -> bool {
         self.ranges
             .get(&boundary)
             .zip(self.ranges.get(&source))
@@ -468,6 +513,20 @@ impl FailureFirstIndex {
 }
 
 impl<'a> LiftedRenderIndex<'a> {
+    pub(super) fn failure_first_direction(
+        &self,
+        source: EntityId,
+        boundary: EntityId,
+        failure_nonzero: bool,
+    ) -> Option<&FailureFirstIf> {
+        let index = self.failure_first.as_ref().ok()?;
+        let plan = index.directions.get(&(source, failure_nonzero))?;
+        (index.contains(boundary, source)
+            && plan
+                .suffix
+                .is_none_or(|(sequence, _, _)| index.contains(boundary, sequence)))
+        .then_some(plan)
+    }
     /// Explicit failure-first decision within the exact rendered source root.
     /// A procedure cannot borrow a following suffix outside its canonical body.
     pub fn failure_first(&self, source: EntityId, boundary: EntityId) -> Option<&FailureFirstIf> {
@@ -531,22 +590,6 @@ impl<'a> LiftedRenderIndex<'a> {
             .suffix
             .map(|(_, _, end)| end)
     }
-    pub(crate) fn failure_first_expanded_sequence_end(
-        &self,
-        sequence: EntityId,
-        position: usize,
-        boundary: EntityId,
-    ) -> Option<usize> {
-        let source = *self
-            .failure_first
-            .as_ref()
-            .ok()?
-            .cuts
-            .get(&(sequence, position))?;
-        self.failure_first_expanded(source, boundary)?
-            .suffix
-            .map(|(_, _, end)| end)
-    }
     /// Render the same typed predicate once at its original decision site.
     pub fn render_failure_first_condition(
         &self,
@@ -565,13 +608,7 @@ impl<'a> LiftedRenderIndex<'a> {
         let control = self
             .control(plan.source)
             .ok_or(Error::MissingWitness(plan.source))?;
-        let condition = self.render_expression(control.condition, &mut pay)?;
-        if plan.failure_nonzero {
-            Ok(condition)
-        } else {
-            paid(&mut pay, 3)?;
-            Ok(format!("!({condition})"))
-        }
+        self.render_condition(control.condition, !plan.failure_nonzero, &mut pay)
     }
     /// Failed admission publishes no partial omission plan.
     pub fn validate_failure_first_sources(&self) -> Result<(), Error> {

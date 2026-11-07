@@ -238,10 +238,13 @@ impl Dispatch<'_> {
                     let condition = semantic
                         .and_then(|block| block.condition)
                         .and_then(|id| {
-                            self.context
-                                .scope
-                                .lifted
-                                .map(|renderer| super::super::lifted::expression(renderer, id))
+                            self.context.scope.lifted.map(|renderer| {
+                                renderer
+                                    .render_condition(id, false, |_| true)
+                                    .unwrap_or_else(|error| {
+                                        format!("unavailable_predicate(b{}: {error})", block.0)
+                                    })
+                            })
                         })
                         .unwrap_or_else(|| format!("unavailable_predicate(b{})", block.0));
                     (semantic.map_or(block, |block| block.id), condition)

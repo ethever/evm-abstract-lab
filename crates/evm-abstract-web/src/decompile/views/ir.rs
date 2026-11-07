@@ -208,7 +208,7 @@ impl Row {
             }
             Self::Terminator(index) => format!(
                 "  {}",
-                structured::terminator(&stage.ir.blocks[index].terminator)
+                structured::block_terminator(&stage.ir.blocks[index])
             ),
             Self::Edge(index) => {
                 let edge = &stage.ir.edges[index];

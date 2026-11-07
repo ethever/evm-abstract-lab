@@ -1,6 +1,6 @@
 //! Parameterized canonical body rows shared by native and browser consumers.
 use super::{MAX_SHARED_REGION_ENTITIES, SharedInvocation, SharedProcedure};
-use crate::{EntityId, RenderSummary};
+use crate::{EntityId, LiftedIfPlan, RenderSummary};
 use crate::{
     LiftedRenderError as E, LiftedRenderIndex, StructuredKind as K, Terminator as T, ValueKind as V,
 };
@@ -267,8 +267,7 @@ impl<'a> LiftedRenderIndex<'a> {
                     while pos < end {
                         paid(&mut pay, 1)?;
                         if pos > start
-                            && let Some(next) =
-                                self.failure_first_expanded_sequence_end(id, pos, p.body)
+                            && let Some(next) = self.expanded_selected_sequence_end(id, pos, p.body)
                         {
                             pos = next;
                             continue;
@@ -356,7 +355,18 @@ impl<'a> LiftedRenderIndex<'a> {
                             ..
                         } => {
                             let control = self.control(id).ok_or(E::MissingWitness(id))?;
-                            if let Some(plan) = self.failure_first_expanded(id, p.body) {
+                            if let LiftedIfPlan::Require(plan) = self.expanded_if_plan(id, p.body) {
+                                output.emit(
+                                    id,
+                                    self.render_require(plan, &mut pay)?,
+                                    depth,
+                                    false,
+                                    &mut pay,
+                                )?;
+                                todo.push(Task::Node(plan.success_node(), depth, loop_id));
+                            } else if let LiftedIfPlan::FailureFirst(plan) =
+                                self.expanded_if_plan(id, p.body)
+                            {
                                 let condition =
                                     self.render_failure_first_condition(plan, &mut pay)?;
                                 output.emit(
@@ -385,7 +395,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                     id,
                                     format!(
                                         "if ({}) {{",
-                                        self.render_expression(control.condition, &mut pay)?
+                                        self.render_condition(control.condition, false, &mut pay)?
                                     ),
                                     depth,
                                     false,
@@ -414,8 +424,11 @@ impl<'a> LiftedRenderIndex<'a> {
                             todo.push(Task::Node(body.id, depth + 1, Some(id)));
                             if condition.is_some() {
                                 let control = self.control(id).ok_or(E::MissingWitness(id))?;
-                                let condition =
-                                    self.render_expression(control.condition, &mut pay)?;
+                                let condition = self.render_condition(
+                                    control.condition,
+                                    *condition_nonzero,
+                                    &mut pay,
+                                )?;
                                 todo.push(Task::Text(id, "}".to_owned(), depth + 1));
                                 todo.push(Task::Text(
                                     id,
@@ -427,11 +440,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                 }
                                 todo.push(Task::Text(
                                     id,
-                                    format!(
-                                        "if ({}{}) {{",
-                                        if *condition_nonzero { "!" } else { "" },
-                                        format_args!("({condition})")
-                                    ),
+                                    format!("if ({condition}) {{"),
                                     depth + 1,
                                 ));
                             }
@@ -462,7 +471,9 @@ impl<'a> LiftedRenderIndex<'a> {
                                     self.block(*block)
                                         .and_then(|b| b.statements.last())
                                         .map_or(id, |s| s.id),
-                                    format!("trap({reason:?});"),
+                                    crate::render_explicit_invalid(b)
+                                        .map(str::to_owned)
+                                        .unwrap_or_else(|| format!("trap({reason:?});")),
                                     depth,
                                     false,
                                     &mut pay,

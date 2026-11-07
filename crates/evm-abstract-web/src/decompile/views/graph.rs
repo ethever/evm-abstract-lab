@@ -176,7 +176,7 @@ fn preview(
             )
         ));
     } else if lines.len() < graph_view::PREVIEW_LINES {
-        lines.push(structured::terminator(&block.terminator));
+        lines.push(structured::block_terminator(block));
     }
     lines
 }

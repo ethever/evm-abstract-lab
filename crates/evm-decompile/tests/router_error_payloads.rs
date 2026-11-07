@@ -465,7 +465,7 @@ fn actual_array_allocation_and_call_output_fault_prefixes_match_normalized_execu
 }
 
 #[test]
-fn router_default_failure_first_covers_certified_sites_and_keeps_normal_code_flat() {
+fn router_hybrid_guards_cover_certified_sites_and_keep_normal_code_flat() {
     let (_, artifact) = router();
     let ir = &artifact.current().unwrap().ir;
     let high = ir.lifted.as_ref().unwrap();
@@ -478,12 +478,22 @@ fn router_default_failure_first_covers_certified_sites_and_keeps_normal_code_fla
     index.validate_failure_first_sources().unwrap();
     let boundary = ir.structured.as_ref().unwrap().root.id;
     let mut sites = 0;
+    let mut requires = 0;
+    let mut explicit = 0;
     for control in &expanded.controls {
+        match index.if_plan(control.node, boundary) {
+            evm_decompile::LiftedIfPlan::Require(_) => requires += 1,
+            evm_decompile::LiftedIfPlan::FailureFirst(_) => explicit += 1,
+            evm_decompile::LiftedIfPlan::Original => {}
+        }
         if control.guard.is_some() {
             sites += 1;
             assert!(
-                index.failure_first(control.node, boundary).is_some(),
-                "certified source guard {:?} lost explicit failure-first projection",
+                !matches!(
+                    index.if_plan(control.node, boundary),
+                    evm_decompile::LiftedIfPlan::Original
+                ),
+                "certified source guard {:?} lost its selected projection",
                 control.node
             );
         }
@@ -493,14 +503,18 @@ fn router_default_failure_first_covers_certified_sites_and_keeps_normal_code_fla
         "whole Router source coverage, not one constructor slice"
     );
     let text = evm_decompile::render_text(artifact);
-    assert!(!text.contains("require("));
+    assert!(
+        requires > 0 && explicit > 0,
+        "selected sites: require={requires}, explicit={explicit}"
+    );
+    assert!(text.contains("require(") && text.contains("evm.invalid();"));
     let depth = text
         .lines()
         .map(|line| (line.len() - line.trim_start().len()) / 4)
         .max()
         .unwrap();
     assert!(
-        depth <= 12,
+        depth <= 8,
         "normal Router code regressed into deep failed-else nesting: {depth}"
     );
     assert!(

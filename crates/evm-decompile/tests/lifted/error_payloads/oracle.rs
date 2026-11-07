@@ -1,11 +1,11 @@
-//! An independent display interpreter: execute the explicit failure-first plan
+//! An independent display interpreter: execute the selected require/If plan
 //! with original constructor primitives, and build/check ABI bytes separately.
 //! No producer search or production semantic certificate checker is an oracle.
 use evm_decompile::{
     Artifact, EntityId, ExecutionError, ExecutionLimits, ExecutionOutcome, ExitKind, Input,
-    LiftedProgram, LiftedRenderIndex, LiftedValue, MemoryHost, Primitive, SemanticHost, Stage,
-    StageKind, StructuredKind, StructuredNode, Terminator, U256, execute_bytecode, execute_ir,
-    execute_structured,
+    LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex, LiftedValue, MemoryHost,
+    Primitive, SemanticHost, Stage, StageKind, StructuredKind, StructuredNode, Terminator, U256,
+    execute_bytecode, execute_ir, execute_structured,
 };
 use std::collections::BTreeMap;
 
@@ -296,7 +296,7 @@ impl Machine<'_> {
             if position > range.start
                 && let Some(end) = self
                     .index
-                    .failure_first_sequence_end(sequence, position, boundary)
+                    .selected_sequence_end(sequence, position, boundary)
             {
                 assert!(end > position && end <= range.end);
                 position = end;
@@ -332,7 +332,32 @@ impl Machine<'_> {
                 let control = self.program.control(node.id).unwrap();
                 let condition = self.predicate(control.condition);
                 let boundary = self.stage.ir.structured.as_ref().unwrap().root.id;
-                if let Some(plan) = self.index.failure_first(node.id, boundary).cloned() {
+                if let LiftedIfPlan::Require(plan) = self.index.if_plan(node.id, boundary) {
+                    let plan = plan.clone();
+                    if condition == plan.pass_nonzero() {
+                        return self.syntax(self.index.node(plan.success_node()).unwrap());
+                    }
+                    let flow = self.syntax(self.index.node(plan.failure_node()).unwrap())?;
+                    if flow != Flow::Next {
+                        return Ok(flow);
+                    }
+                    if let LiftedIfSuffix::Absorb {
+                        sequence,
+                        start,
+                        end,
+                    } = self.index.if_plan(node.id, boundary).suffix()
+                    {
+                        let StructuredKind::Sequence(children) =
+                            &self.index.node(sequence).unwrap().kind
+                        else {
+                            unreachable!()
+                        };
+                        return self.sequence(sequence, children, start..end);
+                    }
+                    return Ok(Flow::Next);
+                }
+                if let LiftedIfPlan::FailureFirst(plan) = self.index.if_plan(node.id, boundary) {
+                    let plan = plan.clone();
                     if condition == plan.failure_nonzero() {
                         let flow = self.syntax(self.index.node(plan.failure_node()).unwrap())?;
                         if flow != Flow::Next {
