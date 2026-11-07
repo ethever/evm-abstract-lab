@@ -16,6 +16,7 @@ mod availability;
 mod guards;
 mod liveness;
 mod payloads;
+mod shared;
 mod simplify;
 mod validate;
 pub(crate) use validate::certify;
@@ -69,11 +70,65 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
         .map(|id| (id, owner.id()))
         .collect();
     remap_program(&mut projection.program, &remap);
-    let parents = projection
+    let mut parents: BTreeMap<EntityId, Vec<EntityId>> = projection
         .parents
         .into_iter()
         .filter_map(|(id, parents)| Some((*remap.get(&id)?, parents.into_iter().collect())))
         .collect();
+    // Source and semantic entities share one artifact namespace. Discover only
+    // after publishing fresh semantic IDs; temporary arena IDs can overlap raw
+    // source IDs and must never enter a mixed source correspondence map.
+    let mut next = projection
+        .program
+        .entity_ids()
+        .map(|id| id.0)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let mut shared_work = 0_usize;
+    let Some(mut plan) = shared::discover(&ir, &projection.program, &mut next, &mut |work| {
+        shared_work = shared_work.saturating_add(work);
+        owner.pay(work)
+    }) else {
+        if !owner.stopped {
+            owner.stop(
+                Completion::Limited,
+                DiagnosticCode::Limit,
+                "shared procedure admission allowance exhausted; Structured retained",
+            );
+        }
+        return;
+    };
+    if !owner.pay(shared_work.saturating_mul(2)) {
+        return;
+    }
+    let mut definitions = BTreeMap::new();
+    for definition in &mut plan.procedures {
+        let old = definition.id;
+        definition.id = owner.id();
+        definitions.insert(old, definition.id);
+        parents.insert(definition.id, vec![definition.body]);
+    }
+    for invocation in &mut plan.invocations {
+        invocation.id = owner.id();
+        invocation.procedure = definitions[&invocation.procedure];
+        parents.insert(invocation.id, vec![invocation.source]);
+    }
+    projection.program.procedures = plan.procedures;
+    projection.program.invocations = plan.invocations;
+    if let Err(error) = projection
+        .program
+        .validate_shared_sources(&ir, |work| owner.pay(work))
+    {
+        if !owner.stopped {
+            owner.stop(
+                Completion::Partial,
+                DiagnosticCode::Validation,
+                &format!("shared procedure source certificate failed: {error}"),
+            );
+        }
+        return;
+    }
     ir.lifted = Some(projection.program);
     owner.commit(StageKind::Lifted, ir,
         ("lift_semantic_expressions", "typed scoped EVM expressions, live simultaneous transfers and lazy exact-payload REVERT guards certified against unchanged primitive witness"),
@@ -510,6 +565,13 @@ fn remap_program(program: &mut LiftedProgram, ids: &BTreeMap<EntityId, EntityId>
         if let crate::LiftedGuardPayload::ErrorString(payload) = &mut failure.payload {
             id(payload);
         }
+    }
+    for p in &mut program.procedures {
+        id(&mut p.id);
+    }
+    for i in &mut program.invocations {
+        id(&mut i.id);
+        id(&mut i.procedure);
     }
     for c in &mut program.controls {
         id(&mut c.id);

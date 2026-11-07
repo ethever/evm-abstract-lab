@@ -5,7 +5,7 @@ use super::{LiftedRenderError, MAX_LIFTED_EXPRESSION_TEXT};
 
 pub(super) const LEFT_RIGHT: &[&str] = &["left", "right"];
 
-pub(super) fn operand_names(opcode: u8, arity: usize) -> Option<&'static [&'static str]> {
+pub(crate) fn operand_names(opcode: u8, arity: usize) -> Option<&'static [&'static str]> {
     let names: &[&str] = match opcode {
         0x01..=0x03 | 0x10..=0x14 | 0x16..=0x18 => LEFT_RIGHT,
         0x04..=0x07 => &["dividend", "divisor"],

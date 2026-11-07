@@ -41,6 +41,8 @@ pub(super) enum EntityKind {
     LiftedPayload,
     LiftedRevert,
     LiftedConstruction,
+    LiftedProcedure,
+    LiftedInvocation,
 }
 
 #[derive(Default)]
@@ -64,9 +66,13 @@ impl Index {
             ..Self::default()
         };
         for stage in &artifact.stages {
-            index
-                .stages
-                .insert(stage.id, Rc::new(super::index::StageIndex::new(&stage.ir)));
+            index.stages.insert(
+                stage.id,
+                Rc::new(super::index::StageIndex::with_render_work_limit(
+                    &stage.ir,
+                    artifact.config.limits.max_work,
+                )),
+            );
             let mut add = |entity, kind| {
                 index.entities.insert(
                     EntityRef {
@@ -463,6 +469,15 @@ pub(super) fn check_artifact(artifact: &Artifact) -> Result<(), String> {
                     stage.id
                 )
             })?;
+            let work = super::lifted::work::Work::new(artifact.config.limits.max_work);
+            program
+                .validate_shared_sources(&stage.ir, |amount| work.reserve(amount))
+                .map_err(|error| {
+                    format!(
+                        "invalid shared procedure sources in stage {:?}: {error}",
+                        stage.id
+                    )
+                })?;
             if stage.validation.status != ValidationStatus::Failed {
                 program
                     .validate()

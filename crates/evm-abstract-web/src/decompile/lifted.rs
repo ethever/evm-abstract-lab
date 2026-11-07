@@ -7,6 +7,9 @@ use evm_abstract_protocol::decompile_model::{
     LiftedGuardPayload, LiftedProgram, LiftedRenderIndex, LiftedStatement, LiftedTransfer, Stage,
 };
 
+pub(super) mod shared;
+pub(super) mod work;
+
 pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, EntityKind)) {
     for expression in &program.expressions {
         visitor(expression.id, EntityKind::LiftedExpression);
@@ -31,6 +34,12 @@ pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, 
     }
     for construction in &program.constructions {
         visitor(construction.id, EntityKind::LiftedConstruction);
+    }
+    for procedure in &program.procedures {
+        visitor(procedure.id, EntityKind::LiftedProcedure);
+    }
+    for invocation in &program.invocations {
+        visitor(invocation.id, EntityKind::LiftedInvocation);
     }
 }
 
@@ -84,7 +93,11 @@ pub(super) fn details(
     index: &StageIndex,
     id: EntityId,
     renderer: &LiftedRenderIndex<'_>,
+    work: &work::Work,
 ) -> Option<Details> {
+    if let Some(details) = shared::details(stage, index, id, work) {
+        return Some(details);
+    }
     let mut lines = Vec::new();
     let mut references = Vec::new();
     if let Some(definition) = index.expression(&stage.ir, id) {

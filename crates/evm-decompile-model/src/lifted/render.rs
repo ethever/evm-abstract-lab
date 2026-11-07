@@ -7,12 +7,17 @@ use super::{LiftedModelError, sources::GuardSources};
 use crate::{EntityId, Ir, StructuredNode};
 use std::collections::BTreeMap;
 
-mod primitive;
+pub(crate) mod primitive;
 use primitive::append;
 
 /// Reusable indexes for rendering many semantic rows without rescanning arenas.
 /// Owners reserve index construction from their own work ledger before creating it.
 pub struct LiftedRenderIndex<'a> {
+    pub(crate) program: &'a LiftedProgram,
+    pub(crate) shared_source: Option<crate::SharedSourceIndex<'a>>,
+    pub(crate) shared_error: Option<LiftedRenderError>,
+    pub(crate) shared_calls: BTreeMap<EntityId, &'a crate::SharedInvocation>,
+    pub(crate) shared_definitions: BTreeMap<EntityId, &'a crate::SharedProcedure>,
     expressions: BTreeMap<EntityId, &'a LiftedExpression>,
     operations: BTreeMap<EntityId, &'a crate::Operation>,
     edges: BTreeMap<EntityId, &'a crate::Edge>,
@@ -38,6 +43,8 @@ pub enum LiftedRenderError {
     MissingWitness(EntityId),
     /// Guard metadata would escape its owned source arm or forge a suffix cut.
     InvalidGuardSource(EntityId),
+    /// Sharing certificate failed direct source validation; omission is quarantined.
+    InvalidSharedSource(EntityId),
 }
 impl std::fmt::Display for LiftedRenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,7 +54,27 @@ impl std::fmt::Display for LiftedRenderError {
 impl std::error::Error for LiftedRenderError {}
 
 impl<'a> LiftedRenderIndex<'a> {
-    fn new(program: &'a LiftedProgram, ir: Option<&'a Ir>) -> Self {
+    fn new(
+        program: &'a LiftedProgram,
+        ir: Option<&'a Ir>,
+        mut pay: impl FnMut(usize) -> bool,
+        include_shared: bool,
+    ) -> Self {
+        let mut basic = program.record_count();
+        if let Some(ir) = ir {
+            basic = basic
+                .saturating_add(ir.values.len())
+                .saturating_add(ir.edges.len());
+            for b in &ir.blocks {
+                basic = basic
+                    .saturating_add(b.operations.len())
+                    .saturating_add(b.parameters.len())
+                    .saturating_add(4);
+            }
+        }
+        if !pay(basic.saturating_mul(4)) {
+            return Self::refused(program);
+        }
         let expressions = program.expressions.iter().map(|e| (e.id, e)).collect();
         let edges = ir
             .into_iter()
@@ -77,7 +104,31 @@ impl<'a> LiftedRenderIndex<'a> {
                     .map(|c| LiftedRenderError::MissingWitness(c.node)),
             ),
         };
+        let shared = ir
+            .filter(|_| include_shared && program.has_procedures())
+            .map(|ir| {
+                crate::SharedSourceIndex::for_program(ir, Some(program), &mut pay).and_then(
+                    |index| {
+                        index.validate(program, &mut pay)?;
+                        Ok(index)
+                    },
+                )
+            });
+        let (shared_source, shared_error) = match shared {
+            Some(Ok(index)) => (Some(index), None),
+            Some(Err(crate::SharedProcedureError::Limit)) => (None, Some(LiftedRenderError::Limit)),
+            Some(Err(_)) => (
+                None,
+                Some(LiftedRenderError::InvalidSharedSource(EntityId(0))),
+            ),
+            None => (None, None),
+        };
         Self {
+            program,
+            shared_source,
+            shared_error,
+            shared_calls: program.invocations.iter().map(|i| (i.source, i)).collect(),
+            shared_definitions: program.procedures.iter().map(|p| (p.id, p)).collect(),
             expressions,
             operations: ir
                 .into_iter()
@@ -96,6 +147,28 @@ impl<'a> LiftedRenderIndex<'a> {
             reverts: program.reverts.iter().map(|r| (r.block, r)).collect(),
             constructions: program.constructions.iter().map(|c| (c.block, c)).collect(),
             guard_source_error,
+        }
+    }
+    fn refused(program: &'a LiftedProgram) -> Self {
+        Self {
+            program,
+            shared_source: None,
+            shared_error: Some(LiftedRenderError::Limit),
+            shared_calls: BTreeMap::new(),
+            shared_definitions: BTreeMap::new(),
+            expressions: BTreeMap::new(),
+            operations: BTreeMap::new(),
+            edges: BTreeMap::new(),
+            blocks: BTreeMap::new(),
+            transfers: BTreeMap::new(),
+            controls: BTreeMap::new(),
+            nodes: BTreeMap::new(),
+            failures: BTreeMap::new(),
+            omissions: BTreeMap::new(),
+            payloads: BTreeMap::new(),
+            reverts: BTreeMap::new(),
+            constructions: BTreeMap::new(),
+            guard_source_error: Some(LiftedRenderError::Limit),
         }
     }
     /// Structural guard admission for this index, independent of stored Passed
@@ -477,31 +550,68 @@ impl<'a> LiftedRenderIndex<'a> {
             .get(&raw.to)
             .copied()
             .ok_or(LiftedRenderError::MissingWitness(raw.to))?;
-        Ok(Some(format!(
-            "({}) = ({});",
-            target
-                .parameters
-                .iter()
-                .map(|v| format!("v{}", v.0))
-                .collect::<Vec<_>>()
-                .join(", "),
-            transfer
-                .arguments
-                .iter()
-                .map(|id| self.render_expression(*id, &mut reserve))
-                .collect::<Result<Vec<_>, _>>()?
-                .join(", ")
-        )))
+        let mut out = String::new();
+        append(&mut out, "(", &mut reserve)?;
+        for (position, id) in target.parameters.iter().enumerate() {
+            if position > 0 {
+                append(&mut out, ", ", &mut reserve)?;
+            }
+            append(&mut out, &format!("v{}", id.0), &mut reserve)?;
+        }
+        append(&mut out, ") = (", &mut reserve)?;
+        for (position, id) in transfer.arguments.iter().enumerate() {
+            if position > 0 {
+                append(&mut out, ", ", &mut reserve)?;
+            }
+            let value = self.render_expression(*id, &mut reserve)?;
+            append(&mut out, &value, &mut reserve)?;
+        }
+        append(&mut out, ");", &mut reserve)?;
+        Ok(Some(out))
     }
 }
 impl LiftedProgram {
     /// Build reusable source/expression indexes for a batch of code rows.
     pub fn render_index<'a>(&'a self, ir: &'a Ir) -> LiftedRenderIndex<'a> {
-        LiftedRenderIndex::new(self, Some(ir))
+        {
+            let mut remaining = super::MAX_LIFTED_RECORDS.saturating_mul(256);
+            LiftedRenderIndex::new(
+                self,
+                Some(ir),
+                |n| {
+                    if n > remaining {
+                        false
+                    } else {
+                        remaining -= n;
+                        true
+                    }
+                },
+                true,
+            )
+        }
+    }
+    /// Prepare one reusable index under the owner's cancellation/work ledger.
+    /// Invalid sharing is quarantined; refusal is reported by validation APIs.
+    pub fn render_index_with_budget<'a>(
+        &'a self,
+        ir: &'a Ir,
+        reserve: impl FnMut(usize) -> bool,
+    ) -> LiftedRenderIndex<'a> {
+        LiftedRenderIndex::new(self, Some(ir), reserve, true)
+    }
+    /// Base expressions/guards/capsules only; performs no shared Flow proof and
+    /// exposes no shared definitions/call omissions. Immutable owners can cache
+    /// the full index's formatted shared rows and use this for normal windows.
+    pub fn render_base_index_with_budget<'a>(
+        &'a self,
+        ir: &'a Ir,
+        reserve: impl FnMut(usize) -> bool,
+    ) -> LiftedRenderIndex<'a> {
+        LiftedRenderIndex::new(self, Some(ir), reserve, false)
     }
     /// Bounded single-expression convenience; batch consumers use render_index.
     pub fn render_expression(&self, id: EntityId) -> String {
-        match LiftedRenderIndex::new(self, None).render_expression(id, |_| true) {
+        match LiftedRenderIndex::new(self, None, |_| true, false).render_expression(id, |_| true) {
             Ok(text) => text,
             Err(LiftedRenderError::Limit) => format!("expression_limit(e{})", id.0),
             Err(_) => format!("missing_expression(e{})", id.0),

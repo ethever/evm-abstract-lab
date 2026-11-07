@@ -11,6 +11,76 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
+fn default_cli_exports_real_certified_definitions_calls_and_retained_raw_witness() {
+    let bytecode =
+        include_str!("../../evm-decompile/tests/fixtures/shared-procedures/pure-call-inputs.hex")
+            .trim();
+    let output = run(&["--hex", bytecode, "--format", "json"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(artifact.schema_version, 5);
+    let stage = artifact.current().unwrap();
+    let high = stage.ir.lifted.as_ref().unwrap();
+    assert!(
+        !high.procedures.is_empty(),
+        "installed CLI must publish actual reusable definitions"
+    );
+    assert!(
+        high.invocations.len() >= 2,
+        "installed CLI must publish actual invocation sites"
+    );
+    high.validate_shared_sources(&stage.ir, |_| true).unwrap();
+    let text = run(&["--hex", bytecode]);
+    assert_eq!(text.status.code(), Some(0));
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert_eq!(
+        text.trim_end(),
+        evm_decompile::render_text(&artifact).trim_end()
+    );
+    let index = high.render_index(&stage.ir);
+    for procedure in index.procedures() {
+        let header = index
+            .render_procedure_header(procedure, true, |_| true)
+            .unwrap();
+        assert!(
+            text.contains(&header),
+            "CLI/model definition formatting diverged: {header}"
+        );
+    }
+    for call in &high.invocations {
+        let invocation = index
+            .render_shared_invocation(call, true, |_| true)
+            .unwrap();
+        assert!(
+            text.contains(&invocation),
+            "CLI/model call formatting diverged: {invocation}"
+        );
+    }
+    let raw = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
+        .unwrap();
+    let mut witness = stage.ir.clone();
+    witness.lifted = None;
+    assert_eq!(
+        witness, raw.ir,
+        "sharing must preserve the exact raw Structured/IR artifact"
+    );
+    let decoded: evm_decompile::Artifact =
+        serde_json::from_slice(&serde_json::to_vec(&artifact).unwrap()).unwrap();
+    assert_eq!(
+        decoded, artifact,
+        "IDs, source maps and certificate bindings roundtrip"
+    );
+}
+
+#[test]
 fn local_code_produces_structured_output_and_inspectable_json_without_a_world() {
     let output = run(&["--hex", "600260030100", "--format", "json"]);
     assert_eq!(
@@ -20,7 +90,7 @@ fn local_code_produces_structured_output_and_inspectable_json_without_a_world() 
         String::from_utf8_lossy(&output.stderr)
     );
     let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(artifact.schema_version, 4);
+    assert_eq!(artifact.schema_version, 5);
     assert!(artifact.admits_schema());
     assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
     assert_eq!(
@@ -411,7 +481,7 @@ fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_w
             String::from_utf8_lossy(&output.stderr)
         );
         let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(artifact.schema_version, 4);
+        assert_eq!(artifact.schema_version, 5);
         assert!(artifact.admits_schema());
         let current = artifact.current().unwrap();
         let program = current.ir.lifted.as_ref().unwrap();

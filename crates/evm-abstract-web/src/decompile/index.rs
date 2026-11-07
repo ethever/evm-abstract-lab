@@ -4,7 +4,7 @@
 use evm_abstract_protocol::decompile_model::{
     Block, DispatchTransition, Edge, EntityId, Ir, LiftedBlock, LiftedConstruction, LiftedControl,
     LiftedErrorPayload, LiftedExpression, LiftedRevert, LiftedStatement, LiftedTransfer, Operation,
-    StructuredKind, StructuredNode, Value,
+    SharedInvocation, SharedProcedure, StructuredKind, StructuredNode, Value,
 };
 use std::collections::BTreeMap;
 
@@ -24,10 +24,14 @@ pub(super) struct StageIndex {
     payloads: BTreeMap<EntityId, usize>,
     reverts: BTreeMap<EntityId, usize>,
     constructions: BTreeMap<EntityId, usize>,
+    procedures: BTreeMap<EntityId, usize>,
+    invocations: BTreeMap<EntityId, usize>,
     source_blocks: BTreeMap<EntityId, usize>,
     source_edges: BTreeMap<EntityId, usize>,
     source_nodes: BTreeMap<EntityId, usize>,
     semantic_owners: BTreeMap<EntityId, usize>,
+    render_work_limit: u64,
+    pub shared: super::lifted::shared::Prepared,
     #[cfg(test)]
     pub value_reads: std::cell::Cell<usize>,
 }
@@ -38,8 +42,15 @@ impl StageIndex {
     pub fn first_block(&self, ir: &Ir, node: &StructuredNode) -> Option<EntityId> {
         node.entry_block_with(|edge| self.edge(ir, edge).map(|edge| edge.from))
     }
+    #[cfg(test)]
     pub fn new(ir: &Ir) -> Self {
-        let mut index = Self::default();
+        Self::with_render_work_limit(ir, u64::MAX)
+    }
+    pub fn with_render_work_limit(ir: &Ir, render_work_limit: u64) -> Self {
+        let mut index = Self {
+            render_work_limit,
+            ..Self::default()
+        };
         for (position, block) in ir.blocks.iter().enumerate() {
             index.blocks.insert(block.id, position);
             for (offset, op) in block.operations.iter().enumerate() {
@@ -130,8 +141,32 @@ impl StageIndex {
                     index.semantic_owners.insert(construction.id, *owner);
                 }
             }
+            for (position, procedure) in program.procedures.iter().enumerate() {
+                index.procedures.insert(procedure.id, position);
+                if let Some(owner) = index
+                    .node(ir, procedure.body)
+                    .and_then(|node| index.first_block(ir, node))
+                    .and_then(|block| index.blocks.get(&block).copied())
+                {
+                    index.semantic_owners.insert(procedure.id, owner);
+                }
+            }
+            for (position, invocation) in program.invocations.iter().enumerate() {
+                index.invocations.insert(invocation.id, position);
+                if let Some(owner) = index
+                    .node(ir, invocation.source)
+                    .and_then(|node| index.first_block(ir, node))
+                    .and_then(|block| index.blocks.get(&block).copied())
+                {
+                    index.semantic_owners.insert(invocation.id, owner);
+                }
+            }
         }
+        index.shared = super::lifted::shared::Prepared::new(ir, &index.render_work());
         index
+    }
+    pub fn render_work(&self) -> super::lifted::work::Work {
+        super::lifted::work::Work::new(self.render_work_limit)
     }
     pub fn block<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a Block> {
         ir.blocks.get(*self.blocks.get(&id)?)
@@ -222,6 +257,18 @@ impl StageIndex {
             .as_ref()?
             .constructions
             .get(*self.constructions.get(&id)?)
+    }
+    pub fn procedure<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a SharedProcedure> {
+        ir.lifted
+            .as_ref()?
+            .procedures
+            .get(*self.procedures.get(&id)?)
+    }
+    pub fn invocation<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a SharedInvocation> {
+        ir.lifted
+            .as_ref()?
+            .invocations
+            .get(*self.invocations.get(&id)?)
     }
     pub fn source_block<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedBlock> {
         ir.lifted

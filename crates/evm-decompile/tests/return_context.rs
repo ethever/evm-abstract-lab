@@ -8,6 +8,13 @@ use evm_decompile::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "lifted/oracle/expressions.rs"]
+mod expressions;
+#[path = "shared_procedures/oracle.rs"]
+mod shared_oracle;
+#[path = "shared_procedures/support.rs"]
+mod support;
+
 const USDC: &str =
     include_str!("../../../examples/known-recursion/captured/usdc-26180958-observed-world.json");
 const ADMIN_SLOT: &str = "10d6a54a4754c8869d6886b5f5d7fbfa5b4522237ea5c60d11bc4e7a1ff9390b";
@@ -325,7 +332,7 @@ fn differential(
     }
     let current = artifact.current().unwrap();
     assert_eq!(current.kind, StageKind::Lifted);
-    let mut syntax_host = host;
+    let mut syntax_host = host.clone();
     let syntax = execute_structured(current, &mut syntax_host, &limits)
         .unwrap_or_else(|error| panic!("{label}, structured: {error}"));
     assert_eq!(raw.outcome, syntax.outcome, "{label}, structured");
@@ -335,7 +342,61 @@ fn differential(
         "{label}, structured"
     );
     assert_eq!(raw_host, syntax_host, "{label}, structured");
+    let shared = shared_oracle::certify(input, artifact, host, &limits);
+    assert_eq!(
+        shared.outcome,
+        Ok(raw.outcome.clone()),
+        "{label}, procedure invocation projection"
+    );
+    assert_eq!(
+        shared.host.state, raw_host,
+        "{label}, procedure shared state"
+    );
+    eprintln!("{label}: {} shared dynamic invocations", shared.calls.len());
     (raw, raw_host)
+}
+
+#[test]
+fn captured_usdc_sharing_reduces_high_text_and_preserves_matched_returns() {
+    let input = proxy();
+    let artifact = decompile(&input, &Config::default());
+    complete(&artifact);
+    let high = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
+    assert!(
+        !high.procedures.is_empty(),
+        "captured USDC must exercise actual procedure sharing"
+    );
+    assert!(high.invocations.len() >= 2);
+    let text = evm_decompile::render_text(&artifact);
+    let mut unshared = artifact.clone();
+    let high_unshared = unshared
+        .stages
+        .last_mut()
+        .unwrap()
+        .ir
+        .lifted
+        .as_mut()
+        .unwrap();
+    high_unshared.procedures.clear();
+    high_unshared.invocations.clear();
+    let before = evm_decompile::render_text(&unshared);
+    assert!(
+        text.len() < before.len(),
+        "captured USDC must have profitable high text sharing: {} -> {}",
+        before.len(),
+        text.len()
+    );
+    eprintln!(
+        "USDC sharing: {} procedures, {} invocations; bytes {} -> {}; lines {} -> {}",
+        high.procedures.len(),
+        high.invocations.len(),
+        before.len(),
+        text.len(),
+        before.lines().count(),
+        text.lines().count()
+    );
+    exact_returns(baseline(&artifact), 0x303, 0x106);
+    exact_returns(baseline(&artifact), 0x64f, 0x201);
 }
 
 fn exit(execution: &Execution, expected: ExitKind) {

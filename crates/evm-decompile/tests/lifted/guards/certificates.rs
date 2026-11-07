@@ -244,15 +244,17 @@ fn guard_identity_and_absorbed_failure_operations_remain_navigable_in_raw_histor
 #[test]
 fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     let artifact = checked(&direct(false, Failure::Empty(U256::ZERO)));
-    assert_eq!(artifact.schema_version, 4);
+    assert_eq!(artifact.schema_version, 5);
     assert!(artifact.admits_schema());
-    let mut legacy = artifact.clone();
-    legacy.schema_version = 3;
-    assert!(legacy.admits_schema());
-    let encoded = serde_json::to_string(&legacy).unwrap();
-    assert_eq!(serde_json::from_str::<Artifact>(&encoded).unwrap(), legacy);
-    assert!(!encoded.contains("\"payloads\"") && !encoded.contains("\"constructions\""));
-    for version in [1, 2, 5] {
+    for version in [3, 4] {
+        let mut legacy = artifact.clone();
+        legacy.schema_version = version;
+        assert!(legacy.admits_schema());
+        let encoded = serde_json::to_string(&legacy).unwrap();
+        assert_eq!(serde_json::from_str::<Artifact>(&encoded).unwrap(), legacy);
+        assert!(!encoded.contains("\"payloads\"") && !encoded.contains("\"constructions\""));
+    }
+    for version in [1, 2, 6] {
         let mut old = artifact.clone();
         old.schema_version = version;
         assert!(

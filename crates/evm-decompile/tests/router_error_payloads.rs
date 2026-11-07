@@ -7,9 +7,16 @@ use evm_decompile::{
 use std::sync::OnceLock;
 
 #[path = "lifted/oracle/expressions.rs"]
-mod oracle;
+mod expressions;
+use expressions as oracle;
 #[path = "lifted/error_payloads/oracle.rs"]
 mod payload_oracle;
+#[path = "shared_procedures/oracle.rs"]
+mod shared_oracle;
+#[path = "shared_procedures/router.rs"]
+mod shared_router;
+#[path = "shared_procedures/support.rs"]
+mod support;
 
 fn router() -> &'static (Input, Artifact) {
     static ROUTER: OnceLock<(Input, Artifact)> = OnceLock::new();
@@ -97,15 +104,15 @@ fn actual_router_preserves_baseline_coverage_and_raw_witness() {
     let index = program.render_index(&stage.ir);
     index.validate_guard_sources().unwrap();
     assert!(
-        program.reverts.len() >= 65,
+        program.reverts.len() >= 129,
         "retain baseline terminal coverage"
     );
     assert!(
-        program.constructions.len() >= 65,
+        program.constructions.len() >= 129,
         "retain baseline capsule coverage"
     );
     assert!(
-        program.payloads.len() >= 6,
+        program.payloads.len() >= 7,
         "retain baseline byte identities"
     );
     let ds_math = program
@@ -425,6 +432,16 @@ fn array_success(input: &Input, artifact: &Artifact, signature: &str, amount: U2
     assert_eq!(normalized.unwrap(), raw.outcome);
     assert_eq!(normalized_host, raw_host);
     assert_eq!(capsules, 0);
+    let shared = shared_oracle::certify(
+        input,
+        artifact,
+        array_host(input, signature, amount, 3, 1000),
+        &ExecutionLimits::default(),
+    );
+    assert!(
+        shared.calls.len() >= 2,
+        "actual Router array path must execute shared definitions repeatedly"
+    );
 }
 
 #[test]

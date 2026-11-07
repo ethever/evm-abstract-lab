@@ -15,9 +15,15 @@ pub(super) struct Details {
 }
 
 pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &[u8]) -> Details {
+    let work = index.render_work();
     if let Some(program) = &stage.ir.lifted
-        && let Some(details) =
-            super::lifted::details(stage, index, id, &program.render_index(&stage.ir))
+        && let Some(details) = super::lifted::details(
+            stage,
+            index,
+            id,
+            &program.render_base_index_with_budget(&stage.ir, |amount| work.reserve(amount)),
+            &work,
+        )
     {
         return details;
     }

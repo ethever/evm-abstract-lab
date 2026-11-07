@@ -114,6 +114,8 @@ class BrowserRegistryTests(unittest.TestCase):
                 expected.add(layout + "nested-call-world.json")
             if case_id in {"storage-table", "storage-scroll"}:
                 expected.add("scripts/web_test_storage_literals.json")
+            if case_id == "decompile-shared-procedures":
+                expected.add("crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex")
             actual = {dependency for dependency in case["dependencies"] if not dependency.endswith(".py")}
             with self.subTest(case=case_id):
                 self.assertEqual(actual, expected)

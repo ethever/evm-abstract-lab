@@ -72,3 +72,35 @@ fn new_arena_weights_match_the_global_record_units() {
     };
     assert_eq!(program.record_count(), weight);
 }
+
+#[test]
+fn sharing_wire_weights_cover_body_references_and_identity_invocations() {
+    let procedure = crate::SharedProcedure {
+        id: EntityId(1),
+        body: EntityId(100),
+        interface: crate::SharedInterface::default(),
+    };
+    let calls: Vec<_> = (0_u64..2)
+        .map(|i| crate::SharedInvocation {
+            id: EntityId(i + 2),
+            procedure: procedure.id,
+            source: EntityId(100 + i),
+            owner: None,
+            position: 0,
+            continuation: None,
+            bindings: Vec::new(),
+        })
+        .collect();
+    let expected =
+        procedure.wire_weight() + calls.iter().map(WireWeight::wire_weight).sum::<usize>();
+    let program = LiftedProgram {
+        procedures: vec![procedure],
+        invocations: calls,
+        ..LiftedProgram::default()
+    };
+    assert_eq!(program.record_count(), expected);
+    program.validate().unwrap();
+    let wire = serde_json::to_vec(&program).unwrap();
+    let admitted: LiftedProgram = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(admitted.record_count(), expected);
+}

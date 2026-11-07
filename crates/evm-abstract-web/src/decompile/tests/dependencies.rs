@@ -20,6 +20,7 @@ mod error_payloads;
 mod guard_sources;
 mod guards;
 mod named_operands;
+mod shared_procedures;
 
 // A calldata branch joins a live word after MSTORE/MLOAD/SSTORE/SLOAD. The
 // joined word is stored, then CALL, LOG0 and RETURN remain observable.

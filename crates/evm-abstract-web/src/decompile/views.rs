@@ -221,6 +221,8 @@ impl Views {
                         | EntityKind::LiftedTransfer
                         | EntityKind::LiftedControl
                         | EntityKind::LiftedConstruction
+                        | EntityKind::LiftedProcedure
+                        | EntityKind::LiftedInvocation
                 )
             );
             if semantic_code {
