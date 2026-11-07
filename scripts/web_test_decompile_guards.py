@@ -97,6 +97,37 @@ def guard_rows(text):
     return [line for line in text.splitlines() if line.lstrip().startswith("if (")]
 
 
+def normal_join_witness(current, program):
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    expressions = {expression["id"]: expression for expression in program["expressions"]}
+    stores = [(block, statement) for block in program["blocks"] for statement in block["statements"]
+              if operations[statement["operation"]]["opcode"] == 0x55]
+    (join, store), = stores
+    parameter, = join["parameters"]
+    assert expressions[store["inputs"][0]]["kind"] == {"word": "0x0"}
+    assert expressions[store["inputs"][1]]["kind"] == {"value": parameter}
+    edges = {edge["id"]: edge for edge in current["ir"]["edges"]}
+    transfers = {transfer["edge"]: transfer for transfer in program["transfers"]}
+    nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
+    branch, = [kind["if"] for kind in nodes.values() if isinstance(kind, dict) and "if" in kind]
+    arms = []
+    for arm in [branch["then_branch"], branch["else_branch"]]:
+        pending, incoming = [arm], []
+        while pending:
+            kind = nodes[pending.pop()]
+            if "sequence" in kind:
+                pending.extend(kind["sequence"])
+            elif "transfer" in kind and edges[kind["transfer"]["edge"]]["to"] == join["block"]:
+                incoming.append(transfers[kind["transfer"]["edge"]])
+        transfer, = incoming
+        argument, = transfer["arguments"]
+        literal = expressions[argument]["kind"]["word"]
+        arms.append((transfer, f"(v{parameter}) = ({literal});"))
+    assert {expressions[transfer["arguments"][0]]["kind"]["word"] for transfer, _ in arms} == {"0x1", "0x2"}
+    return parameter, store, arms
+
+
 def run(context):
     page, canvas, _, _ = open_decompiler(context)
     posts, publications, results = [], [], []
@@ -308,9 +339,25 @@ def run(context):
     current, program = projection(artifact)
     high(page, canvas)
     ordinary = painted_copy(page, canvas)
-    assert "} else {" in ordinary and "parallel assignment" in ordinary, ordinary
+    assert "} else {" in ordinary, ordinary
     assert ordinary.count("evm.sstore(") == 1 and "evm.revert(" not in ordinary, ordinary
-    results.append({"artifact": artifact["id"], "ordinary_branch": True})
+    parameter, store, arms = normal_join_witness(current, program)
+    rows = [line.strip() for line in ordinary.splitlines()]
+    separator = rows.index("} else {")
+    stored = rows.index(f"evm.sstore(slot = 0x0, value = v{parameter});")
+    assert rows.index(arms[0][1]) < separator < rows.index(arms[1][1]) < stored, ordinary
+    for transfer, assignment in arms:
+        assert rows.count(assignment) == 1, ordinary
+        source_descendant(page, canvas, artifact, current["id"], transfer["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", assignment)
+    source_descendant(page, canvas, artifact, current["id"], store["id"])
+    ui_control(page, "Simplified structured code", role="tab", selected=True)
+    selected_row(page, "decompile-code", f"value = v{parameter}")
+    assert painted_copy(page, canvas) == ordinary
+    results.append({"artifact": artifact["id"], "ordinary_branch": True,
+                    "join_parameter": parameter, "store_statement": store["id"],
+                    "arm_transfers": [transfer["id"] for transfer, _ in arms]})
 
     gpu = webgpu_evidence(page)
     page.close()
