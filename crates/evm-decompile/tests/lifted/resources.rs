@@ -16,26 +16,34 @@ fn shared_sum(depth: usize) -> Input {
 }
 
 #[test]
-fn truncated_shared_dag_export_never_claims_complete_semantic_source() {
+fn shared_dag_materialization_completes_without_bypassing_export_budget() {
     let input = shared_sum(32);
     let artifact = checked(&input);
-    // Only 32 pure operations, but inlining their shared operands expands to
-    // billions of leaves. The flat semantic DAG and its evaluation remain valid.
+    // Naive inlining of these 32 pure operations has billions of leaves. The
+    // projector now retains named raw computations; their evaluation is exact.
     let (_, host) = certify(
         &input,
         &artifact,
         MemoryHost::new(&input, calldata(&[U256::from(3)])),
     );
     assert_eq!(host.storage[&U256::ZERO], U256::from(3) << 32);
-    // This stress oracle deliberately refuses exponential text expansion. Keep
-    // its former 100M allowance explicit now that ordinary defaults are MAX.
-    let export = export_text_with_observer(&artifact, &Cancellation::new(), 100_000_000, |_| {});
+    let complete = export_text_with_observer(&artifact, &Cancellation::new(), 100_000_000, |_| {});
+    assert_eq!(complete.status, TextExportStatus::Complete);
+    assert!(complete.text.contains("evm.add("));
+    assert_eq!(complete.text.matches("evm.calldataload(").count(), 1);
+    assert_eq!(complete.text.matches("evm.sstore(").count(), 1);
+    assert!(!complete.text.contains("work limit exhausted"));
+    // A deliberately smaller independent export allowance must still refuse;
+    // compact materialization does not remove the public resource boundary.
+    let allowance = complete.work / 2;
+    let export = export_text_with_observer(&artifact, &Cancellation::new(), allowance, |_| {});
     assert_eq!(
         export.status,
         TextExportStatus::Limited,
-        "expanded-expression refusal reported Complete: {}",
-        export.text
+        "export work refusal must not report Complete"
     );
+    assert!(export.work <= allowance);
+    assert!(!export.text.contains("evm.sstore("));
     assert!(
         export
             .text
@@ -57,7 +65,7 @@ fn export_expression_expansion_is_metered_and_cancellable_inside_the_statement()
     assert!(!complete.text.contains("expression_limit"));
     assert!(
         complete.work >= 1024,
-        "the 1,024 expanded leaves were not charged"
+        "the retained arithmetic expansion was not charged"
     );
     assert_eq!(observations.last(), Some(&complete.work));
     assert!(observations.windows(2).all(|pair| pair[0] <= pair[1]));
