@@ -5,7 +5,7 @@
 例如，未知的 storage 读取仍可表示为：
 
 ```text
-x = sload(slot)
+x = evm.sload(slot)
 y = add256(x, 1)
 ```
 
@@ -89,26 +89,26 @@ if (z != 0) { ... }
 当条件的一条路径可以证明只会以空数据 REVERT 结束时，高层代码可以将它显示为单行 `require`，并把成功路径放在同一缩进层。例如：
 
 ```text
-if (C) { revert(offset = 0, size = 0); }
-sstore(slot = 0, value = 42);
-stop();
+if (C) { evm.revert(offset = 0, size = 0); }
+evm.sstore(slot = 0, value = 42);
+evm.stop();
 ```
 
 对应的高层表示为：
 
 ```text
 require(!(C));
-sstore(slot = 0x0, value = 0x2a);
+evm.sstore(slot = 0x0, value = 0x2a);
 evm.stop();
 ```
 
-若非零条件才是成功路径，则使用 `require(C);`。嵌套的 ABI 长度、bool 与动态偏移检查可以依次显示为多条 `require`；检查之前的环境读取与其他操作仍留在原位置。成功路径上的参数传递在 `require` 之后按原顺序执行，多个右值先同时求值，再写入目标参数。条件中的 256 位回绕算术和有符号比较保留，例如 `slt(left = (size - 0x4), right = 0x40)`，不会改写成缺少前提的整数长度比较；相同条件也不会因为这种表示自动合并。
+若非零条件才是成功路径，则使用 `require(C);`。嵌套的 ABI 长度、bool 与动态偏移检查可以依次显示为多条 `require`；检查之前的环境读取与其他操作仍留在原位置。成功路径上的参数传递在 `require` 之后按原顺序执行，多个右值先同时求值，再写入目标参数。条件中的 256 位回绕算术和有符号比较保留，例如 `evm.slt(left = (size - 0x4), right = 0x40)`，不会改写成缺少前提的整数长度比较；相同条件也不会因为这种表示自动合并。
 
 共用的失败尾部是否省略需要单独检查。例如，两条路径最终都会到达同一个 REVERT，而成功分支先执行 SSTORE 时，高层代码保留：
 
 ```text
 require(C);
-sstore(slot = 0x0, value = 0x2a);
+evm.sstore(slot = 0x0, value = 0x2a);
 evm.revert(offset = 0x0, size = 0x0);
 ```
 
@@ -117,7 +117,7 @@ evm.revert(offset = 0x0, size = 0x0);
 空数据 REVERT 的偏移不必为零。高层还可以识别由常量 MSTORE／MSTORE8 写入完整构造的规范 `Error(string)`，在证书通过后显示为：
 
 ```text
-revert("ds-math-mul-overflow");
+evm.revert("ds-math-mul-overflow");
 ```
 
 如果控制流也证明该构造属于条件失败路径，则进一步显示为 `require(C, "ds-math-mul-overflow");`。这里的 `C` 是原始成功谓词，仍遵守上述极性、成功参数传递和共享尾部规则。错误消息中的引号、反斜杠、换行、NUL 与 Unicode 使用共享的单行转义格式，页面、复制文本和 CLI 保持一致。
@@ -159,7 +159,7 @@ F_i = F_0 + 189*i
 
 高层投影还会传播已证明等价的块入口参数。在完整局部 CFG 中，若所有入边最终传入同一个已定义值，并且该定义所在块是进入目标块之前的必经节点，冗余参数及对应实参可以消除。相同来源的分支合流、自引用参数及有共同外部来源的复制环也按这些条件检查；不同来源的合流、变化的循环状态、没有外部来源的复制环和开放控制流保守保留。相同的抽象数值事实不构成值身份相同的证明。
 
-例如，`v1 = sload(slot);` 后经过 `v2 = v1; v3 = v2;` 的跨块传值链，可以在证明通过后改为后续直接引用 `v1`。SLOAD 仍在原位置执行一次，即使中途写入同一 storage 槽，后续使用的仍是先前读取的值。若传播源是原本会内联的纯计算结果，则在原操作位置保留一次有名字的定义，避免后续引用没有实际定义的变量。
+例如，`v1 = evm.sload(slot);` 后经过 `v2 = v1; v3 = v2;` 的跨块传值链，可以在证明通过后改为后续直接引用 `v1`。SLOAD 仍在原位置执行一次，即使中途写入同一 storage 槽，后续使用的仍是先前读取的值。若传播源是原本会内联的纯计算结果，则在原操作位置保留一次有名字的定义，避免后续引用没有实际定义的变量。
 
 表达式 DAG 仍按消费块组织；跨块引用使用已经证明在入口可用的原始值身份。内存读取、调用、环境观察及其他残余操作保留有序语句和不透明结果引用，保留下来的边实参同时求值后再写入下一块参数。同块内较晚产生的值不能替代块入口参数，因此不会把上一轮循环保存的值误当成本轮重新读取的值。未使用的不透明结果可以省略其高层绑定，但产生它的操作和既有 fault 仍保留。被消除的参数和实参仍通过保留的传边见证记录直接来源，底层参数表与指令不变。
 
@@ -188,13 +188,15 @@ procedure shared_42(v1, v2) -> (v3) {
 
 共享分析采用有界的结构化区域，目前定义之间不嵌套调用。无法证明的接口、逃出区域的外层循环控制，以及不支持的间接或分派控制保留原表示。候选、对应关系、活性分析、验证、历史和文本导出都计入资源预算；取消或超限不发布半份共享层。该层改善高层代码的组织，恢复阶段的上下文区分和原始历史仍然保留。
 
-仓库固定的 Router02 fixture 在默认 CLI 高层导出下，从 5,090,454 字节、32,872 行缩减为 1,828,553 字节、17,388 行；生成 79 个共享定义和 616 个调用，其中 28 个定义包含多个基本块。按“定义计一次、调用位置不重复展开”统计，代码体物化次数从 10,400 降为 5,005。原有 129 个终结载荷及构造证书仍然保留。这个比较衡量高层表示大小，原始 CFG、Structured 树和历史没有被删除。检查规则见[共享来源验证](../crates/evm-decompile-model/src/shared/source.rs)，实际执行与缩减回归见[Router 共享测试](../crates/evm-decompile/tests/shared_procedures/router.rs)。
+仓库固定的 Router02 fixture 在默认 CLI 高层导出下，从 5,182,998 字节、32,872 行缩减为 1,857,353 字节、17,388 行；生成 79 个共享定义和 616 个调用，其中 28 个定义包含多个基本块。按“定义计一次、调用位置不重复展开”统计，代码体物化次数从 10,400 降为 5,005。原有 129 个终结载荷及构造证书仍然保留。这个比较衡量高层表示大小，原始 CFG、Structured 树和历史没有被删除。检查规则见[共享来源验证](../crates/evm-decompile-model/src/shared/source.rs)，实际执行与缩减回归见[Router 共享测试](../crates/evm-decompile/tests/shared_procedures/router.rs)。
+
+普通高级代码、共享过程、Inspector 与 CLI 的 EVM 调用统一使用 `evm.` 前缀，包括函数形式的字运算和有符号比较。位取反显示为 `evm.not(...)`，逻辑否定仍使用 `!`；`require`、`word(...)` 和共享过程调用保留高级构造的写法。原始内存范围失败显示为 `evm.revert(offset = …, size = …)`，已认证的错误构造显示为 `evm.revert("消息")`，两者由参数形式和来源证明区分。
 
 高层原语调用按固定的 opcode 签名显示参数名，例如：
 
 ```text
-v4210 = call(gas = (v4205 - 0x2c6), target = v4066, value = 0x0, input_offset = v4169, input_size = 0x84, output_offset = v4169, output_size = 0x0);
-calldatacopy(memory_offset = 0x0, calldata_offset = 0x4, size = v12);
+v4210 = evm.call(gas = (v4205 - 0x2c6), target = v4066, value = 0x0, input_offset = v4169, input_size = 0x84, output_offset = v4169, output_size = 0x0);
+evm.calldatacopy(memory_offset = 0x0, calldata_offset = 0x4, size = v12);
 evm.revert(offset = 0x0, size = v13);
 ```
 

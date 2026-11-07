@@ -53,7 +53,7 @@ fn export_expression_expansion_is_metered_and_cancellable_inside_the_statement()
         observations.push(work)
     });
     assert_eq!(complete.status, TextExportStatus::Complete);
-    assert!(complete.text.contains("sstore("));
+    assert!(complete.text.contains("evm.sstore("));
     assert!(!complete.text.contains("expression_limit"));
     assert!(
         complete.work >= 1024,
@@ -66,11 +66,11 @@ fn export_expression_expansion_is_metered_and_cancellable_inside_the_statement()
     assert_eq!(limited.status, TextExportStatus::Limited);
     assert!(limited.work <= allowance);
     assert!(
-        limited.text.contains("calldataload("),
+        limited.text.contains("evm.calldataload("),
         "refusal must happen after input production"
     );
     assert!(
-        !limited.text.contains("sstore("),
+        !limited.text.contains("evm.sstore("),
         "partially rendered invocation must not be published as complete"
     );
     let cancel = Cancellation::new();
@@ -82,8 +82,8 @@ fn export_expression_expansion_is_metered_and_cancellable_inside_the_statement()
     assert!(cancel.is_cancelled());
     assert_eq!(cancelled.status, TextExportStatus::Cancelled);
     assert!(cancelled.work < complete.work);
-    assert!(cancelled.text.contains("calldataload("));
-    assert!(!cancelled.text.contains("sstore("));
+    assert!(cancelled.text.contains("evm.calldataload("));
+    assert!(!cancelled.text.contains("evm.sstore("));
     assert_eq!(artifact.completion, Completion::Complete);
 }
 

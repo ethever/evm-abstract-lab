@@ -134,7 +134,7 @@ fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
             .iter()
             .enumerate()
             .skip(assigned + 1)
-            .find(|(_, line)| line.text.contains("sstore("))
+            .find(|(_, line)| line.text.contains("evm.sstore("))
             .map(|(position, _)| position)
             .unwrap();
         assert!(
@@ -149,14 +149,14 @@ fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
         assert_eq!(
             lines[store].text.split(" //").next().unwrap(),
             format!(
-                "sstore(slot = v{}, value = v{});",
+                "evm.sstore(slot = v{}, value = v{});",
                 target.parameters[1].0, target.parameters[0].0
             )
         );
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.text.contains("sstore("))
+                .filter(|line| line.text.contains("evm.sstore("))
                 .count(),
             2,
             "both source occurrences of the joined store remain represented"
@@ -281,7 +281,7 @@ fn guards_preserve_loop_continues_and_dispatcher_state_actions() {
                     "preserve the actual source loop exits, including STOP exits"
                 );
             }
-            assert!(!text.contains("revert("), "{text}");
+            assert!(!text.contains("evm.revert("), "{text}");
         }
         assert_eq!(rows(&structured::lines(stage)), rows(&raw));
     }
@@ -301,7 +301,7 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
     assert!(guards.iter().all(|line| line.indent == 0));
     let caller = normal
         .iter()
-        .position(|line| line.text.contains("caller("))
+        .position(|line| line.text.contains("evm.caller("))
         .unwrap();
     let first = normal
         .iter()
@@ -313,7 +313,7 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
         .unwrap();
     let store = normal
         .iter()
-        .position(|line| line.text.contains("sstore("))
+        .position(|line| line.text.contains("evm.sstore("))
         .unwrap();
     assert!(caller < first && first < second && second < store);
     assert_eq!(normal[store].indent, 0);
@@ -326,7 +326,7 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
     assert!(
         !normal
             .iter()
-            .any(|line| line.text.contains("revert(") || line.text.starts_with("if ("))
+            .any(|line| line.text.contains("evm.revert(") || line.text.starts_with("if ("))
     );
     for dependencies in [false, true] {
         for annotations in [false, true] {
@@ -348,7 +348,7 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
                     .map(|line| (line.entity, line.indent, &line.text))
                     .collect::<Vec<_>>(),
             );
-            assert!(!lines.iter().any(|line| line.text.contains("revert(")));
+            assert!(!lines.iter().any(|line| line.text.contains("evm.revert(")));
         }
     }
     let raw = structured::lines(stage);
@@ -358,7 +358,7 @@ fn nested_certified_guards_flatten_at_their_scope_and_keep_observation_effect_or
             .count(),
         2
     );
-    assert!(raw.iter().any(|line| line.text.contains("revert(")));
+    assert!(raw.iter().any(|line| line.text.contains("evm.revert(")));
     assert_eq!(artifact, original);
 }
 
@@ -392,11 +392,11 @@ fn pass_that_falls_into_joined_revert_keeps_the_revert_after_its_store() {
             .unwrap();
         let store = lines
             .iter()
-            .position(|line| line.text.contains("sstore("))
+            .position(|line| line.text.contains("evm.sstore("))
             .unwrap();
         let revert = lines
             .iter()
-            .position(|line| line.text.contains("revert("))
+            .position(|line| line.text.contains("evm.revert("))
             .unwrap();
         assert!(guard < store && store < revert, "{}", copied_text(&lines));
         assert_eq!(
@@ -410,7 +410,7 @@ fn pass_that_falls_into_joined_revert_keeps_the_revert_after_its_store() {
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.text.contains("revert("))
+                .filter(|line| line.text.contains("evm.revert("))
                 .count(),
             1
         );
@@ -436,22 +436,25 @@ fn payload_or_observation_on_failure_keeps_the_conditional_and_its_effects() {
             let lines = high(stage, dependencies);
             let text = copied_text(&lines);
             assert!(!text.contains("require("), "{text}");
-            assert!(text.contains("if (") && text.contains("revert("), "{text}");
+            assert!(
+                text.contains("if (") && text.contains("evm.revert("),
+                "{text}"
+            );
             let revert = lines
                 .iter()
-                .position(|line| line.text.contains("revert("))
+                .position(|line| line.text.contains("evm.revert("))
                 .unwrap();
             if failure[0] == 0x33 {
                 let caller = lines
                     .iter()
-                    .position(|line| line.text.contains("caller("))
+                    .position(|line| line.text.contains("evm.caller("))
                     .unwrap();
                 assert!(caller < revert);
                 assert_eq!(lines[caller].indent, lines[revert].indent);
             } else if failure.contains(&0x55) {
                 let store = lines
                     .iter()
-                    .position(|line| line.text.contains("sstore("))
+                    .position(|line| line.text.contains("evm.sstore("))
                     .unwrap();
                 assert!(store < revert);
                 assert_eq!(lines[store].indent, lines[revert].indent);
@@ -663,7 +666,7 @@ fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation(
             click(&ctx, &mut workspace, "Copy structured text").copied,
             [copied_text(&raw)]
         );
-        assert!(raw.iter().any(|line| line.text.contains("revert(")));
+        assert!(raw.iter().any(|line| line.text.contains("evm.revert(")));
         assert!(workspace.state.navigate(
             &artifact,
             EntityRef {

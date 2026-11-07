@@ -121,9 +121,9 @@ fn cached_shared_else_follows_substantive_content_in_all_display_modes() {
             copied.matches("} else {").count(),
             usize::from(dependencies)
         );
-        assert_eq!(copied.matches("log0(").count(), 1);
-        assert_eq!(copied.matches("sstore(slot = 0x3,").count(), 1);
-        assert_eq!(copied.matches("sstore(slot = 0x4,").count(), 1);
+        assert_eq!(copied.matches("evm.log0(").count(), 1);
+        assert_eq!(copied.matches("evm.sstore(slot = 0x3,").count(), 1);
+        assert_eq!(copied.matches("evm.sstore(slot = 0x4,").count(), 1);
         assert_eq!(rows(&structured::lines(stage)), raw);
     }
     assert_eq!(artifact, original);
@@ -238,8 +238,8 @@ fn shared_definitions_and_calls_use_model_text_in_all_display_modes_and_clipboar
     renderer.validate_shared_sources().unwrap();
     let raw = rows(&structured::lines(stage));
     let reading = copied_text(&high(stage, false));
-    assert_eq!(reading.matches("log0(").count(), 1, "{reading}");
-    assert_eq!(reading.matches("mstore(").count(), 1, "{reading}");
+    assert_eq!(reading.matches("evm.log0(").count(), 1, "{reading}");
+    assert_eq!(reading.matches("evm.mstore(").count(), 1, "{reading}");
     assert_eq!(
         copied_text(&structured::lines(stage))
             .matches("evm.log0(")
@@ -688,7 +688,7 @@ fn a_new_publication_with_the_same_artifact_id_replaces_prepared_shared_rows() {
     let after = click(&ctx, &mut workspace, "Copy structured text").copied;
     assert_ne!(after, before);
     assert_eq!(after.as_slice(), std::slice::from_ref(&expected));
-    assert_eq!(expected.matches("log0(").count(), 2);
+    assert_eq!(expected.matches("evm.log0(").count(), 2);
     assert_eq!(workspace.artifact.as_ref(), Some(&replacement));
 }
 

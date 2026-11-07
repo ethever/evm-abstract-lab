@@ -361,9 +361,9 @@ fn deep_recovered_loop_regions_use_flat_wire_without_json_depth_refusal() {
 #[test]
 fn structured_text_prints_one_terminal_and_readable_partial_and_fault_exits() {
     for (bytes, terminal) in [
-        (vec![0x00], "stop("),
-        (vec![0x5f, 0x5f, 0xf3], "return("),
-        (vec![0x5f, 0x5f, 0xfd], "revert("),
+        (vec![0x00], "evm.stop("),
+        (vec![0x5f, 0x5f, 0xf3], "evm.return("),
+        (vec![0x5f, 0x5f, 0xfd], "evm.revert("),
     ] {
         let input = Input::new(bytes, Fork::Osaka);
         let artifact = decompile(&input, &Config::default());
@@ -377,7 +377,7 @@ fn structured_text_prints_one_terminal_and_readable_partial_and_fault_exits() {
     let fault = decompile(&Input::new(vec![0x01], Fork::Osaka), &Config::default());
     let text = render_text(&fault);
     assert!(text.contains("trap(\"EVM stack underflow\")"), "{text}");
-    assert!(!text.contains("add("));
+    assert!(!text.contains("evm.add("));
     let unknown = decompile(
         &Input::new(vec![0x5f, 0x35, 0x56], Fork::Osaka),
         &Config::default(),
@@ -1292,7 +1292,7 @@ fn overflow_and_state_write_underflow_render_faults_without_fake_results() {
         .map(|s| s.id);
     let text = render_text(&primitive_view);
     assert!(text.contains("0x7") && text.contains("EVM stack underflow"));
-    assert!(!text.contains("sstore("));
+    assert!(!text.contains("evm.sstore("));
 }
 
 #[test]

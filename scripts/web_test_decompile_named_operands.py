@@ -83,9 +83,9 @@ def run(context):
     code = "5f6080608460805f60025f356102c69003f15f5500"
     artifact, _ = submit(context, page, canvas, code, "named-call-dynamic-gas")
     text = painted_copy(page, canvas)
-    loaded = re.search(r"(v\d+) = calldataload\(offset = 0x0\);", text)
+    loaded = re.search(r"(v\d+) = evm\.calldataload\(offset = 0x0\);", text)
     assert loaded, text
-    invocation = (f"call(gas = ({loaded[1]} - 0x2c6), target = 0x2, value = 0x0, "
+    invocation = (f"evm.call(gas = ({loaded[1]} - 0x2c6), target = 0x2, value = 0x0, "
                   "input_offset = 0x80, input_size = 0x84, output_offset = 0x80, output_size = 0x0);")
     assert invocation in text, text
     canvas.screenshot(path=str(context.output / "named-call-dynamic-gas-code.png"))
@@ -97,14 +97,14 @@ def run(context):
     artifact, _ = submit(context, page, canvas, code, "named-memory-log-revert")
     text = painted_copy(page, canvas)
     for expected in [
-        "calldatacopy(memory_offset = 0x0, calldata_offset = 0x2, size = 0x3);",
-        "mload(offset = 0x0)",
-        "mcopy(dest_offset = 0x2, src_offset = ",
-        "log4(offset = 0x4, size = 0x5, topic0 = 0x6, topic1 = 0x7, topic2 = 0x8, topic3 = 0x9);",
+        "evm.calldatacopy(memory_offset = 0x0, calldata_offset = 0x2, size = 0x3);",
+        "evm.mload(offset = 0x0)",
+        "evm.mcopy(dest_offset = 0x2, src_offset = ",
+        "evm.log4(offset = 0x4, size = 0x5, topic0 = 0x6, topic1 = 0x7, topic2 = 0x8, topic3 = 0x9);",
         "evm.revert(offset = 0x0, size = 0x3);",
     ]:
         assert expected in text, (expected, text)
-    assert re.search(r"mcopy\(dest_offset = 0x2, src_offset = v\d+, size = 0x1\);", text), text
+    assert re.search(r"evm\.mcopy\(dest_offset = 0x2, src_offset = v\d+, size = 0x1\);", text), text
     canvas.screenshot(path=str(context.output / "named-memory-log-revert-code.png"))
     results.append({"artifact": artifact["id"], "terminal": "revert"})
     gpu = webgpu_evidence(page)

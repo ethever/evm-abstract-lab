@@ -721,16 +721,8 @@ fn projected_terminator(
             {
                 return text;
             }
-            let (opcode, name) = match kind {
-                ExitKind::Stop => (0x00, "evm.stop"),
-                ExitKind::Return => (0xf3, "evm.return"),
-                ExitKind::Revert => (0xfd, "evm.revert"),
-                ExitKind::SelfDestruct => (0xff, "evm.selfdestruct"),
-                ExitKind::EndOfCode => return "evm.stop(); // end of code".into(),
-            };
             renderer
-                .render_invocation(opcode, name, &semantic.exit_values, |_| true)
-                .map(|invocation| format!("{invocation};"))
+                .render_exit(*kind, &semantic.exit_values, |_| true)
                 .unwrap_or_else(|error| format!("unavailable_exit(b{}: {error});", block.0))
         }
         Terminator::Pending => "partial_exit(\"recovery pending\");".into(),

@@ -118,7 +118,7 @@ fn dynamic_loop_certificates_roundtrip_with_current_schema_and_source_navigation
             assert_eq!(capsule.revert, proof.id);
             assert_eq!(
                 index.render_revert(proof.block, |_| true).unwrap(),
-                Some("revert(\"ds-math-mul-overflow\");".into())
+                Some("evm.revert(\"ds-math-mul-overflow\");".into())
             );
             for id in [proof.id, capsule.id, proof.payload] {
                 let origin = artifact

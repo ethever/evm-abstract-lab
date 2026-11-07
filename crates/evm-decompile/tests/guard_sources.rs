@@ -114,8 +114,8 @@ fn valid_direct_and_shared_join_guards_continue_to_export_completely() {
         let export = export_text(&artifact, &Cancellation::default());
         assert!(export.text.contains("require("));
         if join {
-            assert!(export.text.find("require(") < export.text.find("sstore("));
-            assert!(export.text.find("sstore(") < export.text.rfind("revert("));
+            assert!(export.text.find("require(") < export.text.find("evm.sstore("));
+            assert!(export.text.find("evm.sstore(") < export.text.rfind("evm.revert("));
         }
     }
 }

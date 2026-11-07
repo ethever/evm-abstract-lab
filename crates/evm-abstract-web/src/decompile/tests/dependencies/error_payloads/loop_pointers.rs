@@ -174,11 +174,15 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
             );
             let text = copied_text(&lines);
             assert!(
-                text.contains("while (") && text.contains("staticcall("),
+                text.contains("while (") && text.contains("evm.staticcall("),
                 "{text}"
             );
-            assert!(!text.contains("evm.revert("), "{text}");
-            assert_eq!(text.matches("mstore(offset = 0x40,").count(), 3, "{text}");
+            assert!(!text.contains("evm.revert(offset ="), "{text}");
+            assert_eq!(
+                text.matches("evm.mstore(offset = 0x40,").count(),
+                3,
+                "{text}"
+            );
             assert!(
                 lines.iter().all(|line| !elided.contains(&line.entity)),
                 "{text}"
@@ -219,14 +223,17 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
                     .iter()
                     .enumerate()
                     .skip(passed + 1)
-                    .find(|(_, line)| line.text.contains("sstore("))
+                    .find(|(_, line)| line.text.contains("evm.sstore("))
                     .map(|(position, _)| position)
                     .unwrap();
                 assert!(require < passed && passed < stored, "{text}");
                 assert!(lines[require].text.ends_with(&format!(", \"{MESSAGE}\");")));
             } else {
-                assert!(text.contains(&format!("revert(\"{MESSAGE}\");")), "{text}");
-                assert!(text.find("sstore(").unwrap() < text.find("revert(\"").unwrap());
+                assert!(
+                    text.contains(&format!("evm.revert(\"{MESSAGE}\");")),
+                    "{text}"
+                );
+                assert!(text.find("evm.sstore(").unwrap() < text.find("evm.revert(\"").unwrap());
             }
         }
     }
@@ -294,12 +301,15 @@ fn loop_alias_and_wrap_keep_raw_error_construction() {
             let text = copied_text(&high(stage, dependencies));
             assert!(
                 text.contains("while (")
-                    && text.contains("mstore(")
-                    && text.contains("evm.revert("),
+                    && text.contains("evm.mstore(")
+                    && text.contains("evm.revert(offset ="),
                 "{text}"
             );
             assert!(!text.contains(&format!(", \"{MESSAGE}\");")), "{text}");
-            assert!(!text.contains(&format!("revert(\"{MESSAGE}\");")), "{text}");
+            assert!(
+                !text.contains(&format!("evm.revert(\"{MESSAGE}\");")),
+                "{text}"
+            );
         }
     }
 }

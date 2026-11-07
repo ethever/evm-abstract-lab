@@ -190,7 +190,7 @@ fn certified_error_strings_share_compact_rows_and_keep_pass_reachable_join_occur
                     "{text}"
                 );
                 assert!(
-                    !text.contains("if (") && !text.contains("evm.revert("),
+                    !text.contains("if (") && !text.contains("evm.revert(offset ="),
                     "{text}"
                 );
                 for plan in &program.constructions {
@@ -202,7 +202,7 @@ fn certified_error_strings_share_compact_rows_and_keep_pass_reachable_join_occur
                         );
                     }
                 }
-                let compact = format!("revert(\"{MESSAGE}\");");
+                let compact = format!("evm.revert(\"{MESSAGE}\");");
                 let count = usize::from(matches!(shape, Shape::Standalone | Shape::Join));
                 assert_eq!(
                     lines.iter().filter(|line| line.text == compact).count(),
@@ -220,8 +220,8 @@ fn certified_error_strings_share_compact_rows_and_keep_pass_reachable_join_occur
                             .unwrap()
                             .pass_falls_through
                     );
-                    assert!(text.find("require(").unwrap() < text.find("sstore(").unwrap());
-                    assert!(text.find("sstore(").unwrap() < text.find(&compact).unwrap());
+                    assert!(text.find("require(").unwrap() < text.find("evm.sstore(").unwrap());
+                    assert!(text.find("evm.sstore(").unwrap() < text.find(&compact).unwrap());
                 }
             }
         }
@@ -250,7 +250,9 @@ fn capsules_have_complete_inspector_links_clipboard_and_original_ir_navigation()
         );
         let visible = normal
             .iter()
-            .find(|line| line.text.starts_with("require(") || line.text.starts_with("revert(\""))
+            .find(|line| {
+                line.text.starts_with("require(") || line.text.starts_with("evm.revert(\"")
+            })
             .unwrap();
         let label = labels(&frame(&ctx, &mut workspace, vec![]), "decompile-code")
             .into_iter()
@@ -339,7 +341,7 @@ fn capsules_have_complete_inspector_links_clipboard_and_original_ir_navigation()
             click(&ctx, &mut workspace, "Copy structured text").copied,
             [copied_text(&raw)]
         );
-        assert!(raw.iter().any(|line| line.text.contains("mstore(")));
+        assert!(raw.iter().any(|line| line.text.contains("evm.mstore(")));
     }
 }
 
@@ -358,18 +360,20 @@ fn missing_capsule_and_alias_padding_or_observing_failure_keep_primitive_behavio
         for dependencies in [false, true] {
             let text = copied_text(&high(stage, dependencies));
             assert!(
-                text.contains("if (") && text.contains("mstore(") && text.contains("evm.revert("),
+                text.contains("if (")
+                    && text.contains("evm.mstore(")
+                    && text.contains("evm.revert(offset ="),
                 "{text}"
             );
             assert!(
-                !text.contains("require(") && !text.contains("revert(\""),
+                !text.contains("require(") && !text.contains("evm.revert(\""),
                 "{text}"
             );
             if after.first() == Some(&0x33) {
-                assert!(text.contains("caller("));
+                assert!(text.contains("evm.caller("));
             }
             if after.contains(&0x55) {
-                assert_eq!(text.matches("sstore(").count(), 2);
+                assert_eq!(text.matches("evm.sstore(").count(), 2);
             }
         }
     }
@@ -383,10 +387,10 @@ fn missing_capsule_and_alias_padding_or_observing_failure_keep_primitive_behavio
     stage.ir.lifted.as_mut().unwrap().constructions.clear();
     let text = copied_text(&high(stage, false));
     assert!(
-        text.contains("mstore(") && text.contains("evm.revert("),
+        text.contains("evm.mstore(") && text.contains("evm.revert(offset ="),
         "{text}"
     );
-    assert!(!text.contains("revert(\""));
+    assert!(!text.contains("evm.revert(\""));
     let index = StageIndex::new(&stage.ir);
     let revert = stage.ir.lifted.as_ref().unwrap().reverts[0].id;
     let details = crate::decompile::details::build(stage, &index, revert, &[]);
@@ -406,7 +410,7 @@ fn exact_escaping_and_live_operations_before_the_capsule_remain_visible() {
     assert!(
         high(stage, false)
             .iter()
-            .any(|line| line.text == "revert(\"quote\\\" slash\\\\ line\\n雪\\u0000\");")
+            .any(|line| line.text == "evm.revert(\"quote\\\" slash\\\\ line\\n雪\\u0000\");")
     );
     assert_eq!(
         stage.ir.lifted.as_ref().unwrap().payloads[0].bytes,
@@ -423,16 +427,19 @@ fn exact_escaping_and_live_operations_before_the_capsule_remain_visible() {
     for dependencies in [false, true] {
         let text = copied_text(&high(stage, dependencies));
         assert!(
-            text.contains("mstore(offset = 0x200, value = 0x2a)"),
+            text.contains("evm.mstore(offset = 0x200, value = 0x2a)"),
             "{text}"
         );
         assert!(
-            text.contains("mload(offset = 0x200)") && text.contains("sstore("),
+            text.contains("evm.mload(offset = 0x200)") && text.contains("evm.sstore("),
             "{text}"
         );
-        assert!(text.contains(&format!("revert(\"{MESSAGE}\");")), "{text}");
-        assert!(text.find("mstore(").unwrap() < text.find("mload(").unwrap());
-        assert!(text.find("sstore(").unwrap() < text.find("revert(\"").unwrap());
+        assert!(
+            text.contains(&format!("evm.revert(\"{MESSAGE}\");")),
+            "{text}"
+        );
+        assert!(text.find("evm.mstore(").unwrap() < text.find("evm.mload(").unwrap());
+        assert!(text.find("evm.sstore(").unwrap() < text.find("evm.revert(\"").unwrap());
     }
 }
 
@@ -451,9 +458,13 @@ fn one_word_and_multiword_messages_use_the_same_consumer_plan() {
             assert!(
                 lines
                     .iter()
-                    .any(|line| line.text == format!("revert(\"{message}\");"))
+                    .any(|line| line.text == format!("evm.revert(\"{message}\");"))
             );
-            assert!(!lines.iter().any(|line| line.text.contains("evm.revert(")));
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.text.contains("evm.revert(offset ="))
+            );
         }
     }
 }
@@ -484,11 +495,13 @@ fn forged_construction_sources_quarantine_the_entire_overlay_even_on_failed_snap
             stage.validation.status = status;
             let text = copied_text(&high(stage, false)); // Deliberately bypass admission.
             assert!(
-                text.contains("if (") && text.contains("mstore(") && text.contains("evm.revert("),
+                text.contains("if (")
+                    && text.contains("evm.mstore(")
+                    && text.contains("evm.revert(offset ="),
                 "{field}: {text}"
             );
             assert!(
-                !text.contains("require(") && !text.contains("revert(\""),
+                !text.contains("require(") && !text.contains("evm.revert(\""),
                 "{text}"
             );
             assert!(
@@ -553,7 +566,7 @@ fn shared_nested_materializations_keep_one_source_certificate_and_two_guard_occu
         let text = copied_text(&high(stage, dependencies));
         assert_eq!(text.matches("require(").count(), 2, "{text}");
         assert!(
-            !text.contains("if (") && !text.contains("revert("),
+            !text.contains("if (") && !text.contains("evm.revert(offset ="),
             "{text}"
         );
     }
@@ -604,11 +617,15 @@ fn dispatcher_terminal_capsule_uses_its_compact_line_as_the_navigation_owner() {
             );
             let compact: Vec<_> = lines
                 .iter()
-                .filter(|line| line.text == format!("revert(\"{MESSAGE}\");"))
+                .filter(|line| line.text == format!("evm.revert(\"{MESSAGE}\");"))
                 .collect();
             assert_eq!(compact.len(), 1);
             assert_eq!(compact[0].entity, plan.id);
-            assert!(!lines.iter().any(|line| line.text.contains("evm.revert(")));
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.text.contains("evm.revert(offset ="))
+            );
             for statement in &stage
                 .ir
                 .lifted

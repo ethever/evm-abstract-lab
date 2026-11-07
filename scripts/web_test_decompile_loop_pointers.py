@@ -88,7 +88,7 @@ def live_rows(page, program, current):
                 and statement["id"] not in elided]
     assert len(retained) >= 7, retained
     text = "\n".join(code_label(row["label"])[1] for row in observed(page, "decompile-code"))
-    for opcode, spelling in [(0x52, "mstore("), (0xfa, "staticcall(")]:
+    for opcode, spelling in [(0x52, "evm.mstore("), (0xfa, "evm.staticcall(")]:
         expected = sum(operations[statement["operation"]]["opcode"] == opcode for statement in retained)
         assert text.count(spelling) == expected, (retained, text)
     return retained
@@ -123,14 +123,14 @@ def run(context):
         assert len(loops) == 1, loops
         high(page, canvas)
         text = painted_copy(page, canvas)
-        assert "while (" in text and "staticcall(" in text, text
-        assert text.count("mstore(offset = 0x40,") == 3, text
-        assert "evm.revert(" not in text, text
+        assert "while (" in text and "evm.staticcall(" in text, text
+        assert text.count("evm.mstore(offset = 0x40,") == 3, text
+        assert "evm.revert(offset =" not in text, text
         if guarded:
             assert guards[0]["guard"]["pass_nonzero"], guards
             required = next(line for line in text.splitlines()
                             if line.lstrip().startswith("require(") and MESSAGE in line)
-            store_at = text.index("sstore(", text.index(required))
+            store_at = text.index("evm.sstore(", text.index(required))
             transfer = next(transfer for transfer in program["transfers"]
                             if transfer["edge"] == guards[0]["guard"]["pass_edge"])
             assert transfer["arguments"], transfer
@@ -140,8 +140,8 @@ def run(context):
             tuple_text = code_label(row["label"])[1]
             assert text.index(required) < text.index(tuple_text) < store_at, text
         else:
-            assert f'revert("{MESSAGE}");' in text, text
-            assert text.index("sstore(") < text.index(f'revert("{MESSAGE}");'), text
+            assert f'evm.revert("{MESSAGE}");' in text, text
+            assert text.index("evm.sstore(") < text.index(f'evm.revert("{MESSAGE}");'), text
         retained = live_rows(page, program, current)
         for dependencies, annotations in [(True, False), (False, True), (True, True), (False, False)]:
             set_control(page, canvas, DEPENDENCIES, dependencies)
@@ -190,8 +190,8 @@ def run(context):
             set_control(page, canvas, DEPENDENCIES, dependencies)
             set_control(page, canvas, ANNOTATIONS, annotations)
             text = painted_copy(page, canvas)
-            assert "while (" in text and "mstore(" in text and "evm.revert(" in text, text
-            assert f', "{MESSAGE}");' not in text and f'revert("{MESSAGE}");' not in text, text
+            assert "while (" in text and "evm.mstore(" in text and "evm.revert(offset =" in text, text
+            assert f', "{MESSAGE}");' not in text and f'evm.revert("{MESSAGE}");' not in text, text
         results.append({"rejected": mutation, "artifact": artifact["id"], "code": text})
     gpu = webgpu_evidence(page)
     page.close()

@@ -46,9 +46,9 @@ def run(context):
     assert expressions[control["condition"]]["ty"] == "predicate"
     assert ui_control(page, "Simplified structured code", role="tab")["selected"]
     high_text = copy_code(page, canvas)
-    assert " >= " in high_text and "iszero(" not in high_text, high_text
+    assert " >= " in high_text and "evm.iszero(" not in high_text, high_text
     assert control["guard"]["pass_nonzero"] and control["guard"]["payload"] == "empty_revert"
-    assert "if (" not in high_text and "revert(" not in high_text, high_text
+    assert "if (" not in high_text and "evm.revert(" not in high_text, high_text
     assert any("require(" in row["label"] and " >= " in row["label"]
                for row in observed(page, "decompile-code"))
     canvas.screenshot(path=str(context.output / "lifted-unsigned-predicate-code.png"))
@@ -109,7 +109,7 @@ def run(context):
     assert value["ty"] == "word256" and "word_from_predicate" in value["kind"], value
     click_control(page, canvas, "Simplified structured code", role="tab")
     text = copy_code(page, canvas)
-    assert "word(" in text and " != 0" in text and "iszero(" not in text, text
+    assert "word(" in text and " != 0" in text and "evm.iszero(" not in text, text
     canvas.screenshot(path=str(context.output / "lifted-numeric-boolean-cast.png"))
     artifacts.append(artifact["id"])
 
@@ -127,7 +127,7 @@ def run(context):
         assert transfer["arguments"] == [], transfer
     click_control(page, canvas, "Simplified structured code", role="tab")
     text = copy_code(page, canvas)
-    assert "parallel assignment" not in text and "stop(" in text, text
+    assert "parallel assignment" not in text and "evm.stop(" in text, text
     for parameter in blocks[0]["parameters"]:
         assert f"v{parameter}" not in text, text
     canvas.screenshot(path=str(context.output / "lifted-return-and-pop-parameters.png"))
@@ -154,8 +154,8 @@ def run(context):
     click_control(page, canvas, "Simplified structured code", role="tab")
     ui_control(page, "Show structure annotations", role="toggle", selected=False)
     text = copy_code(page, canvas)
-    assert text.count("sload(") == 1 and text.count("sstore(") == 2, text
-    assert f"sstore(slot = 0x1, value = v{loaded})" in text and "sstore(slot = 0x0, value = 0x2a)" in text, text
+    assert text.count("evm.sload(") == 1 and text.count("evm.sstore(") == 2, text
+    assert f"evm.sstore(slot = 0x1, value = v{loaded})" in text and "evm.sstore(slot = 0x0, value = 0x2a)" in text, text
     assert not re.search(r"(?m)^\s*\(v\d+", text), text
     assert "// sequence" not in text and "// b" not in text, text
     for parameter in original_parameters:
@@ -214,15 +214,15 @@ def run(context):
         if name in {"computed-target", "conditional-target"}:
             assert " + " in text and "0x1" in text, text
         if name == "conditional-target":
-            assert " != 0" in text and "iszero(" not in text, text
+            assert " != 0" in text and "evm.iszero(" not in text, text
         canvas.screenshot(path=str(context.output / ("lifted-residual-" + name + ".png")))
         if name.startswith("final-"):
             # Only the false continuation of a terminal JUMPI stops. Its true
             # partial/invalid exit must remain explicit in both source views.
-            assert text.count("stop(") == 1, text
+            assert text.count("evm.stop(") == 1, text
             click_control(page, canvas, "Structured code", role="tab")
             raw_text = copy_code(page, canvas)
-            assert raw_text.count("stop(") == 1, raw_text
+            assert raw_text.count("evm.stop(") == 1, raw_text
             if completion == "partial":
                 assert "unresolved" in raw_text or "partial" in raw_text, raw_text
             else:

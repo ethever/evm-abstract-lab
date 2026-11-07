@@ -241,6 +241,6 @@ fn one_exact_constructor_range_can_be_materialized_at_multiple_raw_source_occurr
     assert!(index.construction(block).is_some());
     assert_eq!(
         index.render_revert(block, |_| true).unwrap(),
-        Some("revert(\"ds-math-mul-overflow\");".into())
+        Some("evm.revert(\"ds-math-mul-overflow\");".into())
     );
 }

@@ -219,7 +219,7 @@ fn real_revert_guard_replaces_conditional_and_preserves_pass_continuation() {
     assert!(
         normal[store_position]
             .2
-            .contains("sstore(slot = 0x0, value = 0x2a)")
+            .contains("evm.sstore(slot = 0x0, value = 0x2a)")
     );
     assert!(
         normal

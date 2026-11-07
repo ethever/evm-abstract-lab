@@ -456,10 +456,10 @@ fn assert_final_branch(bytecode: &str, qualifier: &str) {
         let true_arm = text.split("} else {").next().unwrap();
         assert!(true_arm.contains(qualifier), "{text}");
         assert!(
-            !true_arm.contains("stop()"),
+            !true_arm.contains("evm.stop()"),
             "true arm must keep its boundary: {text}"
         );
-        assert_eq!(text.matches("stop()").count(), 1, "{text}");
+        assert_eq!(text.matches("evm.stop()").count(), 1, "{text}");
         assert_eq!(
             text.matches("JUMPI false continuation: end of code")
                 .count(),
@@ -607,7 +607,7 @@ fn model_admission_accepts_legacy_raw_and_rejects_mislabeled_or_corrupt_lifted_e
     deliver(&mut workspace, legacy_high, 11);
     let legacy_code = code(&frame(&ctx, &mut workspace, vec![]));
     assert_eq!(workspace.views.route_label(), "Simplified structured code");
-    assert!(legacy_code.contains("if (") && legacy_code.contains("sstore("));
+    assert!(legacy_code.contains("if (") && legacy_code.contains("evm.sstore("));
     assert!(!legacy_code.contains("require("));
     deliver(&mut workspace, high.clone(), 12);
     frame(&ctx, &mut workspace, vec![]);

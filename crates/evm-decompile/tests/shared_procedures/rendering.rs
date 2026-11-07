@@ -4,6 +4,80 @@ use evm_decompile::{ExecutionLimits, MemoryHost, StageKind, StructuredKind, U256
 use std::collections::BTreeSet;
 
 #[test]
+fn terminal_names_match_shared_bodies_and_ordinary_exports() {
+    for (opcode, name, implicit) in [
+        (0x00, "stop", false),
+        (0xf3, "return", false),
+        (0xfd, "revert", false),
+        (0xff, "selfdestruct", false),
+        (0x00, "stop", true),
+    ] {
+        let mut fixture = fixtures::repeated_tail(opcode);
+        if implicit {
+            assert_eq!(fixture.input.runtime_bytecode.pop(), Some(0x00));
+        }
+        let artifact = checked(&fixture.input);
+        let original = artifact.clone();
+        let ir = &artifact.current().unwrap().ir;
+        let program = ir.lifted.as_ref().unwrap();
+        let renderer = program.render_index(ir);
+        let mut ordinary = artifact.clone();
+        let high = ordinary
+            .stages
+            .last_mut()
+            .unwrap()
+            .ir
+            .lifted
+            .as_mut()
+            .unwrap();
+        high.procedures.clear();
+        high.invocations.clear();
+        let exported = evm_decompile::render_text(&ordinary);
+        let prefix = format!("evm.{name}(");
+        let mut checked_bodies = 0;
+        for procedure in &program.procedures {
+            if !boundaries::nodes(renderer.node(procedure.body).unwrap()).iter().any(|node| {
+                matches!(node.kind, StructuredKind::Exit { block }
+                    if ir.block(block).unwrap().source.is_some_and(|source| source.pc == fixture.labels["tail"]))
+            }) {
+                continue;
+            }
+            for dependencies in [false, true] {
+                let rows = renderer
+                    .render_procedure_body(procedure, dependencies, |_| true)
+                    .unwrap();
+                let terminals: Vec<_> = rows
+                    .iter()
+                    .filter(|row| row.text.starts_with(&prefix))
+                    .collect();
+                assert_eq!(
+                    terminals.len(),
+                    1,
+                    "terminal must print once: {name}, implicit={implicit}"
+                );
+                let invocation = terminals[0].text.split(" //").next().unwrap();
+                assert!(
+                    exported.contains(invocation),
+                    "ordinary/shared spelling differs: {invocation}\n{exported}"
+                );
+                assert!(!rows.iter().any(|row| row.text.contains("evm.evm.")));
+                assert!(
+                    !rows
+                        .iter()
+                        .any(|row| row.text.starts_with(&format!("{name}(")))
+                );
+            }
+            checked_bodies += 1;
+        }
+        assert!(
+            checked_bodies > 0,
+            "fixture must put {name} inside a certified shared body"
+        );
+        assert_eq!(artifact, original);
+    }
+}
+
+#[test]
 fn shared_token_only_else_is_hidden_without_state_dependencies() {
     let fixture = fixtures::token_only_else();
     // The browser case uses these same bytes through the real HTTP boundary.
@@ -98,10 +172,10 @@ fn shared_token_only_else_is_hidden_without_state_dependencies() {
     }
     let input = procedure.interface.inputs[0].0;
     let expected = [
-        format!("mstore(offset = 0x60, value = v{input});"),
-        "log0(offset = 0x40, size = 0x20);".to_owned(),
-        format!("sstore(slot = 0x3, value = v{input});"),
-        format!("sstore(slot = 0x4, value = v{input});"),
+        format!("evm.mstore(offset = 0x60, value = v{input});"),
+        "evm.log0(offset = 0x40, size = 0x20);".to_owned(),
+        format!("evm.sstore(slot = 0x3, value = v{input});"),
+        format!("evm.sstore(slot = 0x4, value = v{input});"),
     ];
     let operations: Vec<_> = boundaries::nodes(then_branch)
         .iter()
@@ -169,7 +243,7 @@ fn shared_else_display_retains_observable_effects_and_actual_branch_execution() 
             if observable_else {
                 assert!(
                     rows.iter()
-                        .any(|row| row.text.starts_with("sstore(slot = 0x5,"))
+                        .any(|row| row.text.starts_with("evm.sstore(slot = 0x5,"))
                 );
             }
         }

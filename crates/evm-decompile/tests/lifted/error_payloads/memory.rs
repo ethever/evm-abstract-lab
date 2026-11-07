@@ -147,7 +147,7 @@ fn codecopy_padding_gap_and_forwarded_returndata_never_guess_a_string() {
         let artifact = checked(&input);
         assert!(lifted(&artifact).1.payloads.is_empty());
         assert!(lifted(&artifact).1.reverts.is_empty());
-        assert!(!render_text(&artifact).contains("revert(\""));
+        assert!(!render_text(&artifact).contains("evm.revert(\""));
         let mut host = MemoryHost::new(&input, Vec::new());
         host.return_data = oracle::abi(DS_MATH);
         let _ = oracle::certify(&input, &artifact, host, 1_048_576);

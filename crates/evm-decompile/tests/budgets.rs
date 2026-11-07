@@ -111,7 +111,7 @@ fn stop_with_wide_resource_ceilings_preserves_config_and_does_only_actual_work()
             paid.push(work)
         });
         assert_eq!(export.status, TextExportStatus::Complete);
-        assert!(export.text.contains("stop();"));
+        assert!(export.text.contains("evm.stop();"));
         assert!(export.work > 0 && export.work < 1_000_000);
         assert_eq!(paid.last(), Some(&export.work));
         assert!(paid.windows(2).all(|p| p[0] <= p[1]));
