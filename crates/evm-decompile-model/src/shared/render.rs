@@ -459,7 +459,12 @@ impl<'a> LiftedRenderIndex<'a> {
                                     kind: crate::ExitKind::EndOfCode,
                                     ..
                                 } => {
-                                    output.emit(id, "stop();".to_owned(), depth, false, &mut pay)?
+                                    let text = self.render_exit(
+                                        crate::ExitKind::EndOfCode,
+                                        &[],
+                                        &mut pay,
+                                    )?;
+                                    output.emit(id, text, depth, false, &mut pay)?
                                 }
                                 T::Exit { .. } => {}
                                 _ => return Err(E::InvalidSharedSource(id)),

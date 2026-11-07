@@ -88,7 +88,7 @@ fn removing_context_rows_does_not_refund_the_cumulative_row_limit() {
         .unwrap();
     output.rows.clear();
     assert_eq!(
-        output.emit(EntityId(2), "stop();".into(), 1, false, &mut |_| true),
+        output.emit(EntityId(2), "evm.stop();".into(), 1, false, &mut |_| true),
         Err(E::Limit)
     );
     assert!(output.rows.is_empty());

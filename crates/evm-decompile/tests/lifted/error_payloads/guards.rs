@@ -124,8 +124,8 @@ fn shared_and_nested_pass_reachable_tails_preserve_storage_before_error() {
         let artifact = checked(&input);
         assert_message(&artifact, DS_MATH);
         let text = render_text(&artifact);
-        let store = text.find("sstore(").unwrap();
-        let tail = text.rfind("revert(\"ds-math-mul-overflow\");").unwrap();
+        let store = text.find("evm.sstore(").unwrap();
+        let tail = text.rfind("evm.revert(\"ds-math-mul-overflow\");").unwrap();
         assert!(store < tail, "pass-reachable tail was removed: {text}");
         for (outer, inner) in [(0_u64, 0_u64), (0, 1), (1, 0), (1, 1)] {
             let (outcome, host, _) = oracle::certify(
@@ -324,7 +324,7 @@ fn dispatcher_terminal_cases_reuse_certified_construction_without_erasing_state_
         index.construction(terminal).is_some(),
         "valid dispatcher terminal case needs a source construction plan"
     );
-    assert!(render_text(&artifact).contains("revert(\"ds-math-mul-overflow\");"));
+    assert!(render_text(&artifact).contains("evm.revert(\"ds-math-mul-overflow\");"));
     for words in [[0_u64, 0_u64, 0_u64], [1, 0, 0], [1, 1, 0], [0, 0, 1]] {
         let words = words.map(U256::from);
         let (outcome, host, capsules) = oracle::certify(
@@ -423,8 +423,8 @@ fn a_pass_reachable_error_join_remains_after_the_actual_external_call() {
     assert!(error_guards(&artifact) > 0);
     let text = render_text(&artifact);
     let require = text.find("require(").unwrap();
-    let call = text.find("call(").unwrap();
-    let tail = text.rfind("revert(\"ds-math-mul-overflow\");").unwrap();
+    let call = text.find("evm.call(").unwrap();
+    let tail = text.rfind("evm.revert(\"ds-math-mul-overflow\");").unwrap();
     assert!(require < call && call < tail, "{text}");
     for pass in [0_u64, 1] {
         let mut host = MemoryHost::new(&input, calldata(&[U256::from(pass)]));

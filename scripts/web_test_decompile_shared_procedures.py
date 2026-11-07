@@ -199,8 +199,8 @@ def token_only_else(context, page, canvas):
             assert (token in lines) == dependencies
         for annotation in annotations:
             assert (annotation in lines) == (dependencies and structure)
-        assert text.count("sstore(slot = 0x3,") == text.count("sstore(slot = 0x4,") == 1
-        assert text.count("log0(") == 1, "the substantive true arm must survive every display mode"
+        assert text.count("evm.sstore(slot = 0x3,") == text.count("evm.sstore(slot = 0x4,") == 1
+        assert text.count("evm.log0(") == 1, "the substantive true arm must survive every display mode"
     for dependencies in [False, True]:
         assert without_structure(snapshots[dependencies, True]) == snapshots[dependencies, False].splitlines()
     for structure in [False, True]:
@@ -281,7 +281,9 @@ def run(context):
     for annotations in [False, True]:
         assert without_state(snapshots[True, annotations], current) == snapshots[False, annotations].splitlines()
     reading = snapshots[False, False]
-    assert reading.count("log0(") == 1 and reading.count("mstore(") == 1, reading
+    assert "evm.evm." not in reading, reading
+    assert not re.search(r"(?<![\w.])(?:mstore|sstore|sload|log0|stop|calldataload)\(", reading), reading
+    assert reading.count("evm.log0(") == 1 and reading.count("evm.mstore(") == 1, reading
     (context.output / "shared-toggle-text.json").write_text(json.dumps(
         {f"dependencies={dependencies},annotations={annotations}": text
          for (dependencies, annotations), text in snapshots.items()}, indent=2) + "\n")
@@ -366,7 +368,7 @@ def run(context):
     _, rejected_program = raw_witness(rejected)
     assert rejected_program.get("procedures", []) == [] and rejected_program.get("invocations", []) == []
     text = painted_copy(page, canvas)
-    assert text.count("mstore(") == text.count("sload(") == text.count("sstore(") == 1, text
+    assert text.count("evm.mstore(") == text.count("evm.sload(") == text.count("evm.sstore(") == 1, text
     rendered_frame(page)
     gpu = webgpu_evidence(page)
     page.close()

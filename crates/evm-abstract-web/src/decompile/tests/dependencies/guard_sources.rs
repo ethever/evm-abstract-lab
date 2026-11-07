@@ -70,11 +70,11 @@ fn web_rejects_forged_sources_and_direct_failed_stage_rows_fall_back_without_ree
                 "{field}"
             );
             assert!(
-                direct.iter().any(|row| row.text.contains("sstore(")),
+                direct.iter().any(|row| row.text.contains("evm.sstore(")),
                 "pass witness lost"
             );
             assert!(
-                direct.iter().any(|row| row.text.contains("revert(")),
+                direct.iter().any(|row| row.text.contains("evm.revert(")),
                 "join witness lost"
             );
             assert_eq!(rows(&structured::lines_indexed(stage, &index)), raw);
@@ -146,7 +146,7 @@ fn inherited_guard_cannot_acquire_an_ancestor_omission_plan() {
         .unwrap();
     inherited.continuation = Some(ancestor);
     let lines = high(stage, false); // No admission or stored-status gate here.
-    assert!(lines.iter().any(|r| r.text.contains("revert(")));
+    assert!(lines.iter().any(|r| r.text.contains("evm.revert(")));
     assert!(lines.iter().all(|r| !r.text.starts_with("require(")));
     assert!(
         model::check_artifact(&changed)

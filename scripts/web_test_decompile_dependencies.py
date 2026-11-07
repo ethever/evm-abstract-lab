@@ -61,7 +61,7 @@ def run(context):
     reading = painted_copy(page, canvas)
     clean(reading)
     assert not ANNOTATIONS.search(reading), reading
-    for operation in ["calldataload(", "mstore(", "mload(", "sstore(", "stop("]:
+    for operation in ["evm.calldataload(", "evm.mstore(", "evm.mload(", "evm.sstore(", "evm.stop("]:
         assert reading.count(operation) == 1, reading
     canvas.screenshot(path=str(context.output / "dependencies-default-reading.png"))
 
@@ -79,7 +79,7 @@ def run(context):
     store = next(statement for block in current["ir"]["lifted"]["blocks"]
                  for statement in block["statements"]
                  if raw_operations[statement["operation"]]["opcode"] == 0x52)
-    row = next(row for row in observed(page, "decompile-code") if "mstore(" in row["label"])
+    row = next(row for row in observed(page, "decompile-code") if "evm.mstore(" in row["label"])
     click_control(page, canvas, row["label"], role="decompile-code", id=row["id"])
     detail = inspector_control(page, canvas, "Statement h" + store["id"], "decompile-entity-detail")
     assert "memory m" in detail["label"] and "effect q" in detail["label"], detail
@@ -89,7 +89,7 @@ def run(context):
     detailed = painted_copy(page, canvas)
     assert "// memory" in detailed and "// effect" in detailed, detailed
     assert not ANNOTATIONS.search(detailed), detailed
-    for operation in ["calldataload(", "mstore(", "mload(", "sstore(", "stop("]:
+    for operation in ["evm.calldataload(", "evm.mstore(", "evm.mload(", "evm.sstore(", "evm.stop("]:
         assert detailed.count(operation) == 1, detailed
     canvas.screenshot(path=str(context.output / "dependencies-enabled-memory.png"))
     set_control(page, canvas, STRUCTURE, True)
@@ -121,13 +121,13 @@ def run(context):
     admitted = len(posts)
     ui_control(page, TOGGLE, role="toggle", selected=True)
     detailed = painted_copy(page, canvas)
-    assert ALIASES.search(detailed) and "mstore(" not in detailed, detailed
+    assert ALIASES.search(detailed) and "evm.mstore(" not in detailed, detailed
     tuples = TUPLES.findall(detailed)
-    assert len(tuples) == 2 and "sstore(" in detailed, detailed
+    assert len(tuples) == 2 and "evm.sstore(" in detailed, detailed
     set_control(page, canvas, TOGGLE, False)
     reading = painted_copy(page, canvas)
     clean(reading)
-    assert TUPLES.findall(reading) == tuples and "sstore(" in reading, reading
+    assert TUPLES.findall(reading) == tuples and "evm.sstore(" in reading, reading
     canvas.screenshot(path=str(context.output / "dependencies-live-tuples-preserved.png"))
     transfer = next(transfer for transfer in current["ir"]["lifted"]["transfers"]
                     if transfer["arguments"])
@@ -155,7 +155,7 @@ def run(context):
     ui_control(page, TOGGLE, role="toggle", selected=False)
     reading = painted_copy(page, canvas)
     clean(reading)
-    assert "stop(" in reading, reading
+    assert "evm.stop(" in reading, reading
     transfer = next(transfer for transfer in current["ir"]["lifted"]["transfers"]
                     if not transfer["arguments"])
     edge = next(edge for edge in current["ir"]["edges"] if edge["id"] == transfer["edge"])
@@ -207,11 +207,11 @@ def run(context):
     clean(reading)
     assert "} else {" not in reading, reading
     assert reading.count("if (") == 1, reading
-    for operation in ["returndatasize(", "evm.revert(", "sstore(", "evm.stop("]:
+    for operation in ["evm.returndatasize(", "evm.revert(", "evm.sstore(", "evm.stop("]:
         assert reading.count(operation) == 1, reading
     rows = reading.splitlines()
     revert = next(i for i, text in enumerate(rows) if "evm.revert(" in text)
-    store = next(i for i, text in enumerate(rows) if "sstore(" in text)
+    store = next(i for i, text in enumerate(rows) if "evm.sstore(" in text)
     assert rows[revert].startswith("    ") and not rows[store].startswith(" "), reading
     assert revert < store and "}" in rows[revert + 1:store], reading
     canvas.screenshot(path=str(context.output / "dependencies-empty-else-omitted.png"))
@@ -262,11 +262,11 @@ def run(context):
     reading = painted_copy(page, canvas)
     clean(reading)
     assert reading.count("require(!(") == 1 and "if (" not in reading, reading
-    assert "revert(" not in reading and "} else {" not in reading, reading
+    assert "evm.revert(" not in reading and "} else {" not in reading, reading
     rows = reading.splitlines()
     require = next(i for i, text in enumerate(rows) if text.startswith("require("))
-    store = next(i for i, text in enumerate(rows) if text.startswith("sstore("))
-    assert require < store and rows[store] == "sstore(slot = 0x0, value = 0x2a);", reading
+    store = next(i for i, text in enumerate(rows) if text.startswith("evm.sstore("))
+    assert require < store and rows[store] == "evm.sstore(slot = 0x0, value = 0x2a);", reading
     assert rows[-1] == "evm.stop();", reading
     predicate = rows[require]
     failure = next(item for item in current["ir"]["lifted"]["transfers"]
@@ -275,7 +275,7 @@ def run(context):
         set_control(page, canvas, TOGGLE, dependencies)
         text = painted_copy(page, canvas)
         assert text.splitlines().count(predicate) == 1, text
-        assert "if (" not in text and "revert(" not in text and "} else {" not in text, text
+        assert "if (" not in text and "evm.revert(" not in text and "} else {" not in text, text
         assert "token on e" + guard["failure_edge"] not in text, text
         if dependencies:
             detailed = text

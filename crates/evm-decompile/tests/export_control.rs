@@ -108,7 +108,7 @@ fn dispatcher_external_edge_assigns_phi_before_leaving_for_following_region() {
         .find(&format!("break 'dispatch{};", DISPATCH.0))
         .expect("external case target must leave its dispatcher");
     assert!(
-        phi < escape && escape < text.find("sstore(").unwrap(),
+        phi < escape && escape < text.find("evm.sstore(").unwrap(),
         "{text}"
     );
     assert!(!text.contains(&format!(

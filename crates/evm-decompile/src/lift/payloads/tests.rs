@@ -66,7 +66,7 @@ fn byte_and_source_corruptions_fail_local_replay() {
             .render_index(&stage.ir)
             .render_revert(program.reverts[0].block, |_| true)
             .unwrap(),
-        Some("revert(\"ds-math-mul-overflow\");".to_owned())
+        Some("evm.revert(\"ds-math-mul-overflow\");".to_owned())
     );
 }
 

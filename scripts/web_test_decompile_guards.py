@@ -121,14 +121,14 @@ def run(context):
             assert guard["continuation"] is None, guard
         high(page, canvas)
         text = painted_copy(page, canvas)
-        loaded = re.search(r"(?m)^(v\d+) = calldataload\(offset = 0x0\);$", text)
+        loaded = re.search(r"(?m)^(v\d+) = evm\.calldataload\(offset = 0x0\);$", text)
         assert loaded, text
         predicate = "(" + loaded[1] + " != 0)"
         expected = f"require({predicate});" if nonzero else f"require(!({predicate}));"
         assert guard_rows(text) == [expected], text
-        assert "if (" not in text and "revert(" not in text, text
+        assert "if (" not in text and "evm.revert(" not in text, text
         lines = text.splitlines()
-        assert lines.index(expected) < lines.index("sstore(slot = 0x0, value = 0x2a);")
+        assert lines.index(expected) < lines.index("evm.sstore(slot = 0x0, value = 0x2a);")
         assert lines[-1] == "evm.stop();", text
         row = next(row for row in observed(page, "decompile-code")
                    if code_label(row["label"])[1] == expected)
@@ -173,7 +173,7 @@ def run(context):
                 set_control(page, canvas, ANNOTATIONS, annotations)
                 detailed = painted_copy(page, canvas)
                 assert guard_rows(detailed) == [expected], detailed
-                assert "if (" not in detailed and "revert(" not in detailed, detailed
+                assert "if (" not in detailed and "evm.revert(" not in detailed, detailed
                 assert "token on e" + guard["failure_edge"] not in detailed, detailed
                 if dependencies:
                     tokens = [i for i, line in enumerate(detailed.splitlines())
@@ -215,10 +215,10 @@ def run(context):
     controls = [control for control in program["controls"] if control.get("guard")]
     assert len(controls) >= 4 and len(guard_rows(text)) == len(controls), text
     assert all(line.startswith("require(") for line in guard_rows(text)), text
-    assert "if (" not in text and "revert(" not in text, text
-    assert "slt(" in text and " - 0x4)" in text, text
-    assert text.count("sstore(") == 2 and text.count("call(") == 1, text
-    assert text.rindex("require(") < text.index("sstore(") < text.index("call("), text
+    assert "if (" not in text and "evm.revert(" not in text, text
+    assert "evm.slt(" in text and " - 0x4)" in text, text
+    assert text.count("evm.sstore(") == 2 and text.count("evm.call(") == 1, text
+    assert text.rindex("require(") < text.index("evm.sstore(") < text.index("evm.call("), text
     # This is the native decoder's actual nested If/following-tail shape.
     nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
     assert sum("if" in kind for kind in nodes.values() if isinstance(kind, dict)) >= 4
@@ -229,7 +229,7 @@ def run(context):
         set_control(page, canvas, ANNOTATIONS, annotations)
         detailed = copy_code(page, canvas)
         assert guard_rows(detailed) == guard_rows(text), detailed
-        assert "if (" not in detailed and "revert(" not in detailed, detailed
+        assert "if (" not in detailed and "evm.revert(" not in detailed, detailed
     click_control(page, canvas, "Structured code", role="tab")
     raw = copy_code(page, canvas)
     assert raw.count("if (") >= 4 and "evm.revert(" in raw and "require(" not in raw, raw
@@ -245,10 +245,10 @@ def run(context):
     text = painted_copy(page, canvas)
     lines = text.splitlines()
     require, = guard_rows(text)
-    store = "sstore(slot = 0x0, value = 0x2a);"
+    store = "evm.sstore(slot = 0x0, value = 0x2a);"
     revert = "evm.revert(offset = 0x0, size = 0x0);"
     assert lines.index(require) < lines.index(store) < lines.index(revert), text
-    assert text.count("revert(") == 1 and "if (" not in text, text
+    assert text.count("evm.revert(") == 1 and "if (" not in text, text
     row = next(row for row in observed(page, "decompile-code") if require in row["label"])
     click_control(page, canvas, row["label"], role="decompile-code", id=row["id"])
     plan = inspector_control(page, canvas, "Failure continuation:", "decompile-entity-detail")
@@ -261,8 +261,8 @@ def run(context):
     results.append({"artifact": artifact["id"], "retained_join_revert": True})
 
     for name, failure, operation in [("payload", "60015ffd", "size = 0x1"),
-                                      ("store", "602a5f555f5ffd", "sstore("),
-                                      ("observation", "33505f5ffd", "caller(")]:
+                                      ("store", "602a5f555f5ffd", "evm.sstore("),
+                                      ("observation", "33505f5ffd", "evm.caller(")]:
         artifact, _ = submit(context, page, canvas, rejected_failure(failure), "guard-excluded-" + name)
         current, program = projection(artifact)
         assert not any(control.get("guard") for control in program["controls"]), program
@@ -270,10 +270,10 @@ def run(context):
         for dependencies in [False, True]:
             set_control(page, canvas, DEPENDENCIES, dependencies)
             text = painted_copy(page, canvas)
-            assert "require(" not in text and "if (" in text and "revert(" in text, text
+            assert "require(" not in text and "if (" in text and "evm.revert(" in text, text
             assert operation in text, text
             if name != "payload":
-                assert text.index(operation) < text.index("revert("), text
+                assert text.index(operation) < text.index("evm.revert("), text
         set_control(page, canvas, DEPENDENCIES, False)
         results.append({"artifact": artifact["id"], "excluded_failure": name})
 

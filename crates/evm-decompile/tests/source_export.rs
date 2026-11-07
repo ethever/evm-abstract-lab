@@ -45,7 +45,13 @@ fn decoded_source_export_shows_original_instructions_without_fake_ssa_or_effects
     assert!(text.contains("0x0007: STOP"));
     assert_eq!(text.matches("; unrecovered;").count(), 6);
     assert!(text.contains("Limit") && text.contains("block transfer iteration limit exhausted"));
-    for invented in [" = ", "add(", "sstore(", "stop(", "partial_recovery("] {
+    for invented in [
+        " = ",
+        "evm.add(",
+        "evm.sstore(",
+        "evm.stop(",
+        "partial_recovery(",
+    ] {
         assert!(!text.contains(invented), "{text}");
     }
     assert_eq!(render_text(&artifact), text);
@@ -135,7 +141,7 @@ fn recovered_baseline_and_partial_ssa_keep_real_operands() {
     assert_eq!(artifact.current().unwrap().kind, StageKind::Baseline);
     let exported = export_text(&artifact, &Cancellation::default());
     assert_eq!(exported.status, TextExportStatus::Complete);
-    assert!(exported.text.contains("sstore(0x0, v"));
+    assert!(exported.text.contains("evm.sstore(0x0, v"));
     assert!(!exported.text.contains("unrecovered"));
     let partial = decompile(
         &Input::new(vec![0x5f, 0x35, 0x56], Fork::Osaka),
@@ -143,7 +149,7 @@ fn recovered_baseline_and_partial_ssa_keep_real_operands() {
     );
     assert_eq!(partial.completion, Completion::Partial);
     let text = render_text(&partial);
-    assert!(text.contains("calldataload(offset = 0x0)"));
+    assert!(text.contains("evm.calldataload(offset = 0x0)"));
     assert!(text.contains("partial_indirect_exit"));
     assert!(!text.contains("decoded source only"));
 }

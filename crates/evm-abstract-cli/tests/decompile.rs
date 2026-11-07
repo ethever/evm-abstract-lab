@@ -279,8 +279,8 @@ fn installed_cli_keeps_a_pass_reachable_join_revert_after_the_store() {
     );
     let text = String::from_utf8(output.stdout).unwrap();
     let require = text.find("require(").expect("certified empty failure");
-    let store = text.find("sstore(").unwrap();
-    let revert = text.rfind("revert(").expect("pass-reachable REVERT");
+    let store = text.find("evm.sstore(").unwrap();
+    let revert = text.rfind("evm.revert(").expect("pass-reachable REVERT");
     assert!(require < store && store < revert, "{text}");
 }
 
@@ -291,25 +291,25 @@ fn installed_cli_names_distinct_call_arguments_and_keeps_json_operand_identity()
             "6077606660556044603360226011f15000",
             0xf1,
             &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77][..],
-            "call(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
+            "evm.call(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
         ),
         (
             "6077606660556044603360226011f25000",
             0xf2,
             &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77][..],
-            "callcode(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
+            "evm.callcode(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
         ),
         (
             "606660556044603360226011f45000",
             0xf4,
             &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66][..],
-            "delegatecall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
+            "evm.delegatecall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
         ),
         (
             "606660556044603360226011fa5000",
             0xfa,
             &[0x11_u64, 0x22, 0x33, 0x44, 0x55, 0x66][..],
-            "staticcall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
+            "evm.staticcall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
         ),
     ] {
         let json = run(&["--hex", bytecode, "--format", "json"]);
@@ -363,10 +363,10 @@ fn installed_cli_names_distinct_call_arguments_and_keeps_json_operand_identity()
 #[test]
 fn installed_cli_terminal_text_names_offset_size_and_beneficiary() {
     for (bytecode, expected) in [
-        ("60226011f3", "return(offset = 0x11, size = 0x22);"),
-        ("60226011fd", "revert(offset = 0x11, size = 0x22);"),
-        ("6011ff", "selfdestruct(beneficiary = 0x11);"),
-        ("00", "stop();"),
+        ("60226011f3", "evm.return(offset = 0x11, size = 0x22);"),
+        ("60226011fd", "evm.revert(offset = 0x11, size = 0x22);"),
+        ("6011ff", "evm.selfdestruct(beneficiary = 0x11);"),
+        ("00", "evm.stop();"),
     ] {
         let output = run(&["--hex", bytecode]);
         assert!(
@@ -542,12 +542,12 @@ fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_w
         assert_eq!(text.matches(&require).count(), 1, "{text}");
         assert_eq!(text.matches(message).count(), 1, "{text}");
         assert_eq!(
-            text.matches("mstore(").count(),
+            text.matches("evm.mstore(").count(),
             1,
             "only the original prefix store remains visible: {text}"
         );
         assert!(
-            !text.contains("mload("),
+            !text.contains("evm.mload("),
             "failure-only loads must be inside the lazy capsule: {text}"
         );
     }
@@ -565,12 +565,13 @@ fn installed_cli_standalone_error_collapses_the_actual_constructor_and_bad_paddi
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();
     assert_eq!(
-        text.matches("revert(\"ds-math-mul-overflow\");").count(),
+        text.matches("evm.revert(\"ds-math-mul-overflow\");")
+            .count(),
         1,
         "{text}"
     );
     assert!(
-        !text.contains("mstore("),
+        !text.contains("evm.mstore("),
         "standalone construction is one lazy capsule: {text}"
     );
     let needle = "64732d6d6174682d6d756c2d6f766572666c6f77000000000000000000000000";
@@ -586,11 +587,11 @@ fn installed_cli_standalone_error_collapses_the_actual_constructor_and_bad_paddi
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(
-        !text.contains("require(") && !text.contains("revert(\""),
+        !text.contains("require(") && !text.contains("evm.revert(\""),
         "{text}"
     );
     assert!(
-        text.contains("mstore(") && text.contains("revert(offset"),
+        text.contains("evm.mstore(") && text.contains("evm.revert(offset"),
         "{text}"
     );
 }

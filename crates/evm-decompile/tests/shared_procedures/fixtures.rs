@@ -300,6 +300,8 @@ pub(super) fn repeated_tail(terminal: u8) -> Fixture {
         .op(0xa0);
     if matches!(terminal, 0xf3 | 0xfd) {
         a.number(32).number(128).op(0x35);
+    } else if terminal == 0xff {
+        a.number(17);
     }
     a.op(terminal);
     a.finish()

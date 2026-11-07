@@ -4,7 +4,7 @@ use crate::decompile::{index::StageIndex, structured};
 use evm_abstract_protocol::decompile_model::{EntityRef, ExitKind, StageKind, Terminator, U256};
 
 const DISTINCT_CALL: &str = "6077606660556044603360226011f15000";
-const NAMED_CALL: &str = "call(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);";
+const NAMED_CALL: &str = "evm.call(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);";
 
 #[test]
 fn published_call_keeps_named_values_in_code_inspector_and_clipboard_only() {

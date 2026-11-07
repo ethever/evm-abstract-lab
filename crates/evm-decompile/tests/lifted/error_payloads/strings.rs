@@ -10,7 +10,7 @@ fn real_constant_mstore_words_cover_twenty_plus_twelve_and_thirty_one_plus_one()
         assert_eq!(lifted(&artifact).1.constructions.len(), 1);
         let text = render_text(&artifact);
         let expected = format!(
-            "revert({});",
+            "evm.revert({});",
             serde_json::to_string(std::str::from_utf8(message).unwrap()).unwrap()
         );
         assert_eq!(text.matches(&expected).count(), 1, "{text}");
@@ -59,7 +59,7 @@ fn empty_multiword_and_escaped_utf8_messages_keep_exact_byte_identity() {
         assert_eq!(
             rendered,
             format!(
-                "revert({});",
+                "evm.revert({});",
                 serde_json::to_string(std::str::from_utf8(message).unwrap()).unwrap()
             )
         );

@@ -13,22 +13,22 @@ fn real_runtime_calls_export_names_without_changing_witness_or_semantics() {
         (
             0xf1,
             &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77][..],
-            "call(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
+            "evm.call(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
         ),
         (
             0xf2,
             &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77][..],
-            "callcode(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
+            "evm.callcode(gas = 0x11, target = 0x22, value = 0x33, input_offset = 0x44, input_size = 0x55, output_offset = 0x66, output_size = 0x77);",
         ),
         (
             0xf4,
             &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66][..],
-            "delegatecall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
+            "evm.delegatecall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
         ),
         (
             0xfa,
             &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66][..],
-            "staticcall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
+            "evm.staticcall(gas = 0x11, target = 0x22, input_offset = 0x33, input_size = 0x44, output_offset = 0x55, output_size = 0x66);",
         ),
     ] {
         let mut asm = Asm::default();
@@ -111,7 +111,11 @@ fn named_invocation_export_refusal_and_cancellation_are_atomic() {
         checkpoints.push(work);
     });
     assert_eq!(complete.status, TextExportStatus::Complete);
-    assert!(complete.text.contains("sstore(slot = 0x11, value = 0x22);"));
+    assert!(
+        complete
+            .text
+            .contains("evm.sstore(slot = 0x11, value = 0x22);")
+    );
     assert!(checkpoints.windows(2).all(|pair| pair[0] <= pair[1]));
     let mut interrupted_after_work = false;
     for allowance in checkpoints {
@@ -121,11 +125,13 @@ fn named_invocation_export_refusal_and_cancellation_are_atomic() {
         }
         assert_eq!(limited.status, TextExportStatus::Limited);
         assert!(limited.work <= allowance);
-        if !limited.text.contains("sstore(") {
+        if !limited.text.contains("evm.sstore(") {
             interrupted_after_work |= limited.work > 0;
         } else {
             assert!(
-                limited.text.contains("sstore(slot = 0x11, value = 0x22);"),
+                limited
+                    .text
+                    .contains("evm.sstore(slot = 0x11, value = 0x22);"),
                 "{}",
                 limited.text
             );
@@ -138,11 +144,11 @@ fn named_invocation_export_refusal_and_cancellation_are_atomic() {
         });
         assert!(cancel.is_cancelled());
         assert_eq!(cancelled.status, TextExportStatus::Cancelled);
-        if cancelled.text.contains("sstore(") {
+        if cancelled.text.contains("evm.sstore(") {
             assert!(
                 cancelled
                     .text
-                    .contains("sstore(slot = 0x11, value = 0x22);"),
+                    .contains("evm.sstore(slot = 0x11, value = 0x22);"),
                 "{}",
                 cancelled.text
             );

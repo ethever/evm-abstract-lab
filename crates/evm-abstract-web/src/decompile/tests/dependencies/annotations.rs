@@ -100,7 +100,7 @@ fn all_option_combinations_keep_exact_semantic_rows_effect_order_and_empty_else_
                         .count(),
                     1
                 );
-                assert!(!clean.iter().any(|line| line.text.contains("revert(")));
+                assert!(!clean.iter().any(|line| line.text.contains("evm.revert(")));
             }
         }
         assert_eq!(rows(&structured::lines(stage)), raw);

@@ -339,7 +339,9 @@ fn dependency_visibility_preserves_unknown_invalid_and_fault_boundaries() {
                         .any(|line| line.text.contains("fault") && line.text.contains("SSTORE"))
                 );
                 assert!(
-                    !lines.iter().any(|line| line.text.starts_with("sstore(")),
+                    !lines
+                        .iter()
+                        .any(|line| line.text.starts_with("evm.sstore(")),
                     "faulting SSTORE must not appear completed"
                 );
             }

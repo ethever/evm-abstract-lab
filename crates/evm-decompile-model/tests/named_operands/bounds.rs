@@ -134,9 +134,9 @@ fn expression_size_limit_counts_nested_labels_and_separators() {
 
 #[test]
 fn statement_size_includes_the_combined_named_operands() {
-    let (program, root) = shared_exponents(11);
+    let (program, root) = shared_exponents(10);
     let child = program.render_expression(root);
-    assert!(child.starts_with("exp(base = "));
+    assert!(child.starts_with("evm.exp(base = "));
     assert!(child.len() < MAX_LIFTED_EXPRESSION_TEXT);
     assert!(child.len() * 2 > MAX_LIFTED_EXPRESSION_TEXT);
     let (_, ir, mut statement) = primitive(0x55, "SSTORE", 2);
@@ -159,7 +159,7 @@ fn statement_size_includes_the_combined_named_operands() {
 fn invocation_names_and_punctuation_are_inside_the_exact_byte_ceiling() {
     let (program, ir, _) = primitive(0x00, "STOP", 0);
     let renderer = program.render_index(&ir);
-    let exact_name = "x".repeat(MAX_LIFTED_EXPRESSION_TEXT - 2);
+    let exact_name = "x".repeat(MAX_LIFTED_EXPRESSION_TEXT - 6);
     let mut paid = 0;
     let text = renderer
         .render_invocation(0x00, &exact_name, &[], |units| {
@@ -168,7 +168,7 @@ fn invocation_names_and_punctuation_are_inside_the_exact_byte_ceiling() {
         })
         .unwrap();
     assert_eq!(text.len(), MAX_LIFTED_EXPRESSION_TEXT);
-    assert_eq!(text, format!("{exact_name}()"));
+    assert_eq!(text, format!("evm.{exact_name}()"));
     assert!(paid >= text.len());
     assert_eq!(
         renderer.render_invocation(0x00, &format!("{exact_name}x"), &[], |_| true),

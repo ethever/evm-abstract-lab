@@ -133,7 +133,7 @@ fn actual_nested_decoder_sequence_flattens_and_preserves_signed_wrapping_checks_
             "nested failure-only checks must flatten: {text}"
         );
         assert!(
-            text.contains("slt("),
+            text.contains("evm.slt("),
             "signed decoder comparison lost: {text}"
         );
         assert!(
@@ -200,9 +200,9 @@ fn pass_side_effect_before_shared_join_revert_remains_visible_and_executes() {
     checker::certificate(lifted(&artifact).0);
     let text = render_text(&artifact);
     let require = text.find("require(").unwrap();
-    let store = text.find("sstore(").unwrap();
+    let store = text.find("evm.sstore(").unwrap();
     let revert = text
-        .rfind("revert(")
+        .rfind("evm.revert(")
         .expect("join REVERT still executes on the pass path");
     assert!(require < store && store < revert, "{text}");
     for value in [0_u64, 1] {
@@ -515,11 +515,11 @@ fn observations_before_require_bind_once_and_keep_their_old_storage_value() {
     assert_eq!(guards(&artifact), 1);
     let text = render_text(&artifact);
     assert!(
-        text.find("sload(").unwrap() < text.find("require(").unwrap(),
+        text.find("evm.sload(").unwrap() < text.find("require(").unwrap(),
         "{text}"
     );
     assert!(
-        text.find("require(").unwrap() < text.find("sstore(").unwrap(),
+        text.find("require(").unwrap() < text.find("evm.sstore(").unwrap(),
         "{text}"
     );
     for value in [0_u64, 1, 3] {
@@ -554,7 +554,7 @@ fn nested_guards_inherit_a_shared_outer_join_without_omitting_its_revert() {
     assert_eq!(text.matches("require(").count(), 2, "{text}");
     assert!(!text.contains("if ("), "{text}");
     assert!(
-        text.find("sstore(").unwrap() < text.rfind("revert(").unwrap(),
+        text.find("evm.sstore(").unwrap() < text.rfind("evm.revert(").unwrap(),
         "{text}"
     );
     for a in [0_u64, 1] {

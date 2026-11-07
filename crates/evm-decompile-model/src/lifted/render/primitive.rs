@@ -5,6 +5,46 @@ use super::{LiftedRenderError, MAX_LIFTED_EXPRESSION_TEXT};
 
 pub(super) const LEFT_RIGHT: &[&str] = &["left", "right"];
 
+/// EVM spellings and high-level constructs have separate naming policies.
+/// Callers may still supply a qualified EVM name; qualification is idempotent.
+#[derive(Clone, Copy)]
+pub(super) enum CallName<'a> {
+    Evm(&'a str),
+    High(&'a str),
+}
+
+impl<'a> CallName<'a> {
+    fn parts(self) -> (&'static str, &'a str) {
+        match self {
+            Self::Evm(name) => ("evm.", name.trim_start_matches("evm.")),
+            Self::High(name) => ("", name),
+        }
+    }
+
+    /// Expression call names are fixed small spellings, paid when emitted.
+    pub(super) fn opening(self) -> String {
+        let (prefix, name) = self.parts();
+        format!("{prefix}{name}(")
+    }
+
+    pub(super) fn append(
+        self,
+        output: &mut String,
+        reserve: &mut impl FnMut(usize) -> bool,
+    ) -> Result<(), LiftedRenderError> {
+        let supplied = match self {
+            Self::Evm(name) | Self::High(name) => name,
+        };
+        // Qualification may scan a caller-supplied name before emitting it.
+        if supplied.len() > MAX_LIFTED_EXPRESSION_TEXT || !reserve(supplied.len()) {
+            return Err(LiftedRenderError::Limit);
+        }
+        let (prefix, name) = self.parts();
+        append(output, prefix, reserve)?;
+        append(output, name, reserve)
+    }
+}
+
 pub(crate) fn operand_names(opcode: u8, arity: usize) -> Option<&'static [&'static str]> {
     let names: &[&str] = match opcode {
         0x01..=0x03 | 0x10..=0x14 | 0x16..=0x18 => LEFT_RIGHT,

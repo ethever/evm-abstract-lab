@@ -331,14 +331,9 @@ impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
             renderer.render_statement(statement, |work| owner.pay(work))
         })
     }
-    fn high_invocation(
-        &mut self,
-        opcode: u8,
-        name: &str,
-        arguments: &[EntityId],
-    ) -> Option<String> {
+    fn high_exit(&mut self, kind: ExitKind, arguments: &[EntityId]) -> Option<String> {
         self.semantic(|renderer, owner| {
-            renderer.render_invocation(opcode, name, arguments, |work| owner.pay(work))
+            renderer.render_exit(kind, arguments, |work| owner.pay(work))
         })
     }
     fn high_transfer(&mut self, transfer: &LiftedTransfer) -> Option<String> {
@@ -514,7 +509,7 @@ fn body(out: &mut String, block: &Block, ir: &mut RenderIndex<'_, impl FnMut(u64
 fn primitive_text(out: &mut String, op: &Operation, ir: &RenderIndex<'_, impl FnMut(u64)>) {
     let _ = write!(
         out,
-        "{}({})",
+        "evm.{}({})",
         op.name.to_lowercase(),
         op.inputs
             .iter()
@@ -961,34 +956,30 @@ fn control(
             {
                 return;
             }
-            if *kind == ExitKind::EndOfCode {
+            if let Some(semantic) = ir.lifted_block(block.id) {
+                let Some(text) = ir.high_exit(*kind, &semantic.exit_values) else {
+                    return;
+                };
                 indent(out, depth);
-                out.push_str("stop(); // end of runtime\n");
+                let _ = writeln!(out, "{text}");
+            } else if *kind == ExitKind::EndOfCode {
+                indent(out, depth);
+                out.push_str("evm.stop(); // end of runtime\n");
             } else {
-                let (opcode, primitive) = match kind {
-                    ExitKind::Stop => (0x00, "stop"),
-                    ExitKind::Return => (0xf3, "return"),
-                    ExitKind::Revert => (0xfd, "revert"),
-                    ExitKind::SelfDestruct => (0xff, "selfdestruct"),
+                let primitive = match kind {
+                    ExitKind::Stop => "stop",
+                    ExitKind::Return => "return",
+                    ExitKind::Revert => "revert",
+                    ExitKind::SelfDestruct => "selfdestruct",
                     ExitKind::EndOfCode => unreachable!(),
                 };
-                let invocation = if let Some(semantic) = ir.lifted_block(block.id) {
-                    let Some(invocation) =
-                        ir.high_invocation(opcode, primitive, &semantic.exit_values)
-                    else {
-                        return;
-                    };
-                    invocation
-                } else {
-                    let args = values
-                        .iter()
-                        .map(|v| expression(ir, *v))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{primitive}({args})")
-                };
+                let args = values
+                    .iter()
+                    .map(|v| expression(ir, *v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 indent(out, depth);
-                let _ = writeln!(out, "{invocation};");
+                let _ = writeln!(out, "evm.{primitive}({args});");
             }
         }
         Terminator::Trap { reason } => {

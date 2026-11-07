@@ -92,7 +92,7 @@ def runtime(message=MESSAGE, shape="nonzero", **options):
 
 def compact_rows(text):
     return [line for line in text.splitlines()
-            if line.lstrip().startswith(("require(", 'revert("'))]
+            if line.lstrip().startswith(("require(", 'evm.revert("'))]
 
 
 def options_invariance(page, canvas, program, text):
@@ -103,8 +103,8 @@ def options_invariance(page, canvas, program, text):
         set_control(page, canvas, ANNOTATIONS, annotations)
         displayed = painted_copy(page, canvas)
         assert compact_rows(displayed) == expected, displayed
-        assert displayed.count("mstore(") == text.count("mstore("), displayed
-        assert displayed.count("sstore(") == text.count("sstore("), displayed
+        assert displayed.count("evm.mstore(") == text.count("evm.mstore("), displayed
+        assert displayed.count("evm.sstore(") == text.count("evm.sstore("), displayed
     assert painted_copy(page, canvas) == text
 
 
@@ -160,7 +160,7 @@ def navigate_witnesses(page, canvas, artifact, current, program, text, standalon
         click_control(page, canvas, "Structured code", role="tab")
     ui_control(page, "Structured code", role="tab", selected=True)
     raw = copy_code(page, canvas)
-    assert "evm.mstore(" in raw and "evm.revert(" in raw and 'revert("' not in raw, raw
+    assert "evm.mstore(" in raw and "evm.revert(" in raw and 'evm.revert("' not in raw, raw
     choose_stage(page, canvas, artifact, "structured")
     click_control(page, canvas, "Structured code", role="tab")
     assert copy_code(page, canvas) == raw
@@ -193,10 +193,10 @@ def run(context):
         high(page, canvas)
         text = painted_copy(page, canvas)
         assert len(guard_rows(text)) == len(controls), text
-        assert "if (" not in text and "evm.revert(" not in text, text
+        assert "if (" not in text and "evm.revert(offset =" not in text, text
         if shape in {"nonzero", "zero"}:
             assert controls[0]["guard"]["pass_nonzero"] == (shape == "nonzero")
-            value = re.search(r"(?m)^(v\d+) = calldataload\(offset = 0x0\);$", text)
+            value = re.search(r"(?m)^(v\d+) = evm\.calldataload\(offset = 0x0\);$", text)
             assert value, text
             condition = "(" + value[1] + " != 0)"
             predicate = condition if shape == "nonzero" else "!(" + condition + ")"
@@ -204,20 +204,20 @@ def run(context):
         if message == ESCAPED:
             # A literal newline/NUL must never split a code row or clipboard line.
             assert '\\"' in text and '\\\\' in text and "\\n" in text and "\x00" not in text, text
-            assert len([line for line in text.splitlines() if line.startswith('revert("')]) == 1, text
-            assert 'revert(' + json.dumps(ESCAPED, ensure_ascii=False) + ');' in text.splitlines(), text
+            assert len([line for line in text.splitlines() if line.startswith('evm.revert("')]) == 1, text
+            assert 'evm.revert(' + json.dumps(ESCAPED, ensure_ascii=False) + ');' in text.splitlines(), text
         else:
             assert all(line.endswith(', "' + message + '");') for line in guard_rows(text)), text
         if shape in {"standalone", "join"}:
-            assert len([line for line in text.splitlines() if line.startswith('revert("')]) == 1, text
+            assert len([line for line in text.splitlines() if line.startswith('evm.revert("')]) == 1, text
         else:
-            assert not any(line.startswith('revert("') for line in text.splitlines()), text
+            assert not any(line.startswith('evm.revert("') for line in text.splitlines()), text
         if shape == "join":
             guard, = controls
             assert guard["guard"]["continuation"]["pass_falls_through"], guard
-            assert text.index("require(") < text.index("sstore(") < text.index('revert("'), text
+            assert text.index("require(") < text.index("evm.sstore(") < text.index('evm.revert("'), text
         if shape != "standalone":
-            assert text.count("sstore(") == 1 and text.rindex("require(") < text.index("sstore("), text
+            assert text.count("evm.sstore(") == 1 and text.rindex("require(") < text.index("evm.sstore("), text
         options_invariance(page, canvas, program, text)
         if shape in {"nonzero", "standalone"} and message == MESSAGE:
             navigate_witnesses(page, canvas, artifact, current, program, text, shape == "standalone")
@@ -239,7 +239,7 @@ def run(context):
             set_control(page, canvas, DEPENDENCIES, dependencies)
             set_control(page, canvas, ANNOTATIONS, annotations)
             text = painted_copy(page, canvas)
-            assert "if (" in text and "mstore(" in text and "evm.revert(" in text, text
+            assert "if (" in text and "evm.mstore(" in text and "evm.revert(offset =" in text, text
             assert not compact_rows(text), text
         results.append({"rejected": name, "artifact": artifact["id"]})
     gpu = webgpu_evidence(page)

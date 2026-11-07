@@ -4,11 +4,11 @@ use super::{
     LiftedProgram, LiftedRelation, LiftedStatement, LiftedTransfer, MAX_LIFTED_EXPRESSION_TEXT,
 };
 use super::{LiftedModelError, sources::GuardSources};
-use crate::{EntityId, Ir, StructuredNode};
+use crate::{EntityId, ExitKind, Ir, StructuredNode};
 use std::collections::BTreeMap;
 
 pub(crate) mod primitive;
-use primitive::append;
+use primitive::{CallName, append};
 
 /// Reusable indexes for rendering many semantic rows without rescanning arenas.
 /// Owners reserve index construction from their own work ledger before creating it.
@@ -246,7 +246,8 @@ impl<'a> LiftedRenderIndex<'a> {
             .payload(proof.payload)
             .ok_or(LiftedRenderError::MissingWitness(proof.payload))?;
         let mut out = String::new();
-        append(&mut out, "revert(", &mut reserve)?;
+        CallName::Evm("revert").append(&mut out, &mut reserve)?;
+        append(&mut out, "(", &mut reserve)?;
         quoted(&mut out, &payload.message, &mut reserve)?;
         append(&mut out, ");", &mut reserve)?;
         Ok(Some(out))
@@ -308,7 +309,7 @@ impl<'a> LiftedRenderIndex<'a> {
             {
                 return Err(LiftedRenderError::Limit);
             }
-            let mut call = |name: &str, args: &[EntityId], names: Option<&[&str]>| {
+            let mut call = |name: CallName<'_>, args: &[EntityId], names: Option<&[&str]>| {
                 // Bound pending expansion before allocating per-argument parts.
                 let parts = if names.is_some() { 3 } else { 2 };
                 if work
@@ -329,7 +330,7 @@ impl<'a> LiftedRenderIndex<'a> {
                         pending.push(Part::Text(", ".to_owned()));
                     }
                 }
-                pending.push(Part::Text(format!("{name}(")));
+                pending.push(Part::Text(name.opening()));
                 Ok(())
             };
             match part {
@@ -349,7 +350,9 @@ impl<'a> LiftedRenderIndex<'a> {
                         LiftedExpressionKind::Value(v) => {
                             append(&mut out, &format!("v{}", v.0), &mut reserve)?;
                         }
-                        LiftedExpressionKind::WordFromPredicate(v) => call("word", &[*v], None)?,
+                        LiftedExpressionKind::WordFromPredicate(v) => {
+                            call(CallName::High("word"), &[*v], None)?
+                        }
                         LiftedExpressionKind::NonZero(v) => {
                             pending.push(Part::Text(" != 0)".to_owned()));
                             pending.push(Part::Expression(*v));
@@ -384,7 +387,11 @@ impl<'a> LiftedRenderIndex<'a> {
                                     | LiftedRelation::Sgt
                                     | LiftedRelation::Sge
                             ) {
-                                call(symbol, &[*left, *right], Some(primitive::LEFT_RIGHT))?;
+                                call(
+                                    CallName::Evm(symbol),
+                                    &[*left, *right],
+                                    Some(primitive::LEFT_RIGHT),
+                                )?;
                             } else {
                                 pending.push(Part::Text(")".to_owned()));
                                 pending.push(Part::Expression(*right));
@@ -420,7 +427,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                     0x0a => "exp",
                                     0x0b => "signextend",
                                     0x15 => "iszero",
-                                    0x19 => "bitnot",
+                                    0x19 => "not",
                                     0x1a => "byte",
                                     0x1b => "shl",
                                     0x1c => "shr",
@@ -429,7 +436,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                     _ => "word_op",
                                 };
                                 call(
-                                    name,
+                                    CallName::Evm(name),
                                     arguments,
                                     primitive::operand_names(*opcode, arguments.len()),
                                 )?;
@@ -444,7 +451,7 @@ impl<'a> LiftedRenderIndex<'a> {
         }
         Ok(out)
     }
-    /// One complete primitive call from semantic inputs, without a semicolon.
+    /// One qualified EVM call from semantic inputs, without a semicolon.
     /// Operand labels require an exact opcode/arity match; display spelling does
     /// not select a signature. Names, labels and separators share the expression
     /// byte ceiling and caller's work allowance. Refusal exposes no partial call.
@@ -457,7 +464,7 @@ impl<'a> LiftedRenderIndex<'a> {
     ) -> Result<String, LiftedRenderError> {
         let names = primitive::operand_names(opcode, arguments.len());
         let mut out = String::new();
-        append(&mut out, name, &mut reserve)?;
+        CallName::Evm(name).append(&mut out, &mut reserve)?;
         append(&mut out, "(", &mut reserve)?;
         for (position, argument) in arguments.iter().enumerate() {
             if position > 0 {
@@ -471,6 +478,28 @@ impl<'a> LiftedRenderIndex<'a> {
             append(&mut out, &argument, &mut reserve)?;
         }
         append(&mut out, ")", &mut reserve)?;
+        Ok(out)
+    }
+
+    /// One terminal primitive with the same spelling in every code consumer.
+    /// Compact error constructions are handled separately by `render_revert`.
+    pub fn render_exit(
+        &self,
+        kind: ExitKind,
+        arguments: &[EntityId],
+        mut reserve: impl FnMut(usize) -> bool,
+    ) -> Result<String, LiftedRenderError> {
+        let (opcode, name) = match kind {
+            ExitKind::Stop | ExitKind::EndOfCode => (0x00, "stop"),
+            ExitKind::Return => (0xf3, "return"),
+            ExitKind::Revert => (0xfd, "revert"),
+            ExitKind::SelfDestruct => (0xff, "selfdestruct"),
+        };
+        let mut out = self.render_invocation(opcode, name, arguments, &mut reserve)?;
+        append(&mut out, ";", &mut reserve)?;
+        if kind == ExitKind::EndOfCode {
+            append(&mut out, " // end of code", &mut reserve)?;
+        }
         Ok(out)
     }
     /// One retained primitive, formatted from high semantic inputs.

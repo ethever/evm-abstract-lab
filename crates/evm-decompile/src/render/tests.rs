@@ -25,8 +25,8 @@ fn expression_text_ceiling_cannot_report_complete_export() {
     assert_eq!(result.status, TextExportStatus::Limited);
     assert!(result.work > 4_096);
     assert!(result.text.contains("work limit exhausted"));
-    assert!(!result.text.contains("sstore("));
-    assert_eq!(result.text.matches("calldataload(").count(), 1);
+    assert!(!result.text.contains("evm.sstore("));
+    assert_eq!(result.text.matches("evm.calldataload(").count(), 1);
 }
 #[test]
 fn semantic_expression_expansion_charges_work_and_checks_cancellation() {
