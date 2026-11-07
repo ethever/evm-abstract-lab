@@ -48,7 +48,7 @@ async fn status(
 ) -> Result<DecompileJobReply, TransportError> {
     let (status, ok, body) = super::fetch(method, path, body).await?;
     let reply: DecompileJobReply =
-        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+        serde_json::from_slice(&body).map_err(|cause| TransportError::Decode { status, cause })?;
     if !ok && reply.result.is_ok() {
         return Err(TransportError::Http { status });
     }
@@ -58,7 +58,7 @@ async fn status(
 async fn result(path: &str) -> Result<DecompileJobResultReply, TransportError> {
     let (status, ok, body) = super::fetch("GET", path, None).await?;
     let reply: DecompileJobResultReply =
-        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+        serde_json::from_slice(&body).map_err(|cause| TransportError::Decode { status, cause })?;
     if !ok && reply.result.is_ok() {
         return Err(TransportError::Http { status });
     }

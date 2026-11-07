@@ -63,8 +63,16 @@ pub enum TransportError {
     #[error("Browser window is unavailable")]
     MissingWindow,
     /// Unexpected fetch body type.
-    #[error("Server returned a non-text response")]
-    NonTextResponse,
+    #[error("Server returned a non-binary response")]
+    NonBinaryResponse,
+    /// The decoded body cannot fit in the available Wasm memory.
+    #[error("Could not allocate {bytes} bytes for the response body: {cause}")]
+    BodyMemory {
+        /// Byte count after HTTP decompression.
+        bytes: usize,
+        /// Concrete allocation failure, retained without dynamic dispatch.
+        cause: std::collections::TryReserveError,
+    },
     /// HTTP failure with an inconsistent success envelope.
     #[error("Server returned HTTP {status}")]
     Http {
