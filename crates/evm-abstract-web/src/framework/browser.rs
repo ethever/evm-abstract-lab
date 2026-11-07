@@ -248,7 +248,7 @@ async fn execute_analysis(command: Command) -> Message {
 async fn rpc_providers() -> Result<RpcProvidersReply, TransportError> {
     let (status, ok, body) = fetch("GET", RPC_PROVIDERS_PATH, None).await?;
     let reply: RpcProvidersReply =
-        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+        serde_json::from_slice(&body).map_err(|cause| TransportError::Decode { status, cause })?;
     if !ok && reply.result.is_ok() {
         return Err(TransportError::Http { status });
     }
@@ -266,7 +266,7 @@ async fn status(
         .map_err(TransportError::Encode)?;
     let (status, ok, body) = fetch(method, path, body).await?;
     let reply: JobReply =
-        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+        serde_json::from_slice(&body).map_err(|cause| TransportError::Decode { status, cause })?;
     if !ok && reply.result.is_ok() {
         return Err(TransportError::Http { status });
     }
@@ -283,7 +283,7 @@ async fn result(path: &str) -> (Result<JobResultReply, TransportError>, u64, u64
         Err(error) => return (Err(error), transfer_ns, 0),
     };
     let decoded: Result<JobResultReply, TransportError> =
-        serde_json::from_str(&body).map_err(|cause| TransportError::Decode { status, cause });
+        serde_json::from_slice(&body).map_err(|cause| TransportError::Decode { status, cause });
     let parsing_ns = timing::elapsed_ns(parsing_started, timing::now());
     let decoded = decoded.and_then(|reply| {
         if !ok && reply.result.is_ok() {
@@ -299,7 +299,7 @@ async fn fetch(
     method: &str,
     path: &str,
     body: Option<String>,
-) -> Result<(u16, bool, String), TransportError> {
+) -> Result<(u16, bool, Vec<u8>), TransportError> {
     let options = web_sys::RequestInit::new();
     options.set_method(method);
     options.set_mode(web_sys::RequestMode::SameOrigin);
@@ -341,11 +341,23 @@ async fn fetch(
             .map_err(browser_error)?;
         let status = response.status();
         let ok = response.ok();
-        let body = JsFuture::from(response.text().map_err(browser_error)?)
+        // HTTP content decoding remains browser-owned. Avoid Response.text():
+        // a valid large JSON body can exceed the browser's single-string limit.
+        let buffer = JsFuture::from(response.array_buffer().map_err(browser_error)?)
             .await
             .map_err(browser_error)?
-            .as_string()
-            .ok_or(TransportError::NonTextResponse)?;
+            .dyn_into::<js_sys::ArrayBuffer>()
+            .map_err(|_| TransportError::NonBinaryResponse)?;
+        let bytes = js_sys::Uint8Array::new(&buffer);
+        let length = bytes.length() as usize;
+        let mut body = Vec::new();
+        body.try_reserve_exact(length)
+            .map_err(|cause| TransportError::BodyMemory {
+                bytes: length,
+                cause,
+            })?;
+        body.resize(length, 0);
+        bytes.copy_to(&mut body);
         Ok((status, ok, body))
     }
     .await;

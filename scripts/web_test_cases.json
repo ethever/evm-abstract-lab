@@ -104,7 +104,24 @@
         "scripts/web_test_harness.py",
         "scripts/web_test_http_errors.py",
         "scripts/web_test_hybrid.py",
-        "scripts/web_test_registry.py"
+        "scripts/web_test_registry.py",
+        "scripts/web_test_response_bytes.py"
+      ]
+    },
+    {
+      "id": "byte-transport",
+      "group": "transport",
+      "module": "web_test_transport_bytes",
+      "parameters": {},
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http_errors.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_registry.py",
+        "scripts/web_test_response_bytes.py",
+        "scripts/web_test_transport_bytes.py"
       ]
     },
     {

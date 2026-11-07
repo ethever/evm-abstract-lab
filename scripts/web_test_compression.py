@@ -5,6 +5,7 @@ from playwright.sync_api import expect
 import json
 from web_test_hybrid import assert_hybrid, graph, job_result_report
 from web_test_harness import complete_submission, observe_webgpu
+from web_test_response_bytes import byte_probe_result, install_byte_probe
 
 
 def compression_interactions(browser, url: str, output: Path):
@@ -16,6 +17,7 @@ def compression_interactions(browser, url: str, output: Path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         requested = ", ".join(accepted) if accepted else "identity"
         page.set_extra_http_headers({"Accept-Encoding": requested})
+        install_byte_probe(page)
         observe_webgpu(page)
         errors = []
         fetched = []
@@ -71,7 +73,7 @@ def compression_interactions(browser, url: str, output: Path):
             results[expected] = {"accepted": accepted, "request_accept_encoding": requested,
                                  "content_encoding": observed,
                                  "encoded_bytes": sizes["encoded"], "decoded_bytes": sizes["decoded"],
-                                 "status": report["status"], "wasm_installed_report": True,
+                                 "status": report["status"], "wasm_installed_report": True, "byte_reads": byte_probe_result(page),
                                  "job_id": completed.job["id"], "publication": completed.job["publication"],
                                  "browser_publications": [item["result"]["Ok"]["publication"]
                                                           for _, item in publications]}
