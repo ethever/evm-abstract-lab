@@ -19,6 +19,8 @@ pub(super) struct Facts {
     pub normal_postdom: BTreeMap<EntityId, BTreeSet<EntityId>>,
     pub blocks: BTreeMap<EntityId, usize>,
     pub edges: BTreeMap<EntityId, usize>,
+    // Exact terminator successors, shared by all indexed planning queries.
+    pub successors: Vec<Vec<usize>>,
 }
 impl Facts {
     pub fn new(
@@ -183,7 +185,79 @@ impl Facts {
             normal_postdom,
             blocks,
             edges,
+            successors,
         })
+    }
+
+    pub fn indexed_distances(
+        &self,
+        start: EntityId,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Option<Vec<Option<usize>>> {
+        if !pay(self.successors.len().saturating_mul(2)) {
+            return None;
+        }
+        let mut distances = vec![None; self.successors.len()];
+        let Some(&start) = self.blocks.get(&start) else {
+            return Some(distances);
+        };
+        distances[start] = Some(0);
+        let mut queue = VecDeque::from([start]);
+        while let Some(from) = queue.pop_front() {
+            if !pay(self.successors[from].len().saturating_add(1)) {
+                return None;
+            }
+            let next = distances[from].unwrap() + 1;
+            for &to in &self.successors[from] {
+                if distances[to].is_none() {
+                    distances[to] = Some(next);
+                    queue.push_back(to);
+                }
+            }
+        }
+        Some(distances)
+    }
+
+    pub fn indexed_residual_cycle(
+        &self,
+        ir: &Ir,
+        start: EntityId,
+        active: Option<EntityId>,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Option<bool> {
+        if self.loops.contains_key(&start) {
+            return Some(false);
+        }
+        let Some(&root) = self.blocks.get(&start) else {
+            return Some(false);
+        };
+        if !pay(self
+            .successors
+            .len()
+            .saturating_add(self.successors[root].len()))
+        {
+            return None;
+        }
+        let mut seen = vec![false; self.successors.len()];
+        let mut todo = self.successors[root].clone();
+        while let Some(index) = todo.pop() {
+            if !pay(1) {
+                return None;
+            }
+            if index == root {
+                return Some(true);
+            }
+            let id = ir.blocks[index].id;
+            if seen[index] || self.loops.contains_key(&id) || active == Some(id) {
+                continue;
+            }
+            seen[index] = true;
+            if !pay(self.successors[index].len()) {
+                return None;
+            }
+            todo.extend_from_slice(&self.successors[index]);
+        }
+        Some(false)
     }
 }
 pub(super) fn natural_loops(
@@ -388,33 +462,4 @@ pub(super) fn distances(ir: &Ir, start: EntityId) -> BTreeMap<EntityId, usize> {
         }
     }
     dist
-}
-pub(super) fn reaches_cycle_without_natural_header(
-    ir: &Ir,
-    start: EntityId,
-    loops: &BTreeMap<EntityId, Loop>,
-    active: Option<&Loop>,
-) -> bool {
-    // A node lies in a residual cycle if it can return to itself without passing
-    // a natural header other than the currently emitted loop's own header.
-    if loops.contains_key(&start) {
-        return false;
-    }
-    let mut seen = BTreeSet::new();
-    let mut todo: Vec<_> = ir
-        .edges
-        .iter()
-        .filter(|e| e.from == start)
-        .map(|e| e.to)
-        .collect();
-    while let Some(id) = todo.pop() {
-        if id == start {
-            return true;
-        }
-        if !seen.insert(id) || loops.contains_key(&id) || active.is_some_and(|lp| id == lp.header) {
-            continue;
-        }
-        todo.extend(ir.edges.iter().filter(|e| e.from == id).map(|e| e.to));
-    }
-    false
 }

@@ -166,24 +166,100 @@ fn nonempty_proof_http_budget_refusal_retains_only_the_prior_validated_publicati
             .constructions
             .is_empty()
     );
+    let fork = match input.fork {
+        evm_abstract_protocol::Fork::Cancun => evm_decompile::Fork::Cancun,
+        evm_abstract_protocol::Fork::Prague => evm_decompile::Fork::Prague,
+        evm_abstract_protocol::Fork::Osaka => evm_decompile::Fork::Osaka,
+    };
+    let source = evm_decompile::Input::new(evm_bytecode::parse_hex(&input.bytecode).unwrap(), fork);
+    let config = evm_decompile::Config {
+        strategy: input.strategy,
+        limits: input.limits.clone(),
+    };
+    let cancel = evm_decompile::Cancellation::new();
+    let before = evm_decompile::decompile_with_progress(&source, &config, &cancel, |progress| {
+        if progress.phase == evm_decompile::Phase::Lift {
+            cancel.cancel();
+        }
+    });
+    assert_eq!(
+        before.current().unwrap().kind,
+        evm_decompile::StageKind::Structured
+    );
+    let mut entered_lift = false;
+    let mut prepared_provenance = false;
+    let mut base_work = None;
+    let observed = evm_decompile::decompile_with_progress(
+        &source,
+        &config,
+        &evm_decompile::Cancellation::new(),
+        |progress| {
+            if progress.phase == evm_decompile::Phase::Lift {
+                if entered_lift && prepared_provenance && base_work.is_none() {
+                    base_work = Some(progress.work);
+                }
+                entered_lift = true;
+            } else if entered_lift && progress.phase == evm_decompile::Phase::Provenance {
+                prepared_provenance = true;
+            }
+        },
+    );
+    assert_eq!(
+        observed, complete,
+        "HTTP and direct progress observation must describe the same pipeline"
+    );
+    let base_work = base_work.expect("base publication is fully paid before optional sharing");
+    assert!(before.statistics.work < base_work && base_work < complete.statistics.work);
+    let mut expected = complete.current().unwrap().ir.lifted.clone().unwrap();
+    expected.procedures.clear();
+    expected.invocations.clear();
+    let mut base_history = None;
+    for max_work in [base_work, complete.statistics.work - 1] {
+        let mut bounded = input.clone();
+        bounded.limits.max_work = max_work;
+        let artifact = fetch(&bounded, &assets, &pool).artifact;
+        assert_eq!(
+            artifact.completion,
+            Completion::Complete,
+            "{:?}",
+            artifact.diagnostics
+        );
+        let stage = artifact.current().unwrap();
+        assert_eq!(stage.kind, evm_decompile::StageKind::Lifted);
+        assert_eq!(
+            stage.validation.status,
+            evm_decompile::ValidationStatus::Passed
+        );
+        assert_eq!(stage.ir.lifted.as_ref().unwrap(), &expected);
+        assert!(artifact.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == evm_decompile::DiagnosticCode::OptimizationRefused
+            && diagnostic.severity == evm_decompile::Severity::Info
+            && diagnostic.message.contains("coverage unchanged")));
+        assert!(artifact.statistics.work <= max_work);
+        base_history = Some(artifact.statistics.history_entities);
+    }
     for history in [false, true] {
         let mut limited = input.clone();
         limited.limits = if history {
             DecompileLimits {
-                max_history_entities: complete.statistics.history_entities - 1,
+                max_history_entities: base_history.unwrap() - 1,
                 ..input.limits.clone()
             }
         } else {
             DecompileLimits {
-                max_work: complete.statistics.work - 1,
+                max_work: base_work - 1,
                 ..input.limits.clone()
             }
         };
         let artifact = fetch(&limited, &assets, &pool).artifact;
         assert_eq!(artifact.completion, Completion::Limited);
+        assert_eq!(artifact.current_stage, before.current_stage);
+        assert_eq!(artifact.stages, before.stages);
+        assert_eq!(artifact.events, before.events);
+        assert_eq!(artifact.mappings, before.mappings);
         assert_eq!(
-            artifact.current().unwrap().kind,
-            evm_abstract_protocol::decompile_model::StageKind::Structured
+            artifact.statistics.history_entities,
+            before.statistics.history_entities
         );
         assert!(
             artifact

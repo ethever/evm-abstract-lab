@@ -72,3 +72,93 @@ fn metadata_refusal_preserves_code_duplication_policy_and_cancellation() {
     assert_eq!(owner.artifact.completion, Completion::Cancelled);
     assert!(owner.artifact.stages.is_empty());
 }
+
+#[test]
+fn cumulative_natural_attempt_limit_and_pressure_survive_an_arena_rollback() {
+    let (input, ir) = source();
+    let mut owner = Builder::new(&input, &Config::default(), &Cancellation::new(), |_| {});
+    let dom = crate::transform::dominators(&ir, &mut owner).unwrap();
+    let facts = Facts::new(&ir, &dom, &mut owner).unwrap();
+    let mut planner = Planner::new(&ir, &facts, &mut owner, MAX_PLAN_SLOTS);
+    planner.natural_limit = 1;
+    let checkpoint = planner.checkpoint();
+    planner
+        .build(ir.entry.unwrap(), None, None, 0, &BTreeSet::new())
+        .unwrap();
+    assert!(planner.compact_pressure);
+    assert_eq!(planner.natural_attempts, 1);
+    planner.rollback(checkpoint);
+    assert!(
+        planner.compact_pressure,
+        "rollback cannot restart natural planning"
+    );
+    assert_eq!(planner.natural_attempts, 1);
+    let root = planner
+        .build(ir.entry.unwrap(), None, None, 0, &BTreeSet::new())
+        .unwrap();
+    assert_eq!(
+        planner.natural_attempts, 1,
+        "the same region does not naturally replan"
+    );
+    assert_eq!(planner.nodes.len(), 1);
+    let plan = Plan {
+        nodes: planner.nodes,
+        root,
+        regions: planner.regions,
+    };
+    super::super::super::verify::verify(&ir, &plan, &mut |n| planner.owner.pay(n)).unwrap();
+}
+
+#[test]
+fn source_join_memo_including_negative_answers_survives_proposal_rollback() {
+    let (input, ir) = source();
+    let mut owner = Builder::new(&input, &Config::default(), &Cancellation::new(), |_| {});
+    let dom = crate::transform::dominators(&ir, &mut owner).unwrap();
+    let facts = Facts::new(&ir, &dom, &mut owner).unwrap();
+    let mut planner = Planner::new(&ir, &facts, &mut owner, MAX_PLAN_SLOTS);
+    let entry = ir.block(ir.entry.unwrap()).unwrap();
+    let Terminator::Branch {
+        then_edges,
+        else_edge: Some(other),
+        ..
+    } = &entry.terminator
+    else {
+        panic!("branch fixture")
+    };
+    let left = ir.edge(then_edges[0]).unwrap().to;
+    let right = ir.edge(*other).unwrap().to;
+    let tail = ir
+        .blocks
+        .iter()
+        .find(|b| b.source.is_some_and(|s| s.pc == 33))
+        .unwrap()
+        .id;
+    let failed = ir
+        .blocks
+        .iter()
+        .find(|b| b.source.is_some_and(|s| s.pc == 29))
+        .unwrap()
+        .id;
+    let checkpoint = planner.checkpoint();
+    let before = planner.owner.budget.used();
+    assert_eq!(planner.common_join(left, right, None), Ok(Some(tail)));
+    assert!(planner.owner.budget.used() - before > 8);
+    planner.rollback(checkpoint);
+    let before = planner.owner.budget.used();
+    assert_eq!(planner.common_join(left, right, None), Ok(Some(tail)));
+    assert_eq!(
+        planner.owner.budget.used() - before,
+        8,
+        "the source fact requires no second graph walk"
+    );
+    let before = planner.owner.budget.used();
+    assert_eq!(planner.common_join(failed, tail, None), Ok(None));
+    assert_eq!(
+        planner.owner.budget.used() - before,
+        8,
+        "an empty candidate set performs no distance scan"
+    );
+    planner.rollback(checkpoint);
+    assert_eq!(planner.join_cache.len(), 2);
+    assert_eq!(planner.common_join(failed, tail, None), Ok(None));
+}

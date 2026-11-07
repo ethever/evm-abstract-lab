@@ -1,7 +1,7 @@
 //! Fixed real runtimes exercise planning size and independent execution paths.
 use evm_decompile::{
     Artifact, Cancellation, Completion, Config, ExecutionLimits, ExecutionOutcome, ExitKind, Fork,
-    Input, MemoryHost, StageKind, StructuredKind, StructuredNode, TextExportStatus, U256,
+    Input, Limits, MemoryHost, StageKind, StructuredKind, StructuredNode, TextExportStatus, U256,
     ValidationStatus, decompile, execute_bytecode, execute_ir, execute_structured, export_text,
 };
 use std::sync::OnceLock;
@@ -23,7 +23,19 @@ fn fixture(hex: &str, metadata: &str) -> Fixture {
         metadata["code_hash"].as_str().unwrap()
     );
     let input = Input::new(bytes, Fork::Osaka);
-    let artifact = decompile(&input, &Config::default());
+    // Match the finite whole-Router acceptance envelope. In addition to final
+    // size, this catches repeated planning after local rollback; a regression
+    // must stop with evidence rather than consume the default u64::MAX budget.
+    // Release CLI/browser acceptance also checks the ordinary default policy.
+    let config = Config {
+        limits: Limits {
+            max_work: 200_000_000_000,
+            max_history_entities: 40_000_000,
+            ..Limits::default()
+        },
+        ..Config::default()
+    };
+    let artifact = decompile(&input, &config);
     assert_eq!(
         artifact.completion,
         Completion::Complete,

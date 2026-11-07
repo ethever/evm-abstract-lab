@@ -1,6 +1,6 @@
 //! Build shared, source-scoped region plans before allocating syntax occurrences.
-use super::super::facts::{Facts, Loop, distances, reaches_cycle_without_natural_header};
-use super::{MAX_SOURCE_REFERENCES, Plan, PlanId, PlanNode, Quote, Region, quote_node};
+use super::super::facts::{Facts, Loop};
+use super::{MAX_SOURCE_REFERENCES, Plan, PlanError, PlanId, PlanNode, Quote, Region, quote_node};
 use crate::{
     Completion, DiagnosticCode, DispatchCase, DispatchTransition, EntityId, IndirectArm, Ir,
     Progress, Strategy, StructuredKind, Terminator, artifact::Builder, budget::count,
@@ -20,6 +20,21 @@ struct RegionKey {
     entry: EntityId,
     continuation: Option<EntityId>,
     loop_header: Option<EntityId>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct JoinKey {
+    left: EntityId,
+    right: EntityId,
+    loop_header: Option<EntityId>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CycleKey {
+    entry: EntityId,
+    loop_header: Option<EntityId>,
+}
+enum Admission {
+    Keep(PlanId),
+    Compact(BTreeSet<EntityId>),
 }
 #[derive(Clone, Copy)]
 struct Checkpoint {
@@ -43,6 +58,14 @@ pub(super) struct Planner<'a, P: FnMut(Progress)> {
     arena_slots: usize,
     slot_limit: usize,
     capacity_refused: bool,
+    // These source-only facts and the pressure decision survive arena rollback.
+    // They contain no PlanId that a truncated arena could invalidate.
+    join_cache: BTreeMap<JoinKey, Option<EntityId>>,
+    cycle_cache: BTreeMap<CycleKey, bool>,
+    memo_limit: usize,
+    compact_pressure: bool,
+    natural_attempts: usize,
+    natural_limit: usize,
 }
 pub(in crate::structure) fn build(
     ir: &Ir,
@@ -57,21 +80,7 @@ fn build_with_slot_limit(
     owner: &mut Builder<impl FnMut(Progress)>,
     slot_limit: usize,
 ) -> Option<Plan> {
-    let mut p = Planner {
-        owner,
-        ir,
-        facts,
-        loops: &facts.loops,
-        postdom: &facts.postdom,
-        nodes: Vec::new(),
-        quotes: Vec::new(),
-        regions: Vec::new(),
-        cache: BTreeMap::new(),
-        cache_log: Vec::new(),
-        arena_slots: 0,
-        slot_limit,
-        capacity_refused: false,
-    };
+    let mut p = Planner::new(ir, facts, owner, slot_limit);
     let root = if let Some(entry) = ir.entry {
         match p.build(entry, None, None, 0, &BTreeSet::new()) {
             Some(root) => root,
@@ -91,7 +100,36 @@ fn build_with_slot_limit(
         regions: p.regions,
     })
 }
-impl<P: FnMut(Progress)> Planner<'_, P> {
+impl<'a, P: FnMut(Progress)> Planner<'a, P> {
+    fn new(ir: &'a Ir, facts: &'a Facts, owner: &'a mut Builder<P>, slot_limit: usize) -> Self {
+        let natural_limit = ir
+            .blocks
+            .len()
+            .saturating_add(ir.edges.len())
+            .saturating_mul(PLAN_ARENA_RATIO)
+            .max(NATURAL_OCCURRENCE_FLOOR);
+        Self {
+            owner,
+            ir,
+            facts,
+            loops: &facts.loops,
+            postdom: &facts.postdom,
+            nodes: Vec::new(),
+            quotes: Vec::new(),
+            regions: Vec::new(),
+            cache: BTreeMap::new(),
+            cache_log: Vec::new(),
+            arena_slots: 0,
+            slot_limit,
+            capacity_refused: false,
+            join_cache: BTreeMap::new(),
+            cycle_cache: BTreeMap::new(),
+            memo_limit: natural_limit.saturating_mul(2).min(MAX_PLAN_SLOTS / 8),
+            compact_pressure: false,
+            natural_attempts: 0,
+            natural_limit,
+        }
+    }
     fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             nodes: self.nodes.len(),
@@ -112,6 +150,7 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
     fn fits(&mut self, slots: usize) -> bool {
         if slots > self.slot_limit.saturating_sub(self.arena_slots) {
             self.capacity_refused = true;
+            self.compact_pressure = true;
             false
         } else {
             true
@@ -120,6 +159,7 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
     fn node(&mut self, kind: StructuredKind<PlanId>, mut sources: Vec<EntityId>) -> Option<PlanId> {
         if self.nodes.len() >= crate::MAX_STRUCTURED_WIRE_NODES {
             self.capacity_refused = true;
+            self.compact_pressure = true;
             return None;
         }
         let child_slots = match &kind {
@@ -223,13 +263,11 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
             if Some(id) == stop || !found.insert(id) {
                 continue;
             }
-            let block = self.block(id)?;
+            let index = *self.facts.blocks.get(&id)?;
             todo.extend(
-                block
-                    .terminator
-                    .edges()
-                    .into_iter()
-                    .filter_map(|edge| self.edge(edge).map(|e| e.to)),
+                self.facts.successors[index]
+                    .iter()
+                    .map(|to| self.ir.blocks[*to].id),
             );
         }
         Some(found)
@@ -240,16 +278,16 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
         stop: Option<EntityId>,
         lp: Option<&Loop>,
         body: PlanId,
-    ) -> Option<PlanId> {
+    ) -> Option<Admission> {
         let quote = self.quotes[body.0];
         let hard = quote.nodes > crate::MAX_STRUCTURED_WIRE_NODES
             || quote.depth > crate::MAX_STRUCTURED_WIRE_DEPTH
             || quote.references > MAX_SOURCE_REFERENCES;
         if !hard && quote.nodes < NATURAL_OCCURRENCE_FLOOR {
-            return Some(body);
+            return Some(Admission::Keep(body));
         }
         if matches!(self.nodes[body.0].kind, StructuredKind::Dispatcher { .. }) {
-            return Some(body);
+            return Some(Admission::Keep(body));
         }
         let mut region = self.reachable(start, stop)?;
         if let Some(lp) = lp {
@@ -267,14 +305,15 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
         let compact = region.len().saturating_add(edges).saturating_add(1);
         if hard || quote.nodes > compact.saturating_mul(REGION_EXPANSION_RATIO) {
             if self.owner.artifact.config.strategy == Strategy::Dispatcher {
-                return self.dispatch(start, stop, lp);
+                self.compact_pressure = true;
+                return Some(Admission::Compact(region));
             }
             if hard {
                 self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"structured occurrence/depth admission requires a dispatcher; selected strategy retains prior CFG");
                 return None;
             }
         }
-        Some(body)
+        Some(Admission::Keep(body))
     }
     fn build(
         &mut self,
@@ -292,20 +331,23 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
             continuation: stop,
             loop_header: lp.map(|l| l.header),
         };
-        // Only well-founded CFG fragments are path-independent here. Sharing
-        // their plan does not suppress execution: every use is materialized as
-        // its own source occurrence unless an explicit continuation factors it.
-        if self.facts.finite.contains(&start)
-            && let Some(id) = self.cache.get(&key)
-        {
+        // Ordinary plans are cached only for finite path-independent regions;
+        // a complete source dispatcher is also path-independent for open/cyclic
+        // regions. No cached PlanId survives the checkpoint that owns it.
+        if let Some(id) = self.cache.get(&key) {
             return Some(*id);
         }
         let checkpoint = self.checkpoint();
         let proposed = self
             .build_uncached(start, stop, lp, depth, path)
             .and_then(|body| self.admit(start, stop, lp, body));
-        let mut body = match proposed {
-            Some(body) => body,
+        let body = match proposed {
+            Some(Admission::Keep(body)) => body,
+            Some(Admission::Compact(region)) => {
+                self.rollback(checkpoint);
+                self.capacity_refused = false;
+                self.dispatch_region(start, region)?
+            }
             None if self.capacity_refused && !self.owner.stopped => {
                 self.rollback(checkpoint);
                 self.capacity_refused = false;
@@ -317,25 +359,15 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
             }
             None => return None,
         };
-        // A source dispatcher has no plan children. Its replaced candidates
-        // cannot be referenced by earlier arena nodes (all references point
-        // backwards), so release their ancestry and cache entries immediately.
-        if matches!(self.nodes[body.0].kind, StructuredKind::Dispatcher { .. })
-            && body.0 + 1 == self.nodes.len()
-            && self.nodes.len() > checkpoint.nodes + 1
-        {
-            let node = self.nodes.pop().unwrap();
-            self.quotes.pop();
-            self.rollback(checkpoint);
-            body = self.node(node.kind, node.sources)?;
-        }
         self.regions.push(Region {
             entry: start,
             continuation: stop,
             loop_header: lp.map(|l| l.header),
             body,
         });
-        if self.facts.finite.contains(&start) {
+        if self.facts.finite.contains(&start)
+            || matches!(self.nodes[body.0].kind, StructuredKind::Dispatcher { .. })
+        {
             self.cache.insert(key, body);
             self.cache_log.push(key);
         }
@@ -352,20 +384,20 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
         if Some(start) == stop {
             return self.sequence(Vec::new());
         }
-        let plan_limit = self
-            .ir
-            .blocks
-            .len()
-            .saturating_add(self.ir.edges.len())
-            .saturating_mul(PLAN_ARENA_RATIO)
-            .max(NATURAL_OCCURRENCE_FLOOR);
-        if count(depth) > self.owner.limits().max_structuring_depth
-            || self.nodes.len() >= plan_limit
-        {
+        if self.compact_pressure || self.natural_attempts >= self.natural_limit {
+            if self.owner.artifact.config.strategy == Strategy::Dispatcher {
+                self.compact_pressure = true;
+                return self.dispatch(start, stop, lp);
+            }
+            self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"cumulative natural region attempt admission requires a dispatcher; selected strategy retains prior CFG");
+            return None;
+        }
+        self.natural_attempts += 1;
+        if count(depth) > self.owner.limits().max_structuring_depth {
             if self.owner.artifact.config.strategy == Strategy::Dispatcher {
                 return self.dispatch(start, stop, lp);
             }
-            self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"structuring plan depth/size requires a dispatcher; selected strategy retains prior CFG");
+            self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"structuring depth admission requires a dispatcher; selected strategy retains prior CFG");
             return None;
         }
         if path.contains(&start) {
@@ -402,7 +434,7 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
         visited.insert(start);
         // A residual cycle must be entered as a state machine before emitting
         // its first body; otherwise the first case's effects would execute twice.
-        if reaches_cycle_without_natural_header(self.ir, start, self.loops, lp) {
+        if self.residual_cycle(start, lp).ok()? {
             return self.dispatch(start, stop, lp);
         }
         let body = self.node(StructuredKind::Block { block: start }, vec![start])?;
@@ -432,9 +464,12 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
             } => {
                 let simple = then_edges.len() == 1 && !unresolved && invalid_targets.is_empty();
                 let join = if simple {
-                    else_edge.and_then(|e| {
-                        self.common_join(self.edge(then_edges[0])?.to, self.edge(e)?.to, lp)
-                    })
+                    if let Some(other) = else_edge {
+                        self.common_join(self.edge(then_edges[0])?.to, self.edge(other)?.to, lp)
+                            .ok()?
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -666,6 +701,9 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
             region.retain(|id| lp.nodes.contains(id) && *id != lp.header);
             region.insert(start);
         }
+        self.dispatch_region(start, region)
+    }
+    fn dispatch_region(&mut self, start: EntityId, region: BTreeSet<EntityId>) -> Option<PlanId> {
         let transitions = region
             .iter()
             .filter_map(|id| self.block(*id))
@@ -704,43 +742,98 @@ impl<P: FnMut(Progress)> Planner<'_, P> {
             region.into_iter().collect(),
         )
     }
-    fn common_join(&self, a: EntityId, b: EntityId, lp: Option<&Loop>) -> Option<EntityId> {
-        let da = distances(self.ir, a);
-        let db = distances(self.ir, b);
-        let select = |common: BTreeSet<EntityId>| {
-            common
-                .into_iter()
-                .filter(|id| id.0 != 0 && lp.is_none_or(|lp| lp.nodes.contains(id)))
-                .filter_map(|id| Some(((*da.get(&id)?).max(*db.get(&id)?), id)))
-                .min()
-                .map(|(_, id)| id)
+    fn cache_room(&mut self) -> bool {
+        if self.join_cache.len().saturating_add(self.cycle_cache.len()) < self.memo_limit {
+            true
+        } else {
+            self.compact_pressure = true;
+            false
+        }
+    }
+    fn residual_cycle(&mut self, start: EntityId, lp: Option<&Loop>) -> Result<bool, PlanError> {
+        if !self.owner.pay(8) {
+            return Err(PlanError::Limit);
+        }
+        let key = CycleKey {
+            entry: start,
+            loop_header: lp.map(|l| l.header),
         };
-        let strict = self.postdom[&a]
+        if let Some(answer) = self.cycle_cache.get(&key) {
+            return Ok(*answer);
+        }
+        let answer = self
+            .facts
+            .indexed_residual_cycle(self.ir, start, key.loop_header, &mut |n| self.owner.pay(n))
+            .ok_or(PlanError::Limit)?;
+        if self.cache_room() {
+            self.cycle_cache.insert(key, answer);
+        }
+        Ok(answer)
+    }
+    fn common_join(
+        &mut self,
+        a: EntityId,
+        b: EntityId,
+        lp: Option<&Loop>,
+    ) -> Result<Option<EntityId>, PlanError> {
+        if !self.owner.pay(8) {
+            return Err(PlanError::Limit);
+        }
+        let key = JoinKey {
+            left: a,
+            right: b,
+            loop_header: lp.map(|l| l.header),
+        };
+        if let Some(answer) = self.join_cache.get(&key) {
+            return Ok(*answer);
+        }
+        let allowed = |id: &&EntityId| id.0 != 0 && lp.is_none_or(|l| l.nodes.contains(id));
+        let strict: BTreeSet<_> = self.postdom[&a]
             .intersection(&self.postdom[&b])
+            .filter(allowed)
             .copied()
             .collect();
-        if let Some(join) = select(strict) {
-            return Some(join);
-        }
-        if !self.facts.finite.contains(&a) || !self.facts.finite.contains(&b) {
-            return None;
-        }
-        let common = match (
-            self.facts.failed.contains(&a),
-            self.facts.failed.contains(&b),
-        ) {
-            (true, true) => return None,
-            (true, false) => self.facts.normal_postdom.get(&b)?.clone(),
-            (false, true) => self.facts.normal_postdom.get(&a)?.clone(),
-            (false, false) => self
-                .facts
-                .normal_postdom
-                .get(&a)?
-                .intersection(self.facts.normal_postdom.get(&b)?)
+        let normal: BTreeSet<_> = if self.facts.finite.contains(&a)
+            && self.facts.finite.contains(&b)
+            && !self.facts.failed.contains(&a)
+            && !self.facts.failed.contains(&b)
+        {
+            self.facts.normal_postdom[&a]
+                .intersection(&self.facts.normal_postdom[&b])
+                .filter(allowed)
                 .copied()
-                .collect(),
+                .collect()
+        } else {
+            BTreeSet::new()
         };
-        select(common)
+        // Most early-terminal pairs have no candidate at all. In that case no
+        // distance arrays or graph walks are necessary; cache the negative fact.
+        let answer = if strict.is_empty() && normal.is_empty() {
+            None
+        } else {
+            let da = self
+                .facts
+                .indexed_distances(a, &mut |n| self.owner.pay(n))
+                .ok_or(PlanError::Limit)?;
+            let db = self
+                .facts
+                .indexed_distances(b, &mut |n| self.owner.pay(n))
+                .ok_or(PlanError::Limit)?;
+            let select = |set: BTreeSet<EntityId>| {
+                set.into_iter()
+                    .filter_map(|id| {
+                        let n = self.facts.blocks[&id];
+                        Some((da[n]?.max(db[n]?), id))
+                    })
+                    .min()
+                    .map(|(_, id)| id)
+            };
+            select(strict).or_else(|| select(normal))
+        };
+        if self.cache_room() {
+            self.join_cache.insert(key, answer);
+        }
+        Ok(answer)
     }
 }
 
