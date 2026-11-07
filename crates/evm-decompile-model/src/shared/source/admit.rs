@@ -55,7 +55,11 @@ impl SharedSourceIndex<'_> {
                 .saturating_add(region.nodes.len())
                 .saturating_add(region.interface.record_count());
             if domain_units > crate::MAX_LIFTED_RECORDS {
-                return Err(Error::Limit);
+                return Err(Error::Capacity {
+                    resource: crate::SharedCapacity::DefinitionDomains,
+                    required: domain_units,
+                    limit: crate::MAX_LIFTED_RECORDS,
+                });
             }
             definitions.insert(p.id, (p, region));
         }

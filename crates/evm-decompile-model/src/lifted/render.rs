@@ -125,7 +125,9 @@ impl<'a> LiftedRenderIndex<'a> {
             });
         let (shared_source, shared_error) = match shared {
             Some(Ok(index)) => (Some(index), None),
-            Some(Err(crate::SharedProcedureError::Limit)) => (None, Some(LiftedRenderError::Limit)),
+            Some(Err(
+                crate::SharedProcedureError::Limit | crate::SharedProcedureError::Capacity { .. },
+            )) => (None, Some(LiftedRenderError::Limit)),
             Some(Err(_)) => (
                 None,
                 Some(LiftedRenderError::InvalidSharedSource(EntityId(0))),

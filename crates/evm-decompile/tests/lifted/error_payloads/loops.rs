@@ -375,13 +375,22 @@ fn dynamic_relation_limits_and_mid_lift_cancellation_publish_no_tentative_proof(
     });
     assert_eq!(before.current().unwrap().kind, StageKind::Structured);
     let mut lift_progress = Vec::new();
+    let mut entered_lift = false;
+    let mut prepared_provenance = false;
+    let mut base_publication_work = None;
     let complete = decompile_with_progress(
         &input,
         &Config::default(),
         &Cancellation::new(),
         |progress| {
             if progress.phase == Phase::Lift {
+                if entered_lift && prepared_provenance && base_publication_work.is_none() {
+                    base_publication_work = Some(progress.work);
+                }
+                entered_lift = true;
                 lift_progress.push(progress.work);
+            } else if entered_lift && progress.phase == Phase::Provenance {
+                prepared_provenance = true;
             }
         },
     );
@@ -404,7 +413,10 @@ fn dynamic_relation_limits_and_mid_lift_cancellation_publish_no_tentative_proof(
     assert_eq!(result.stages, before.stages);
     assert_eq!(result.events, before.events);
     assert_eq!(result.mappings, before.mappings);
-    for max_work in [before.statistics.work + 1, complete.statistics.work - 1] {
+    let base_work = base_publication_work
+        .expect("mandatory Lifted publication is prepared before optional sharing");
+    assert!(base_work < complete.statistics.work);
+    for max_work in [before.statistics.work + 1, base_work - 1] {
         let mut config = Config::default();
         config.limits.max_work = max_work;
         let limited = decompile(&input, &config);
@@ -414,8 +426,34 @@ fn dynamic_relation_limits_and_mid_lift_cancellation_publish_no_tentative_proof(
         assert_eq!(limited.events, before.events);
         assert_eq!(limited.mappings, before.mappings);
     }
+    // A budget that pays the complete base but no optional discovery work
+    // publishes certified high semantics, without tentative sharing metadata.
     let mut config = Config::default();
-    config.limits.max_history_entities = complete.statistics.history_entities - 1;
+    config.limits.max_work = base_work;
+    let base = decompile(&input, &config);
+    assert_eq!(
+        base.completion,
+        Completion::Complete,
+        "{:?}",
+        base.diagnostics
+    );
+    assert_eq!(base.current().unwrap().kind, StageKind::Lifted);
+    assert_message(&base, DS_MATH);
+    let mut expected = complete.current().unwrap().ir.lifted.clone().unwrap();
+    expected.procedures.clear();
+    expected.invocations.clear();
+    assert_eq!(
+        base.current().unwrap().ir.lifted.as_ref().unwrap(),
+        &expected
+    );
+    assert!(base.statistics.work <= base_work);
+    assert!(
+        base.diagnostics
+            .iter()
+            .any(|d| d.code == evm_decompile::DiagnosticCode::OptimizationRefused)
+    );
+    let mut config = Config::default();
+    config.limits.max_history_entities = base.statistics.history_entities - 1;
     let limited = decompile(&input, &config);
     assert_eq!(limited.completion, Completion::Limited);
     assert_eq!(limited.stages, before.stages);

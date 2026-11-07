@@ -1511,7 +1511,7 @@ fn cancelled_provenance_does_not_publish_half_an_event() {
     assert!(a.stages.is_empty() && a.events.is_empty() && a.mappings.origins.is_empty());
 }
 #[test]
-fn nested_structured_wire_roundtrip_and_depth_refusal_are_explicit() {
+fn nested_structured_wire_roundtrip_and_depth_fallback_respect_selected_policy() {
     let mut a = Asm::default();
     for (i, label) in ["one", "two", "three", "four", "five", "six"]
         .iter()
@@ -1534,8 +1534,44 @@ fn nested_structured_wire_roundtrip_and_depth_refusal_are_explicit() {
     );
     let mut config = Config::default();
     config.limits.max_structuring_depth = 0;
+    for value in [0, 1] {
+        let artifact = check(&input, &config, MemoryHost::new(&input, calldata(value)));
+        assert_eq!(artifact.config, config);
+        let mut pending = vec![
+            &artifact
+                .current()
+                .unwrap()
+                .ir
+                .structured
+                .as_ref()
+                .unwrap()
+                .root,
+        ];
+        let mut dispatch = false;
+        while let Some(node) = pending.pop() {
+            match &node.kind {
+                StructuredKind::Dispatcher { .. } => dispatch = true,
+                StructuredKind::Sequence(v) => pending.extend(v),
+                StructuredKind::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => pending.extend([&**then_branch, &**else_branch]),
+                _ => {}
+            }
+        }
+        assert!(
+            dispatch,
+            "zero natural-region recursion uses explicit source cases"
+        );
+        let wire = serde_json::to_vec(&artifact).unwrap();
+        let restored: Artifact = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(restored, artifact);
+    }
+    config.strategy = Strategy::CodeDuplication;
     let artifact = decompile(&input, &config);
     assert_eq!(artifact.completion, Completion::Limited);
+    assert_eq!(artifact.config, config);
     assert!(artifact.current().unwrap().ir.structured.is_none());
     let wire = serde_json::to_vec(&artifact).unwrap();
     let _: Artifact = serde_json::from_slice(&wire).unwrap();

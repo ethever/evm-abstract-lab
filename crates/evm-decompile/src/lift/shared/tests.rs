@@ -324,3 +324,146 @@ fn wide_parallel_rows_refuse_before_expanding_every_rhs() {
         "a refused row must not expand all 1000 large RHS expressions: {work}"
     );
 }
+
+#[test]
+fn unshared_base_validation_never_constructs_a_shared_flow_index() {
+    let a = witness();
+    let ir = &a.current().unwrap().ir;
+    let mut base = ir.lifted.clone().unwrap();
+    base.procedures.clear();
+    base.invocations.clear();
+    let mut calls = 0;
+    assert_eq!(
+        base.validate_shared_sources(ir, |_| {
+            calls += 1;
+            false
+        }),
+        Ok(())
+    );
+    assert_eq!(calls, 0);
+}
+
+#[test]
+fn discovery_distinguishes_invalid_base_witness_from_optional_capacity() {
+    let a = witness();
+    let ir = &a.current().unwrap().ir;
+    let mut base = ir.lifted.clone().unwrap();
+    base.procedures.clear();
+    base.invocations.clear();
+    base.blocks.clear();
+    let mut next = u64::MAX / 2;
+    let result = super::discover(ir, &base, &mut next, usize::MAX, &mut |_| true);
+    assert!(
+        matches!(result, Err(super::DiscoveryError::Invalid(_))),
+        "{result:?}"
+    );
+}
+
+fn structured_owner(
+    input: &Input,
+    cancel: &Cancellation,
+) -> crate::artifact::Builder<impl FnMut(crate::Progress) + use<>> {
+    fn ignore(_: crate::Progress) {}
+    let mut owner = crate::artifact::Builder::new(input, &Config::default(), cancel, ignore);
+    assert!(crate::recover::run(&mut owner));
+    crate::transform::simplify(&mut owner);
+    crate::structure::run(&mut owner);
+    assert_eq!(
+        owner.current().kind,
+        StageKind::Structured,
+        "{:?}",
+        owner.artifact.diagnostics
+    );
+    owner
+}
+
+#[test]
+fn optional_sharing_work_refusal_publishes_the_complete_validated_base_only() {
+    let expected = witness();
+    let mut owner = structured_owner(&expected.input, &Cancellation::default());
+    let prior_stages = owner.artifact.stages.len();
+    super::super::run_with_sharing_limits(&mut owner, 0, usize::MAX);
+    let result = owner.finish();
+    assert_eq!(
+        result.completion,
+        crate::Completion::Complete,
+        "{:?}",
+        result.diagnostics
+    );
+    assert_eq!(result.current().unwrap().kind, StageKind::Lifted);
+    assert_eq!(result.stages.len(), prior_stages + 1);
+    assert!(
+        result
+            .stages
+            .iter()
+            .all(|stage| stage.validation.status == crate::ValidationStatus::Passed)
+    );
+    let actual = result.current().unwrap().ir.lifted.as_ref().unwrap();
+    assert!(actual.procedures.is_empty() && actual.invocations.is_empty());
+    let mut base = expected.current().unwrap().ir.lifted.clone().unwrap();
+    base.procedures.clear();
+    base.invocations.clear();
+    assert_eq!(*actual, base);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == crate::DiagnosticCode::OptimizationRefused
+                && d.severity == crate::Severity::Info
+                && d.message.contains("validated base Lifted retained"))
+    );
+}
+
+#[test]
+fn cancellation_and_total_work_refusal_still_stop_before_lift_publication() {
+    let expected = witness();
+    let cancel = Cancellation::new();
+    let mut cancelled = structured_owner(&expected.input, &cancel);
+    cancel.cancel();
+    super::super::run_with_sharing_limits(&mut cancelled, 0, usize::MAX);
+    assert_eq!(cancelled.artifact.completion, crate::Completion::Cancelled);
+    assert_eq!(cancelled.current().kind, StageKind::Structured);
+    let mut limited = structured_owner(&expected.input, &Cancellation::default());
+    limited.budget.limit_remaining(0).unwrap();
+    super::super::run_with_sharing_limits(&mut limited, 0, usize::MAX);
+    assert_eq!(limited.artifact.completion, crate::Completion::Limited);
+    assert_eq!(limited.current().kind, StageKind::Structured);
+    assert!(
+        limited
+            .artifact
+            .diagnostics
+            .iter()
+            .all(|d| d.code != crate::DiagnosticCode::OptimizationRefused)
+    );
+}
+
+#[test]
+fn optional_flow_capacity_refusal_keeps_the_complete_certified_base() {
+    let expected = witness();
+    let mut owner = structured_owner(&expected.input, &Cancellation::default());
+    super::super::run_with_sharing_limits(&mut owner, usize::MAX, 0);
+    let result = owner.finish();
+    assert_eq!(
+        result.completion,
+        crate::Completion::Complete,
+        "{:?}",
+        result.diagnostics
+    );
+    let stage = result.current().unwrap();
+    assert_eq!(stage.kind, StageKind::Lifted);
+    assert_eq!(stage.validation.status, crate::ValidationStatus::Passed);
+    let actual = stage.ir.lifted.as_ref().unwrap();
+    assert!(actual.procedures.is_empty() && actual.invocations.is_empty());
+    let mut base = expected.current().unwrap().ir.lifted.clone().unwrap();
+    base.procedures.clear();
+    base.invocations.clear();
+    assert_eq!(*actual, base);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == crate::DiagnosticCode::OptimizationRefused
+                && d.message.contains("FlowEventSlots")
+                && d.message.contains("limit 0"))
+    );
+}

@@ -9,6 +9,10 @@ use crate::{
 };
 use evm_decompile_model::{Record, diff_ir, records};
 use evm_resource::WorkBudget;
+mod optional;
+#[cfg(test)]
+mod tests;
+pub(crate) use optional::OptionalStop;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct Builder<P: FnMut(Progress)> {
@@ -21,7 +25,50 @@ pub(crate) struct Builder<P: FnMut(Progress)> {
     next_entity: u64,
     published_entities: BTreeMap<EntityId, StageId>,
     pub stopped: bool,
+    optional: Option<optional::Allowance>,
 }
+/// Fully paid and verified publication. The owned IR and provenance cannot be
+/// replaced after quotation, and adoption consumes this transaction once.
+pub(crate) struct PreparedPublication {
+    source: Option<StageId>,
+    source_history: u64,
+    source_stages: usize,
+    units: usize,
+    kind: StageKind,
+    stage: Stage,
+    event: TransformEvent,
+    origins: Vec<Origin>,
+    published: Vec<EntityId>,
+    history_entities: u64,
+    prior_phase: Phase,
+}
+impl PreparedPublication {
+    pub fn ir(&self) -> &Ir {
+        &self.stage.ir
+    }
+    pub fn passed(&self) -> bool {
+        self.stage.validation.status == ValidationStatus::Passed
+    }
+    pub fn candidate_clone_work(&self) -> usize {
+        self.origins
+            .iter()
+            .fold(self.units.saturating_mul(4), |work, origin| {
+                work.saturating_add(origin.parents.len()).saturating_add(1)
+            })
+    }
+    pub fn parents(&self) -> BTreeMap<EntityId, Vec<EntityId>> {
+        self.origins
+            .iter()
+            .map(|origin| {
+                (
+                    origin.entity.entity,
+                    origin.parents.iter().map(|parent| parent.entity).collect(),
+                )
+            })
+            .collect()
+    }
+}
+
 impl<P: FnMut(Progress)> Builder<P> {
     pub fn new(input: &Input, config: &Config, cancel: &Cancellation, observer: P) -> Self {
         let mut bytes = input.fork.to_string().into_bytes();
@@ -56,6 +103,7 @@ impl<P: FnMut(Progress)> Builder<P> {
             next_entity: 1,
             published_entities: BTreeMap::new(),
             stopped: false,
+            optional: None,
         };
         if let Some(error) = refusal {
             builder.stop(
@@ -110,6 +158,11 @@ impl<P: FnMut(Progress)> Builder<P> {
                 DiagnosticCode::Cancelled,
                 "decompilation cancelled",
             );
+            return false;
+        }
+        if let Some(local) = &mut self.optional
+            && !local.admits(work)
+        {
             return false;
         }
         if !self.budget.charge(work) {
@@ -174,9 +227,25 @@ impl<P: FnMut(Progress)> Builder<P> {
         copies: Vec<(EntityId, EntityId)>,
         redirects: Vec<EdgeRedirect>,
     ) -> bool {
+        let Some(publication) =
+            self.prepare_publication(kind, ir, explanation, parents, copies, redirects)
+        else {
+            return false;
+        };
+        self.adopt_publication(publication)
+    }
+    pub fn prepare_publication(
+        &mut self,
+        kind: StageKind,
+        ir: Ir,
+        explanation: (&str, &str),
+        parents: BTreeMap<EntityId, Vec<EntityId>>,
+        copies: Vec<(EntityId, EntityId)>,
+        redirects: Vec<EdgeRedirect>,
+    ) -> Option<PreparedPublication> {
         let (rule, reason) = explanation;
         if !self.pay(0) {
-            return false;
+            return None;
         }
         let Some(stage_number) = u32::try_from(self.artifact.stages.len()).ok() else {
             self.stop(
@@ -184,7 +253,7 @@ impl<P: FnMut(Progress)> Builder<P> {
                 DiagnosticCode::Limit,
                 "artifact stage identity space exhausted",
             );
-            return false;
+            return None;
         };
         let units = crate::transform::ir_size(&ir);
         let old_units = self
@@ -200,12 +269,23 @@ impl<P: FnMut(Progress)> Builder<P> {
             .checked_add(count(retained))
             .filter(|total| *total <= self.limits().max_history_entities)
         else {
-            self.stop(
-                Completion::Limited,
-                DiagnosticCode::Limit,
-                "immutable stage/provenance history limit exceeded; prior validated stage retained",
-            );
-            return false;
+            if let Some(local) = &mut self.optional {
+                local.refuse(OptionalStop::History {
+                    required: self
+                        .artifact
+                        .statistics
+                        .history_entities
+                        .saturating_add(count(retained)),
+                    limit: self.artifact.config.limits.max_history_entities,
+                });
+            } else {
+                self.stop(
+                    Completion::Limited,
+                    DiagnosticCode::Limit,
+                    "immutable stage/provenance history limit exceeded; prior validated stage retained",
+                );
+            }
+            return None;
         };
         // Index construction/diffs/SSA checks plus edge grouping and bounded
         // ancestry payloads are quoted before preparing any publication.
@@ -216,7 +296,7 @@ impl<P: FnMut(Progress)> Builder<P> {
                 .saturating_mul(8),
         );
         if !self.pay(work) {
-            return false;
+            return None;
         }
         let id = StageId(stage_number);
         let previous = self.artifact.current_stage;
@@ -234,11 +314,11 @@ impl<P: FnMut(Progress)> Builder<P> {
         self.notify_phase(Phase::Validate);
         stage.validation = crate::validate::validate_with_cancel(&stage, &self.cancel);
         if !self.pay(0) {
-            return false;
+            return None;
         }
         self.notify_phase(Phase::Provenance);
         if !self.pay(0) {
-            return false;
+            return None;
         }
         let old = previous.and_then(|p| self.artifact.stage(p));
         if let Some(old) = old {
@@ -303,7 +383,7 @@ impl<P: FnMut(Progress)> Builder<P> {
                     DiagnosticCode::Cancelled,
                     "cancelled while preparing provenance; prior validated stage retained",
                 );
-                return false;
+                return None;
             }
             let mut parent_ids = if old_ids.contains(entity) {
                 vec![*entity]
@@ -323,7 +403,7 @@ impl<P: FnMut(Progress)> Builder<P> {
                 let mut resolved = BTreeSet::new();
                 while let Some(parent) = parent_ids.pop() {
                     if !self.pay(1) {
-                        return false;
+                        return None;
                     }
                     if old_ids.contains(&parent) {
                         resolved.insert(parent);
@@ -414,7 +494,7 @@ impl<P: FnMut(Progress)> Builder<P> {
             });
         }
         if !self.pay(0) {
-            return false;
+            return None;
         }
         let clones: Vec<_> = copies
             .into_iter()
@@ -495,18 +575,67 @@ impl<P: FnMut(Progress)> Builder<P> {
             redirects,
             validation: validation.clone(),
         };
-        let passed = validation.status == ValidationStatus::Passed;
+        self.notify_phase(prior_phase);
+        Some(PreparedPublication {
+            source: previous,
+            source_history: self.artifact.statistics.history_entities,
+            source_stages: self.artifact.stages.len(),
+            units,
+            kind,
+            published: all.keys().copied().collect(),
+            stage,
+            event,
+            origins,
+            history_entities,
+            prior_phase,
+        })
+    }
+
+    pub fn adopt_publication(&mut self, publication: PreparedPublication) -> bool {
+        if !self.pay(0) {
+            return false;
+        }
+        if self.artifact.current_stage != publication.source
+            || self.artifact.statistics.history_entities != publication.source_history
+            || self.artifact.stages.len() != publication.source_stages
+            || self.artifact.events.len() as u64 != publication.event.id
+            || crate::transform::ir_size(&publication.stage.ir) != publication.units
+            || publication.stage.parent != publication.source
+            || publication.stage.kind != publication.kind
+        {
+            self.stop(
+                Completion::Failed,
+                DiagnosticCode::Validation,
+                "prepared publication no longer matches its paid source/IR witness",
+            );
+            return false;
+        }
+        let PreparedPublication {
+            stage,
+            event,
+            origins,
+            published,
+            history_entities,
+            prior_phase,
+            ..
+        } = publication;
+        let id = stage.id;
+        let rule = event.rule.clone();
+        let passed = stage.validation.status == ValidationStatus::Passed;
         // One publication point: cancellation/refusal cannot leave half an event,
         // origin table or stage attached to the artifact.
         self.artifact.statistics.history_entities = history_entities;
         for diagnostic in &mut self.artifact.diagnostics {
-            if diagnostic.stage.is_none() && diagnostic.entity.is_some_and(|e| all.contains_key(&e))
+            if diagnostic.stage.is_none()
+                && diagnostic
+                    .entity
+                    .is_some_and(|e| published.binary_search(&e).is_ok())
             {
                 diagnostic.stage = Some(id);
             }
         }
         self.published_entities
-            .extend(all.keys().map(|entity| (*entity, id)));
+            .extend(published.iter().map(|entity| (*entity, id)));
         self.artifact.mappings.origins.extend(origins);
         self.artifact.events.push(event);
         self.artifact.stages.push(stage);

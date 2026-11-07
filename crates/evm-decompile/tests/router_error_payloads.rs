@@ -466,6 +466,8 @@ fn actual_array_allocation_and_call_output_fault_prefixes_match_normalized_execu
 
 #[test]
 fn router_hybrid_guards_cover_certified_sites_and_keep_normal_code_flat() {
+    use evm_decompile::{StructuredKind, Terminator};
+    use std::collections::{BTreeMap, BTreeSet};
     let (_, artifact) = router();
     let ir = &artifact.current().unwrap().ir;
     let high = ir.lifted.as_ref().unwrap();
@@ -477,17 +479,100 @@ fn router_hybrid_guards_cover_certified_sites_and_keep_normal_code_flat() {
     let index = expanded.render_index(ir);
     index.validate_failure_first_sources().unwrap();
     let boundary = ir.structured.as_ref().unwrap().root.id;
+    let mut source_controls = BTreeMap::new();
+    let mut source_ifs = BTreeSet::new();
+    let mut pending = vec![&ir.structured.as_ref().unwrap().root];
+    while let Some(node) = pending.pop() {
+        match &node.kind {
+            StructuredKind::Sequence(v) => pending.extend(v),
+            StructuredKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                source_controls.insert(node.id, *condition);
+                source_ifs.insert(node.id);
+                pending.extend([&**then_branch, &**else_branch]);
+            }
+            StructuredKind::While {
+                header,
+                condition,
+                body,
+                ..
+            } => {
+                if let Some(condition) = condition {
+                    source_controls.insert(node.id, *condition);
+                }
+                pending.extend([&**header, &**body]);
+            }
+            StructuredKind::Indirect { arms, .. } => pending.extend(arms.iter().map(|a| &a.body)),
+            StructuredKind::Dispatcher { .. } => {
+                panic!("this reducible Router fixture must retain natural regions")
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        source_controls.keys().copied().collect::<BTreeSet<_>>(),
+        expanded.controls.iter().map(|c| c.node).collect(),
+        "every actual source If/conditional While has exactly its semantic binding"
+    );
+    let blocks: BTreeMap<_, _> = ir.blocks.iter().map(|b| (b.id, b)).collect();
+    let edges: BTreeMap<_, _> = ir.edges.iter().map(|e| (e.id, e)).collect();
+    let expressions: BTreeMap<_, _> = expanded.expressions.iter().map(|e| (e.id, e)).collect();
+    let failures: BTreeSet<_> = expanded.failures.iter().map(|f| f.block).collect();
+    let mut expected_sources = BTreeSet::new();
+    let mut actual_sources = BTreeSet::new();
     let mut sites = 0;
     let mut requires = 0;
     let mut explicit = 0;
     for control in &expanded.controls {
+        let block = blocks[&expressions[&control.condition].block];
+        if source_ifs.contains(&control.node)
+            && let Terminator::Branch {
+                condition,
+                then_edges,
+                else_edge: Some(other),
+                unresolved: false,
+                invalid_targets,
+                ..
+            } = &block.terminator
+        {
+            assert_eq!(source_controls[&control.node], *condition);
+            if then_edges.len() == 1
+                && invalid_targets.is_empty()
+                && (failures.contains(&edges[&then_edges[0]].to)
+                    ^ failures.contains(&edges[other].to))
+            {
+                expected_sources.insert((block.id, then_edges[0], *other));
+                assert!(
+                    control.guard.is_some(),
+                    "qualified original branch {:?} at PC {:?} lost its source guard",
+                    block.id,
+                    block.source.map(|s| s.pc)
+                );
+            }
+        }
         match index.if_plan(control.node, boundary) {
             evm_decompile::LiftedIfPlan::Require(_) => requires += 1,
             evm_decompile::LiftedIfPlan::FailureFirst(_) => explicit += 1,
             evm_decompile::LiftedIfPlan::Original => {}
         }
-        if control.guard.is_some() {
+        if let Some(guard) = &control.guard {
             sites += 1;
+            actual_sources.insert((
+                guard.block,
+                if guard.pass_nonzero {
+                    guard.pass_edge
+                } else {
+                    guard.failure_edge
+                },
+                if guard.pass_nonzero {
+                    guard.failure_edge
+                } else {
+                    guard.pass_edge
+                },
+            ));
             assert!(
                 !matches!(
                     index.if_plan(control.node, boundary),
@@ -498,9 +583,25 @@ fn router_hybrid_guards_cover_certified_sites_and_keep_normal_code_flat() {
             );
         }
     }
-    assert!(
-        sites >= 1_000,
-        "whole Router source coverage, not one constructor slice"
+    // Count original branch witnesses, not repeated occurrences of a tail.
+    // Eliminating redundant AST copies must not look like lost source coverage.
+    assert!(!expected_sources.is_empty());
+    assert_eq!(actual_sources, expected_sources);
+    let expected_pcs: BTreeSet<_> = expected_sources
+        .iter()
+        .map(|(block, _, _)| blocks[block].source.unwrap().pc)
+        .collect();
+    let actual_pcs: BTreeSet<_> = expanded
+        .controls
+        .iter()
+        .filter_map(|c| c.guard.as_ref())
+        .map(|g| blocks[&g.block].source.unwrap().pc)
+        .collect();
+    assert_eq!(actual_pcs, expected_pcs);
+    eprintln!(
+        "Router guard coverage: {sites} occurrences, {} original branch witnesses, {} original PCs",
+        expected_sources.len(),
+        expected_pcs.len()
     );
     let text = evm_decompile::render_text(artifact);
     assert!(

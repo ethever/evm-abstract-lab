@@ -166,7 +166,11 @@ fn repeated_wide_while_exits_are_in_the_retained_event_budget() {
     assert!(
         matches!(
             Flow::new_with_slots(&source, &mut |_| true, 200),
-            Err(SharedProcedureError::Limit)
+            Err(SharedProcedureError::Capacity {
+                resource: crate::SharedCapacity::FlowEventSlots,
+                required,
+                limit: 200,
+            }) if required > 200
         ),
         "eight 32-word exit assignments must exceed 200 retained event slots"
     );

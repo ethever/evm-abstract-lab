@@ -86,6 +86,18 @@ impl<'a> SharedSourceIndex<'a> {
         program: Option<&'a LiftedProgram>,
         pay: &mut impl FnMut(usize) -> bool,
     ) -> Result<Self, Error> {
+        Self::for_program_with_event_capacity(ir, program, pay, crate::MAX_LIFTED_RECORDS * 8)
+    }
+    /// Inspect an optional source candidate with a smaller retained-event budget.
+    /// The caller cannot raise the model's hard ceiling. All admitted work still
+    /// uses the supplied cumulative payer; refusal carries the exact capacity.
+    pub fn for_program_with_event_capacity(
+        ir: &'a Ir,
+        program: Option<&'a LiftedProgram>,
+        pay: &mut impl FnMut(usize) -> bool,
+        max_event_slots: usize,
+    ) -> Result<Self, Error> {
+        let max_event_slots = max_event_slots.min(crate::MAX_LIFTED_RECORDS * 8);
         let mut size = ir.values.len().saturating_add(ir.edges.len());
         for b in &ir.blocks {
             size = size.saturating_add(b.parameters.len()).saturating_add(1);
@@ -259,8 +271,14 @@ impl<'a> SharedSourceIndex<'a> {
                     n.saturating_add(index.expression_reads.get(id).map_or(0, BTreeSet::len))
                 });
                 charge(pay, size.saturating_mul(3))?;
-                if slots.saturating_add(size) > crate::MAX_LIFTED_RECORDS * 8 {
-                    return Err(Error::Limit);
+                let required = slots.saturating_add(size);
+                let limit = crate::MAX_LIFTED_RECORDS * 8;
+                if required > limit {
+                    return Err(Error::Capacity {
+                        resource: crate::SharedCapacity::ExpressionReadSlots,
+                        required,
+                        limit,
+                    });
                 }
                 let mut reads = BTreeSet::new();
                 if let crate::LiftedExpressionKind::Value(id) = e.kind {
@@ -300,7 +318,11 @@ impl<'a> SharedSourceIndex<'a> {
         }
 
         if ir.structured.is_some() {
-            index.flow = Some(flow::Flow::new(&index, pay)?);
+            index.flow = Some(if max_event_slots == crate::MAX_LIFTED_RECORDS * 8 {
+                flow::Flow::new(&index, pay)?
+            } else {
+                flow::Flow::new_with_slots(&index, pay, max_event_slots)?
+            });
         }
         Ok(index)
     }
