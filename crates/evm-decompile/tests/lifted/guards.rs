@@ -60,8 +60,8 @@ fn direct_guards_preserve_both_polarities_empty_bytes_and_pass_store() {
             assert_eq!(guards(&artifact), 1, "{}", render_text(&artifact));
             checker::certificate(lifted(&artifact).0);
             let text = render_text(&artifact);
-            assert_eq!(text.matches("if (").count(), 1, "{text}");
-            assert!(!text.contains("require("), "{text}");
+            assert_eq!(text.matches("require(").count(), 1, "{text}");
+            assert!(!text.contains("if ("), "{text}");
             for value in [U256::ZERO, U256::from(1), U256::from(2), U256::MAX] {
                 let (raw, host) = certify(
                     &input,
@@ -82,6 +82,94 @@ fn direct_guards_preserve_both_polarities_empty_bytes_and_pass_store() {
                     assert_eq!(host.storage[&U256::ZERO], U256::from(0x55));
                 }
                 assert_eq!(raw.trace.iter().filter(|op| op.opcode == 0x35).count(), 1);
+            }
+            assert_unchanged_witness(&artifact);
+        }
+    }
+}
+
+#[test]
+fn one_artifact_mixes_requires_with_observing_raw_and_invalid_failed_ifs() {
+    for failure_nonzero in [false, true] {
+        for failure in ["observation", "raw", "invalid"] {
+            let mut asm = Asm::default();
+            asm.op(0x5f)
+                .op(0x35)
+                .target(if failure_nonzero {
+                    "first_failed"
+                } else {
+                    "second"
+                })
+                .op(0x57);
+            if !failure_nonzero {
+                asm.op(0x5f).op(0x5f).op(0xfd).dest("second");
+            }
+            asm.push(32)
+                .op(0x35)
+                .target(if failure_nonzero {
+                    "second_failed"
+                } else {
+                    "done"
+                })
+                .op(0x57);
+            if failure_nonzero {
+                asm.op(0x00).dest("second_failed");
+            }
+            match failure {
+                "observation" => {
+                    asm.op(0x5f).op(0x54).op(0x50).op(0x5f).op(0x5f).op(0xfd);
+                }
+                "raw" => {
+                    asm.push(0x42).op(0x5f).op(0x53).push(1).op(0x5f).op(0xfd);
+                }
+                "invalid" => {
+                    asm.op(0xfe);
+                }
+                _ => unreachable!(),
+            }
+            if failure_nonzero {
+                asm.dest("first_failed").op(0x5f).op(0x5f).op(0xfd);
+            } else {
+                asm.dest("done").op(0x00);
+            }
+            let input = asm.finish();
+            let artifact = checked(&input);
+            let (stage, high) = lifted(&artifact);
+            let index = high.render_index(&stage.ir);
+            let boundary = stage.ir.structured.as_ref().unwrap().root.id;
+            assert_eq!(
+                high.controls
+                    .iter()
+                    .filter(|c| matches!(
+                        index.if_plan(c.node, boundary),
+                        evm_decompile::LiftedIfPlan::Require(_)
+                    ))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                high.controls
+                    .iter()
+                    .filter(|c| matches!(
+                        index.if_plan(c.node, boundary),
+                        evm_decompile::LiftedIfPlan::FailureFirst(_)
+                    ))
+                    .count(),
+                1
+            );
+            let text = render_text(&artifact);
+            assert!(text.contains("require(") && text.contains("if ("), "{text}");
+            assert_eq!(
+                text.contains("evm.invalid();"),
+                failure == "invalid",
+                "{text}"
+            );
+            for first in [U256::ZERO, U256::from(1)] {
+                for second in [U256::ZERO, U256::from(1)] {
+                    let mut host = MemoryHost::new(&input, calldata(&[first, second]));
+                    host.storage.insert(U256::ZERO, U256::from(0xab));
+                    certify(&input, &artifact, host);
+                }
             }
             assert_unchanged_witness(&artifact);
         }
@@ -130,8 +218,8 @@ fn actual_nested_decoder_sequence_flattens_and_preserves_signed_wrapping_checks_
         checker::certificate(lifted(&artifact).0);
         let text = render_text(&artifact);
         assert!(
-            text.contains("if (") && !text.contains("} else {"),
-            "nested failure-only checks must use flat explicit failed arms: {text}"
+            text.contains("require(") && !text.contains("} else {"),
+            "nested certified checks must use flat requires: {text}"
         );
         assert!(
             text.contains("evm.slt("),
@@ -200,7 +288,7 @@ fn pass_side_effect_before_shared_join_revert_remains_visible_and_executes() {
     assert!(guards(&artifact) >= 1, "{}", render_text(&artifact));
     checker::certificate(lifted(&artifact).0);
     let text = render_text(&artifact);
-    let failure_if = text.find("if (").unwrap();
+    let failure_if = text.find("require(").unwrap();
     let store = text.find("evm.sstore(").unwrap();
     let revert = text
         .rfind("evm.revert(")
@@ -242,7 +330,7 @@ fn canonical_empty_error_string_is_distinct_from_empty_revert() {
     assert_eq!(program.payloads[0].bytes.len(), 68);
     let text = render_text(&artifact);
     assert!(
-        text.contains("evm.mstore(") && text.contains("evm.revert("),
+        text.contains(", \"\");") && text.contains("require("),
         "{text}"
     );
     for value in [0_u64, 1] {
@@ -519,11 +607,11 @@ fn observations_before_failed_if_bind_once_and_keep_their_old_storage_value() {
     assert_eq!(guards(&artifact), 1);
     let text = render_text(&artifact);
     assert!(
-        text.find("evm.sload(").unwrap() < text.find("if (").unwrap(),
+        text.find("evm.sload(").unwrap() < text.find("require(").unwrap(),
         "{text}"
     );
     assert!(
-        text.find("if (").unwrap() < text.find("evm.sstore(").unwrap(),
+        text.find("require(").unwrap() < text.find("evm.sstore(").unwrap(),
         "{text}"
     );
     for value in [0_u64, 1, 3] {
@@ -555,8 +643,8 @@ fn nested_guards_inherit_a_shared_outer_join_without_omitting_its_revert() {
     );
     checker::certificate(lifted(&artifact).0);
     let text = render_text(&artifact);
-    assert_eq!(text.matches("if (").count(), 2, "{text}");
-    assert!(!text.contains("require("), "{text}");
+    assert_eq!(text.matches("require(").count(), 2, "{text}");
+    assert!(!text.contains("if ("), "{text}");
     assert!(
         text.find("evm.sstore(").unwrap() < text.rfind("evm.revert(").unwrap(),
         "{text}"
@@ -587,7 +675,10 @@ fn a_closed_empty_failure_can_guard_a_success_route_with_an_explicit_partial_jum
     validated(&artifact);
     assert_eq!(guards(&artifact), 1, "{}", render_text(&artifact));
     let text = render_text(&artifact);
-    assert!(text.contains("if (") && text.contains("partial"), "{text}");
+    assert!(
+        text.contains("require(") && text.contains("partial"),
+        "{text}"
+    );
     let (stage, program) = lifted(&artifact);
     let guard = program
         .controls

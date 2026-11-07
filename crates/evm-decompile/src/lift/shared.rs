@@ -1,6 +1,6 @@
 //! Bounded candidate selection; source admission lives independently in model.
 use crate::{
-    EntityId, Ir, LiftedProgram, SharedBinding, SharedInvocation, SharedProcedure,
+    EntityId, Ir, LiftedIfPlan, LiftedProgram, SharedBinding, SharedInvocation, SharedProcedure,
     SharedProcedureError, SharedRegion, SharedSourceIndex, StructuredKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +54,31 @@ fn fingerprint(
     let _ = ir;
     Some(h.finish())
 }
+fn selected_children(
+    render: &crate::LiftedRenderIndex<'_>,
+    sequence: EntityId,
+    children: &[crate::StructuredNode],
+    range: std::ops::Range<usize>,
+    boundary: EntityId,
+    pay: &mut impl FnMut(usize) -> bool,
+) -> Option<Vec<EntityId>> {
+    let mut selected = Vec::new();
+    let mut pos = range.start;
+    while pos < range.end {
+        if !pay(1) {
+            return None;
+        }
+        if pos > range.start
+            && let Some(end) = render.selected_sequence_end(sequence, pos, boundary)
+        {
+            pos = end;
+            continue;
+        }
+        selected.push(children.get(pos)?.id);
+        pos += 1;
+    }
+    Some(selected)
+}
 fn visible_cost(
     root: EntityId,
     nodes: &BTreeMap<EntityId, &crate::StructuredNode>,
@@ -70,41 +95,18 @@ fn visible_cost(
         let n = nodes[&id];
         match &n.kind {
             StructuredKind::Sequence(children) => {
-                let mut selected = Vec::new();
-                let mut pos = 0;
-                while let Some(n) = children.get(pos) {
-                    if !pay(1) {
-                        return None;
-                    }
-                    if let Some(end) = render.sequence_end(id, pos) {
-                        pos = end;
-                        continue;
-                    }
-                    selected.push(n.id);
-                    pos += 1;
-                }
+                let selected =
+                    selected_children(render, id, children, 0..children.len(), root, pay)?;
                 todo.extend(selected.into_iter().rev());
             }
             StructuredKind::Block { block } => {
                 let h = render.block(*block)?;
-                let mut pos = 0;
-                let compact = render.construction(*block);
-                while let Some(statement) = h.statements.get(pos) {
-                    if let Some(c) = compact
-                        && pos == c.start
-                    {
-                        let text = render.render_revert(*block, &mut *pay).ok()??;
-                        bytes = bytes.saturating_add(text.len() + 5);
-                        primitives += 1;
-                        pos = c.end;
-                        continue;
-                    }
+                for statement in &h.statements {
                     let text = render
                         .render_statement_with_dependencies(statement, false, &mut *pay)
                         .ok()?;
                     bytes = bytes.saturating_add(text.len() + 17);
                     primitives += 1;
-                    pos += 1;
                 }
             }
             StructuredKind::Transfer { edge } => {
@@ -119,19 +121,38 @@ fn visible_cost(
                 then_branch,
                 else_branch,
                 ..
-            } => {
-                if let Some(g) = render.guard(id) {
-                    let text = render.render_guard(render.control(id)?, &mut *pay).ok()??;
+            } => match render.if_plan(id, root) {
+                LiftedIfPlan::Require(plan) => {
+                    let text = render.render_require(plan, &mut *pay).ok()?;
                     bytes = bytes.saturating_add(text.len() + 5);
-                    todo.push(g.pass_node);
-                } else {
+                    todo.push(plan.success_node());
+                }
+                LiftedIfPlan::FailureFirst(plan) => {
                     let text = render
-                        .render_expression(render.control(id)?.condition, &mut *pay)
+                        .render_failure_first_condition(plan, &mut *pay)
+                        .ok()?;
+                    bytes = bytes.saturating_add(text.len() + 12);
+                    todo.push(plan.success_node());
+                    if let Some((sequence, range)) = render.failure_first_suffix_range(plan) {
+                        let StructuredKind::Sequence(children) = &nodes[&sequence].kind else {
+                            return None;
+                        };
+                        todo.extend(
+                            selected_children(render, sequence, children, range, root, pay)?
+                                .into_iter()
+                                .rev(),
+                        );
+                    }
+                    todo.push(plan.failure_node());
+                }
+                LiftedIfPlan::Original => {
+                    let text = render
+                        .render_condition(render.control(id)?.condition, false, &mut *pay)
                         .ok()?;
                     bytes = bytes.saturating_add(text.len() + 28);
                     todo.extend([else_branch.id, then_branch.id]);
                 }
-            }
+            },
             StructuredKind::While { header, body, .. } => {
                 bytes = bytes.saturating_add(64);
                 todo.extend([body.id, header.id]);
@@ -186,7 +207,8 @@ pub(super) fn discover(
     // contribute a visible call. Keep its witness in a larger visible region,
     // but never emit a standalone unused definition for that hidden subtree.
     let mut visible = BTreeSet::new();
-    let mut pending = vec![ir.structured.as_ref()?.root.id];
+    let boundary = ir.structured.as_ref()?.root.id;
+    let mut pending = vec![boundary];
     while let Some(id) = pending.pop() {
         if !pay(1) {
             return None;
@@ -194,30 +216,34 @@ pub(super) fn discover(
         visible.insert(id);
         match &nodes[&id].kind {
             StructuredKind::Sequence(children) => {
-                let mut pos = 0;
-                while let Some(n) = children.get(pos) {
-                    if !pay(1) {
-                        return None;
-                    }
-                    if let Some(end) = render.sequence_end(id, pos) {
-                        pos = end;
-                        continue;
-                    }
-                    pending.push(n.id);
-                    pos += 1;
-                }
+                pending.extend(selected_children(
+                    &render,
+                    id,
+                    children,
+                    0..children.len(),
+                    boundary,
+                    pay,
+                )?);
             }
             StructuredKind::If {
                 then_branch,
                 else_branch,
                 ..
-            } => {
-                if let Some(g) = render.guard(id) {
-                    pending.push(g.pass_node);
-                } else {
-                    pending.extend([then_branch.id, else_branch.id]);
+            } => match render.if_plan(id, boundary) {
+                LiftedIfPlan::Require(plan) => pending.push(plan.success_node()),
+                LiftedIfPlan::FailureFirst(plan) => {
+                    pending.extend([plan.success_node(), plan.failure_node()]);
+                    if let Some((sequence, range)) = render.failure_first_suffix_range(plan) {
+                        let StructuredKind::Sequence(children) = &nodes[&sequence].kind else {
+                            return None;
+                        };
+                        pending.extend(selected_children(
+                            &render, sequence, children, range, boundary, pay,
+                        )?);
+                    }
                 }
-            }
+                LiftedIfPlan::Original => pending.extend([then_branch.id, else_branch.id]),
+            },
             StructuredKind::While { header, body, .. } => pending.extend([header.id, body.id]),
             _ => {}
         }

@@ -4,9 +4,11 @@
 use super::index::StageIndex;
 
 use evm_abstract_protocol::decompile_model::{
-    EntityId, ExitKind, Ir, LiftedRenderError, LiftedRenderIndex, Operation, RenderSummary, Stage,
-    StructuredKind, StructuredNode, Terminator, ValueKind,
+    Block, EntityId, ExitKind, Ir, LiftedIfPlan, LiftedRenderError, LiftedRenderIndex, Operation,
+    RenderSummary, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
+    render_explicit_invalid,
 };
+use std::cell::Cell;
 
 mod dispatch;
 
@@ -25,6 +27,7 @@ struct Scope<'a> {
     work: Option<&'a super::lifted::work::Work>,
     shared: bool,
     boundary: Option<EntityId>,
+    aborted: Option<&'a Cell<bool>>,
     display: HighDisplayOptions,
 }
 impl Scope<'_> {
@@ -114,6 +117,7 @@ fn render_lines(
         .and_then(|_| shared_definitions(&index.shared, display, &work));
     let shared = definitions.is_some();
     let mut output = definitions.unwrap_or_default();
+    let aborted = Cell::new(false);
     if let Some(program) = &stage.ir.structured {
         render(
             &program.root,
@@ -124,6 +128,7 @@ fn render_lines(
                 work: Some(&work),
                 shared,
                 boundary: Some(program.root.id),
+                aborted: Some(&aborted),
                 display,
                 ..Scope::default()
             },
@@ -153,7 +158,12 @@ fn shared_definitions(
             if !work.reserve(row.text.len().saturating_add(1)) {
                 return None;
             }
-            emit(&mut output, row.entity, row.depth + 1, row.text.clone());
+            emit(
+                &mut output,
+                prepared.require_owner(row.entity).unwrap_or(row.entity),
+                row.depth + 1,
+                row.text.clone(),
+            );
         }
         emit(&mut output, procedure.id, 0, "}");
     }
@@ -176,6 +186,9 @@ fn render(
     indent: usize,
     output: &mut Vec<Line>,
 ) -> RenderSummary {
+    if scope.aborted.is_some_and(Cell::get) {
+        return RenderSummary::default();
+    }
     if scope.shared
         && let Some((entity, text)) = index
             .shared
@@ -199,11 +212,13 @@ fn render(
             summary = RenderSummary::default();
             let mut position = 0;
             while let Some(child) = nodes.get(position) {
+                if scope.aborted.is_some_and(Cell::get) {
+                    break;
+                }
                 if let Some(end) = scope.lifted.and_then(|renderer| {
-                    renderer.failure_first_sequence_end(node.id, position, scope.boundary?)
+                    renderer.selected_sequence_end(node.id, position, scope.boundary?)
                 }) {
-                    // This source suffix was moved into its failed arm by the
-                    // shared plan. Preferences never change its ownership.
+                    // One selected plan owns suffix absorption or movement.
                     position = end;
                     continue;
                 }
@@ -235,9 +250,40 @@ fn render(
             then_branch,
             else_branch,
         } => {
+            let selected = scope
+                .lifted
+                .zip(scope.boundary)
+                .map_or(LiftedIfPlan::Original, |(renderer, boundary)| {
+                    renderer.if_plan(node.id, boundary)
+                });
+            if let Some(renderer) = scope.lifted
+                && let LiftedIfPlan::Require(plan) = &selected
+                && let Some(success) = renderer.node(plan.success_node())
+            {
+                let owner = renderer
+                    .control(node.id)
+                    .map_or(node.id, |control| control.id);
+                match renderer.render_require(plan, |_| true) {
+                    Ok(text) => emit(output, owner, indent, text),
+                    Err(error) => {
+                        if let Some(aborted) = scope.aborted {
+                            aborted.set(true);
+                        }
+                        emit(
+                            output,
+                            owner,
+                            indent,
+                            format!("unavailable_require(ast{}: {error});", node.id.0),
+                        );
+                        return RenderSummary::CONTENT;
+                    }
+                }
+                render(success, ir, index, scope, indent, output);
+                return RenderSummary::CONTENT;
+            }
             if let Some(renderer) = scope.lifted
                 && let Some(boundary) = scope.boundary
-                && let Some(plan) = renderer.failure_first(node.id, boundary)
+                && let LiftedIfPlan::FailureFirst(plan) = &selected
                 && let Some(failure) = renderer.node(plan.failure_node())
                 && let Some(success) = renderer.node(plan.success_node())
             {
@@ -246,11 +292,21 @@ fn render(
                     .map_or(node.id, |control| control.id);
                 // The suffix skip and this layout are one admitted decision.
                 // A formatting refusal must keep every planned source row.
-                let condition = renderer
-                    .render_failure_first_condition(plan, |_| true)
-                    .unwrap_or_else(|error| {
-                        format!("unavailable_predicate(ast{}: {error})", node.id.0)
-                    });
+                let condition = match renderer.render_failure_first_condition(plan, |_| true) {
+                    Ok(condition) => condition,
+                    Err(error) => {
+                        if let Some(aborted) = scope.aborted {
+                            aborted.set(true);
+                        }
+                        emit(
+                            output,
+                            owner,
+                            indent,
+                            format!("unavailable_predicate(ast{}: {error});", node.id.0),
+                        );
+                        return RenderSummary::CONTENT;
+                    }
+                };
                 emit(output, owner, indent, format!("if ({condition}) {{"));
                 let suffix = renderer.failure_first_suffix(plan).unwrap_or_default();
                 render(
@@ -269,7 +325,7 @@ fn render(
                 while let Some(child) = suffix.get(position) {
                     if position > 0
                         && let Some((sequence, range)) = &suffix_range
-                        && let Some(end) = renderer.failure_first_sequence_end(
+                        && let Some(end) = renderer.selected_sequence_end(
                             *sequence,
                             range.start + position,
                             boundary,
@@ -299,7 +355,7 @@ fn render(
                 render(success, ir, index, scope, indent, output);
                 return RenderSummary::CONTENT;
             }
-            let (owner, predicate) = predicate(node.id, *condition, ir, index, scope.lifted);
+            let (owner, predicate) = predicate(node.id, *condition, false, ir, index, scope.lifted);
             emit(output, owner, indent, format!("if ({predicate}) {{"));
             render(then_branch, ir, index, scope, indent + 1, output);
             let else_start = output.len();
@@ -336,12 +392,15 @@ fn render(
             render(header, ir, index, scope, indent + 1, output);
             if let Some(condition) = condition {
                 let condition = if scope.lifted.is_some() {
-                    let (_, predicate) = predicate(node.id, *condition, ir, index, scope.lifted);
-                    if *condition_nonzero {
-                        format!("!({predicate})")
-                    } else {
-                        predicate
-                    }
+                    predicate(
+                        node.id,
+                        *condition,
+                        *condition_nonzero,
+                        ir,
+                        index,
+                        scope.lifted,
+                    )
+                    .1
                 } else {
                     format!(
                         "{} {} 0",
@@ -641,17 +700,23 @@ fn transfer(
 fn predicate(
     node: EntityId,
     raw: EntityId,
+    invert: bool,
     ir: &Ir,
     index: &StageIndex,
     lifted: Option<&LiftedRenderIndex<'_>>,
 ) -> (EntityId, String) {
     if lifted.is_none() {
-        return (node, format!("{} != 0", value(raw)));
+        return (
+            node,
+            format!("{} {} 0", value(raw), if invert { "==" } else { "!=" }),
+        );
     }
     match (lifted, index.source_control(ir, node)) {
         (Some(renderer), Some(control)) => (
             control.id,
-            super::lifted::expression(renderer, control.condition),
+            renderer
+                .render_condition(control.condition, invert, |_| true)
+                .unwrap_or_else(|error| format!("unavailable_predicate(ast{}: {error})", node.0)),
         ),
         _ => (node, format!("unavailable_predicate(ast{})", node.0)),
     }
@@ -703,6 +768,9 @@ fn projected_terminator(
     index: &StageIndex,
     lifted: Option<&LiftedRenderIndex<'_>>,
 ) -> String {
+    if let Some(text) = index.block(ir, block).and_then(render_explicit_invalid) {
+        return text.into();
+    }
     let Some(renderer) = lifted else {
         return terminator(term);
     };
@@ -736,7 +804,13 @@ fn projected_terminator(
         } => {
             let condition = semantic
                 .condition
-                .map(|id| super::lifted::expression(renderer, id))
+                .map(|id| {
+                    renderer
+                        .render_condition(id, false, |_| true)
+                        .unwrap_or_else(|error| {
+                            format!("unavailable_predicate(b{}: {error})", block.0)
+                        })
+                })
                 .unwrap_or_else(|| format!("unavailable_predicate(b{})", block.0));
             format!(
                 "branch {condition}: jump {} via [{}]; else {};{}{}",
@@ -841,6 +915,14 @@ fn fault_marker(op: &Operation, reason: &str) -> String {
 }
 
 pub(super) fn operation(op: &Operation, ir: &Ir, index: &StageIndex) -> String {
+    if let Some(text) = index
+        .containing_block(op.id)
+        .and_then(|position| ir.blocks.get(position))
+        .filter(|block| block.operations.last().is_some_and(|last| last.id == op.id))
+        .and_then(render_explicit_invalid)
+    {
+        return text.into();
+    }
     if let Some(reason) = fault_reason(op, ir, index) {
         return format!(
             "{}; raw opcode 0x{:02x}; inputs ({}) outputs ({})",
@@ -884,6 +966,12 @@ pub(super) fn operation(op: &Operation, ir: &Ir, index: &StageIndex) -> String {
         _ => String::new(),
     };
     format!("{assignment};{memory}{effect}")
+}
+
+pub(super) fn block_terminator(block: &Block) -> String {
+    render_explicit_invalid(block)
+        .map(str::to_owned)
+        .unwrap_or_else(|| terminator(&block.terminator))
 }
 
 pub(super) fn terminator(term: &Terminator) -> String {

@@ -3,7 +3,8 @@
 //! and terminal kind; rendered string assertions alone cannot establish these.
 use evm_decompile_model::{
     Block, Edge, EdgeKind, Effects, EntityId, ExitKind, Ir, LiftedBlock, LiftedControl,
-    LiftedExpression, LiftedExpressionKind, LiftedProgram, LiftedRenderIndex, LiftedType,
+    LiftedExpression, LiftedExpressionKind, LiftedFailure, LiftedGuard, LiftedGuardContinuation,
+    LiftedGuardPayload, LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex, LiftedType,
     Operation, SharedInvocation, StructuredKind, StructuredNode, StructuredProgram, Terminator,
     Value, ValueFact, ValueKind,
 };
@@ -210,9 +211,7 @@ impl Walker<'_> {
         while position < range.end {
             if self.projected
                 && position > range.start
-                && let Some(end) = self
-                    .index
-                    .failure_first_sequence_end(owner, position, id(303))
+                && let Some(end) = self.index.selected_sequence_end(owner, position, id(303))
             {
                 assert!(end > position && end <= range.end);
                 position = end;
@@ -255,8 +254,34 @@ impl Walker<'_> {
                 self.events
                     .push(Event::Condition(*condition, self.decision));
                 if self.projected
-                    && let Some(plan) = self.index.failure_first(source.id, id(303)).cloned()
+                    && let LiftedIfPlan::Require(plan) = self.index.if_plan(source.id, id(303))
                 {
+                    let plan = plan.clone();
+                    if self.decision == plan.pass_nonzero() {
+                        return self.walk(self.index.node(plan.success_node()).unwrap());
+                    }
+                    if !self.walk(self.index.node(plan.failure_node()).unwrap()) {
+                        return false;
+                    }
+                    if let LiftedIfSuffix::Absorb {
+                        sequence,
+                        start,
+                        end,
+                    } = self.index.if_plan(source.id, id(303)).suffix()
+                    {
+                        let StructuredKind::Sequence(children) =
+                            &self.index.node(sequence).unwrap().kind
+                        else {
+                            unreachable!()
+                        };
+                        return self.sequence(sequence, children, start..end);
+                    }
+                    return true;
+                }
+                if self.projected
+                    && let LiftedIfPlan::FailureFirst(plan) = self.index.if_plan(source.id, id(303))
+                {
+                    let plan = plan.clone();
                     if self.decision == plan.failure_nonzero() {
                         if !self.walk(self.index.node(plan.failure_node()).unwrap()) {
                             return false;
@@ -312,6 +337,237 @@ fn equivalent(ir: &Ir) {
     }
 }
 
+fn certified_fixture(failure_nonzero: bool, suffix: bool) -> Ir {
+    let mut ir = fixture(failure_nonzero, suffix);
+    let mut revert = operation(1200, 0xfd);
+    revert.inputs = vec![id(122), id(123)];
+    revert.effects.memory_read = true;
+    revert.effects.terminate = true;
+    revert.memory_input = Some(id(124));
+    ir.blocks[2].operations = vec![revert];
+    let high = ir.lifted.as_mut().unwrap();
+    high.expressions.push(LiftedExpression {
+        id: id(3),
+        block: id(120),
+        ty: LiftedType::Word256,
+        kind: LiftedExpressionKind::Word(evm_decompile_model::U256::ZERO),
+    });
+    high.blocks[2].exit_values = vec![id(3), id(3)];
+    high.failures = vec![LiftedFailure {
+        block: id(120),
+        rank: 0,
+        payload: LiftedGuardPayload::EmptyRevert,
+    }];
+    high.controls[0].guard = Some(LiftedGuard {
+        block: id(100),
+        pass_nonzero: !failure_nonzero,
+        pass_edge: id(if failure_nonzero { 201 } else { 200 }),
+        failure_edge: id(if failure_nonzero { 200 } else { 201 }),
+        pass_node: id(if failure_nonzero { 302 } else { 301 }),
+        failure_node: id(if failure_nonzero { 301 } else { 302 }),
+        payload: LiftedGuardPayload::EmptyRevert,
+        continuation: suffix.then_some(LiftedGuardContinuation {
+            sequence: id(303),
+            start: 2,
+            end: 4,
+            pass_falls_through: false,
+        }),
+    });
+    ir
+}
+
+#[test]
+fn selected_requires_execute_original_lazy_failure_and_pass_tuples_in_both_polarities() {
+    for polarity in [false, true] {
+        for suffix in [false, true] {
+            let ir = certified_fixture(polarity, suffix);
+            let index = ir.lifted.as_ref().unwrap().render_index(&ir);
+            assert!(matches!(
+                index.if_plan(id(300), id(303)),
+                LiftedIfPlan::Require(_)
+            ));
+            assert_eq!(
+                index.selected_sequence_end(id(303), 2, id(303)),
+                suffix.then_some(4)
+            );
+            if suffix {
+                assert_eq!(index.if_plan(id(300), id(300)), LiftedIfPlan::Original);
+                assert_eq!(index.selected_sequence_end(id(303), 2, id(300)), None);
+            }
+            equivalent(&ir);
+        }
+    }
+}
+
+#[test]
+fn a_stale_empty_payload_fact_cannot_absorb_failed_observations() {
+    for polarity in [false, true] {
+        let mut ir = certified_fixture(polarity, true);
+        let mut read = operation(1210, 0x54);
+        read.inputs = vec![id(122)];
+        read.outputs = vec![id(125)];
+        read.effects.storage_read = true;
+        ir.blocks[2].operations.insert(0, read);
+        let index = ir.lifted.as_ref().unwrap().render_index(&ir);
+        assert!(matches!(
+            index.if_plan(id(300), id(303)),
+            LiftedIfPlan::FailureFirst(_)
+        ));
+        assert!(matches!(
+            index.if_plan(id(300), id(303)).suffix(),
+            LiftedIfSuffix::Move { .. }
+        ));
+        equivalent(&ir);
+    }
+}
+
+#[test]
+fn require_absorption_cannot_bypass_a_successors_open_escape_before_a_lexical_stop() {
+    let mut ir = certified_fixture(false, true);
+    let mut pending = ir.blocks[1].clone();
+    pending.id = id(130);
+    pending.terminator = Terminator::Pending;
+    ir.blocks.push(pending);
+    let (success, _) = arms(&mut ir);
+    let StructuredKind::Sequence(children) = &mut success.kind else {
+        unreachable!()
+    };
+    children.insert(1, node(341, StructuredKind::PartialExit { block: id(130) }));
+    let index = ir.lifted.as_ref().unwrap().render_index(&ir);
+    index.validate_guard_sources().unwrap();
+    assert_eq!(index.if_plan(id(300), id(303)), LiftedIfPlan::Original);
+    assert_eq!(index.selected_sequence_end(id(303), 2, id(303)), None);
+}
+
+#[test]
+fn require_keeps_a_common_failure_suffix_reached_by_the_successful_arm() {
+    let mut ir = certified_fixture(false, true);
+    ir.blocks[1].terminator = Terminator::Fallthrough { edge: id(202) };
+    ir.blocks[1].operations.pop();
+    let mut edge = ir.edges[0].clone();
+    edge.id = id(202);
+    edge.from = id(110);
+    edge.to = id(120);
+    ir.edges.push(edge);
+    let (success, _) = arms(&mut ir);
+    let StructuredKind::Sequence(children) = &mut success.kind else {
+        unreachable!()
+    };
+    children[2].kind = StructuredKind::Transfer { edge: id(202) };
+    ir.lifted.as_mut().unwrap().controls[0]
+        .guard
+        .as_mut()
+        .unwrap()
+        .continuation
+        .as_mut()
+        .unwrap()
+        .pass_falls_through = true;
+    let index = ir.lifted.as_ref().unwrap().render_index(&ir);
+    assert!(matches!(
+        index.if_plan(id(300), id(303)),
+        LiftedIfPlan::Require(_)
+    ));
+    assert_eq!(
+        index.if_plan(id(300), id(303)).suffix(),
+        LiftedIfSuffix::Keep
+    );
+    assert_eq!(index.selected_sequence_end(id(303), 2, id(303)), None);
+    equivalent(&ir);
+}
+
+#[test]
+fn inherited_failure_suffix_stays_at_its_owner_and_cannot_escape_a_body_boundary() {
+    let mut ir = certified_fixture(false, true);
+    ir.lifted.as_mut().unwrap().controls[0]
+        .guard
+        .as_mut()
+        .unwrap()
+        .continuation = None;
+    let StructuredKind::Sequence(children) = &mut ir.structured.as_mut().unwrap().root.kind else {
+        unreachable!()
+    };
+    let conditional = children.remove(1);
+    children.insert(1, node(350, StructuredKind::Sequence(vec![conditional])));
+    let index = ir.lifted.as_ref().unwrap().render_index(&ir);
+    assert!(matches!(
+        index.if_plan(id(300), id(303)),
+        LiftedIfPlan::Require(_)
+    ));
+    assert_eq!(
+        index.if_plan(id(300), id(303)).suffix(),
+        LiftedIfSuffix::Keep
+    );
+    assert_eq!(index.if_plan(id(300), id(350)), LiftedIfPlan::Original);
+    assert_eq!(index.selected_sequence_end(id(303), 2, id(303)), None);
+    equivalent(&ir);
+}
+
+#[test]
+fn require_absorption_uses_its_own_failure_direction_when_both_arms_terminate() {
+    let mut ir = certified_fixture(false, true);
+    // The true arm has an observable store, then its own REVERT. The false
+    // arm has a certified empty REVERT in the following source suffix.
+    ir.blocks[1].terminator = Terminator::Exit {
+        kind: ExitKind::Revert,
+        values: vec![id(122), id(123)],
+    };
+    ir.blocks[1].operations[1] = operation(1101, 0xfd);
+    let index = ir.lifted.as_ref().unwrap().render_index(&ir);
+    assert!(
+        index
+            .failure_first(id(300), id(303))
+            .unwrap()
+            .failure_nonzero()
+    );
+    assert!(matches!(
+        index.if_plan(id(300), id(303)),
+        LiftedIfPlan::Require(_)
+    ));
+    assert!(matches!(
+        index.if_plan(id(300), id(303)).suffix(),
+        LiftedIfSuffix::Absorb { .. }
+    ));
+    assert_eq!(index.selected_sequence_end(id(303), 2, id(303)), Some(4));
+    equivalent(&ir);
+}
+
+#[test]
+fn malformed_empty_revert_witnesses_never_select_require_or_absorb_the_tail() {
+    for mutation in ["arguments", "terminator", "empty", "effects"] {
+        let mut ir = certified_fixture(false, true);
+        let block = &mut ir.blocks[2];
+        match mutation {
+            "arguments" => block.operations[0].inputs.clear(),
+            "terminator" => {
+                block.terminator = Terminator::Exit {
+                    kind: ExitKind::Revert,
+                    values: vec![id(122), id(999)],
+                }
+            }
+            "empty" => {
+                block.terminator = Terminator::Exit {
+                    kind: ExitKind::Revert,
+                    values: vec![],
+                }
+            }
+            "effects" => block.operations[0].effects.terminate = false,
+            _ => unreachable!(),
+        }
+        let index = ir.lifted.as_ref().unwrap().render_index(&ir);
+        assert!(
+            !matches!(index.if_plan(id(300), id(303)), LiftedIfPlan::Require(_)),
+            "{mutation}"
+        );
+        assert!(
+            !matches!(
+                index.if_plan(id(300), id(303)).suffix(),
+                LiftedIfSuffix::Absorb { .. }
+            ),
+            "{mutation}"
+        );
+    }
+}
+
 #[test]
 fn both_polarities_keep_complete_failed_observations_transfers_and_condition_once() {
     for polarity in [false, true] {
@@ -324,7 +580,7 @@ fn both_polarities_keep_complete_failed_observations_transfers_and_condition_onc
             let condition = index
                 .render_failure_first_condition(plan, |_| true)
                 .unwrap();
-            assert_eq!(condition.starts_with("!("), !polarity);
+            assert!(condition.contains(if polarity { " != 0)" } else { " == 0)" }));
             assert_eq!(condition.matches("v101").count(), 1);
             equivalent(&ir);
             let failure = events(&ir, polarity, true);

@@ -4,7 +4,8 @@
 use super::{details::Details, index::StageIndex, model::EntityKind, structured};
 use evm_abstract_protocol::decompile_model::{
     EntityId, EntityRef, LiftedConstruction, LiftedExpressionKind, LiftedGuardPayload,
-    LiftedProgram, LiftedRenderIndex, LiftedStatement, LiftedTransfer, Stage,
+    LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex, LiftedStatement,
+    LiftedTransfer, Stage,
 };
 
 pub(super) mod shared;
@@ -259,25 +260,45 @@ pub(super) fn details(
     } else {
         let control = index.control(&stage.ir, id)?;
         references.extend([control.node, control.condition]);
-        let failure_first = stage
-            .ir
-            .structured
-            .as_ref()
-            .and_then(|source| renderer.failure_first(control.node, source.root.id));
-        let failure_header = failure_first.and_then(|plan| {
-            renderer
-                .render_failure_first_condition(plan, |_| true)
-                .ok()
-                .map(|condition| format!("if ({condition}) {{"))
-        });
-        if let Some(plan) = failure_first {
-            references.extend([plan.failure_node(), plan.success_node()]);
-            if let Some(suffix) = renderer.failure_first_suffix(plan) {
-                references.extend(suffix.iter().map(|node| node.id));
+        let canonical = index.shared.control_plan(control.id);
+        let selected = if canonical.is_some() {
+            LiftedIfPlan::Original
+        } else {
+            stage
+                .ir
+                .structured
+                .as_ref()
+                .map_or(LiftedIfPlan::Original, |source| {
+                    renderer.if_plan(control.node, source.root.id)
+                })
+        };
+        let selected_header = if let Some(canonical) = canonical {
+            references.extend(canonical.references.iter().copied());
+            canonical.header.clone()
+        } else {
+            match &selected {
+                LiftedIfPlan::Require(plan) => {
+                    references.extend([plan.failure_node(), plan.success_node()]);
+                    renderer.render_require(plan, |_| true).ok()
+                }
+                LiftedIfPlan::FailureFirst(plan) => {
+                    references.extend([plan.failure_node(), plan.success_node()]);
+                    if let Some(suffix) = renderer.failure_first_suffix(plan) {
+                        references.extend(suffix.iter().map(|node| node.id));
+                    }
+                    renderer
+                        .render_failure_first_condition(plan, |_| true)
+                        .ok()
+                        .map(|condition| format!("if ({condition}) {{"))
+                }
+                LiftedIfPlan::Original => None,
             }
-        }
+        };
         if let Some(guard) = &control.guard {
-            let admitted = renderer.guard(control.node).is_some();
+            let admitted = canonical
+                .map_or(matches!(&selected, LiftedIfPlan::Require(_)), |plan| {
+                    plan.require
+                });
             let kind = match guard.payload {
                 LiftedGuardPayload::EmptyRevert => "empty-REVERT",
                 LiftedGuardPayload::ErrorString(payload) => {
@@ -290,7 +311,7 @@ pub(super) fn details(
                 if admitted { "Certified" } else { "Unadmitted" },
                 id.0,
                 control.node.0,
-                failure_header.unwrap_or_else(|| "original source If retained".into())
+                selected_header.unwrap_or_else(|| "original source If retained".into())
             ));
             lines.push(format!(
                 "Predicate: {} · successful source truth: {}",
@@ -351,19 +372,16 @@ pub(super) fn details(
                     continuation.start,
                     continuation.end,
                     continuation.pass_falls_through,
-                    if failure_first
-                        .and_then(|plan| renderer.failure_first_suffix(plan))
-                        .is_some()
-                    {
-                        "moved into explicit failed arm"
-                    } else {
-                        "retained after pass"
+                    match canonical.map_or(selected.suffix(), |plan| plan.suffix) {
+                        LiftedIfSuffix::Absorb { .. } => "absorbed by require",
+                        LiftedIfSuffix::Move { .. } => "moved into explicit failed arm",
+                        LiftedIfSuffix::Keep => "retained after pass",
                     },
                 ));
                 references.push(continuation.sequence);
             }
         } else {
-            lines.push(failure_header.map_or_else(
+            lines.push(selected_header.map_or_else(
                 || {
                     format!(
                         "Control h{} · ast{}: {}",

@@ -128,3 +128,56 @@ fn high_export_retains_an_empty_nested_if_as_else_content() {
     );
     assert!(result.text.ends_with("    }\n}\n"), "{}", result.text);
 }
+
+#[test]
+fn require_formatting_refusal_stops_before_any_absorbed_suffix_can_resume() {
+    let mut artifact = decompile(
+        &Input::new(
+            vec![
+                0x34, 0x60, 7, 0x57, 0x60, 9, 0x56, 0x5b, 0x00, 0x5b, 0x5f, 0x5f, 0xfd,
+            ],
+            Fork::Osaka,
+        ),
+        &Config::default(),
+    );
+    let stage = artifact.stages.last_mut().unwrap();
+    let source = stage.ir.structured.clone();
+    let raw = stage.ir.blocks.clone();
+    let boundary = stage.ir.structured.as_ref().unwrap().root.id;
+    let program = stage.ir.lifted.as_mut().unwrap();
+    let control = program
+        .controls
+        .iter()
+        .find(|c| c.guard.is_some())
+        .unwrap()
+        .clone();
+    // Topology remains admitted, but expression expansion must refuse this
+    // malformed cyclic diagnostic artifact before publishing a require row.
+    program
+        .expressions
+        .iter_mut()
+        .find(|e| e.id == control.condition)
+        .unwrap()
+        .kind = crate::LiftedExpressionKind::Not(control.condition);
+    let index = stage.ir.lifted.as_ref().unwrap().render_index(&stage.ir);
+    let plan = index.if_plan(control.node, boundary);
+    assert!(matches!(plan, crate::LiftedIfPlan::Require(_)));
+    assert!(matches!(
+        plan.suffix(),
+        crate::LiftedIfSuffix::Absorb { .. }
+    ));
+    let result = export_text(&artifact, &Cancellation::default());
+    assert_eq!(result.status, TextExportStatus::Limited);
+    assert!(
+        !result.text.contains("require(") && !result.text.contains("if ("),
+        "{}",
+        result.text
+    );
+    assert!(
+        !result.text.contains("evm.revert(") && !result.text.contains("evm.stop("),
+        "{}",
+        result.text
+    );
+    assert_eq!(artifact.current().unwrap().ir.blocks, raw);
+    assert_eq!(artifact.current().unwrap().ir.structured, source);
+}

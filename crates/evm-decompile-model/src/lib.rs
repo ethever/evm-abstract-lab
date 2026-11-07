@@ -53,6 +53,7 @@ mod model;
 mod render;
 mod shared;
 mod structured;
+mod terminal;
 pub use alloy_primitives::U256;
 pub use artifact::*;
 pub use evm_bytecode::Fork;
@@ -61,6 +62,7 @@ pub use model::*;
 pub use render::RenderSummary;
 pub use shared::*;
 pub use structured::{MAX_STRUCTURED_WIRE_DEPTH, MAX_STRUCTURED_WIRE_NODES, MAX_STRUCTURING_DEPTH};
+pub use terminal::render_explicit_invalid;
 
 mod decimal_id {
     pub fn serialize<S: serde::Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {

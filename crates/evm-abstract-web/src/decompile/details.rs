@@ -59,9 +59,7 @@ pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &
             block.memory_parameter.0,
             block.effect_parameter.0
         ));
-        details
-            .lines
-            .push(structured::terminator(&block.terminator));
+        details.lines.push(structured::block_terminator(block));
         refs.extend(block.parameters.iter().copied());
         refs.extend([block.memory_parameter, block.effect_parameter]);
         refs.extend(block.terminator.edges());

@@ -96,15 +96,11 @@ fn all_option_combinations_keep_exact_semantic_rows_effect_order_and_empty_else_
                 assert_eq!(
                     clean
                         .iter()
-                        .filter(|line| line.text.starts_with("if ("))
+                        .filter(|line| line.text.starts_with("require("))
                         .count(),
                     1
                 );
-                assert!(
-                    clean
-                        .iter()
-                        .any(|line| line.indent == 1 && line.text.contains("evm.revert("))
-                );
+                assert!(!clean.iter().any(|line| line.text.contains("evm.revert(")));
             }
         }
         assert_eq!(rows(&structured::lines(stage)), raw);

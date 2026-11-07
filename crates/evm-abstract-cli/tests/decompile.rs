@@ -239,18 +239,13 @@ fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stag
     let guard = control.guard.as_ref().unwrap();
     assert!(guard.pass_nonzero);
     let index = program.render_index(&current.ir);
-    let plan = index
-        .failure_first(
-            control.node,
-            current.ir.structured.as_ref().unwrap().root.id,
-        )
-        .unwrap();
-    let failed_if = format!(
-        "if ({}) {{",
-        index
-            .render_failure_first_condition(plan, |_| true)
-            .unwrap()
-    );
+    let evm_decompile::LiftedIfPlan::Require(plan) = index.if_plan(
+        control.node,
+        current.ir.structured.as_ref().unwrap().root.id,
+    ) else {
+        panic!("certified empty revert should select require")
+    };
+    let require = index.render_require(plan, |_| true).unwrap();
     let mut witness = current.ir.clone();
     witness.lifted = None;
     assert_eq!(witness, raw.ir);
@@ -271,8 +266,8 @@ fn default_text_and_json_expose_lifted_unsigned_predicate_with_retained_raw_stag
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(" >= "), "{text}");
     assert!(!text.contains("iszero"), "{text}");
-    assert_eq!(text.matches(&failed_if).count(), 1, "{text}");
-    assert!(!text.contains("require("), "{text}");
+    assert_eq!(text.matches(&require).count(), 1, "{text}");
+    assert!(!text.contains("if ("), "{text}");
     assert!(!text.contains("} else {"), "{text}");
 }
 
@@ -287,7 +282,7 @@ fn installed_cli_keeps_a_pass_reachable_join_revert_after_the_store() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = String::from_utf8(output.stdout).unwrap();
-    let failure_if = text.find("if (").expect("explicit source conditional");
+    let failure_if = text.find("require(").expect("certified guard");
     let store = text.find("evm.sstore(").unwrap();
     let revert = text.rfind("evm.revert(").expect("pass-reachable REVERT");
     assert!(failure_if < store && store < revert, "{text}");
@@ -516,18 +511,13 @@ fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_w
             .unwrap();
         let index = program.render_index(&current.ir);
         index.validate_guard_sources().unwrap();
-        let plan = index
-            .failure_first(
-                control.node,
-                current.ir.structured.as_ref().unwrap().root.id,
-            )
-            .unwrap();
-        let failed_if = format!(
-            "if ({}) {{",
-            index
-                .render_failure_first_condition(plan, |_| true)
-                .unwrap()
-        );
+        let evm_decompile::LiftedIfPlan::Require(plan) = index.if_plan(
+            control.node,
+            current.ir.structured.as_ref().unwrap().root.id,
+        ) else {
+            panic!("exact Error(string) should select require")
+        };
+        let require = index.render_require(plan, |_| true).unwrap();
         let guard = control.guard.as_ref().unwrap();
         assert!(guard.pass_nonzero);
         let raw = artifact
@@ -559,17 +549,17 @@ fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_w
         let text = run(&["--hex", bytecode]);
         assert!(text.status.success());
         let text = String::from_utf8(text.stdout).unwrap();
-        assert_eq!(text.matches(&failed_if).count(), 1, "{text}");
-        assert!(!text.contains("require("), "{text}");
-        assert!(text.contains("evm.revert(offset = "), "{text}");
+        assert_eq!(text.matches(&require).count(), 1, "{text}");
+        assert!(!text.contains("if ("), "{text}");
+        assert!(!text.contains("evm.revert(offset = "), "{text}");
         assert_eq!(
             text.matches("evm.mstore(").count(),
-            proof.writes.len() + 1,
-            "retain the prefix and every original constructor store: {text}"
+            1,
+            "retain prefix store: {text}"
         );
         assert!(
-            text.contains("evm.mload("),
-            "retain the original failure-only loads: {text}"
+            !text.contains("evm.mload("),
+            "constructor belongs to lazy require: {text}"
         );
     }
 }
@@ -656,7 +646,7 @@ fn installed_cli_keeps_observing_and_invalid_failed_arms_explicit_in_both_polari
             "condition capture executes once: {text}"
         );
         if invalid {
-            assert!(text.contains("trap("), "{text}");
+            assert!(text.contains("evm.invalid();"), "{text}");
             assert!(!text.contains("evm.revert("), "{text}");
         } else {
             assert_eq!(text.matches("evm.sload(").count(), 1, "{text}");

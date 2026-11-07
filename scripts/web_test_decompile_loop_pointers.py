@@ -77,13 +77,14 @@ def semantic_rows(text):
     return rows
 
 
-def live_rows(page, program, current):
+def live_rows(page, program, current, absorbed):
     plan, = program["constructions"]
     block = next(block for block in program["blocks"] if block["block"] == plan["block"])
     operations = {operation["id"]: operation for block in current["ir"]["blocks"]
                   for operation in block["operations"]}
+    hidden = {statement["id"] for statement in block["statements"][plan["start"]:plan["end"]]} if absorbed else set()
     retained = [statement for block in program["blocks"] for statement in block["statements"]
-                if operations[statement["operation"]]["opcode"] in {0x52, 0xfa}]
+                if statement["id"] not in hidden and operations[statement["operation"]]["opcode"] in {0x52, 0xfa}]
     assert len(retained) >= 7, retained
     text = "\n".join(code_label(row["label"])[1] for row in observed(page, "decompile-code"))
     for opcode, spelling in [(0x52, "evm.mstore("), (0xfa, "evm.staticcall(")]:
@@ -101,7 +102,7 @@ def run(context):
     page.on("response", lambda response: publications.append(response.url)
             if "/api/decompile/" in response.url and response.url.endswith("/result") else None)
     for coefficient, step, guarded in [(0x60, 0x67, True), (0x70, 0x59, False)]:
-        name = "loop-pointer-" + ("failed-if" if guarded else "revert")
+        name = "loop-pointer-" + ("require" if guarded else "revert")
         artifact, _ = submit(context, page, canvas, runtime(coefficient, step, guarded), name)
         current, program = projection(artifact)
         admitted, result_url = len(posts), publications[-1]
@@ -123,12 +124,12 @@ def run(context):
         text = painted_copy(page, canvas)
         assert "while (" in text and "evm.staticcall(" in text, text
         assert text.count("evm.mstore(offset = 0x40,") == 3, text
-        assert "evm.revert(offset =" in text and "require(" not in text, text
+        assert ("evm.revert(offset =" in text) != guarded and ("require(" in text) == guarded, text
         if guarded:
             assert guards[0]["guard"]["pass_nonzero"], guards
             source_descendant(page, canvas, artifact, current["id"], guards[0]["id"])
             ui_control(page, "Simplified structured code", role="tab", selected=True)
-            required = code_label(selected_row(page, "decompile-code", "if (")["label"])[1]
+            required = code_label(selected_row(page, "decompile-code", "require(")["label"])[1]
             store_at = text.index("evm.sstore(", text.index(required))
             transfer = next(transfer for transfer in program["transfers"]
                             if transfer["edge"] == guards[0]["guard"]["pass_edge"])
@@ -146,13 +147,13 @@ def run(context):
             ui_control(page, "Simplified structured code", role="tab", selected=True)
             terminal_row = code_label(selected_row(page, "decompile-code", "evm.revert(offset =")["label"])[1]
             assert text.index("evm.sstore(") < text.index(terminal_row), text
-        retained = live_rows(page, program, current)
+        retained = live_rows(page, program, current, guarded)
         for dependencies, annotations in [(True, False), (False, True), (True, True), (False, False)]:
             set_control(page, canvas, DEPENDENCIES, dependencies)
             set_control(page, canvas, ANNOTATIONS, annotations)
             displayed = painted_copy(page, canvas)
             assert semantic_rows(displayed) == semantic_rows(text), (text, displayed)
-            live_rows(page, program, current)
+            live_rows(page, program, current, guarded)
         assert painted_copy(page, canvas) == text
         navigate_witnesses(page, canvas, artifact, current, program, text, not guarded)
         # Ordinary F writes remain source-selectable high-level operations.

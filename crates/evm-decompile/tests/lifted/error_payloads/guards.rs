@@ -9,13 +9,14 @@ fn both_guard_polarities_execute_failure_construction_only_on_rejection() {
             assert_message(&artifact, message);
             assert_eq!(error_guards(&artifact), 1, "{}", render_text(&artifact));
             let text = render_text(&artifact);
-            assert_eq!(text.matches("if (").count(), 1, "{text}");
-            assert!(!text.contains("require("), "{text}");
-            assert!(
-                text.contains("evm.mload(") && text.contains("evm.mstore("),
-                "{text}"
+            assert_eq!(text.matches("require(").count(), 1, "{text}");
+            assert!(!text.contains("if ("), "{text}");
+            assert!(!text.contains("evm.revert(offset = "), "{text}");
+            assert_eq!(
+                text.matches("evm.mstore(").count(),
+                1,
+                "prefix only: {text}"
             );
-            assert!(text.contains("evm.revert(offset = "), "{text}");
             for word in [U256::ZERO, U256::from(1), U256::from(2), U256::MAX] {
                 let (outcome, host, capsules) = oracle::certify(
                     &input,
@@ -427,7 +428,7 @@ fn a_pass_reachable_error_join_remains_after_the_actual_external_call() {
     assert_message(&artifact, DS_MATH);
     assert!(error_guards(&artifact) > 0);
     let text = render_text(&artifact);
-    let failure_if = text.find("if (").unwrap();
+    let failure_if = text.find("require(").unwrap();
     let call = text.find("evm.call(").unwrap();
     let tail = text.rfind("evm.revert(").unwrap();
     assert!(failure_if < call && call < tail, "{text}");

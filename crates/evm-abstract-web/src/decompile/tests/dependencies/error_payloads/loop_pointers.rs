@@ -177,7 +177,7 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
                 text.contains("while (") && text.contains("evm.staticcall("),
                 "{text}"
             );
-            assert!(text.contains("evm.revert(offset ="), "{text}");
+            assert_eq!(text.contains("evm.revert(offset ="), !guard, "{text}");
             assert_eq!(
                 text.matches("evm.mstore(offset = 0x40,").count(),
                 3,
@@ -186,7 +186,7 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
             assert!(
                 elided
                     .iter()
-                    .all(|entity| lines.iter().any(|line| line.entity == *entity)),
+                    .all(|entity| lines.iter().any(|line| line.entity == *entity) != guard),
                 "{text}"
             );
             for statement in &retained {
@@ -229,7 +229,7 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
                     .map(|(position, _)| position)
                     .unwrap();
                 assert!(failed_if < passed && passed < stored, "{text}");
-                assert!(lines[failed_if].text.starts_with("if ("));
+                assert!(lines[failed_if].text.starts_with("require("));
             } else {
                 assert!(text.contains("evm.revert(offset ="), "{text}");
                 let terminal = block
@@ -294,7 +294,14 @@ fn assert_bounded_loop(coefficient: u8, step: u8, guard: bool) {
     };
     assert!(workspace.state.navigate(&artifact, at));
     frame(&ctx, &mut workspace, vec![]);
-    assert_eq!(workspace.views.route_label(), "Simplified structured code");
+    assert_eq!(
+        workspace.views.route_label(),
+        if guard {
+            "IR"
+        } else {
+            "Simplified structured code"
+        }
+    );
     assert_eq!(rows(&structured::lines(stage)), raw);
     assert_eq!(artifact, original);
 }

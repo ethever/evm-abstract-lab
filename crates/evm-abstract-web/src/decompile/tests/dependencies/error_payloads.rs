@@ -109,7 +109,7 @@ fn runtime(shape: Shape, message: &str, after: &[u8], padding: bool) -> String {
 }
 
 #[test]
-fn certified_error_strings_retain_source_rows_and_pass_reachable_join_occurrences() {
+fn certified_error_strings_use_require_and_retain_pass_reachable_join_occurrences() {
     for shape in [
         Shape::Nonzero,
         Shape::Zero,
@@ -148,6 +148,7 @@ fn certified_error_strings_retain_source_rows_and_pass_reachable_join_occurrence
                 _ => 1,
             }
         );
+        let mut requirements = Vec::new();
         for control in &controls {
             let guard = control.guard.as_ref().unwrap();
             if matches!(shape, Shape::Nonzero | Shape::Zero) {
@@ -155,22 +156,18 @@ fn certified_error_strings_retain_source_rows_and_pass_reachable_join_occurrence
             }
             assert_eq!(guard.payload, LiftedGuardPayload::ErrorString(payload.id));
             let condition = renderer
-                .render_expression(control.condition, |_| true)
+                .render_condition(control.condition, !guard.pass_nonzero, |_| true)
                 .unwrap();
+            let expected = format!("require({condition}, \"{MESSAGE}\");");
             assert_eq!(
                 renderer.render_guard(control, |_| true).unwrap().unwrap(),
-                format!(
-                    "require({}, \"{MESSAGE}\");",
-                    if guard.pass_nonzero {
-                        condition
-                    } else {
-                        format!("!({condition})")
-                    }
-                )
+                expected
             );
+            requirements.push((control.id, expected));
         }
         let raw = rows(&structured::lines(stage));
-        let expected = high(stage, false);
+        let expected = rows(&high(stage, false));
+        let retained = matches!(shape, Shape::Standalone | Shape::Join);
         for dependencies in [false, true] {
             for annotations in [false, true] {
                 let lines = rows_with(
@@ -184,44 +181,39 @@ fn certified_error_strings_retain_source_rows_and_pass_reachable_join_occurrence
                 assert_eq!(
                     lines
                         .iter()
-                        .filter(|line| line.text.starts_with("if ("))
+                        .filter(|line| line.text.starts_with("require("))
                         .count(),
                     controls.len(),
                     "{text}"
                 );
-                assert!(
-                    !text.contains("require(") && text.contains("evm.revert(offset ="),
-                    "{text}"
-                );
+                assert!(!text.contains("if ("), "{text}");
+                for (entity, requirement) in &requirements {
+                    assert!(
+                        lines.iter().any(|line| line.entity == *entity
+                            && line.indent == 0
+                            && line.text == *requirement),
+                        "{text}"
+                    );
+                }
                 for plan in &program.constructions {
                     let block = program.block(plan.block).unwrap();
                     let mut after = 0;
                     for statement in &block.statements[plan.start..plan.end] {
-                        let (position, row) = lines
+                        let found = lines
                             .iter()
                             .enumerate()
                             .skip(after)
-                            .find(|(_, line)| line.entity == statement.id)
-                            .unwrap_or_else(|| panic!("source constructor missing: {text}"));
-                        assert_eq!(
-                            row.indent,
-                            usize::from(!matches!(shape, Shape::Standalone | Shape::Join)),
-                            "{text}"
-                        );
-                        after = position + 1;
+                            .find(|(_, line)| line.entity == statement.id);
+                        assert_eq!(found.is_some(), retained, "{shape:?}: {text}");
+                        if let Some((position, row)) = found {
+                            assert_eq!(row.indent, 0, "{text}");
+                            after = position + 1;
+                        }
                     }
                 }
-                let count = if matches!(shape, Shape::Nested | Shape::SeparateConstructors) {
-                    2
-                } else {
-                    1
-                };
                 assert_eq!(
-                    lines
-                        .iter()
-                        .filter(|line| line.text.contains("evm.revert(offset ="))
-                        .count(),
-                    count,
+                    text.matches("evm.revert(offset =").count(),
+                    usize::from(retained),
                     "{text}"
                 );
                 if shape == Shape::Join {
@@ -235,7 +227,7 @@ fn certified_error_strings_retain_source_rows_and_pass_reachable_join_occurrence
                             .unwrap()
                             .pass_falls_through
                     );
-                    assert!(text.find("if (").unwrap() < text.find("evm.sstore(").unwrap());
+                    assert!(text.find("require(").unwrap() < text.find("evm.sstore(").unwrap());
                     assert!(
                         text.find("evm.sstore(").unwrap()
                             < text.find("evm.revert(offset =").unwrap()
@@ -243,10 +235,180 @@ fn certified_error_strings_retain_source_rows_and_pass_reachable_join_occurrence
                 }
             }
         }
-        assert_eq!(rows(&high(stage, false)), rows(&expected));
+        assert_eq!(rows(&high(stage, false)), expected);
         assert_eq!(rows(&structured::lines(stage)), raw);
         assert_eq!(artifact, original);
     }
+}
+
+#[test]
+fn one_artifact_mixes_require_explicit_error_construction_and_invalid_with_source_identity() {
+    let mut runtime = Runtime::default();
+    runtime.emit(&[0x60, 0x80, 0x60, 0x40, 0x52, 0x5f, 0x35]);
+    runtime.jump("empty-pass", true);
+    runtime.emit(&[0x5f, 0x5f, 0xfd]);
+    runtime.label("empty-pass");
+    runtime.emit(&[0x60, 0x20, 0x35]);
+    runtime.jump("payload-pass", true);
+    // Byte reconstruction cannot absorb this failure-only observation.
+    runtime.emit(&error_tail(MESSAGE, &[0x33, 0x50], false));
+    runtime.label("payload-pass");
+    runtime.emit(&[0x60, 0x40, 0x35]);
+    runtime.jump("normal", true);
+    runtime.emit(&[0xfe]);
+    runtime.label("normal");
+    runtime.emit(&[0x60, 0x2a, 0x5f, 0x55, 0x00]);
+    let artifact = artifact(&runtime.finish());
+    let original = artifact.clone();
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let guard = program
+        .controls
+        .iter()
+        .find(|control| control.guard.is_some())
+        .unwrap();
+    assert_eq!(
+        program
+            .controls
+            .iter()
+            .filter(|control| control.guard.is_some())
+            .count(),
+        1
+    );
+    let operations: std::collections::BTreeMap<_, _> = stage
+        .ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.operations)
+        .map(|operation| (operation.id, operation))
+        .collect();
+    let failure = program
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .statements
+                .iter()
+                .any(|statement| operations[&statement.operation].opcode == 0x33)
+        })
+        .unwrap();
+    let retained: Vec<_> = failure
+        .statements
+        .iter()
+        .filter(|statement| {
+            matches!(
+                operations[&statement.operation].opcode,
+                0x51 | 0x52 | 0x33 | 0xfd
+            )
+        })
+        .collect();
+    assert!(retained.len() >= 7);
+    let terminal = program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find(|statement| operations[&statement.operation].opcode == 0xfe)
+        .unwrap();
+    let normal = high(stage, false);
+    for dependencies in [false, true] {
+        for annotations in [false, true] {
+            let lines = rows_with(
+                stage,
+                HighDisplayOptions {
+                    show_state_dependencies: dependencies,
+                    show_structure_annotations: annotations,
+                },
+            );
+            let text = copied_text(&lines);
+            assert_eq!(text.matches("require(").count(), 1, "{text}");
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.text.starts_with("if ("))
+                    .count(),
+                2,
+                "{text}"
+            );
+            assert_eq!(text.matches("evm.revert(offset =").count(), 1, "{text}");
+            assert_eq!(text.matches("evm.invalid();").count(), 1, "{text}");
+            assert!(
+                !text.contains("exception(")
+                    && !text.contains("} else {")
+                    && !text.contains("!(!("),
+                "{text}"
+            );
+            let mut previous = 0;
+            for statement in &retained {
+                let (position, line) = lines
+                    .iter()
+                    .enumerate()
+                    .skip(previous)
+                    .find(|(_, line)| line.entity == statement.id && !line.text.starts_with("//"))
+                    .unwrap();
+                assert_eq!(line.indent, 1, "{text}");
+                previous = position + 1;
+            }
+            let store = lines
+                .iter()
+                .find(|line| line.text.contains("evm.sstore("))
+                .unwrap();
+            assert_eq!(store.indent, 0, "{text}");
+            assert!(lines.iter().any(|line| line.entity == terminal.id
+                && line.text == "evm.invalid();"
+                && line.indent == 1));
+        }
+    }
+    let (ctx, mut workspace) = setup(artifact.clone());
+    assert_painted(&frame(&ctx, &mut workspace, vec![]), &normal);
+    assert_eq!(
+        click(&ctx, &mut workspace, "Copy structured text").copied,
+        [copied_text(&normal)]
+    );
+    for statement in retained.into_iter().chain(std::iter::once(terminal)) {
+        let at = EntityRef {
+            stage: stage.id,
+            entity: statement.id,
+        };
+        let source = artifact.origin(at).unwrap().source[0].pc;
+        assert!(
+            workspace
+                .state
+                .source_descendants(&artifact, source)
+                .contains(&at)
+        );
+        assert!(workspace.state.navigate(&artifact, at));
+        let frame = frame(&ctx, &mut workspace, vec![]);
+        assert_eq!(workspace.views.route_label(), "Simplified structured code");
+        assert!(
+            frame
+                .controls
+                .iter()
+                .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+        );
+    }
+    let at = EntityRef {
+        stage: stage.id,
+        entity: guard.id,
+    };
+    assert!(workspace.state.navigate(&artifact, at));
+    frame(&ctx, &mut workspace, vec![]);
+    let details = workspace.state.details(&artifact, at);
+    assert!(details.lines.iter().any(|line| line.contains("require(")));
+    let failure = guard.guard.as_ref().unwrap().failure_node;
+    assert!(details.references.contains(&EntityRef {
+        stage: stage.id,
+        entity: failure
+    }));
+    assert!(workspace.state.navigate(
+        &artifact,
+        EntityRef {
+            stage: stage.id,
+            entity: failure
+        }
+    ));
+    frame(&ctx, &mut workspace, vec![]);
+    assert_eq!(workspace.views.route_label(), "Structured code");
+    assert_eq!(artifact, original);
 }
 
 #[test]
@@ -269,7 +431,7 @@ fn constructors_have_complete_inspector_links_clipboard_and_source_navigation() 
         let visible = normal
             .iter()
             .find(|line| {
-                line.text.starts_with("if (") || line.text.starts_with("evm.revert(offset =")
+                line.text.starts_with("require(") || line.text.starts_with("evm.revert(offset =")
             })
             .unwrap();
         let label = labels(&frame(&ctx, &mut workspace, vec![]), "decompile-code")
@@ -335,13 +497,22 @@ fn constructors_have_complete_inspector_links_clipboard_and_source_navigation() 
             );
             assert!(workspace.state.navigate(&artifact, at));
             let result = frame(&ctx, &mut workspace, vec![]);
-            assert_eq!(workspace.views.route_label(), "Simplified structured code");
-            assert!(
-                result
-                    .controls
-                    .iter()
-                    .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+            assert_eq!(
+                workspace.views.route_label(),
+                if shape == Shape::Nonzero {
+                    "IR"
+                } else {
+                    "Simplified structured code"
+                }
             );
+            if shape == Shape::Standalone {
+                assert!(
+                    result
+                        .controls
+                        .iter()
+                        .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+                );
+            }
         }
         assert!(workspace.state.navigate(&artifact, at));
         frame(&ctx, &mut workspace, vec![]);
@@ -577,9 +748,9 @@ fn shared_nested_materializations_keep_one_source_certificate_and_two_guard_occu
     );
     for dependencies in [false, true] {
         let text = copied_text(&high(stage, dependencies));
-        assert_eq!(text.matches("if (").count(), 2, "{text}");
+        assert_eq!(text.matches("require(").count(), 2, "{text}");
         assert!(
-            !text.contains("require(") && text.matches("evm.revert(offset =").count() == 2,
+            !text.contains("if (") && !text.contains("evm.revert(offset ="),
             "{text}"
         );
     }

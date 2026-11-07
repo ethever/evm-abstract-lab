@@ -5,9 +5,9 @@ use super::support::{RecordingHost, source_execution};
 use crate::expressions;
 use evm_decompile::{
     Artifact, EntityId, ExecutionError, ExecutionLimits, ExecutionOutcome, ExitKind,
-    FailureFirstIf, Input, LiftedProgram, LiftedRenderIndex, LiftedValue, MemoryHost, Primitive,
-    SemanticHost, SharedInvocation, Stage, StructuredKind as Kind, StructuredNode, Terminator,
-    U256, ValueKind,
+    FailureFirstIf, Input, LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex,
+    LiftedValue, MemoryHost, Primitive, RequireIf, SemanticHost, SharedInvocation, Stage,
+    StructuredKind as Kind, StructuredNode, Terminator, U256, ValueKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +20,11 @@ enum Flow {
     Continue,
     Escaped(EntityId),
     End(ExecutionOutcome),
+}
+enum IfPlan {
+    Require(RequireIf, LiftedIfSuffix),
+    FailureFirst(FailureFirstIf),
+    Original,
 }
 
 struct Frame<'a> {
@@ -379,13 +384,18 @@ impl<'a> Machine<'a> {
             },
         )
     }
-    fn plan(&self, source: EntityId, frame: &Frame<'a>) -> Option<FailureFirstIf> {
+    fn plan(&self, source: EntityId, frame: &Frame<'a>) -> IfPlan {
         let index = if frame.invocation.is_some() {
             &self.definition_render
         } else {
             &self.render
         };
-        index.failure_first(source, self.scope(frame)).cloned()
+        let plan = index.if_plan(source, self.scope(frame));
+        match plan {
+            LiftedIfPlan::Require(require) => IfPlan::Require(require.clone(), plan.suffix()),
+            LiftedIfPlan::FailureFirst(explicit) => IfPlan::FailureFirst(explicit.clone()),
+            LiftedIfPlan::Original => IfPlan::Original,
+        }
     }
     fn sequence(
         &mut self,
@@ -403,8 +413,7 @@ impl<'a> Machine<'a> {
                 &self.render
             };
             if position > range.start
-                && let Some(end) =
-                    index.failure_first_sequence_end(owner, position, self.scope(frame))
+                && let Some(end) = index.selected_sequence_end(owner, position, self.scope(frame))
             {
                 assert!(end > position && end <= range.end);
                 position = end;
@@ -454,7 +463,30 @@ impl<'a> Machine<'a> {
             } => {
                 let condition =
                     self.predicate(self.high.control(node.id).unwrap().condition, frame);
-                if let Some(plan) = self.plan(node.id, frame) {
+                let selected = self.plan(node.id, frame);
+                if let IfPlan::Require(plan, suffix) = &selected {
+                    self.planned.push(frame.actual(node.id));
+                    if condition == plan.pass_nonzero() {
+                        return self.syntax(self.nodes[&plan.success_node()], frame);
+                    }
+                    let flow = self.syntax(self.nodes[&plan.failure_node()], frame)?;
+                    if flow != Flow::Next {
+                        return Ok(flow);
+                    }
+                    if let LiftedIfSuffix::Absorb {
+                        sequence,
+                        start,
+                        end,
+                    } = *suffix
+                    {
+                        let Kind::Sequence(children) = &self.nodes[&sequence].kind else {
+                            unreachable!()
+                        };
+                        return self.sequence(sequence, children, start..end, frame);
+                    }
+                    return Ok(Flow::Next);
+                }
+                if let IfPlan::FailureFirst(plan) = selected {
                     self.planned.push(frame.actual(node.id));
                     if condition == plan.failure_nonzero() {
                         let flow = self.syntax(self.nodes[&plan.failure_node()], frame)?;

@@ -7,8 +7,12 @@ use super::{LiftedModelError, sources::GuardSources};
 use crate::{EntityId, ExitKind, Ir, StructuredNode};
 use std::collections::BTreeMap;
 
+mod condition;
+mod control;
 mod failure_first;
 pub(crate) mod primitive;
+use control::ControlPlanIndex;
+pub use control::{LiftedIfPlan, LiftedIfSuffix, RequireIf};
 pub use failure_first::FailureFirstIf;
 use failure_first::FailureFirstIndex;
 use primitive::{CallName, append};
@@ -35,6 +39,7 @@ pub struct LiftedRenderIndex<'a> {
     constructions: BTreeMap<EntityId, &'a super::LiftedConstruction>,
     guard_source_error: Option<LiftedRenderError>,
     failure_first: Result<FailureFirstIndex, LiftedRenderError>,
+    control_plans: ControlPlanIndex,
 }
 /// Bounded expression export failure, independent of artifact recovery coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +157,7 @@ impl<'a> LiftedRenderIndex<'a> {
             constructions: program.constructions.iter().map(|c| (c.block, c)).collect(),
             guard_source_error,
             failure_first: Ok(FailureFirstIndex::default()),
+            control_plans: ControlPlanIndex::default(),
         };
         result.failure_first = if let Some(error) = guard_source_error {
             Err(error)
@@ -160,6 +166,9 @@ impl<'a> LiftedRenderIndex<'a> {
         } else {
             Ok(FailureFirstIndex::default())
         };
+        if let Some(ir) = ir {
+            result.control_plans = ControlPlanIndex::new(&result, ir, &mut pay);
+        }
         result
     }
     fn refused(program: &'a LiftedProgram) -> Self {
@@ -183,6 +192,7 @@ impl<'a> LiftedRenderIndex<'a> {
             constructions: BTreeMap::new(),
             guard_source_error: Some(LiftedRenderError::Limit),
             failure_first: Err(LiftedRenderError::Limit),
+            control_plans: ControlPlanIndex::default(),
         }
     }
     /// Structural guard admission for this index, independent of stored Passed
@@ -279,16 +289,11 @@ impl<'a> LiftedRenderIndex<'a> {
         if self.controls.get(&control.node).copied() != Some(control) {
             return Err(LiftedRenderError::InvalidGuardSource(control.node));
         }
-        let condition = self.render_expression(control.condition, &mut reserve)?;
+        let condition =
+            self.render_condition(control.condition, !guard.pass_nonzero, &mut reserve)?;
         let mut out = String::new();
         append(&mut out, "require(", &mut reserve)?;
-        if !guard.pass_nonzero {
-            append(&mut out, "!(", &mut reserve)?;
-        }
         append(&mut out, &condition, &mut reserve)?;
-        if !guard.pass_nonzero {
-            append(&mut out, ")", &mut reserve)?;
-        }
         if let super::LiftedGuardPayload::ErrorString(id) = guard.payload {
             let payload = self
                 .payload(id)

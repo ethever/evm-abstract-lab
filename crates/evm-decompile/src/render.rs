@@ -2,9 +2,9 @@
 use crate::budget::{count, work_budget};
 use crate::{
     Artifact, Block, Cancellation, Edge, EntityId, ExitKind, LiftedBlock, LiftedControl,
-    LiftedProgram, LiftedRenderError, LiftedRenderIndex, LiftedStatement, LiftedTransfer,
-    Operation, RenderSummary, StageKind, StructuredKind, StructuredNode, Terminator, Value,
-    ValueKind,
+    LiftedIfPlan, LiftedProgram, LiftedRenderError, LiftedRenderIndex, LiftedStatement,
+    LiftedTransfer, Operation, RenderSummary, StageKind, StructuredKind, StructuredNode,
+    Terminator, Value, ValueKind,
 };
 use evm_resource::{ResourceError, WorkBudget};
 use std::collections::{BTreeMap, BTreeSet};
@@ -325,6 +325,12 @@ impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
         self.semantic(|renderer, owner| renderer.render_expression(id, |work| owner.pay(work)))
             .unwrap_or_else(|| format!("expression_limit(e{})", id.0))
     }
+    fn high_condition(&mut self, id: EntityId, invert: bool) -> String {
+        self.semantic(|renderer, owner| {
+            renderer.render_condition(id, invert, |work| owner.pay(work))
+        })
+        .unwrap_or_else(|| format!("expression_limit(e{})", id.0))
+    }
     fn high_statement(&mut self, statement: &LiftedStatement) -> Option<String> {
         self.semantic(|renderer, owner| {
             renderer.render_statement(statement, |work| owner.pay(work))
@@ -583,12 +589,36 @@ fn syntax(
             then_branch,
             else_branch,
         } => {
-            if let Some(plan) = ir
+            let (require, failure_first) = ir
                 .lifted_renderer
                 .as_ref()
-                .and_then(|renderer| renderer.failure_first(n.id, ir.boundary))
-                .cloned()
-            {
+                .map(|renderer| match renderer.if_plan(n.id, ir.boundary) {
+                    LiftedIfPlan::Require(plan) => (Some(plan.clone()), None),
+                    LiftedIfPlan::FailureFirst(plan) => (None, Some(plan.clone())),
+                    LiftedIfPlan::Original => (None, None),
+                })
+                .unwrap_or_default();
+            if let Some(plan) = require {
+                let Some(text) = ir.semantic(|renderer, owner| {
+                    renderer.render_require(&plan, |work| owner.pay(work))
+                }) else {
+                    return RenderSummary::CONTENT;
+                };
+                let success = ir
+                    .lifted_renderer
+                    .as_ref()
+                    .and_then(|renderer| renderer.node(plan.success_node()));
+                let Some(success) = success else {
+                    ir.stopped = true;
+                    ir.status = TextExportStatus::Limited;
+                    return RenderSummary::CONTENT;
+                };
+                indent(out, depth);
+                let _ = writeln!(out, "{text}");
+                syntax(out, success, ir, depth);
+                return RenderSummary::CONTENT;
+            }
+            if let Some(plan) = failure_first {
                 let Some(condition) = ir.semantic(|renderer, owner| {
                     renderer.render_failure_first_condition(&plan, |work| owner.pay(work))
                 }) else {
@@ -635,7 +665,7 @@ fn syntax(
             indent(out, depth);
             let condition = ir
                 .lifted_control(n.id)
-                .map(|c| ir.high_expression(c.condition))
+                .map(|c| ir.high_condition(c.condition, false))
                 .unwrap_or_else(|| format!("{} != 0", expression(ir, *condition)));
             let _ = writeln!(out, "if ({condition}) {{");
             syntax(out, then_branch, ir, depth + 1);
@@ -668,13 +698,8 @@ fn syntax(
             if let Some(condition) = condition {
                 indent(out, depth + 1);
                 if let Some(control) = ir.lifted_control(n.id) {
-                    let condition = ir.high_expression(control.condition);
-                    let _ = writeln!(
-                        out,
-                        "if ({}{}) {{",
-                        if *condition_nonzero { "!" } else { "" },
-                        condition
-                    );
+                    let condition = ir.high_condition(control.condition, *condition_nonzero);
+                    let _ = writeln!(out, "if ({condition}) {{");
                 } else {
                     let _ = writeln!(
                         out,
@@ -813,7 +838,7 @@ fn syntax_sequence(
             && let Some(end) = ir
                 .lifted_renderer
                 .as_ref()
-                .and_then(|r| r.failure_first_sequence_end(sequence, position, ir.boundary))
+                .and_then(|r| r.selected_sequence_end(sequence, position, ir.boundary))
         {
             if !ir.pay(1) {
                 break;
@@ -1005,7 +1030,11 @@ fn control(
         }
         Terminator::Trap { reason } => {
             indent(out, depth);
-            let _ = write!(out, "trap({reason:?});");
+            if let Some(text) = crate::render_explicit_invalid(block) {
+                out.push_str(text);
+            } else {
+                let _ = write!(out, "trap({reason:?});");
+            }
             if let Some(op) = block.operations.last() {
                 let _ = write!(out, " // fault op{}", op.id.0);
             }

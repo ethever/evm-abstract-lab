@@ -3,7 +3,8 @@
 use super::*;
 use crate::oracle::evaluate;
 use evm_decompile::{
-    LiftedGuardPayload, LiftedProgram, LiftedRenderIndex, LiftedValue, Primitive, SemanticHost,
+    LiftedGuardPayload, LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex,
+    LiftedValue, Primitive, SemanticHost,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -208,12 +209,10 @@ pub(super) fn certificate(stage: &Stage) {
             continue;
         };
         assert_eq!(index.guard(control.node), Some(guard));
-        let predicate = program.render_expression(control.condition);
-        let expected = if guard.pass_nonzero {
-            format!("require({predicate});")
-        } else {
-            format!("require(!({predicate}));")
-        };
+        let predicate = index
+            .render_condition(control.condition, !guard.pass_nonzero, |_| true)
+            .unwrap();
+        let expected = format!("require({predicate});");
         assert_eq!(
             index.render_guard(control, |_| true).unwrap(),
             Some(expected),
@@ -448,7 +447,7 @@ impl Machine<'_> {
             if position > range.start
                 && let Some(end) = self
                     .index
-                    .failure_first_sequence_end(sequence, position, boundary)
+                    .selected_sequence_end(sequence, position, boundary)
             {
                 assert!(end > position && end <= range.end);
                 position = end;
@@ -480,7 +479,35 @@ impl Machine<'_> {
             } => {
                 let test = self.test(node.id);
                 let boundary = self.stage.ir.structured.as_ref().unwrap().root.id;
-                if let Some(plan) = self.index.failure_first(node.id, boundary).cloned() {
+                if let LiftedIfPlan::Require(plan) = self.index.if_plan(node.id, boundary) {
+                    let plan = plan.clone();
+                    if test == plan.pass_nonzero() {
+                        return self.syntax(self.source[&plan.success_node()]);
+                    }
+                    // Execute the require's retained lazy failed witness,
+                    // including its original first fault and edge tuples.
+                    let failed = self.syntax(self.source[&plan.failure_node()]);
+                    if !matches!(failed, Flow::Normal) {
+                        return failed;
+                    }
+                    if let LiftedIfSuffix::Absorb {
+                        sequence,
+                        start,
+                        end,
+                    } = self.index.if_plan(node.id, boundary).suffix()
+                    {
+                        let StructuredKind::Sequence(children) = &self.source[&sequence].kind
+                        else {
+                            unreachable!()
+                        };
+                        return self.sequence(sequence, children, start..end);
+                    }
+                    // A shared/inherited suffix remains at its original
+                    // lexical owner and executes there on this failed route.
+                    return Flow::Normal;
+                }
+                if let LiftedIfPlan::FailureFirst(plan) = self.index.if_plan(node.id, boundary) {
+                    let plan = plan.clone();
                     if test == plan.failure_nonzero() {
                         let failed = self.syntax(self.source[&plan.failure_node()]);
                         if !matches!(failed, Flow::Normal) {
