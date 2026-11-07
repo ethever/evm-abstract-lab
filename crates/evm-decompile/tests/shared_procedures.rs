@@ -11,6 +11,8 @@ mod fixtures;
 mod mutations;
 #[path = "shared_procedures/oracle.rs"]
 mod oracle;
+#[path = "shared_procedures/rendering.rs"]
+mod rendering;
 #[path = "shared_procedures/support.rs"]
 mod support;
 

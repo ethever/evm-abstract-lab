@@ -1,9 +1,12 @@
 //! Parameterized canonical body rows shared by native and browser consumers.
 use super::{MAX_SHARED_REGION_ENTITIES, SharedInvocation, SharedProcedure};
-use crate::EntityId;
+use crate::{EntityId, RenderSummary};
 use crate::{
     LiftedRenderError as E, LiftedRenderIndex, StructuredKind as K, Terminator as T, ValueKind as V,
 };
+
+#[cfg(test)]
+mod tests;
 
 /// One complete semantic row with its original source-navigation entity.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +23,71 @@ pub struct SharedRenderRow {
 fn paid(pay: &mut impl FnMut(usize) -> bool, n: usize) -> Result<(), E> {
     if pay(n) { Ok(()) } else { Err(E::Limit) }
 }
+
+#[derive(Default)]
+struct BodyRows {
+    rows: Vec<SharedRenderRow>,
+    text_bytes: usize,
+    emitted_rows: usize,
+    summary: RenderSummary,
+}
+
+struct ElseCheckpoint {
+    start: usize,
+    content: RenderSummary,
+}
+
+impl BodyRows {
+    fn begin_else(
+        &mut self,
+        owner: EntityId,
+        depth: usize,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<ElseCheckpoint, E> {
+        let start = self.rows.len();
+        self.emit(owner, "} else {".to_owned(), depth, false, pay)?;
+        // The tentative separator is not content of its own arm.
+        Ok(ElseCheckpoint {
+            start,
+            content: self.summary,
+        })
+    }
+
+    fn end_else(&mut self, checkpoint: ElseCheckpoint) {
+        if !self.summary.since(checkpoint.content).has_content() {
+            self.rows.truncate(checkpoint.start);
+        }
+    }
+
+    fn emit(
+        &mut self,
+        entity: EntityId,
+        text: String,
+        depth: usize,
+        annotation: bool,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<(), E> {
+        paid(pay, text.len().saturating_add(1))?;
+        self.text_bytes = self.text_bytes.saturating_add(text.len());
+        if self.text_bytes > 4_194_304 || self.emitted_rows >= MAX_SHARED_REGION_ENTITIES {
+            return Err(E::Limit);
+        }
+        self.emitted_rows += 1;
+        if !annotation {
+            // The cumulative row ceiling bounds this monotone counter, even
+            // when empty arms remove previously emitted contextual rows.
+            self.summary.include(RenderSummary::CONTENT);
+        }
+        self.rows.push(SharedRenderRow {
+            entity,
+            text,
+            depth,
+            is_structure_annotation: annotation,
+        });
+        Ok(())
+    }
+}
+
 fn tuple(ids: &[EntityId], prefix: &str) -> String {
     ids.iter()
         .map(|id| format!("{prefix}{}", id.0))
@@ -180,35 +248,25 @@ impl<'a> LiftedRenderIndex<'a> {
             Node(EntityId, usize, Option<EntityId>),
             Text(EntityId, String, usize),
             Transfer(EntityId, usize),
+            Else(EntityId, EntityId, usize, Option<EntityId>),
+            EndElse(ElseCheckpoint),
         }
         let mut todo = vec![Task::Node(p.body, 0, None)];
-        let mut rows = Vec::new();
-        let mut text_bytes = 0_usize;
-        let mut emit = |entity, text: String, depth, annotation, pay: &mut _| -> Result<(), E> {
-            paid(pay, text.len().saturating_add(1))?;
-            text_bytes = text_bytes.saturating_add(text.len());
-            if text_bytes > 4_194_304 {
-                return Err(E::Limit);
-            }
-            if rows.len() >= MAX_SHARED_REGION_ENTITIES {
-                return Err(E::Limit);
-            }
-            rows.push(SharedRenderRow {
-                entity,
-                text,
-                depth,
-                is_structure_annotation: annotation,
-            });
-            Ok(())
-        };
+        let mut output = BodyRows::default();
         while let Some(task) = todo.pop() {
             paid(&mut pay, 1)?;
             match task {
-                Task::Text(id, text, depth) => emit(id, text, depth, false, &mut pay)?,
+                Task::Text(id, text, depth) => output.emit(id, text, depth, false, &mut pay)?,
+                Task::Else(owner, body, depth, loop_id) => {
+                    let checkpoint = output.begin_else(owner, depth, &mut pay)?;
+                    todo.push(Task::EndElse(checkpoint));
+                    todo.push(Task::Node(body, depth + 1, loop_id));
+                }
+                Task::EndElse(checkpoint) => output.end_else(checkpoint),
                 Task::Transfer(id, depth) => {
                     let transfer = self.transfer(id).ok_or(E::MissingWitness(id))?;
                     if let Some(text) = self.render_transfer(transfer, &mut pay)? {
-                        emit(id, text, depth, false, &mut pay)?;
+                        output.emit(id, text, depth, false, &mut pay)?;
                     }
                     let edge = source.edges.get(&id).ok_or(E::MissingWitness(id))?;
                     let target = source
@@ -227,7 +285,7 @@ impl<'a> LiftedRenderIndex<'a> {
                         ),
                     ] {
                         if state {
-                            emit(id, text, depth, false, &mut pay)?;
+                            output.emit(id, text, depth, false, &mut pay)?;
                         } else {
                             paid(&mut pay, text.len().saturating_add(1))?;
                         }
@@ -257,7 +315,13 @@ impl<'a> LiftedRenderIndex<'a> {
                         }
                         K::Block { block } => {
                             let b = source.blocks.get(block).ok_or(E::MissingWitness(*block))?;
-                            emit(id, format!("// block b{}", block.0), depth, true, &mut pay)?;
+                            output.emit(
+                                id,
+                                format!("// block b{}", block.0),
+                                depth,
+                                true,
+                                &mut pay,
+                            )?;
                             let high = self.block(*block).ok_or(E::MissingWitness(*block))?;
                             let construction = self.construction(*block);
                             let mut compact = false;
@@ -267,7 +331,13 @@ impl<'a> LiftedRenderIndex<'a> {
                                     if position == c.start
                                         && let Some(text) = self.render_revert(*block, &mut pay)?
                                     {
-                                        emit(statement.operation, text, depth, false, &mut pay)?;
+                                        output.emit(
+                                            statement.operation,
+                                            text,
+                                            depth,
+                                            false,
+                                            &mut pay,
+                                        )?;
                                         compact = true;
                                     }
                                     if compact && (c.start..c.end).contains(&position) {
@@ -284,7 +354,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                 let text = self.render_statement_with_dependencies(
                                     statement, state, &mut pay,
                                 )?;
-                                emit(statement.operation, text, depth, false, &mut pay)?;
+                                output.emit(statement.operation, text, depth, false, &mut pay)?;
                             }
                         }
                         K::Transfer { edge } => todo.push(Task::Transfer(*edge, depth)),
@@ -298,10 +368,10 @@ impl<'a> LiftedRenderIndex<'a> {
                                 let text = self
                                     .render_guard(control, &mut pay)?
                                     .ok_or(E::MissingWitness(id))?;
-                                emit(id, text, depth, false, &mut pay)?;
+                                output.emit(id, text, depth, false, &mut pay)?;
                                 todo.push(Task::Node(g.pass_node, depth, loop_id));
                             } else {
-                                emit(
+                                output.emit(
                                     id,
                                     format!(
                                         "if ({}) {{",
@@ -312,8 +382,7 @@ impl<'a> LiftedRenderIndex<'a> {
                                     &mut pay,
                                 )?;
                                 todo.push(Task::Text(id, "}".to_owned(), depth));
-                                todo.push(Task::Node(else_branch.id, depth + 1, loop_id));
-                                todo.push(Task::Text(id, "} else {".to_owned(), depth));
+                                todo.push(Task::Else(id, else_branch.id, depth, loop_id));
                                 todo.push(Task::Node(then_branch.id, depth + 1, loop_id));
                             }
                         }
@@ -324,7 +393,7 @@ impl<'a> LiftedRenderIndex<'a> {
                             body,
                             exit_edge,
                         } => {
-                            emit(
+                            output.emit(
                                 id,
                                 format!("'loop{}: while (true) {{", id.0),
                                 depth,
@@ -360,7 +429,7 @@ impl<'a> LiftedRenderIndex<'a> {
                         }
                         K::Break | K::Continue => {
                             let loop_id = loop_id.ok_or(E::InvalidSharedSource(id))?;
-                            emit(
+                            output.emit(
                                 id,
                                 format!(
                                     "{} 'loop{};",
@@ -379,13 +448,19 @@ impl<'a> LiftedRenderIndex<'a> {
                         K::Exit { block } => {
                             let b = source.blocks[block];
                             match &b.terminator {
-                                T::Trap { reason } => {
-                                    emit(id, format!("trap({reason:?});"), depth, false, &mut pay)?
-                                }
+                                T::Trap { reason } => output.emit(
+                                    id,
+                                    format!("trap({reason:?});"),
+                                    depth,
+                                    false,
+                                    &mut pay,
+                                )?,
                                 T::Exit {
                                     kind: crate::ExitKind::EndOfCode,
                                     ..
-                                } => emit(id, "stop();".to_owned(), depth, false, &mut pay)?,
+                                } => {
+                                    output.emit(id, "stop();".to_owned(), depth, false, &mut pay)?
+                                }
                                 T::Exit { .. } => {}
                                 _ => return Err(E::InvalidSharedSource(id)),
                             }
@@ -396,7 +471,7 @@ impl<'a> LiftedRenderIndex<'a> {
             }
         }
         if !p.interface.outputs.is_empty() {
-            emit(
+            output.emit(
                 p.body,
                 format!("yield ({});", tuple(&p.interface.outputs, "v")),
                 0,
@@ -404,6 +479,6 @@ impl<'a> LiftedRenderIndex<'a> {
                 &mut pay,
             )?;
         }
-        Ok(rows)
+        Ok(output.rows)
     }
 }

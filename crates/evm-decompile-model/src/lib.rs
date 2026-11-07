@@ -50,6 +50,7 @@ mod artifact;
 mod codec;
 mod lifted;
 mod model;
+mod render;
 mod shared;
 mod structured;
 pub use alloy_primitives::U256;
@@ -57,6 +58,7 @@ pub use artifact::*;
 pub use evm_bytecode::Fork;
 pub use lifted::*;
 pub use model::*;
+pub use render::RenderSummary;
 pub use shared::*;
 pub use structured::{MAX_STRUCTURED_WIRE_DEPTH, MAX_STRUCTURED_WIRE_NODES, MAX_STRUCTURING_DEPTH};
 

@@ -3,7 +3,8 @@ use crate::budget::{count, work_budget};
 use crate::{
     Artifact, Block, Cancellation, Edge, EntityId, ExitKind, LiftedBlock, LiftedControl,
     LiftedProgram, LiftedRenderError, LiftedRenderIndex, LiftedStatement, LiftedTransfer,
-    Operation, StageKind, StructuredKind, StructuredNode, Terminator, Value, ValueKind,
+    Operation, RenderSummary, StageKind, StructuredKind, StructuredNode, Terminator, Value,
+    ValueKind,
 };
 use evm_resource::{ResourceError, WorkBudget};
 use std::collections::{BTreeMap, BTreeSet};
@@ -568,9 +569,9 @@ fn syntax(
     n: &StructuredNode,
     ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
-) {
+) -> RenderSummary {
     if !ir.pay(1) {
-        return;
+        return RenderSummary::CONTENT;
     }
     if let Some(invocation) = ir
         .lifted_renderer
@@ -580,14 +581,16 @@ fn syntax(
         let Some(text) =
             ir.semantic(|r, owner| r.render_shared_invocation(invocation, true, |n| owner.pay(n)))
         else {
-            return;
+            return RenderSummary::CONTENT;
         };
         indent(out, depth);
         let _ = writeln!(out, "{text}");
-        return;
+        return RenderSummary::CONTENT;
     }
+    let mut summary = RenderSummary::CONTENT;
     match &n.kind {
         StructuredKind::Sequence(v) => {
+            summary = RenderSummary::default();
             let outer_next = ir.next_block;
             let sequence = n.id;
             let mut position = 0;
@@ -607,7 +610,7 @@ fn syntax(
                     .get(position + 1)
                     .map(|next| ir.first_block(next))
                     .unwrap_or(outer_next);
-                syntax(out, n, ir, depth);
+                summary.include(syntax(out, n, ir, depth));
                 if ir.stopped {
                     break;
                 }
@@ -616,11 +619,17 @@ fn syntax(
             ir.next_block = outer_next;
         }
         StructuredKind::Block { block } => {
+            let start = out.len();
             if let Some(b) = ir.block(*block) {
                 body(out, b, ir, depth);
             }
+            summary = RenderSummary::from_content(ir.stopped || out.len() > start);
         }
-        StructuredKind::Transfer { edge } => transfer(out, *edge, ir, depth),
+        StructuredKind::Transfer { edge } => {
+            let start = out.len();
+            transfer(out, *edge, ir, depth);
+            summary = RenderSummary::from_content(ir.stopped || out.len() > start);
+        }
         StructuredKind::If {
             condition,
             then_branch,
@@ -630,7 +639,7 @@ fn syntax(
                 && let Some(guard) = &control.guard
             {
                 let Some(text) = ir.high_guard(control) else {
-                    return;
+                    return RenderSummary::CONTENT;
                 };
                 indent(out, depth);
                 let _ = writeln!(out, "{text}");
@@ -646,7 +655,7 @@ fn syntax(
                     ir.stopped = true;
                     ir.status = TextExportStatus::Limited;
                 }
-                return;
+                return RenderSummary::CONTENT;
             }
             indent(out, depth);
             let condition = ir
@@ -655,7 +664,15 @@ fn syntax(
                 .unwrap_or_else(|| format!("{} != 0", expression(ir, *condition)));
             let _ = writeln!(out, "if ({condition}) {{");
             syntax(out, then_branch, ir, depth + 1);
-            if visible(else_branch, ir) {
+            if ir.lifted.is_some() {
+                let else_start = out.len();
+                indent(out, depth);
+                out.push_str("} else {\n");
+                let otherwise = syntax(out, else_branch, ir, depth + 1);
+                if !otherwise.has_content() {
+                    out.truncate(else_start);
+                }
+            } else if visible(else_branch, ir) {
                 indent(out, depth);
                 out.push_str("} else {\n");
                 syntax(out, else_branch, ir, depth + 1);
@@ -769,7 +786,7 @@ fn syntax(
         }
         StructuredKind::Dispatcher { entry, cases } => {
             if !ir.pay(cases.len().saturating_mul(2)) {
-                return;
+                return RenderSummary::CONTENT;
             }
             let dispatch = DispatchControl {
                 node: n.id,
@@ -802,6 +819,7 @@ fn syntax(
             out.push_str("}\n");
         }
     }
+    summary
 }
 
 fn visible(node: &StructuredNode, ir: &RenderIndex<'_, impl FnMut(u64)>) -> bool {
