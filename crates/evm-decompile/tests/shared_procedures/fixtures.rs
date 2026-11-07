@@ -426,3 +426,68 @@ pub(super) fn two_arguments() -> Fixture {
         include_str!("../fixtures/shared-procedures/two-arguments.hex"),
     )
 }
+
+/// The false arm only transfers state to the join; the true arm stores a word.
+/// Both invocations return a live value and execute the same useful body.
+pub(super) fn token_only_else() -> Fixture {
+    conditional_else(false)
+}
+
+pub(super) fn observable_else() -> Fixture {
+    conditional_else(true)
+}
+
+fn conditional_else(observable_else: bool) -> Fixture {
+    let mut a = Asm::default();
+    a.target("after_first")
+        .number(0)
+        .op(0x35)
+        .target("helper")
+        .op(0x56)
+        .dest("after_first")
+        .number(1)
+        .op(0x55)
+        .target("after_second")
+        .number(32)
+        .op(0x35)
+        .target("helper")
+        .op(0x56)
+        .dest("after_second")
+        .number(2)
+        .op(0x55)
+        .op(0x00)
+        .dest("helper")
+        .op(0x80)
+        .number(64)
+        .op(0x52)
+        .op(0x80)
+        .number(0)
+        .op(0x55)
+        .op(0x80)
+        .target("then")
+        .op(0x57);
+    if observable_else {
+        a.op(0x80).number(5).op(0x55);
+    }
+    a.target("join")
+        .op(0x56)
+        .dest("then")
+        .op(0x80)
+        .number(96)
+        .op(0x52)
+        .number(32)
+        .number(64)
+        .op(0xa0)
+        .op(0x80)
+        .number(3)
+        .op(0x55)
+        .op(0x80)
+        .number(4)
+        .op(0x55)
+        .dest("join")
+        .number(1)
+        .op(0x01)
+        .op(0x90)
+        .op(0x56);
+    a.finish()
+}

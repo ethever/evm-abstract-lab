@@ -11,6 +11,13 @@ const SHARED: &str = concat!(
     "5b80604052805f5560206040a0600554600101600555600654600755603d565b806001019156",
 );
 const SHARED_LOOP: &str = include_str!("../../../../tests/fixtures/decompile/shared-loop.hex");
+// The helper's false arm has only an empty block and m/q transfers. Two callers
+// retain the live word result, and the true arm has observable memory/log/store.
+const SHARED_TOKEN_ELSE: &str = concat!(
+    "61000a60003561001d565b60015561001860203561001d565b60025500",
+    "5b80604052806000558061002f57610041565b8060605260206040a0",
+    "80600355806004555b6001019056",
+);
 
 fn with_display(stage: &Stage, display: structured::HighDisplayOptions) -> Vec<structured::Line> {
     structured::lifted_lines_indexed(
@@ -18,6 +25,108 @@ fn with_display(stage: &Stage, display: structured::HighDisplayOptions) -> Vec<s
         &crate::decompile::index::StageIndex::new(&stage.ir),
         display,
     )
+}
+
+#[test]
+fn cached_shared_else_follows_substantive_content_in_all_display_modes() {
+    let artifact = artifact(SHARED_TOKEN_ELSE);
+    let original = artifact.clone();
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    assert_eq!(program.procedures.len(), 1);
+    assert_eq!(program.invocations.len(), 2);
+    let renderer = program.render_index(&stage.ir);
+    let procedure = &program.procedures[0];
+    let branch = renderer.node(procedure.body).unwrap();
+    let StructuredKind::If { else_branch, .. } = &branch.kind else {
+        panic!("the certified shared body must contain the conditional itself")
+    };
+    let mut tokens = Vec::new();
+    let mut context = BTreeSet::new();
+    structured::visit(else_branch, &mut |node| match &node.kind {
+        StructuredKind::Transfer { edge } => {
+            assert!(renderer.transfer(*edge).unwrap().arguments.is_empty());
+            let edge = stage.ir.edge(*edge).unwrap();
+            let target = stage.ir.block(edge.to).unwrap();
+            tokens.extend([
+                (
+                    edge.id,
+                    2,
+                    format!(
+                        "m{} = m{}; // memory token on e{}",
+                        target.memory_parameter.0, edge.memory.0, edge.id.0
+                    ),
+                ),
+                (
+                    edge.id,
+                    2,
+                    format!(
+                        "q{} = q{}; // effect token on e{}",
+                        target.effect_parameter.0, edge.effect.0, edge.id.0
+                    ),
+                ),
+            ]);
+        }
+        StructuredKind::Sequence(_) | StructuredKind::Block { .. } => {
+            context.insert(node.id);
+        }
+        _ => panic!("false arm must contain only context and state transfers"),
+    });
+    assert!(!tokens.is_empty());
+    assert!(!context.is_empty(), "exercise annotation-only block rows");
+    let index = crate::decompile::index::StageIndex::new(&stage.ir);
+    let raw = rows(&structured::lines(stage));
+    for (dependencies, annotations) in [
+        (false, false),
+        (true, false),
+        (true, true),
+        (false, true),
+        (false, false),
+    ] {
+        let lines = structured::lifted_lines_indexed(
+            stage,
+            &index,
+            structured::HighDisplayOptions {
+                show_state_dependencies: dependencies,
+                show_structure_annotations: annotations,
+            },
+        );
+        let rendered = rows(&lines);
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|(entity, depth, text)| *entity == branch.id
+                    && *depth == 1
+                    && text == "} else {")
+                .count(),
+            usize::from(dependencies),
+            "{rendered:#?}"
+        );
+        assert!(rendered.iter().any(|(entity, depth, text)| {
+            *entity == branch.id && *depth == 1 && text.starts_with("if (")
+        }));
+        assert!(rendered.contains(&(branch.id, 1, "}".into())));
+        for token in &tokens {
+            assert_eq!(rendered.contains(token), dependencies, "{rendered:#?}");
+        }
+        if !dependencies {
+            assert!(
+                !rendered
+                    .iter()
+                    .any(|(entity, _, _)| context.contains(entity))
+            );
+        }
+        let copied = copied_text(&lines);
+        assert_eq!(
+            copied.matches("} else {").count(),
+            usize::from(dependencies)
+        );
+        assert_eq!(copied.matches("log0(").count(), 1);
+        assert_eq!(copied.matches("sstore(slot = 0x3,").count(), 1);
+        assert_eq!(copied.matches("sstore(slot = 0x4,").count(), 1);
+        assert_eq!(rows(&structured::lines(stage)), raw);
+    }
+    assert_eq!(artifact, original);
 }
 
 fn assert_semantic_rows_survive_toggles(stage: &Stage) {

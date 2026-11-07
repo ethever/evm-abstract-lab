@@ -4,8 +4,8 @@
 use super::index::StageIndex;
 
 use evm_abstract_protocol::decompile_model::{
-    EntityId, ExitKind, Ir, LiftedRenderError, LiftedRenderIndex, Operation, Stage, StructuredKind,
-    StructuredNode, Terminator, ValueKind,
+    EntityId, ExitKind, Ir, LiftedRenderError, LiftedRenderIndex, Operation, RenderSummary, Stage,
+    StructuredKind, StructuredNode, Terminator, ValueKind,
 };
 
 mod dispatch;
@@ -41,23 +41,6 @@ pub(super) struct Line {
     pub entity: EntityId,
     pub indent: usize,
     pub text: String,
-}
-
-/// Only sequence/block headers are context. Diagnostics (including fault
-/// comments) and control constructs remain content even without operations.
-#[derive(Default)]
-struct RenderSummary {
-    has_content: bool,
-}
-
-impl RenderSummary {
-    const CONTENT: Self = Self { has_content: true };
-
-    fn since(output: &[Line], start: usize) -> Self {
-        Self {
-            has_content: output.len() > start,
-        }
-    }
 }
 
 pub(super) fn visit(node: &StructuredNode, visitor: &mut impl FnMut(&StructuredNode)) {
@@ -227,15 +210,14 @@ fn render(
                     .get(position + 1)
                     .map(|next| index.first_block(ir, next))
                     .unwrap_or(scope.following);
-                summary.has_content |= render(
+                summary.include(render(
                     child,
                     ir,
                     index,
                     Scope { following, ..scope },
                     indent,
                     output,
-                )
-                .has_content;
+                ));
                 position += 1;
             }
         }
@@ -245,7 +227,7 @@ fn render(
         StructuredKind::Transfer { edge } => {
             let start = output.len();
             transfer(node.id, *edge, ir, index, scope, indent, output);
-            summary = RenderSummary::since(output, start);
+            summary = RenderSummary::from_content(output.len() > start);
         }
         StructuredKind::If {
             condition,
@@ -278,7 +260,7 @@ fn render(
             let else_start = output.len();
             emit(output, owner, indent, "} else {");
             let otherwise = render(else_branch, ir, index, scope, indent + 1, output);
-            if scope.lifted.is_some() && !otherwise.has_content {
+            if scope.lifted.is_some() && !otherwise.has_content() {
                 // Remove only this tentative separator and its contextual rows;
                 // the final brace still closes the then branch. Each subtree
                 // renders once into the shared buffer, without rescanning it.
@@ -526,7 +508,7 @@ fn body(
                 ),
             );
         }
-        return RenderSummary::since(output, content_start);
+        return RenderSummary::from_content(output.len() > content_start);
     }
     for op in &block.operations {
         if let Some(reason) = fault_reason(op, ir, index) {
@@ -545,7 +527,7 @@ fn body(
         }
         emit(output, op.id, indent, operation(op, ir, index));
     }
-    RenderSummary::since(output, content_start)
+    RenderSummary::from_content(output.len() > content_start)
 }
 
 fn transfer(

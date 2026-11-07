@@ -4,7 +4,7 @@ import json
 import re
 
 from playwright.sync_api import expect
-from web_test_decompile_alignment import code_label, copy_code
+from web_test_decompile_alignment import code_label, copy_code, scan_document
 from web_test_decompile_helpers import (choose_stage, inspector_control, observed,
                                        open_decompiler, prepare, stage, submit)
 from web_test_decompile_review import selected_row, source_descendant
@@ -16,6 +16,9 @@ from web_test_registry import SOURCE_ROOT
 # Matches the independent native Web fixture, with two distinct continuations.
 SHARED = ("60075f35601e565b6001556002556016602035601e565b60035560045500"
           "5b80604052805f5560206040a0600554600101600555600654600755603d565b806001019156")
+# Kept byte-for-byte equal to the relocatable core token_only_else fixture.
+TOKEN_ONLY_ELSE = ("61000a60003561001d565b60015561001860203561001d565b600255005b80604052"
+                   "806000558061002f57610041565b8060605260206040a080600355806004555b6001019056")
 UNSHARED = "5f356040525f546001015f5500"
 DEPENDENCIES = "Show state dependencies"
 ANNOTATIONS = "Show structure annotations"
@@ -144,6 +147,112 @@ def corrupt_publication(context, page, canvas, retained, retained_text, mutation
         page.unroute(pattern, corrupt)
 
 
+def token_only_else(context, page, canvas):
+    artifact, _ = submit(context, page, canvas, TOKEN_ONLY_ELSE, "shared-procedures-empty-else")
+    assert artifact["completion"] == "complete", artifact["diagnostics"]
+    current, program = raw_witness(artifact)
+    assert len(program["procedures"]) == 1 and len(program["invocations"]) == 2
+    procedure = program["procedures"][0]
+    nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
+    assert "if" in nodes[procedure["body"]], "the If itself must be certified and shared"
+    branch = nodes[procedure["body"]]["if"]
+    high_blocks = {block["block"]: block for block in program["blocks"]}
+    transfers = {transfer["edge"]: transfer for transfer in program["transfers"]}
+    pending, edges, annotations = [branch["else_branch"]], set(), set()
+    while pending:
+        kind = nodes[pending.pop()]
+        if "sequence" in kind:
+            pending.extend(kind["sequence"])
+        elif "transfer" in kind:
+            edge = kind["transfer"]["edge"]
+            assert not transfers[edge]["arguments"], "else must have no live word transfer"
+            edges.add(edge)
+        else:
+            assert "block" in kind, "else must contain no other control or terminal"
+            block = kind["block"]["block"]
+            assert not high_blocks[block]["statements"], "else must have no retained operation"
+            annotations.add("// block b" + block)
+    assert len(edges) == 2 and len(annotations) == 1
+    blocks = {block["id"]: block for block in current["ir"]["blocks"]}
+    raw_edges = {edge["id"]: edge for edge in current["ir"]["edges"]}
+    tokens = []
+    for identity in sorted(edges, key=int):
+        edge = raw_edges[identity]
+        target = blocks[edge["to"]]
+        tokens.extend([
+            (identity, f"m{target['memory_parameter']} = m{edge['memory']}; // memory token on e{identity}"),
+            (identity, f"q{target['effect_parameter']} = q{edge['effect']}; // effect token on e{identity}"),
+        ])
+    high(page, canvas)
+    snapshots = {}
+    for dependencies, structure in [(False, False), (True, False), (True, True), (False, True), (False, False)]:
+        set_control(page, canvas, DEPENDENCIES, dependencies)
+        set_control(page, canvas, ANNOTATIONS, structure)
+        text = painted_copy(page, canvas)
+        key = (dependencies, structure)
+        assert key not in snapshots or snapshots[key] == text, "toggle roundtrip changed a cached projection"
+        snapshots[key] = text
+        lines = [line.strip() for line in text.splitlines()]
+        assert lines.count("} else {") == int(dependencies), "only displayed state makes this else substantive"
+        assert lines.count(f"if ((v{procedure['interface']['inputs'][0]} != 0)) {{") == 1
+        for _, token in tokens:
+            assert (token in lines) == dependencies
+        for annotation in annotations:
+            assert (annotation in lines) == (dependencies and structure)
+        assert text.count("sstore(slot = 0x3,") == text.count("sstore(slot = 0x4,") == 1
+        assert text.count("log0(") == 1, "the substantive true arm must survive every display mode"
+    for dependencies in [False, True]:
+        assert without_structure(snapshots[dependencies, True]) == snapshots[dependencies, False].splitlines()
+    for structure in [False, True]:
+        projected = [line for line in without_state(snapshots[True, structure], current)
+                     if line.strip() != "} else {" and line.strip() not in annotations]
+        assert projected == snapshots[False, structure].splitlines(), "only this typed empty arm may disappear"
+    reading = snapshots[False, False]
+    source_descendant(page, canvas, artifact, current["id"], procedure["body"])
+    # Source nodes keep their raw navigation routes. The same entity must still
+    # select its retained high row when the display tab is chosen explicitly.
+    ui_control(page, "Structured code", role="tab", selected=True)
+    high(page, canvas)
+    selected_row(page, "decompile-code", "if (")
+    assert painted_copy(page, canvas) == reading
+    set_control(page, canvas, DEPENDENCIES, True)
+    edge, token = tokens[0]
+    source_descendant(page, canvas, artifact, current["id"], edge)
+    ui_control(page, "IR", role="tab", selected=True)
+    high(page, canvas)
+    selected_row(page, "decompile-code", token)
+    assert painted_copy(page, canvas) == snapshots[True, False]
+    set_control(page, canvas, DEPENDENCIES, False)
+    assert painted_copy(page, canvas) == reading
+    choose_stage(page, canvas, artifact, "structured")
+    click_control(page, canvas, "Structured code", role="tab")
+    # The duplicated raw witness exceeds one bounded viewport. Reuse the real
+    # overlapping-window collector instead of increasing the canvas size.
+    resize_view(page, 1920, 2300)
+    raw_text = copy_code(page, canvas)
+    raw_samples, raw_rows = scan_document(
+        context, page, raw_text.splitlines(), "shared-empty-else-raw")
+    assert [raw_rows[index]["source"] for index in range(len(raw_rows))] == raw_text.splitlines()
+    copy_code(page, canvas, raw_text)
+    assert raw_text.count("} else {") == 2, "raw Structured keeps both original caller branches"
+    assert all(token in [line.strip() for line in raw_text.splitlines()] for _, token in tokens)
+    choose_stage(page, canvas, artifact, "lifted")
+    high(page, canvas)
+    assert painted_copy(page, canvas) == reading
+    raw_witness(artifact)
+    counts = {f"dependencies={dependencies},annotations={structure}": {
+        "text": text, "bytes": len(text.encode("utf-8"))}
+        for (dependencies, structure), text in snapshots.items()}
+    (context.output / "shared-empty-else-toggle-text.json").write_text(json.dumps(counts, indent=2) + "\n")
+    canvas.screenshot(path=str(context.output / "shared-procedures-empty-else.png"))
+    return {"artifact": artifact["id"], "runtime_bytes": len(bytes.fromhex(TOKEN_ONLY_ELSE)),
+            "if_source": procedure["body"], "false_arm_edges": sorted(edges, key=int),
+            "restored_state_rows": len(tokens), "default_bytes": len(reading.encode("utf-8")),
+            "state_bytes": len(snapshots[True, False].encode("utf-8")),
+            "raw_bytes": len(raw_text.encode("utf-8")),
+            "raw_rows": len(raw_rows), "raw_windows": len(raw_samples)}
+
+
 def run(context):
     page, canvas, _, _ = open_decompiler(context)
     # Native canvas rows remain virtualized. This compact fixture fits even
@@ -224,6 +333,8 @@ def run(context):
     for mutation in ["body", "continuation"]:
         corrupt_publication(context, page, canvas, artifact, reading, mutation)
 
+    empty_else = token_only_else(context, page, canvas)
+
     loop_code = (SOURCE_ROOT / "crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex").read_text().strip()
     loop_artifact, _ = submit(context, page, canvas, loop_code, "shared-procedures-loop-state")
     loop_current, loop_program = raw_witness(loop_artifact)
@@ -262,5 +373,6 @@ def run(context):
     return {"artifact": artifact["id"], "procedures": len(program["procedures"]),
             "invocations": len(program["invocations"]), "raw_bytes": raw_bytes,
             "high_bytes": high_bytes, "loop_artifact": loop_artifact["id"],
+            "empty_else": empty_else,
             "definition_state_rows": len(state_tokens),
             "rejected_artifact": rejected["id"], "webgpu": gpu}

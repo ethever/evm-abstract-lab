@@ -2,7 +2,10 @@
 //! small source program/DAG, including cancellation inside a shared expression.
 use super::{export_text, export_text_with_observer};
 use crate::{Artifact, Cancellation, StageKind, TextExportStatus};
-use crate::{Completion, Config, Fork, Input, decompile};
+use crate::{
+    Completion, Config, EntityId, Fork, Input, LiftedBlock, LiftedProgram, StructuredKind,
+    StructuredNode, StructuredProgram, decompile,
+};
 
 fn shared_expression() -> Artifact {
     let mut bytes = vec![0x5f, 0x35];
@@ -44,4 +47,84 @@ fn semantic_expression_expansion_charges_work_and_checks_cancellation() {
     let result = export_text_with_observer(&artifact, &Cancellation::new(), 2_048, |_| {});
     assert_eq!(result.status, TextExportStatus::Limited);
     assert!(result.work <= 2_048);
+}
+
+fn node(id: u64, kind: StructuredKind) -> StructuredNode {
+    StructuredNode {
+        id: EntityId(id),
+        kind,
+    }
+}
+
+// Isolated presentation fixture: the empty block exercises the renderer's
+// content summary, rather than claiming a new engine transformation proof.
+fn branch_artifact(otherwise: StructuredNode) -> Artifact {
+    let mut artifact = decompile(&Input::new(vec![0x00], Fork::Osaka), &Config::default());
+    let stage = artifact.stages.last_mut().unwrap();
+    let block = stage.ir.blocks[0].id;
+    stage.ir.lifted = Some(LiftedProgram {
+        blocks: vec![LiftedBlock {
+            id: EntityId(101),
+            block,
+            parameters: vec![],
+            statements: vec![],
+            condition: None,
+            target: None,
+            exit_values: vec![],
+        }],
+        ..LiftedProgram::default()
+    });
+    stage.ir.structured = Some(StructuredProgram {
+        root: node(
+            200,
+            StructuredKind::If {
+                condition: EntityId(999),
+                then_branch: Box::new(node(201, StructuredKind::Sequence(vec![]))),
+                else_branch: Box::new(otherwise),
+            },
+        ),
+    });
+    artifact
+}
+
+#[test]
+fn high_export_omits_an_empty_block_else_and_keeps_the_whole_if() {
+    let mut artifact = branch_artifact(node(202, StructuredKind::Sequence(vec![])));
+    let stage = artifact.stages.last_mut().unwrap();
+    let block = stage.ir.blocks[0].id;
+    let StructuredKind::If { else_branch, .. } =
+        &mut stage.ir.structured.as_mut().unwrap().root.kind
+    else {
+        unreachable!()
+    };
+    **else_branch = node(202, StructuredKind::Block { block });
+    let original = artifact.clone();
+    let result = export_text(&artifact, &Cancellation::default());
+    assert_eq!(result.status, TextExportStatus::Complete);
+    assert_eq!(result.text.matches("if (").count(), 1, "{}", result.text);
+    assert!(!result.text.contains("} else {"), "{}", result.text);
+    assert!(result.text.ends_with("{\n}\n"), "{}", result.text);
+    assert_eq!(artifact, original);
+}
+
+#[test]
+fn high_export_retains_an_empty_nested_if_as_else_content() {
+    let artifact = branch_artifact(node(
+        202,
+        StructuredKind::If {
+            condition: EntityId(998),
+            then_branch: Box::new(node(203, StructuredKind::Sequence(vec![]))),
+            else_branch: Box::new(node(204, StructuredKind::Sequence(vec![]))),
+        },
+    ));
+    let result = export_text(&artifact, &Cancellation::default());
+    assert_eq!(result.status, TextExportStatus::Complete);
+    assert_eq!(result.text.matches("if (").count(), 2, "{}", result.text);
+    assert_eq!(
+        result.text.matches("} else {").count(),
+        1,
+        "{}",
+        result.text
+    );
+    assert!(result.text.ends_with("    }\n}\n"), "{}", result.text);
 }
