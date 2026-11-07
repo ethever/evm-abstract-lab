@@ -177,7 +177,7 @@ fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
             "the outer ordinary branch must remain"
         );
         let failure = program.transfer(guard.failure_edge).unwrap();
-        assert_eq!(lines.iter().any(|line| line.entity == failure.id), false);
+        assert!(!lines.iter().any(|line| line.entity == failure.id));
     }
 }
 
@@ -549,10 +549,7 @@ fn both_polarities_share_require_rows_clipboard_inspector_and_source_navigation(
                         show_structure_annotations: annotations,
                     },
                 );
-                assert_eq!(
-                    lines.iter().any(|line| line.entity == failed_transfer.id),
-                    false
-                );
+                assert!(!lines.iter().any(|line| line.entity == failed_transfer.id));
                 assert_eq!(lines.iter().filter(|line| line.text == expected).count(), 1);
             }
         }
