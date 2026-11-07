@@ -361,6 +361,22 @@ impl<P: FnMut(Progress)> Builder<P> {
                 // entire shared failure/pass/containing tree's spans into
                 // every guard. Predicate, block and edge spans anchor its row;
                 // the referenced raw nodes retain their own complete origins.
+                if matches!(
+                    record,
+                    Record::SharedProcedure(_) | Record::SharedInvocation(_)
+                ) {
+                    // Retain one real source anchor per body/site. The checked
+                    // source map keeps complete navigation without copying a
+                    // whole subtree span list into every invocation's history.
+                    if let Some(span) = prior_sources
+                        .get(parent)
+                        .or_else(|| direct.get(&parent.entity))
+                        .and_then(|s| s.first())
+                    {
+                        source.push(*span);
+                    }
+                    continue;
+                }
                 if let Record::LiftedControl(control) = record
                     && let Some(guard) = &control.guard
                     && (parent.entity == control.node
@@ -589,6 +605,8 @@ fn inferred_parents(record: &Record<'_>) -> Vec<EntityId> {
             _ => Vec::new(),
         },
         Record::LiftedBlock(b) => vec![b.block],
+        Record::SharedProcedure(p) => vec![p.body],
+        Record::SharedInvocation(i) => vec![i.source],
         Record::LiftedRevert(r) => std::iter::once(r.block)
             .chain([r.operation, r.memory, r.offset, r.size])
             .chain(r.writes.iter().copied())

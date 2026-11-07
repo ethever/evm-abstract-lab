@@ -15,7 +15,7 @@ enum Row {
     Terminator(usize),
     Edge(usize),
     Value(usize),
-    Lifted(EntityId),
+    Lifted(EntityId, Option<String>),
     Heading(&'static str),
 }
 
@@ -37,11 +37,6 @@ impl Ir {
     ) {
         let title = if before { "Before IR" } else { "Current IR" };
         let index = state.index.stage(stage.id);
-        let renderer = stage
-            .ir
-            .lifted
-            .as_ref()
-            .map(|program| program.render_index(&stage.ir));
         let identity = egui::Id::new((&artifact.id.0, stage.id.0, title));
         if self.identity != Some(identity) {
             self.identity = Some(identity);
@@ -49,7 +44,7 @@ impl Ir {
             if let Some(program) = &stage.ir.lifted {
                 self.rows.push(Row::Heading("Lifted high-level entities"));
                 lifted::visit(program, &mut |entity, _| {
-                    self.rows.push(Row::Lifted(entity))
+                    self.rows.push(Row::Lifted(entity, None))
                 });
                 self.rows.push(Row::Heading("Raw semantic witness"));
             }
@@ -93,16 +88,32 @@ impl Ir {
             scroll = scroll.vertical_scroll_offset(rows::offset(ui, position));
         }
         scroll.show_rows(ui, rows::HEIGHT, self.rows.len(), |ui, range| {
+            let work = index.render_work();
+            // These strings describe an immutable stage. Reuse rows already
+            // visited instead of repeating source certification on every paint;
+            // raw-only windows need no semantic renderer at all.
+            let renderer = self.rows[range.clone()]
+                .iter()
+                .any(|row| matches!(row, Row::Lifted(_, None)))
+                .then(|| {
+                    stage.ir.lifted.as_ref().map(|program| {
+                        program
+                            .render_base_index_with_budget(&stage.ir, |amount| work.reserve(amount))
+                    })
+                })
+                .flatten();
             for position in range {
                 rows::row(ui, position, |ui| {
-                    let row = &self.rows[position];
+                    let row = &mut self.rows[position];
+                    let entity = row.entity(stage);
                     let text = row.text(
                         stage,
                         &index,
                         &artifact.input.runtime_bytecode,
                         renderer.as_ref(),
+                        &work,
                     );
-                    if let Some(entity) = row.entity(stage) {
+                    if let Some(entity) = entity {
                         let visible = entity_line(
                             ui,
                             artifact,
@@ -139,16 +150,17 @@ impl Row {
             }
             Self::Edge(index) => Some(stage.ir.edges[index].id),
             Self::Value(index) => Some(stage.ir.values[index].id),
-            Self::Lifted(entity) => Some(entity),
+            Self::Lifted(entity, _) => Some(entity),
             Self::Heading(_) => None,
         }
     }
     fn text(
-        &self,
+        &mut self,
         stage: &Stage,
         index: &StageIndex,
         bytecode: &[u8],
         renderer: Option<&LiftedRenderIndex<'_>>,
+        work: &lifted::work::Work,
     ) -> String {
         if stage.kind == StageKind::Decoded {
             return match *self {
@@ -168,7 +180,7 @@ impl Row {
                     "Recovery pending; decoded instructions do not establish a continuation".into()
                 }
                 Self::Heading(_) => "Original decode metadata (not recovered SSA)".into(),
-                Self::Lifted(_) => "Unavailable lifted entity in original decode".into(),
+                Self::Lifted(_, _) => "Unavailable lifted entity in original decode".into(),
                 Self::Edge(position) => format!(
                     "Decoded edge e{} · not a recovered SSA transfer",
                     stage.ir.edges[position].id.0
@@ -216,12 +228,16 @@ impl Row {
                 format!("v{}: {:?} · {:?}", value.id.0, value.kind, value.fact)
             }
             Self::Heading(text) => text.into(),
-            Self::Lifted(entity) => renderer
-                .and_then(|renderer| lifted::details(stage, index, entity, renderer))
-                .map_or_else(
-                    || format!("Unavailable lifted entity {}", entity.0),
-                    |details| details.lines.join(" · "),
-                ),
+            Self::Lifted(entity, ref mut text) => text
+                .get_or_insert_with(|| {
+                    renderer
+                        .and_then(|renderer| lifted::details(stage, index, entity, renderer, work))
+                        .map_or_else(
+                            || format!("Unavailable lifted entity {}", entity.0),
+                            |details| details.lines.join(" · "),
+                        )
+                })
+                .clone(),
         }
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 use evm_abstract_protocol::{DecompileJobResult, DecompileLimits};
 use evm_abstract_server::jobs::Pool;
 
-fn fetch(input: &DecompileRequest, assets: &Assets, pool: &Pool) -> DecompileJobResult {
+pub(super) fn fetch(input: &DecompileRequest, assets: &Assets, pool: &Pool) -> DecompileJobResult {
     let body = serde_json::to_string(input).unwrap();
     let (headers, accepted): (_, DecompileJobReply) = decode(&exchange_with_pool(
         &submit_request(&body, "http://localhost"),
@@ -66,7 +66,7 @@ fn real_compressed_http_preserves_error_bytes_lazy_ranges_sources_and_legacy_ver
         let result = fetch(&input, &assets, &pool);
         let artifact = &result.artifact;
         assert_eq!(artifact.completion, Completion::Complete);
-        assert_eq!(artifact.schema_version, 4);
+        assert_eq!(artifact.schema_version, 5);
         assert!(artifact.admits_schema());
         let stage = artifact.current().unwrap();
         let program = stage.ir.lifted.as_ref().unwrap();

@@ -7,11 +7,11 @@
 use crate::{EntityId, U256};
 use serde::{Deserialize, Serialize};
 
-mod codec;
+pub(crate) mod codec;
 mod evaluate;
 mod payload;
-mod render;
-mod sources;
+pub(crate) mod render;
+pub(crate) mod sources;
 mod validate;
 pub use payload::{LiftedConstruction, LiftedErrorPayload, LiftedRevert, MAX_ERROR_PAYLOAD_BYTES};
 pub use render::{LiftedRenderError, LiftedRenderIndex};
@@ -327,6 +327,12 @@ pub struct LiftedProgram {
     /// Exact source statement ranges retaining lazy original fault semantics.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub constructions: Vec<LiftedConstruction>,
+    /// Canonical source code definitions, checked independently of discovery.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub procedures: Vec<crate::SharedProcedure>,
+    /// Exact nonoverlapping source occurrences and expansion correspondences.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub invocations: Vec<crate::SharedInvocation>,
 }
 /// A typed evaluation result; callers cannot confuse word 2 with truth true.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -353,6 +359,8 @@ pub enum LiftedModelError {
     GuardSource(EntityId),
     /// Invalid bounded payload, terminal witness, or construction reference.
     Payload(EntityId),
+    /// Malformed bounded procedure interface, map, dependency or invocation.
+    Procedure(EntityId),
 }
 impl std::fmt::Display for LiftedModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -362,6 +370,10 @@ impl std::fmt::Display for LiftedModelError {
 impl std::error::Error for LiftedModelError {}
 
 impl LiftedProgram {
+    /// Whether schema-5 procedure semantics are present.
+    pub fn has_procedures(&self) -> bool {
+        !self.procedures.is_empty() || !self.invocations.is_empty()
+    }
     /// Whether schema-4 payload or construction semantics are present.
     pub fn has_payloads(&self) -> bool {
         !self.payloads.is_empty()
@@ -382,6 +394,14 @@ impl LiftedProgram {
     pub fn record_count(&self) -> usize {
         self.entity_ids()
             .count()
+            .saturating_add(self.procedures.iter().fold(0_usize, |n, p| {
+                n.saturating_add(p.interface.record_count())
+                    .saturating_add(1)
+            }))
+            .saturating_add(self.invocations.iter().fold(0_usize, |n, i| {
+                n.saturating_add(i.bindings.len().saturating_mul(2))
+                    .saturating_add(5)
+            }))
             .saturating_add(self.failures.len())
             .saturating_add(self.payloads.iter().fold(0_usize, |n, p| {
                 n.saturating_add(p.message.len())
@@ -430,5 +450,7 @@ impl LiftedProgram {
             .chain(self.payloads.iter().map(|p| p.id))
             .chain(self.reverts.iter().map(|r| r.id))
             .chain(self.constructions.iter().map(|c| c.id))
+            .chain(self.procedures.iter().map(|p| p.id))
+            .chain(self.invocations.iter().map(|i| i.id))
     }
 }

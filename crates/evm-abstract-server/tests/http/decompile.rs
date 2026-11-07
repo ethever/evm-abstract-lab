@@ -2,6 +2,8 @@
 mod budgets;
 #[path = "decompile/error_payloads.rs"]
 mod error_payloads;
+#[path = "decompile/shared_procedures.rs"]
+mod shared_procedures;
 
 use super::{Assets, decoded_content, exchange_with_pool, header_value, pool, read_response};
 use evm_abstract_protocol::{
@@ -419,7 +421,7 @@ fn lifted_predicates_and_origins_cross_the_compressed_result_protocol() {
         artifact.diagnostics
     );
     let program = current.ir.lifted.as_ref().unwrap();
-    assert_eq!(artifact.schema_version, 4);
+    assert_eq!(artifact.schema_version, 5);
     assert!(artifact.admits_schema());
     assert!(!program.failures.is_empty());
     let guard_control = program

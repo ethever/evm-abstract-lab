@@ -32,6 +32,38 @@ pub(super) fn show(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState) {
                     let response = ui.label(text);
                     controls::observe(ui, &response, text, "decompile-entity-detail", None);
                 }
+                if let Some(stage) = artifact.stage(selected.stage)
+                    && let Some(invocation) = state
+                        .index
+                        .stage(selected.stage)
+                        .invocation(&stage.ir, selected.entity)
+                {
+                    framework::section(ui, "Procedure source bindings", |ui| {
+                        ui.label("Canonical entity → caller entity");
+                        egui::ScrollArea::vertical()
+                            .id_salt(("procedure_bindings", selected.stage.0, selected.entity.0))
+                            .max_height(160.0)
+                            .show_rows(ui, rows::HEIGHT, invocation.bindings.len(), |ui, range| {
+                                for position in range {
+                                    rows::row(ui, position, |ui| {
+                                        let binding = invocation.bindings[position];
+                                        let text = format!(
+                                            "e{} → e{}",
+                                            binding.formal.0, binding.actual.0
+                                        );
+                                        let response = ui.monospace(&text);
+                                        controls::observe(
+                                            ui,
+                                            &response,
+                                            &text,
+                                            "decompile-procedure-binding",
+                                            None,
+                                        );
+                                    });
+                                }
+                            });
+                    });
+                }
                 framework::section(ui, "Entity references", |ui| {
                     links(ui, artifact, state, &details.references, "Reference")
                 });

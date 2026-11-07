@@ -7,7 +7,7 @@ use super::{LiftedBlock, LiftedExpression, LiftedModelError, LiftedProgram, Lift
 use crate::{Edge, EdgeKind, EntityId, Ir, StructuredKind, StructuredNode, Terminator};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) struct GuardSources<'a> {
+pub(crate) struct GuardSources<'a> {
     pub nodes: BTreeMap<EntityId, &'a StructuredNode>,
     pub omissions: BTreeMap<(EntityId, usize), usize>,
     pub error: Option<LiftedModelError>,

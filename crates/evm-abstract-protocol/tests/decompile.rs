@@ -290,14 +290,14 @@ fn error_reply() -> evm_abstract_protocol::DecompileJobResultReply {
 }
 
 #[test]
-fn schema_four_exact_error_bytes_and_lazy_construction_links_survive_the_result_envelope() {
+fn exact_error_bytes_and_lazy_construction_links_survive_the_result_envelope() {
     use evm_abstract_protocol::DecompileJobResultReply;
     let reply = error_reply();
     let encoded = serde_json::to_vec(&reply).unwrap();
     let restored: DecompileJobResultReply = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(restored, reply);
     let artifact = &restored.result.as_ref().unwrap().artifact;
-    assert_eq!(artifact.schema_version, 4);
+    assert_eq!(artifact.schema_version, 5);
     assert!(artifact.admits_schema());
     for old in [1, 2, 3] {
         let mut wrong = artifact.clone();
@@ -311,6 +311,68 @@ fn schema_four_exact_error_bytes_and_lazy_construction_links_survive_the_result_
     assert_eq!(program.payloads[0].bytes.len(), 100);
     assert_eq!(&program.payloads[0].bytes[88..], &[0_u8; 12]);
     assert_eq!(program.constructions[0].revert, program.reverts[0].id);
+}
+
+#[test]
+fn schema_five_procedure_invocation_entities_and_sparse_maps_survive_result_envelope() {
+    use evm_abstract_protocol::decompile_model::{
+        SharedBinding, SharedInterface, SharedInvocation, SharedProcedure,
+    };
+    let mut reply = guard_reply();
+    let artifact = &mut reply.result.as_mut().unwrap().artifact;
+    let stage = artifact.stages.last_mut().unwrap();
+    let high = stage.ir.lifted.as_mut().unwrap();
+    let procedure = EntityId(u64::MAX - 20);
+    high.procedures.push(SharedProcedure {
+        id: procedure,
+        body: EntityId(1002),
+        interface: SharedInterface {
+            inputs: vec![EntityId(2000), EntityId(2001)],
+            outputs: vec![EntityId(2002), EntityId(2003)],
+            memory_inputs: vec![EntityId(2004)],
+            memory_outputs: vec![EntityId(2005)],
+            effect_inputs: vec![EntityId(2006)],
+            effect_outputs: vec![EntityId(2007)],
+            continuations: vec![],
+        },
+    });
+    high.invocations.push(SharedInvocation {
+        id: EntityId(u64::MAX - 19),
+        procedure,
+        source: EntityId(1003),
+        owner: Some(EntityId(1002)),
+        position: 1,
+        continuation: Some(EntityId(1004)),
+        bindings: vec![SharedBinding {
+            formal: EntityId(2000),
+            actual: EntityId(u64::MAX - 18),
+        }],
+    });
+    assert!(artifact.admits_schema());
+    let wire = serde_json::to_vec(&reply).unwrap();
+    let restored: evm_abstract_protocol::DecompileJobResultReply =
+        serde_json::from_slice(&wire).unwrap();
+    assert_eq!(restored, reply);
+    let artifact = &restored.result.as_ref().unwrap().artifact;
+    let high = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
+    assert_eq!(high.procedures.len(), 1);
+    assert_eq!(high.invocations.len(), 1);
+    assert_eq!(
+        high.invocations[0].actual(EntityId(2000)),
+        Some(EntityId(u64::MAX - 18))
+    );
+    assert_eq!(
+        high.invocations[0].actual(EntityId(2001)),
+        Some(EntityId(2001))
+    );
+    for version in [1, 2, 3, 4] {
+        let mut old = artifact.clone();
+        old.schema_version = version;
+        assert!(
+            !old.admits_schema(),
+            "new executable records advertised as v{version}"
+        );
+    }
 }
 
 #[test]

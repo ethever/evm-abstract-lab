@@ -12,6 +12,7 @@ impl LiftedProgram {
         if self.record_count() > MAX_LIFTED_RECORDS {
             return Err(LiftedModelError::RecordLimit);
         }
+        self.validate_shared_model()?;
         let mut ids = BTreeSet::new();
         for id in self.entity_ids() {
             if id.0 == 0 || !ids.insert(id) {

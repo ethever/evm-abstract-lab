@@ -78,13 +78,13 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Bounded<T> {
 /// program's cross-arena validation. One bounded item may be decoded to learn
 /// its weight; an oversized prefix never allocates the remaining arena.
 #[derive(Serialize)]
-pub struct Weighted<T>(Vec<T>);
+pub(crate) struct Weighted<T>(pub(crate) Vec<T>);
 impl<T> Default for Weighted<T> {
     fn default() -> Self {
         Self(Vec::new())
     }
 }
-pub trait WireWeight {
+pub(crate) trait WireWeight {
     fn wire_weight(&self) -> usize;
 }
 impl WireWeight for LiftedErrorPayload {
@@ -135,6 +135,8 @@ strict_record! { pub struct ProgramWire {
     pub payloads: Weighted<LiftedErrorPayload> = Weighted::default(),
     pub reverts: Weighted<LiftedRevert> = Weighted::default(),
     pub constructions: Weighted<LiftedConstruction> = Weighted::default(),
+    pub procedures: Weighted<crate::SharedProcedure> = Weighted::default(),
+    pub invocations: Weighted<crate::SharedInvocation> = Weighted::default(),
 } }
 impl<'de> Deserialize<'de> for LiftedProgram {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -148,6 +150,8 @@ impl<'de> Deserialize<'de> for LiftedProgram {
             payloads: wire.payloads.0,
             reverts: wire.reverts.0,
             constructions: wire.constructions.0,
+            procedures: wire.procedures.0,
+            invocations: wire.invocations.0,
         };
         program.validate().map_err(serde::de::Error::custom)?;
         Ok(program)
@@ -156,3 +160,14 @@ impl<'de> Deserialize<'de> for LiftedProgram {
 
 #[cfg(test)]
 mod tests;
+
+impl WireWeight for crate::SharedProcedure {
+    fn wire_weight(&self) -> usize {
+        2 + self.interface.record_count()
+    }
+}
+impl WireWeight for crate::SharedInvocation {
+    fn wire_weight(&self) -> usize {
+        6_usize.saturating_add(self.bindings.len().saturating_mul(2))
+    }
+}

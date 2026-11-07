@@ -286,14 +286,19 @@ impl Artifact {
     pub fn admits_schema(&self) -> bool {
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
-            3 => self
+            4 => self
                 .stages
                 .iter()
-                .all(|s| s.ir.lifted.as_ref().is_none_or(|p| !p.has_payloads())),
+                .all(|s| s.ir.lifted.as_ref().is_none_or(|p| !p.has_procedures())),
+            3 => self.stages.iter().all(|s| {
+                s.ir.lifted
+                    .as_ref()
+                    .is_none_or(|p| !p.has_payloads() && !p.has_procedures())
+            }),
             2 => self.stages.iter().all(|s| {
                 s.ir.lifted
                     .as_ref()
-                    .is_none_or(|p| !p.has_guards() && !p.has_payloads())
+                    .is_none_or(|p| !p.has_guards() && !p.has_payloads() && !p.has_procedures())
             }),
             1 => self
                 .stages
@@ -361,6 +366,8 @@ pub enum Record<'a> {
     LiftedPayload(&'a crate::LiftedErrorPayload),
     LiftedRevert(&'a crate::LiftedRevert),
     LiftedConstruction(&'a crate::LiftedConstruction),
+    SharedProcedure(&'a crate::SharedProcedure),
+    SharedInvocation(&'a crate::SharedInvocation),
 }
 #[doc(hidden)]
 pub fn records(ir: &Ir) -> BTreeMap<EntityId, Record<'_>> {
@@ -401,6 +408,12 @@ pub fn records(ir: &Ir) -> BTreeMap<EntityId, Record<'_>> {
         }
         for construction in &lifted.constructions {
             map.insert(construction.id, Record::LiftedConstruction(construction));
+        }
+        for p in &lifted.procedures {
+            map.insert(p.id, Record::SharedProcedure(p));
+        }
+        for i in &lifted.invocations {
+            map.insert(i.id, Record::SharedInvocation(i));
         }
         for control in &lifted.controls {
             map.insert(control.id, Record::LiftedControl(control));

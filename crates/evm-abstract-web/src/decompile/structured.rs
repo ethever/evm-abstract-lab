@@ -4,8 +4,8 @@
 use super::index::StageIndex;
 
 use evm_abstract_protocol::decompile_model::{
-    EntityId, ExitKind, Ir, LiftedRenderIndex, Operation, Stage, StructuredKind, StructuredNode,
-    Terminator, ValueKind,
+    EntityId, ExitKind, Ir, LiftedRenderError, LiftedRenderIndex, Operation, Stage, StructuredKind,
+    StructuredNode, Terminator, ValueKind,
 };
 
 mod dispatch;
@@ -22,6 +22,8 @@ struct Scope<'a> {
     following: Option<EntityId>,
     outer_loop: Option<LoopScope>,
     lifted: Option<&'a LiftedRenderIndex<'a>>,
+    work: Option<&'a super::lifted::work::Work>,
+    shared: bool,
     display: HighDisplayOptions,
 }
 impl Scope<'_> {
@@ -109,17 +111,25 @@ fn render_lines(
     lifted: bool,
     display: HighDisplayOptions,
 ) -> Vec<Line> {
-    // The shared semantic index is built once for this complete code batch.
+    let work = index.render_work();
+    // Shared proof and formatting are already cached on this immutable stage.
+    // This lightweight index cannot authorize procedure omissions on its own.
     let renderer = lifted
         .then(|| {
-            stage
-                .ir
-                .lifted
-                .as_ref()
-                .map(|program| program.render_index(&stage.ir))
+            stage.ir.lifted.as_ref().map(|program| {
+                program.render_base_index_with_budget(&stage.ir, |amount| work.reserve(amount))
+            })
         })
-        .flatten();
-    let mut output = Vec::new();
+        .flatten()
+        .filter(|renderer| renderer.validate_shared_sources() != Err(LiftedRenderError::Limit));
+    // Prepare complete definitions before allowing any call to replace its
+    // source occurrence. A formatting failure retains the full source tree.
+    let definitions = renderer
+        .as_ref()
+        .filter(|_| index.shared.error().is_none())
+        .and_then(|_| shared_definitions(&index.shared, display, &work));
+    let shared = definitions.is_some();
+    let mut output = definitions.unwrap_or_default();
     if let Some(program) = &stage.ir.structured {
         render(
             &program.root,
@@ -127,6 +137,8 @@ fn render_lines(
             index,
             Scope {
                 lifted: renderer.as_ref(),
+                work: Some(&work),
+                shared,
                 display,
                 ..Scope::default()
             },
@@ -135,6 +147,32 @@ fn render_lines(
         );
     }
     output
+}
+
+fn shared_definitions(
+    prepared: &super::lifted::shared::Prepared,
+    display: HighDisplayOptions,
+    work: &super::lifted::work::Work,
+) -> Option<Vec<Line>> {
+    let mut output = Vec::new();
+    for procedure in prepared.definitions() {
+        let header = procedure.header(display.show_state_dependencies);
+        if !work.reserve(header.len().saturating_add(1)) {
+            return None;
+        }
+        emit(&mut output, procedure.id, 0, header.to_owned());
+        for row in procedure.body(display.show_state_dependencies) {
+            if row.is_structure_annotation && !display.show_structure_annotations {
+                continue;
+            }
+            if !work.reserve(row.text.len().saturating_add(1)) {
+                return None;
+            }
+            emit(&mut output, row.entity, row.depth + 1, row.text.clone());
+        }
+        emit(&mut output, procedure.id, 0, "}");
+    }
+    Some(output)
 }
 
 fn emit(output: &mut Vec<Line>, entity: EntityId, indent: usize, text: impl Into<String>) {
@@ -153,6 +191,15 @@ fn render(
     indent: usize,
     output: &mut Vec<Line>,
 ) -> RenderSummary {
+    if scope.shared
+        && let Some((entity, text)) = index
+            .shared
+            .invocation(node.id, scope.display.show_state_dependencies)
+        && scope.work.is_some_and(|work| work.reserve(text.len()))
+    {
+        emit(output, entity, indent, text.to_owned());
+        return RenderSummary::CONTENT;
+    }
     let mut summary = RenderSummary::CONTENT;
     match &node.kind {
         StructuredKind::Sequence(nodes) => {

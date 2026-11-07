@@ -54,13 +54,33 @@ pub(crate) fn certify(ir: &Ir, cancel: &Cancellation) -> ValidationCheck {
         );
     }
     let mut canonical = program.clone();
+    canonical.procedures.clear();
+    canonical.invocations.clear();
     let ids = canonical
         .entity_ids()
         .enumerate()
         .map(|(i, id)| (id, EntityId(i as u64 + 1)))
         .collect();
     remap_program(&mut canonical, &ids);
-    let passed = canonical == expected.program && !cancel.is_cancelled();
+    // Candidate selection is intentionally excluded from base normal-form
+    // reconstruction; direct sharing admission follows this base proof.
+    canonical.procedures.clear();
+    canonical.invocations.clear();
+    let mut expected_program = expected.program;
+    expected_program.procedures.clear();
+    expected_program.invocations.clear();
+    if canonical != expected_program || cancel.is_cancelled() {
+        return fail(
+            "semantic projection differs from the certified normal form of its primitive witness"
+                .to_owned(),
+        );
+    }
+    // Sharing composes with the already checked base, guard and byte proofs.
+    // This validates supplied source maps directly, without rediscovery.
+    if let Err(error) = program.validate_shared_sources(ir, |_| !cancel.is_cancelled()) {
+        return fail(error.to_string());
+    }
+    let passed = !cancel.is_cancelled();
     ValidationCheck { name: "lifted_semantic_projection".to_owned(), passed,
         message: if passed { "checked typed scoped normal forms, anchored identity-copy equations, strict raw entry availability, retained primitive bindings, simultaneous live transfers and independent constant-memory byte replay and exact-payload rank/source/fallthrough certificates against raw witness" } else { "semantic projection differs from the certified normal form of its primitive witness" }.to_owned() }
 }

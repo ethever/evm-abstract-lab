@@ -8,7 +8,7 @@ fn high_with(stage: &Stage, display: HighDisplayOptions) -> Vec<structured::Line
 
 // Expected removable rows come from typed AST/IR witnesses. Fault comments and
 // executable rows are deliberately absent from this set.
-fn annotations(stage: &Stage) -> BTreeSet<(EntityId, String)> {
+pub(super) fn annotations(stage: &Stage) -> BTreeSet<(EntityId, String)> {
     let mut result = BTreeSet::new();
     let program = stage.ir.lifted.as_ref().unwrap();
     for block in &stage.ir.blocks {

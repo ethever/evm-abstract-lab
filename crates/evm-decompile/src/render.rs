@@ -121,18 +121,62 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
     index.blocks = stage.ir.blocks.iter().map(|b| (b.id, b)).collect();
     index.edges = stage.ir.edges.iter().map(|e| (e.id, e)).collect();
     index.lifted = stage.ir.lifted.as_ref();
-    index.lifted_renderer = stage.ir.lifted.as_ref().map(|p| p.render_index(&stage.ir));
+    index.lifted_renderer = stage
+        .ir
+        .lifted
+        .as_ref()
+        .map(|p| p.render_index_with_budget(&stage.ir, |work| index.pay(work)));
+    if index.stopped {
+        return index.finish(out);
+    }
     if let Some(error) = index
         .lifted_renderer
         .as_ref()
         .and_then(|renderer| renderer.validate_guard_sources().err())
     {
         let _ = writeln!(out, "// invalid lifted guard source topology: {error}");
+        // A malformed source overlay is distinct from exhausting the export
+        // ledger; finish() appends the latter's refusal/cancellation marker.
         return TextExport {
             text: out,
             status: TextExportStatus::Limited,
             work: count(index.budget.used()),
         };
+    }
+    let procedures: Vec<_> = index
+        .lifted_renderer
+        .as_ref()
+        .into_iter()
+        .flat_map(|r| r.procedures())
+        .collect();
+    for procedure in procedures {
+        let Some(header) =
+            index.semantic(|r, owner| r.render_procedure_header(procedure, true, |n| owner.pay(n)))
+        else {
+            return index.finish(out);
+        };
+        let _ = writeln!(out, "{header}");
+        let Some(rows) =
+            index.semantic(|r, owner| r.render_procedure_body(procedure, true, |n| owner.pay(n)))
+        else {
+            return index.finish(out);
+        };
+        for row in rows {
+            if row.is_structure_annotation {
+                continue;
+            }
+            if !index.pay(
+                row.text
+                    .len()
+                    .saturating_add(row.depth.saturating_mul(4))
+                    .saturating_add(5),
+            ) {
+                return index.finish(out);
+            }
+            indent(&mut out, row.depth + 1);
+            let _ = writeln!(out, "{}", row.text);
+        }
+        out.push_str("}\n\n");
     }
     if let Some(s) = &stage.ir.structured {
         syntax(&mut out, &s.root, &mut index, 0);
@@ -526,6 +570,20 @@ fn syntax(
     depth: usize,
 ) {
     if !ir.pay(1) {
+        return;
+    }
+    if let Some(invocation) = ir
+        .lifted_renderer
+        .as_ref()
+        .and_then(|r| r.shared_invocation(n.id))
+    {
+        let Some(text) =
+            ir.semantic(|r, owner| r.render_shared_invocation(invocation, true, |n| owner.pay(n)))
+        else {
+            return;
+        };
+        indent(out, depth);
+        let _ = writeln!(out, "{text}");
         return;
     }
     match &n.kind {
