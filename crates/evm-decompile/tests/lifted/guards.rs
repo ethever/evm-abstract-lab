@@ -184,12 +184,14 @@ fn transparent_chains_branching_dags_and_shared_revert_tails_are_certified() {
         assert!(guards(&artifact) >= 1, "{}", render_text(&artifact));
         checker::certificate(lifted(&artifact).0);
         for value in [0_u64, 1, 3] {
-            let (raw, host) = certify(
-                &input,
-                &artifact,
-                MemoryHost::new(&input, calldata(&[U256::from(value)])),
-            );
-            assert_eq!(reverted(&raw, &host).is_some(), value == 0);
+            for inner in [0_u64, 1, 3] {
+                let (raw, host) = certify(
+                    &input,
+                    &artifact,
+                    MemoryHost::new(&input, calldata(&[U256::from(value), U256::from(inner)])),
+                );
+                assert_eq!(reverted(&raw, &host).is_some(), value == 0);
+            }
         }
         assert_unchanged_witness(&artifact);
     }
@@ -531,6 +533,15 @@ fn reverting_loop_exits_and_unanchored_cycles_never_gain_finite_failure_ranks() 
             evm_decompile::execute_structured(stage, &mut initial.clone(), &limits).unwrap();
         assert_eq!(graph.outcome, raw.outcome);
         assert_eq!(structured.outcome, raw.outcome);
+        if exit {
+            let (raw, host) = super::oracle::certify(
+                &input,
+                &artifact,
+                MemoryHost::new(&input, calldata(&[U256::ZERO, U256::from(1)])),
+            );
+            assert_eq!(reverted(&raw, &host), Some(Vec::new()));
+            assert!(host.storage.is_empty());
+        }
     }
 }
 
@@ -557,16 +568,16 @@ fn a_false_eof_branch_is_a_successful_halt_not_a_missing_failure_successor() {
             })
             .unwrap();
         assert!(!program.failures.iter().any(|fact| fact.block == eof.id));
-        for value in [0_u64, 1] {
+        for (value, inner) in [(0_u64, 0_u64), (0, 1), (1, 0), (1, 1)] {
             let (raw, host) = super::oracle::certify(
                 &input,
                 &artifact,
-                MemoryHost::new(&input, calldata(&[U256::from(value)])),
+                MemoryHost::new(&input, calldata(&[U256::from(value), U256::from(inner)])),
             );
-            let expected = if value == 0 {
-                ExitKind::EndOfCode
-            } else if outer {
+            let expected = if outer && value != 0 {
                 ExitKind::Stop
+            } else if (if outer { inner } else { value }) == 0 {
+                ExitKind::EndOfCode
             } else {
                 ExitKind::Revert
             };

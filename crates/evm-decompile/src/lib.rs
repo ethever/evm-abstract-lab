@@ -1,7 +1,7 @@
 //! Offline local EVM recovery, immutable semantic IR and traceable structuring.
 //!
 //! Every instruction/result identity is allocated once before dataflow. Numeric
-//! facts use the shared finite EVM algebra; memory observations are scoped to
+//! facts use the shared product and relational EVM semantics; observations follow
 //! explicit dependencies. Unresolved jumps are represented exits, never evidence
 //! that a recovered graph is closed. Historical stages are owned snapshots.
 

@@ -1,7 +1,7 @@
 //! Distinguish the specified certificate domain from raw numeric facts and
 //! concrete termination; these regressions must fail under the former oracle.
 use super::*;
-use evm_decompile::{IndirectArm, LiftedExpressionKind, ValueFact};
+use evm_decompile::{IndirectArm, LiftedExpressionKind, ValueFact, ValueKind};
 
 #[test]
 fn typed_zero_seed_with_unknown_raw_size_keeps_independent_closure_and_execution() {
@@ -24,7 +24,58 @@ fn typed_zero_seed_with_unknown_raw_size_keeps_independent_closure_and_execution
             .op(0x55)
             .op(0x00);
         let input = asm.finish();
-        let artifact = checked(&input);
+        let mut artifact = checked(&input);
+        let raw_size = lifted(&artifact)
+            .0
+            .ir
+            .blocks
+            .iter()
+            .find_map(|block| {
+                if let Terminator::Exit {
+                    kind: ExitKind::Revert,
+                    values,
+                } = &block.terminator
+                {
+                    Some(values[1])
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        // Recovery now proves x^x and x-x itself. Keep this consumer test
+        // independent by supplying the equally sound, coarser raw witness:
+        // remove its numeric summary AND the pure-fold replacement. The
+        // original operation still computes zero; the typed proof must do so
+        // from its operands, without a raw constant shortcut.
+        for snapshot in &mut artifact.stages {
+            if let Some(operation) = snapshot
+                .ir
+                .blocks
+                .iter_mut()
+                .flat_map(|block| &mut block.operations)
+                .find(|operation| operation.outputs.contains(&raw_size))
+            {
+                assert_eq!(operation.opcode, opcode);
+                operation.replacement = None;
+                let kind = ValueKind::Operation {
+                    operation: operation.id,
+                    index: operation
+                        .outputs
+                        .iter()
+                        .position(|id| *id == raw_size)
+                        .unwrap(),
+                };
+                let value = snapshot
+                    .ir
+                    .values
+                    .iter_mut()
+                    .find(|value| value.id == raw_size)
+                    .unwrap();
+                value.kind = kind;
+                value.fact = ValueFact::Unknown;
+            }
+            assert_eq!(validate_stage(snapshot).status, ValidationStatus::Passed);
+        }
         let (stage, program) = lifted(&artifact);
         assert_eq!(guards(&artifact), 1);
         let failure = stage
@@ -53,6 +104,19 @@ fn typed_zero_seed_with_unknown_raw_size_keeps_independent_closure_and_execution
         assert_eq!(
             program.expression(size).unwrap().kind,
             LiftedExpressionKind::Word(U256::ZERO)
+        );
+        assert!(matches!(
+            stage.ir.value(raw_size).unwrap().kind,
+            ValueKind::Operation { .. }
+        ));
+        assert!(
+            failure
+                .operations
+                .iter()
+                .find(|op| op.outputs.contains(&raw_size))
+                .unwrap()
+                .replacement
+                .is_none()
         );
         assert!(empty_seed(stage, failure.id));
         assert!(failure_set(stage).contains(&failure.id));

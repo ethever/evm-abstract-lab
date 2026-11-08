@@ -58,7 +58,7 @@ fn body(asm: &mut Asm, failure: Failure) {
             empty(asm);
         }
         Failure::Diamond => {
-            asm.op(0x80)
+            asm.op(0x81)
                 .target("diamond_a")
                 .op(0x57)
                 .target("diamond_b")
@@ -158,6 +158,11 @@ fn body(asm: &mut Asm, failure: Failure) {
 
 pub(super) fn direct(failure_nonzero: bool, failure: Failure) -> Input {
     let mut asm = Asm::default();
+    if matches!(failure, Failure::Diamond) {
+        // Capture the independent inner choice before entering the transparent
+        // failure region. Reusing the outer word makes this diamond redundant.
+        asm.push(32).op(0x35);
+    }
     asm.op(0x5f).op(0x35).op(0x80);
     if failure_nonzero {
         asm.target("failure").op(0x57);
@@ -316,6 +321,11 @@ pub(super) fn partial_success() -> Input {
 
 pub(super) fn loop_failure(exit: bool) -> Input {
     let mut asm = Asm::default();
+    if exit {
+        // An independent captured word keeps both the infinite path and the
+        // terminating revert path feasible after the outer condition is zero.
+        asm.push(32).op(0x35);
+    }
     asm.op(0x5f)
         .op(0x35)
         .op(0x80)
@@ -323,7 +333,7 @@ pub(super) fn loop_failure(exit: bool) -> Input {
         .op(0x57)
         .dest("loop");
     if exit {
-        asm.op(0x80).target("exit").op(0x57);
+        asm.op(0x81).target("exit").op(0x57);
     }
     asm.target("loop").op(0x56);
     if exit {
@@ -337,9 +347,13 @@ pub(super) fn loop_failure(exit: bool) -> Input {
 
 pub(super) fn eof_branch(outer: bool) -> Input {
     let mut asm = Asm::default();
+    if outer {
+        asm.push(32).op(0x35);
+    }
     asm.op(0x5f).op(0x35);
     if outer {
-        asm.op(0x80).target("pass").op(0x57);
+        // The last JUMPI consumes the separately captured second word.
+        asm.target("pass").op(0x57);
     }
     asm.target("last").op(0x56).dest("fail");
     empty(&mut asm);

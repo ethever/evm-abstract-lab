@@ -876,8 +876,7 @@ fn unresolved_reentry_does_not_certify_conditional_facts_or_fold_them() {
     );
 }
 
-#[test]
-fn widening_jump_repropagates_stack_and_memory_to_retained_targets() {
+fn widening_jump_fixture(dynamic_memory: bool) -> (Input, usize) {
     // FIFO reaches source->known before a longer path contributes an unknown
     // target and changed carried values. The concrete unknown target is known.
     let mut a = Asm::default();
@@ -898,9 +897,13 @@ fn widening_jump_repropagates_stack_and_memory_to_retained_targets() {
         .dest("late1")
         .target("late2")
         .op(0x56)
-        .dest("late2")
-        .push(1)
-        .op(0x5f)
+        .dest("late2");
+    if dynamic_memory {
+        a.push(64).op(0x35);
+    } else {
+        a.push(1);
+    }
+    a.op(0x5f)
         .op(0x52)
         .push(1)
         .push(32)
@@ -928,83 +931,101 @@ fn widening_jump_repropagates_stack_and_memory_to_retained_targets() {
         .op(0x55)
         .op(0x00);
     let known_pc = a.labels["known"];
-    let input = a.finish();
-    for strategy in [Strategy::Dispatcher, Strategy::CodeDuplication] {
-        let artifact = decompile(
-            &input,
-            &Config {
-                strategy,
-                ..Config::default()
-            },
-        );
-        assert_eq!(
-            artifact.completion,
-            Completion::Partial,
-            "{:?}",
-            artifact.diagnostics
-        );
-        assert!(
-            !artifact
-                .diagnostics
+    (a.finish(), known_pc)
+}
+
+#[test]
+fn widening_jump_repropagates_stack_and_memory_to_retained_targets() {
+    // Preserve both a finite joined cell and a genuinely unknown late write.
+    // Neither may leave the early path's zero fact cached at the known target.
+    for dynamic_memory in [false, true] {
+        let (input, known_pc) = widening_jump_fixture(dynamic_memory);
+        for strategy in [Strategy::Dispatcher, Strategy::CodeDuplication] {
+            let artifact = decompile(
+                &input,
+                &Config {
+                    strategy,
+                    ..Config::default()
+                },
+            );
+            assert_eq!(
+                artifact.completion,
+                Completion::Partial,
+                "{:?}",
+                artifact.diagnostics
+            );
+            assert!(
+                !artifact
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == evm_decompile::DiagnosticCode::Validation)
+            );
+            let base = baseline(&artifact);
+            let known = base
+                .ir
+                .blocks
                 .iter()
-                .any(|d| d.code == evm_decompile::DiagnosticCode::Validation)
-        );
-        let base = baseline(&artifact);
-        let known = base
-            .ir
-            .blocks
-            .iter()
-            .find(|b| b.source.is_some_and(|s| s.pc == known_pc))
-            .unwrap();
-        let carrier = base.ir.value(known.parameters[0]).unwrap();
-        assert_eq!(
-            carrier.fact,
-            ValueFact::Constants(vec![U256::ZERO, U256::from(1)])
-        );
-        let load = known
-            .operations
-            .iter()
-            .find(|op| op.opcode == 0x51)
-            .unwrap();
-        assert_eq!(
-            base.ir.value(load.outputs[0]).unwrap().fact,
-            ValueFact::Unknown
-        );
-        assert!(
-            matches!(&known.terminator, Terminator::Branch { then_edges, else_edge: Some(_), .. } if !then_edges.is_empty())
-        );
-        for selector in [0, 1] {
-            let mut data = calldata(selector);
-            data.extend(U256::from(known_pc).to_be_bytes::<32>());
-            let host = MemoryHost::new(&input, data);
-            let mut raw_host = host.clone();
-            let raw = execute_bytecode(&input, &mut raw_host, &ExecutionLimits::default()).unwrap();
-            for stage in artifact
-                .stages
+                .find(|b| b.source.is_some_and(|s| s.pc == known_pc))
+                .unwrap();
+            let carrier = base.ir.value(known.parameters[0]).unwrap();
+            assert_eq!(
+                carrier.fact,
+                ValueFact::Constants(vec![U256::ZERO, U256::from(1)])
+            );
+            let load = known
+                .operations
                 .iter()
-                .filter(|s| s.kind != StageKind::Decoded)
-            {
-                let mut graph_host = host.clone();
-                let graph =
-                    execute_ir(stage, &mut graph_host, &ExecutionLimits::default()).unwrap();
-                assert_eq!(raw.outcome, graph.outcome);
-                assert_eq!(raw.observations(), graph.observations());
-                assert_eq!(raw_host, graph_host);
-                if stage.ir.structured.is_some() {
-                    let mut syntax_host = host.clone();
-                    let syntax =
-                        execute_structured(stage, &mut syntax_host, &ExecutionLimits::default())
-                            .unwrap();
-                    assert_eq!(raw.outcome, syntax.outcome);
-                    assert_eq!(raw.observations(), syntax.observations());
-                    assert_eq!(raw_host, syntax_host);
+                .find(|op| op.opcode == 0x51)
+                .unwrap();
+            assert_eq!(
+                base.ir.value(load.outputs[0]).unwrap().fact,
+                if dynamic_memory {
+                    ValueFact::Unknown
+                } else {
+                    ValueFact::Constants(vec![U256::ZERO, U256::from(1)])
+                }
+            );
+            assert!(
+                matches!(&known.terminator, Terminator::Branch { then_edges, else_edge: Some(_), .. } if !then_edges.is_empty())
+            );
+            for (selector, memory_value) in [(0, 0), (0, 1), (0, 37), (1, 37)] {
+                let mut data = calldata(selector);
+                data.extend(U256::from(known_pc).to_be_bytes::<32>());
+                data.extend(U256::from(memory_value).to_be_bytes::<32>());
+                let host = MemoryHost::new(&input, data);
+                let mut raw_host = host.clone();
+                let raw =
+                    execute_bytecode(&input, &mut raw_host, &ExecutionLimits::default()).unwrap();
+                for stage in artifact
+                    .stages
+                    .iter()
+                    .filter(|s| s.kind != StageKind::Decoded)
+                {
+                    let mut graph_host = host.clone();
+                    let graph =
+                        execute_ir(stage, &mut graph_host, &ExecutionLimits::default()).unwrap();
+                    assert_eq!(raw.outcome, graph.outcome);
+                    assert_eq!(raw.observations(), graph.observations());
+                    assert_eq!(raw_host, graph_host);
+                    if stage.ir.structured.is_some() {
+                        let mut syntax_host = host.clone();
+                        let syntax = execute_structured(
+                            stage,
+                            &mut syntax_host,
+                            &ExecutionLimits::default(),
+                        )
+                        .unwrap();
+                        assert_eq!(raw.outcome, syntax.outcome);
+                        assert_eq!(raw.observations(), syntax.observations());
+                        assert_eq!(raw_host, syntax_host);
+                    }
                 }
             }
         }
     }
 }
 #[test]
-fn memory_merges_drop_conflicting_stores_and_overlapping_byte_writes() {
+fn memory_merges_join_conflicting_stores_and_invalidate_overlapping_byte_writes() {
     let mut a = Asm::default();
     a.push(7)
         .op(0x5f)
@@ -1048,9 +1069,27 @@ fn memory_merges_drop_conflicting_stores_and_overlapping_byte_writes() {
             .collect();
         assert_eq!(loads.len(), 2);
         assert!(loads.iter().all(|o| o.memory_input.is_some()));
-        assert!(loads.iter().all(
-            |o| baseline(&artifact).ir.value(o.outputs[0]).unwrap().fact == ValueFact::Unknown
-        ));
+        assert_eq!(
+            baseline(&artifact)
+                .ir
+                .value(loads[0].outputs[0])
+                .unwrap()
+                .fact,
+            ValueFact::Constants(vec![U256::from(7), U256::from(9)])
+        );
+        let overwritten = &baseline(&artifact)
+            .ir
+            .value(loads[1].outputs[0])
+            .unwrap()
+            .fact;
+        assert!(
+            match overwritten {
+                ValueFact::Unknown => true,
+                ValueFact::Constants(values) => values.contains(&U256::from(255)),
+                ValueFact::Bottom => false,
+            },
+            "overlapping MSTORE8 must not preserve a stale word: {overwritten:?}"
+        );
     }
 }
 #[test]
