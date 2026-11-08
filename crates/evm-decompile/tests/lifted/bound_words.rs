@@ -143,8 +143,7 @@ fn different_and_disjoint_masks_preserve_named_outputs_in_every_operand_orientat
                         .blocks
                         .iter()
                         .flat_map(|b| &b.operations)
-                        .filter(|op| op.opcode == 0x16)
-                        .last()
+                        .rfind(|op| op.opcode == 0x16)
                         .unwrap();
                     assert_eq!(
                         raw.replacement,
