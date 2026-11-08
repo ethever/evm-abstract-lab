@@ -162,9 +162,40 @@ fn live_pass_edge_tuple_executes_once_after_require_before_the_joined_store() {
                 .iter()
                 .filter(|line| line.text.contains("evm.sstore("))
                 .count(),
-            2,
-            "both source occurrences of the joined store remain represented"
+            1,
+            "the admitted common continuation owns one joined store"
         );
+        let incoming: Vec<_> = stage
+            .ir
+            .edges
+            .iter()
+            .filter(|edge| edge.to == target.block)
+            .collect();
+        assert_eq!(
+            incoming.len(),
+            2,
+            "both original paths must still reach the store"
+        );
+        let index = program.render_index(&stage.ir);
+        for edge in incoming {
+            let transfer = program.transfer(edge.id).unwrap();
+            let tuple = index.render_transfer(transfer, |_| true).unwrap().unwrap();
+            let positions: Vec<_> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.entity == transfer.id && line.text == tuple)
+                .map(|(position, _)| position)
+                .collect();
+            assert_eq!(
+                positions.len(),
+                1,
+                "one simultaneous assignment per incoming edge"
+            );
+            assert!(
+                positions[0] < store,
+                "each branch binds the common store's arguments"
+            );
+        }
         assert_eq!(
             lines
                 .iter()

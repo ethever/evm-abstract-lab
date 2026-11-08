@@ -117,7 +117,7 @@ impl Flow {
     ) -> Result<Self, Error> {
         Self::new_with_slots(index, pay, MAX_FLOW_SLOTS)
     }
-    fn new_with_slots(
+    pub(super) fn new_with_slots(
         index: &SharedSourceIndex<'_>,
         pay: &mut impl FnMut(usize) -> bool,
         max_slots: usize,
@@ -226,8 +226,13 @@ impl Flow {
                 ),
             };
             charge(pay, footprint.saturating_mul(4))?;
-            if retained_slots.saturating_add(footprint.saturating_mul(2)) > max_slots {
-                return Err(Error::Limit);
+            let required = retained_slots.saturating_add(footprint.saturating_mul(2));
+            if required > max_slots {
+                return Err(Error::Capacity {
+                    resource: crate::SharedCapacity::FlowEventSlots,
+                    required,
+                    limit: max_slots,
+                });
             }
 
             let mut e = Event::default();
@@ -277,8 +282,13 @@ impl Flow {
                             .transpose()?
                             .unwrap_or(8);
                         charge(pay, extra.saturating_mul(4))?;
-                        if retained_slots.saturating_add(extra.saturating_mul(2)) > max_slots {
-                            return Err(Error::Limit);
+                        let required = retained_slots.saturating_add(extra.saturating_mul(2));
+                        if required > max_slots {
+                            return Err(Error::Capacity {
+                                resource: crate::SharedCapacity::FlowEventSlots,
+                                required,
+                                limit: max_slots,
+                            });
                         }
                         let exit = flow.events.len();
                         let mut end = if let Some(edge) = exit_edge {
@@ -293,7 +303,11 @@ impl Flow {
                             .saturating_add(end.defines.len())
                             .saturating_add(end.next.len());
                         if retained_slots > max_slots {
-                            return Err(Error::Limit);
+                            return Err(Error::Capacity {
+                                resource: crate::SharedCapacity::FlowEventSlots,
+                                required: retained_slots,
+                                limit: max_slots,
+                            });
                         }
                         flow.events.push(end);
                         flow.loop_exits.insert(id, exit);
@@ -364,7 +378,11 @@ impl Flow {
                 .saturating_add(e.defines.len())
                 .saturating_add(e.next.len());
             if retained_slots > max_slots {
-                return Err(Error::Limit);
+                return Err(Error::Capacity {
+                    resource: crate::SharedCapacity::FlowEventSlots,
+                    required: retained_slots,
+                    limit: max_slots,
+                });
             }
             flow.events[event] = e;
         }
@@ -409,12 +427,15 @@ impl Flow {
                     .saturating_add(event.defines.len())
                     .saturating_add(1),
             )?;
-            if slots
+            let required = slots
                 .saturating_add(capacity.saturating_mul(2))
-                .saturating_add(event.reads.len())
-                > MAX_FLOW_SLOTS
-            {
-                return Err(Error::Limit);
+                .saturating_add(event.reads.len());
+            if required > MAX_FLOW_SLOTS {
+                return Err(Error::Capacity {
+                    resource: crate::SharedCapacity::FlowLivenessSlots,
+                    required,
+                    limit: MAX_FLOW_SLOTS,
+                });
             }
             let mut out = BTreeSet::new();
             for next in &event.next {

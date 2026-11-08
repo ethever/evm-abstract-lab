@@ -117,6 +117,8 @@ pub enum DiagnosticCode {
     StackHeightMismatch,
     /// A configured resource bound refused work.
     Limit,
+    /// An optional representation optimization was skipped; validated coverage is retained.
+    OptimizationRefused,
     /// The operation owner requested cancellation.
     Cancelled,
     /// A representation invariant failed.

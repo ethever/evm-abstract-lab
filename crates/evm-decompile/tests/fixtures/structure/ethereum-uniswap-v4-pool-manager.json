@@ -1,0 +1,15 @@
+{
+  "name": "ethereum-uniswap-v4-pool-manager",
+  "address": "0x000000000004444c5dc75cB358380D2e3dE08A90",
+  "chain_id": 1,
+  "block_number": 26363874,
+  "block_hash": "0xcd92cec18e1411724faa810527971296e839dbfddf696972777d689bbf46bd0b",
+  "byte_length": 24009,
+  "code_hash": "0x785f1014552b7ce7d5fb7d0c970ca60edee94fd00425d7ca21609acac7ce1293",
+  "rpc_method": "eth_getCode",
+  "rpc_block_selector": {
+    "blockHash": "0xcd92cec18e1411724faa810527971296e839dbfddf696972777d689bbf46bd0b",
+    "requireCanonical": true
+  },
+  "acquisition": "ordinary trusted local RPC; fixed runtime bytecode only; no live network required by tests"
+}

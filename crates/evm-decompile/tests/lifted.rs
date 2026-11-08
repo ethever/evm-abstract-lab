@@ -15,6 +15,8 @@ mod copies;
 mod error_payloads;
 #[path = "lifted/guards.rs"]
 mod guards;
+#[path = "lifted/materialize.rs"]
+mod materialize;
 #[path = "lifted/named_operands.rs"]
 mod named_operands;
 #[path = "lifted/oracle.rs"]

@@ -6,9 +6,51 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 
+#[derive(Debug)]
 pub(super) struct Plan {
     pub procedures: Vec<SharedProcedure>,
     pub invocations: Vec<SharedInvocation>,
+}
+#[derive(Debug, thiserror::Error)]
+pub(super) enum DiscoveryError {
+    #[error("shared discovery payer refused work")]
+    Payment,
+    #[error("{0}")]
+    Capacity(SharedProcedureError),
+    #[error("source region {0:?} is unsupported by optional sharing")]
+    Unsupported(EntityId),
+    #[error("invalid shared source witness: {0}")]
+    Invalid(SharedProcedureError),
+    #[error("invalid shared formatting witness: {0}")]
+    Formatting(crate::LiftedRenderError),
+    #[error("shared publication failed semantic validation")]
+    Publication,
+}
+impl DiscoveryError {
+    pub(super) fn source(error: SharedProcedureError) -> Self {
+        match error {
+            SharedProcedureError::Limit => Self::Payment,
+            error @ SharedProcedureError::Capacity { .. } => Self::Capacity(error),
+            error => Self::Invalid(error),
+        }
+    }
+    pub fn optional(&self) -> bool {
+        matches!(
+            self,
+            Self::Capacity(_)
+                | Self::Unsupported(_)
+                | Self::Formatting(crate::LiftedRenderError::Limit)
+        )
+    }
+}
+fn rendered(
+    result: Result<String, crate::LiftedRenderError>,
+) -> Result<Option<String>, DiscoveryError> {
+    match result {
+        Ok(text) => Ok(Some(text)),
+        Err(crate::LiftedRenderError::Limit) => Ok(None),
+        Err(error) => Err(DiscoveryError::Formatting(error)),
+    }
 }
 fn fingerprint(
     ir: &Ir,
@@ -61,12 +103,12 @@ fn selected_children(
     range: std::ops::Range<usize>,
     boundary: EntityId,
     pay: &mut impl FnMut(usize) -> bool,
-) -> Option<Vec<EntityId>> {
+) -> Result<Vec<EntityId>, DiscoveryError> {
     let mut selected = Vec::new();
     let mut pos = range.start;
     while pos < range.end {
         if !pay(1) {
-            return None;
+            return Err(DiscoveryError::Payment);
         }
         if pos > range.start
             && let Some(end) = render.selected_sequence_end(sequence, pos, boundary)
@@ -74,23 +116,30 @@ fn selected_children(
             pos = end;
             continue;
         }
-        selected.push(children.get(pos)?.id);
+        selected.push(
+            children
+                .get(pos)
+                .ok_or(DiscoveryError::Invalid(SharedProcedureError::Missing(
+                    sequence,
+                )))?
+                .id,
+        );
         pos += 1;
     }
-    Some(selected)
+    Ok(selected)
 }
 fn visible_cost(
     root: EntityId,
     nodes: &BTreeMap<EntityId, &crate::StructuredNode>,
     render: &crate::LiftedRenderIndex<'_>,
     pay: &mut impl FnMut(usize) -> bool,
-) -> Option<(usize, usize)> {
+) -> Result<Option<(usize, usize)>, DiscoveryError> {
     let mut bytes = 0_usize;
     let mut primitives = 0_usize;
     let mut todo = vec![root];
     while let Some(id) = todo.pop() {
         if !pay(1) {
-            return None;
+            return Err(DiscoveryError::Payment);
         }
         let n = nodes[&id];
         match &n.kind {
@@ -100,19 +149,27 @@ fn visible_cost(
                 todo.extend(selected.into_iter().rev());
             }
             StructuredKind::Block { block } => {
-                let h = render.block(*block)?;
+                let h = render.block(*block).ok_or(DiscoveryError::Invalid(
+                    SharedProcedureError::Missing(*block),
+                ))?;
                 for statement in &h.statements {
-                    let text = render
-                        .render_statement_with_dependencies(statement, false, &mut *pay)
-                        .ok()?;
+                    let Some(text) = rendered(
+                        render.render_statement_with_dependencies(statement, false, &mut *pay),
+                    )?
+                    else {
+                        return Ok(None);
+                    };
                     bytes = bytes.saturating_add(text.len() + 17);
                     primitives += 1;
                 }
             }
             StructuredKind::Transfer { edge } => {
+                let transfer = render.transfer(*edge).ok_or(DiscoveryError::Invalid(
+                    SharedProcedureError::Missing(*edge),
+                ))?;
                 if let Some(text) = render
-                    .render_transfer(render.transfer(*edge)?, &mut *pay)
-                    .ok()?
+                    .render_transfer(transfer, &mut *pay)
+                    .map_err(DiscoveryError::Formatting)?
                 {
                     bytes = bytes.saturating_add(text.len() + 5);
                 }
@@ -123,19 +180,25 @@ fn visible_cost(
                 ..
             } => match render.if_plan(id, root) {
                 LiftedIfPlan::Require(plan) => {
-                    let text = render.render_require(plan, &mut *pay).ok()?;
+                    let Some(text) = rendered(render.render_require(plan, &mut *pay))? else {
+                        return Ok(None);
+                    };
                     bytes = bytes.saturating_add(text.len() + 5);
                     todo.push(plan.success_node());
                 }
                 LiftedIfPlan::FailureFirst(plan) => {
-                    let text = render
-                        .render_failure_first_condition(plan, &mut *pay)
-                        .ok()?;
+                    let Some(text) =
+                        rendered(render.render_failure_first_condition(plan, &mut *pay))?
+                    else {
+                        return Ok(None);
+                    };
                     bytes = bytes.saturating_add(text.len() + 12);
                     todo.push(plan.success_node());
                     if let Some((sequence, range)) = render.failure_first_suffix_range(plan) {
                         let StructuredKind::Sequence(children) = &nodes[&sequence].kind else {
-                            return None;
+                            return Err(DiscoveryError::Invalid(SharedProcedureError::Missing(
+                                sequence,
+                            )));
                         };
                         todo.extend(
                             selected_children(render, sequence, children, range, root, pay)?
@@ -146,9 +209,14 @@ fn visible_cost(
                     todo.push(plan.failure_node());
                 }
                 LiftedIfPlan::Original => {
-                    let text = render
-                        .render_condition(render.control(id)?.condition, false, &mut *pay)
-                        .ok()?;
+                    let control = render
+                        .control(id)
+                        .ok_or(DiscoveryError::Invalid(SharedProcedureError::Missing(id)))?;
+                    let Some(text) =
+                        rendered(render.render_condition(control.condition, false, &mut *pay))?
+                    else {
+                        return Ok(None);
+                    };
                     bytes = bytes.saturating_add(text.len() + 28);
                     todo.extend([else_branch.id, then_branch.id]);
                 }
@@ -159,10 +227,10 @@ fn visible_cost(
             }
             StructuredKind::Exit { .. } => {}
             StructuredKind::Break | StructuredKind::Continue => bytes = bytes.saturating_add(24),
-            _ => return None,
+            _ => return Ok(None),
         }
     }
-    Some((bytes, primitives))
+    Ok(Some((bytes, primitives)))
 }
 // Profitability uses the default concise view. State annotations remain a
 // selectable diagnostic projection and do not turn real code into free work.
@@ -173,45 +241,48 @@ pub(super) fn discover(
     ir: &Ir,
     program: &LiftedProgram,
     next: &mut u64,
+    max_event_slots: usize,
     pay: &mut impl FnMut(usize) -> bool,
-) -> Option<Plan> {
-    let index = match SharedSourceIndex::for_program(ir, Some(program), pay) {
-        Ok(i) => i,
-        Err(SharedProcedureError::Limit) => return None,
-        Err(_) => {
-            return Some(Plan {
-                procedures: Vec::new(),
-                invocations: Vec::new(),
-            });
-        }
-    };
+) -> Result<Plan, DiscoveryError> {
+    let index =
+        SharedSourceIndex::for_program_with_event_capacity(ir, Some(program), pay, max_event_slots)
+            .map_err(|error| match error {
+                SharedProcedureError::Region(root) => DiscoveryError::Unsupported(root),
+                error => DiscoveryError::source(error),
+            })?;
     if !pay(ir
         .blocks
         .len()
         .saturating_add(crate::transform::ir_size(ir)))
     {
-        return None;
+        return Err(DiscoveryError::Payment);
     }
     let blocks: BTreeMap<_, _> = ir.blocks.iter().map(|b| (b.id, b)).collect();
     let mut nodes = BTreeMap::new();
-    let mut pending = vec![&ir.structured.as_ref()?.root];
+    let ast =
+        ir.structured
+            .as_ref()
+            .ok_or(DiscoveryError::Invalid(SharedProcedureError::Missing(
+                EntityId(0),
+            )))?;
+    let mut pending = vec![&ast.root];
     while let Some(n) = pending.pop() {
         nodes.insert(n.id, n);
         super::children(n, &mut pending);
     }
     let render = program.render_index_with_budget(ir, &mut *pay);
-    if render.validate_guard_sources().is_err() {
-        return None;
-    }
+    render
+        .validate_guard_sources()
+        .map_err(DiscoveryError::Formatting)?;
     // A source occurrence already hidden by a certified guard/suffix cannot
     // contribute a visible call. Keep its witness in a larger visible region,
     // but never emit a standalone unused definition for that hidden subtree.
     let mut visible = BTreeSet::new();
-    let boundary = ir.structured.as_ref()?.root.id;
+    let boundary = ast.root.id;
     let mut pending = vec![boundary];
     while let Some(id) = pending.pop() {
         if !pay(1) {
-            return None;
+            return Err(DiscoveryError::Payment);
         }
         visible.insert(id);
         match &nodes[&id].kind {
@@ -235,7 +306,9 @@ pub(super) fn discover(
                     pending.extend([plan.success_node(), plan.failure_node()]);
                     if let Some((sequence, range)) = render.failure_first_suffix_range(plan) {
                         let StructuredKind::Sequence(children) = &nodes[&sequence].kind else {
-                            return None;
+                            return Err(DiscoveryError::Invalid(SharedProcedureError::Missing(
+                                sequence,
+                            )));
                         };
                         pending.extend(selected_children(
                             &render, sequence, children, range, boundary, pay,
@@ -256,12 +329,12 @@ pub(super) fn discover(
         }
         let r = match index.region(root, pay) {
             Ok(r) => r,
-            Err(SharedProcedureError::Limit) => return None,
-            Err(_) => continue,
+            Err(SharedProcedureError::Region(_)) => continue,
+            Err(error) => return Err(DiscoveryError::source(error)),
         };
         // A lone terminal or trivial block is cheaper in place. The heuristic
         // never certifies equivalence; full source checking follows grouping.
-        let Some((bytes, retained)) = visible_cost(root, &nodes, &render, pay) else {
+        let Some((bytes, retained)) = visible_cost(root, &nodes, &render, pay)? else {
             continue;
         };
         if !r.terminal_closed
@@ -271,12 +344,12 @@ pub(super) fn discover(
             continue;
         }
         costs.insert(root, bytes);
-        let hash = fingerprint(ir, &r, &blocks, &nodes, pay)?;
+        let hash = fingerprint(ir, &r, &blocks, &nodes, pay).ok_or(DiscoveryError::Payment)?;
         groups.entry(hash).or_default().push((bytes, root));
     }
     let mut groups: Vec<_> = groups.into_values().filter(|v| v.len() > 1).collect();
     if !pay(groups.len().saturating_mul(16)) {
-        return None;
+        return Err(DiscoveryError::Payment);
     }
     groups.sort_by_key(|v| std::cmp::Reverse(v.iter().map(|v| v.0).max().unwrap_or(0)));
     let mut plan = Plan {
@@ -295,8 +368,8 @@ pub(super) fn discover(
             }
             let canonical = match index.region(root, pay) {
                 Ok(r) => r,
-                Err(SharedProcedureError::Limit) => return None,
-                Err(_) => continue,
+                Err(SharedProcedureError::Region(_)) => continue,
+                Err(error) => return Err(DiscoveryError::source(error)),
             };
             if canonical.nodes.iter().any(|id| occupied.contains(id)) {
                 continue;
@@ -310,15 +383,15 @@ pub(super) fn discover(
                 .saturating_add(8);
             for (_, actual) in &candidates[cursor..] {
                 if !pay(1) {
-                    return None;
+                    return Err(DiscoveryError::Payment);
                 }
                 if occupied.contains(actual) {
                     continue;
                 }
                 let actual = match index.region(*actual, pay) {
                     Ok(r) => r,
-                    Err(SharedProcedureError::Limit) => return None,
-                    Err(_) => continue,
+                    Err(SharedProcedureError::Region(_)) => continue,
+                    Err(error) => return Err(DiscoveryError::source(error)),
                 };
                 if canonical.nodes.iter().any(|id| actual.nodes.contains(id))
                     || actual.nodes.iter().any(|id| occupied.contains(id))
@@ -327,19 +400,31 @@ pub(super) fn discover(
                 }
                 let bindings = match index.correspondence(&canonical, &actual, pay) {
                     Ok(v) => v,
-                    Err(SharedProcedureError::Limit) => return None,
-                    Err(_) => continue,
+                    Err(
+                        SharedProcedureError::Region(_)
+                        | SharedProcedureError::Correspondence(_)
+                        | SharedProcedureError::Interface(_),
+                    ) => continue,
+                    Err(error) => return Err(DiscoveryError::source(error)),
                 };
                 match index.verify_correspondence(&canonical, &actual, &bindings, pay) {
                     Ok(()) => {}
-                    Err(SharedProcedureError::Limit) => return None,
-                    Err(_) => continue,
+                    Err(
+                        SharedProcedureError::Region(_)
+                        | SharedProcedureError::Correspondence(_)
+                        | SharedProcedureError::Interface(_),
+                    ) => continue,
+                    Err(error) => return Err(DiscoveryError::source(error)),
                 }
                 pending_weight = pending_weight
                     .saturating_add(bindings.len().saturating_mul(2))
                     .saturating_add(6);
                 if pending_weight > crate::MAX_LIFTED_RECORDS {
-                    return None;
+                    return Err(DiscoveryError::source(SharedProcedureError::Capacity {
+                        resource: crate::SharedCapacity::ProgramRecords,
+                        required: pending_weight,
+                        limit: crate::MAX_LIFTED_RECORDS,
+                    }));
                 }
                 matches.push((actual.root, bindings));
             }
@@ -373,12 +458,16 @@ pub(super) fn discover(
             let iid = EntityId(*next);
             *next += 1;
             weight = weight.saturating_add(6);
-            calls.push(index.invocation(iid, pid, root, Vec::new()).ok()?);
+            calls.push(
+                index
+                    .invocation(iid, pid, root, Vec::new())
+                    .map_err(DiscoveryError::source)?,
+            );
             occupied.extend(canonical.nodes);
             for (root, bindings) in matches {
                 let region = match index.region(root, pay) {
                     Ok(r) => r,
-                    Err(_) => return None,
+                    Err(error) => return Err(DiscoveryError::source(error)),
                 };
                 if occupied.contains(&region.root)
                     || region.nodes.iter().any(|id| occupied.contains(id))
@@ -390,24 +479,34 @@ pub(super) fn discover(
                 weight = weight
                     .saturating_add(bindings.len().saturating_mul(2))
                     .saturating_add(6);
-                calls.push(index.invocation(iid, pid, region.root, bindings).ok()?);
+                calls.push(
+                    index
+                        .invocation(iid, pid, region.root, bindings)
+                        .map_err(DiscoveryError::source)?,
+                );
                 occupied.extend(region.nodes);
             }
             if calls.len() < 2 {
-                return None;
+                return Err(DiscoveryError::Invalid(SharedProcedureError::Site(root)));
             }
-            if weight > crate::MAX_LIFTED_RECORDS
-                || !pay(calls
-                    .len()
-                    .saturating_add(procedure.interface.record_count()))
+            if weight > crate::MAX_LIFTED_RECORDS {
+                return Err(DiscoveryError::source(SharedProcedureError::Capacity {
+                    resource: crate::SharedCapacity::ProgramRecords,
+                    required: weight,
+                    limit: crate::MAX_LIFTED_RECORDS,
+                }));
+            }
+            if !pay(calls
+                .len()
+                .saturating_add(procedure.interface.record_count()))
             {
-                return None;
+                return Err(DiscoveryError::Payment);
             }
             plan.procedures.push(procedure);
             plan.invocations.extend(calls);
         }
     }
-    Some(plan)
+    Ok(plan)
 }
 
 #[cfg(test)]

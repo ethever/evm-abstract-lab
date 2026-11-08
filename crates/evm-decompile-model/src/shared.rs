@@ -89,11 +89,35 @@ pub const MAX_SHARED_REGION_ENTITIES: usize = 16_384;
 /// Conservative structural region bound; controls aggregate candidate work.
 pub const MAX_SHARED_REGION_NODES: usize = 512;
 
+/// The finite retained structure that refused shared-source admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharedCapacity {
+    /// Aggregate free-value membership slots retained by expression roots.
+    ExpressionReadSlots,
+    /// Reads, definitions and successors retained by occurrence-flow events.
+    FlowEventSlots,
+    /// Incoming/outgoing liveness memberships and temporary union capacity.
+    FlowLivenessSlots,
+    /// Source correspondence domains retained by supplied definitions.
+    DefinitionDomains,
+    /// Aggregate semantic and shared-interface transport record units.
+    ProgramRecords,
+}
+
 /// Direct source-certificate rejection, independent of candidate heuristics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SharedProcedureError {
     /// The owner refused work or a hard aggregate bound was reached.
     Limit,
+    /// A fixed retained-capacity check refused an optional shared representation.
+    Capacity {
+        /// Retained structure whose independent hard bound was reached.
+        resource: SharedCapacity,
+        /// Required retained and temporary units at the refusing checkpoint.
+        required: usize,
+        /// Maximum admitted units for this structure.
+        limit: usize,
+    },
     /// Existing high guard, capsule or structural source admission failed.
     BaseSource(crate::LiftedModelError),
     /// An expected source or definition entity is absent.
@@ -112,7 +136,15 @@ pub enum SharedProcedureError {
 impl std::fmt::Display for SharedProcedureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Limit => f.write_str("shared procedure resource allowance exhausted"),
+            Self::Limit => f.write_str("shared procedure payer refused work"),
+            Self::Capacity {
+                resource,
+                required,
+                limit,
+            } => write!(
+                f,
+                "shared procedure {resource:?} capacity refused: required {required}, limit {limit}"
+            ),
             Self::BaseSource(error) => write!(f, "invalid base source projection: {error}"),
             Self::Missing(id) => write!(f, "missing shared source entity {id:?}"),
             Self::Region(id) => write!(f, "unsupported or escaping shared region {id:?}"),

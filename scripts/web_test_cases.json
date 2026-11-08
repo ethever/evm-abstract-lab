@@ -1011,6 +1011,24 @@
         "scripts/web_test_hybrid.py",
         "scripts/web_test_registry.py"
       ]
+    },
+    {
+      "id": "decompile-structure-plan",
+      "group": "decompile",
+      "module": "web_test_decompile_structure_plan",
+      "dependencies": [
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_alignment.py",
+        "scripts/web_test_decompile_guards.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_decompile_structure_plan.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http_errors.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
     }
   ],
   "legacy_flags": {

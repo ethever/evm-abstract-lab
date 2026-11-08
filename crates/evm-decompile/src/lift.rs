@@ -15,6 +15,7 @@ mod aliases;
 mod availability;
 mod guards;
 mod liveness;
+mod materialize;
 mod payloads;
 mod shared;
 mod simplify;
@@ -22,6 +23,13 @@ mod validate;
 pub(crate) use validate::certify;
 
 pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
+    run_with_sharing_limits(owner, usize::MAX, usize::MAX);
+}
+fn run_with_sharing_limits(
+    owner: &mut Builder<impl FnMut(Progress)>,
+    allowance: usize,
+    max_event_slots: usize,
+) {
     if owner.stopped || owner.current().kind != StageKind::Structured {
         return;
     }
@@ -70,38 +78,90 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
         .map(|id| (id, owner.id()))
         .collect();
     remap_program(&mut projection.program, &remap);
-    let mut parents: BTreeMap<EntityId, Vec<EntityId>> = projection
+    let parents: BTreeMap<EntityId, Vec<EntityId>> = projection
         .parents
         .into_iter()
         .filter_map(|(id, parents)| Some((*remap.get(&id)?, parents.into_iter().collect())))
         .collect();
-    // Source and semantic entities share one artifact namespace. Discover only
-    // after publishing fresh semantic IDs; temporary arena IDs can overlap raw
-    // source IDs and must never enter a mixed source correspondence map.
-    let mut next = projection
-        .program
+    ir.lifted = Some(projection.program);
+    let explanation = (
+        "lift_semantic_expressions",
+        "typed scoped EVM expressions, live simultaneous transfers and lazy exact-payload REVERT guards certified against unchanged primitive witness",
+    );
+    // Prepare and pay the mandatory base completely, including actual ancestry
+    // traversal. Optional optimization cannot spend its publication reserve.
+    let Some(base) = owner.prepare_publication(
+        StageKind::Lifted,
+        ir,
+        explanation,
+        parents,
+        Vec::new(),
+        Vec::new(),
+    ) else {
+        return;
+    };
+    if !base.passed() {
+        owner.adopt_publication(base);
+        return;
+    }
+    let result = owner.optional(allowance, |owner| {
+        optional_sharing(owner, &base, projection_work, max_event_slots, explanation)
+    });
+    let (selected, refusal) = match result {
+        Err(crate::artifact::OptionalStop::Stopped) => return,
+        Err(reason) => (base, Some(reason.to_string())),
+        Ok(Ok(Some(candidate))) => (candidate, None),
+        Ok(Ok(None)) => (base, None),
+        Ok(Err(reason)) if reason.optional() => (base, Some(reason.to_string())),
+        Ok(Err(reason)) => {
+            owner.stop(
+                Completion::Partial,
+                DiagnosticCode::Validation,
+                &format!("invalid optional shared witness: {reason}; Structured retained"),
+            );
+            return;
+        }
+    };
+    if owner.adopt_publication(selected)
+        && let Some(reason) = refusal
+    {
+        owner.diagnostic(DiagnosticCode::OptimizationRefused, crate::Severity::Info,
+            None, None, format!("optional shared optimization skipped: {reason}; validated base Lifted retained; coverage unchanged"));
+    }
+}
+
+fn optional_sharing(
+    owner: &mut Builder<impl FnMut(Progress)>,
+    base: &crate::artifact::PreparedPublication,
+    projection_work: usize,
+    max_event_slots: usize,
+    explanation: (&str, &str),
+) -> Result<Option<crate::artifact::PreparedPublication>, shared::DiscoveryError> {
+    use shared::DiscoveryError;
+    let source = base.ir();
+    let program = source
+        .lifted
+        .as_ref()
+        .expect("prepared mandatory projection");
+    // Source and semantic IDs share one artifact namespace; provisional shared
+    // IDs are remapped only after a complete, useful candidate exists.
+    let mut next = program
         .entity_ids()
         .map(|id| id.0)
         .max()
         .unwrap_or(0)
         .saturating_add(1);
-    let mut shared_work = 0_usize;
-    let Some(mut plan) = shared::discover(&ir, &projection.program, &mut next, &mut |work| {
-        shared_work = shared_work.saturating_add(work);
+    let mut plan = shared::discover(source, program, &mut next, max_event_slots, &mut |work| {
         owner.pay(work)
-    }) else {
-        if !owner.stopped {
-            owner.stop(
-                Completion::Limited,
-                DiagnosticCode::Limit,
-                "shared procedure admission allowance exhausted; Structured retained",
-            );
-        }
-        return;
-    };
-    if !owner.pay(shared_work.saturating_mul(2)) {
-        return;
+    })?;
+    if plan.procedures.is_empty() && plan.invocations.is_empty() {
+        return Ok(None);
     }
+    if !owner.pay(base.candidate_clone_work()) {
+        return Err(DiscoveryError::Payment);
+    }
+    let mut ir = source.clone();
+    let mut parents = base.parents();
     let mut definitions = BTreeMap::new();
     for definition in &mut plan.procedures {
         let old = definition.id;
@@ -114,25 +174,41 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) {
         invocation.procedure = definitions[&invocation.procedure];
         parents.insert(invocation.id, vec![invocation.source]);
     }
-    projection.program.procedures = plan.procedures;
-    projection.program.invocations = plan.invocations;
-    if let Err(error) = projection
-        .program
-        .validate_shared_sources(&ir, |work| owner.pay(work))
-    {
-        if !owner.stopped {
-            owner.stop(
-                Completion::Partial,
-                DiagnosticCode::Validation,
-                &format!("shared procedure source certificate failed: {error}"),
-            );
-        }
-        return;
+    let program = ir.lifted.as_mut().expect("cloned mandatory projection");
+    program.procedures = plan.procedures;
+    program.invocations = plan.invocations;
+    let mut admission_work = 0_usize;
+    ir.lifted
+        .as_ref()
+        .expect("candidate projection")
+        .validate_shared_sources(&ir, |work| {
+            admission_work = admission_work.saturating_add(work);
+            owner.pay(work)
+        })
+        .map_err(DiscoveryError::source)?;
+    // Candidate publication repeats the deterministic base proof and direct
+    // shared admission. Quote those exact measured passes before preparation.
+    if !owner.pay(
+        projection_work
+            .saturating_mul(2)
+            .saturating_add(admission_work.saturating_mul(2)),
+    ) {
+        return Err(DiscoveryError::Payment);
     }
-    ir.lifted = Some(projection.program);
-    owner.commit(StageKind::Lifted, ir,
-        ("lift_semantic_expressions", "typed scoped EVM expressions, live simultaneous transfers and lazy exact-payload REVERT guards certified against unchanged primitive witness"),
-        parents, Vec::new(), Vec::new());
+    let Some(candidate) = owner.prepare_publication(
+        StageKind::Lifted,
+        ir,
+        explanation,
+        parents,
+        Vec::new(),
+        Vec::new(),
+    ) else {
+        return Err(DiscoveryError::Payment);
+    };
+    if !candidate.passed() {
+        return Err(DiscoveryError::Publication);
+    }
+    Ok(Some(candidate))
 }
 
 struct Projection<'a> {
@@ -149,6 +225,7 @@ struct Projector<'a, P> {
     indices: BTreeMap<EntityId, usize>,
     bindings: BTreeMap<(EntityId, EntityId), EntityId>,
     optional_statements: BTreeSet<EntityId>,
+    inline_weights: Vec<usize>,
 }
 fn project(ir: &Ir, mut pay: impl FnMut(usize) -> bool) -> Option<Projection<'_>> {
     let proof = aliases::Copies::build(ir, &mut pay)?;
@@ -165,6 +242,7 @@ fn project(ir: &Ir, mut pay: impl FnMut(usize) -> bool) -> Option<Projection<'_>
         indices: BTreeMap::new(),
         bindings: BTreeMap::new(),
         optional_statements: BTreeSet::new(),
+        inline_weights: Vec::new(),
     };
     for b in &ir.blocks {
         if !(p.pay)(b.parameters.len().saturating_add(1)) {
@@ -203,9 +281,24 @@ fn project(ir: &Ir, mut pay: impl FnMut(usize) -> bool) -> Option<Projection<'_>
                     .map(|v| p.word(b.id, *v))
                     .collect::<Option<Vec<_>>>()?;
                 let result = if pure_word {
-                    p.simplify(b.id, op.opcode, args)?
+                    p.simplify(b.id, op.opcode, args.clone())?
                 } else {
                     p.word(b.id, op.outputs[0])?
+                };
+                // Large pure DAGs keep one raw computation at its original
+                // position. Later consumers use that exact SSA word identity.
+                let binding = if pure_word && p.needs_named_binding(result) {
+                    let id = p.id([op.id]);
+                    statements.push(LiftedStatement {
+                        id,
+                        operation: op.id,
+                        inputs: args,
+                        outputs: op.outputs.clone(),
+                    });
+                    p.optional_statements.insert(op.id);
+                    p.expression(b.id, Kind::Value(op.outputs[0]), [op.id, op.outputs[0]])
+                } else {
+                    result
                 };
                 let source: Vec<_> = std::iter::once(op.id)
                     .chain(op.inputs.iter().copied())
@@ -242,7 +335,7 @@ fn project(ir: &Ir, mut pay: impl FnMut(usize) -> bool) -> Option<Projection<'_>
                         .or_default()
                         .extend(source.iter().copied());
                 }
-                p.bindings.insert((b.id, op.outputs[0]), result);
+                p.bindings.insert((b.id, op.outputs[0]), binding);
             } else if materialize
                 || !op.effects.is_pure()
                 || fault
@@ -456,6 +549,7 @@ impl<P: FnMut(usize) -> bool> Projector<'_, P> {
             self.result.parents.entry(*id).or_default().extend(parents);
             return *id;
         }
+        let weight = self.inline_weight(&kind);
         let id = self.id(parents);
         let index = self.result.program.expressions.len();
         self.result.program.expressions.push(LiftedExpression {
@@ -464,6 +558,7 @@ impl<P: FnMut(usize) -> bool> Projector<'_, P> {
             ty: kind.ty(),
             kind: kind.clone(),
         });
+        self.inline_weights.push(weight);
         self.indices.insert(id, index);
         self.memo.insert((block, kind), id);
         id
