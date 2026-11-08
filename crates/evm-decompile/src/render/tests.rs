@@ -23,23 +23,36 @@ fn real_shared_dag_keeps_named_computations_and_exports_completely() {
     let artifact = shared_expression();
     let stage = artifact.current().unwrap();
     let high = stage.ir.lifted.as_ref().unwrap();
-    assert!(
-        high.blocks
-            .iter()
-            .flat_map(|block| &block.statements)
-            .any(|statement| !statement.outputs.is_empty()
+    let arithmetic: Vec<_> = high
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter(|statement| {
+            !statement.outputs.is_empty()
                 && stage
                     .ir
                     .blocks
                     .iter()
                     .flat_map(|block| &block.operations)
-                    .any(
-                        |operation| operation.id == statement.operation && operation.opcode == 0x01
-                    ))
-    );
+                    .any(|operation| {
+                        operation.id == statement.operation && operation.opcode == 0x01
+                    })
+        })
+        .collect();
+    assert!(!arithmetic.is_empty());
     let result = export_text(&artifact, &Cancellation::default());
     assert_eq!(result.status, TextExportStatus::Complete);
-    assert!(result.text.contains("evm.add(") && result.text.contains("evm.sstore("));
+    assert!(result.text.contains(" + ") && result.text.contains("evm.sstore("));
+    assert!(!result.text.contains("evm.add("));
+    let renderer = high.render_index(&stage.ir);
+    for statement in arithmetic {
+        let row = renderer
+            .render_statement_with_dependencies(statement, false, |_| true)
+            .unwrap();
+        assert!(row.starts_with(&format!("v{} = (", statement.outputs[0].0)));
+        assert!(row.contains(" + "), "{row}");
+        assert_eq!(result.text.matches(&row).count(), 1, "{row}");
+    }
     assert!(!result.text.contains("work limit exhausted"));
     assert_eq!(result.text.matches("evm.calldataload(").count(), 1);
 }
