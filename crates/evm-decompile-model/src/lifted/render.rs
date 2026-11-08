@@ -11,6 +11,7 @@ mod condition;
 mod control;
 mod failure_first;
 pub(crate) mod primitive;
+mod word;
 use control::ControlPlanIndex;
 pub use control::{LiftedIfPlan, LiftedIfSuffix, RequireIf};
 pub use failure_first::FailureFirstIf;
@@ -27,6 +28,7 @@ pub struct LiftedRenderIndex<'a> {
     pub(crate) shared_definitions: BTreeMap<EntityId, &'a crate::SharedProcedure>,
     expressions: BTreeMap<EntityId, &'a LiftedExpression>,
     operations: BTreeMap<EntityId, &'a crate::Operation>,
+    word_sources: word::WordSources<'a>,
     edges: BTreeMap<EntityId, &'a crate::Edge>,
     blocks: BTreeMap<EntityId, &'a LiftedBlock>,
     transfers: BTreeMap<EntityId, &'a LiftedTransfer>,
@@ -79,9 +81,20 @@ impl<'a> LiftedRenderIndex<'a> {
                     .saturating_add(b.operations.len())
                     .saturating_add(b.parameters.len())
                     .saturating_add(4);
+                for operation in &b.operations {
+                    basic = basic.saturating_add(operation.outputs.len());
+                }
             }
         }
-        if !pay(basic.saturating_mul(4)) {
+        // The local word-source indexes visit these references even when a
+        // directly constructed model supplies malformed, repeated vectors.
+        for block in &program.blocks {
+            basic = basic.saturating_add(block.parameters.len());
+            for statement in &block.statements {
+                basic = basic.saturating_add(statement.outputs.len());
+            }
+        }
+        if !pay(basic.saturating_mul(6)) {
             return Self::refused(program);
         }
         let expressions = program.expressions.iter().map(|e| (e.id, e)).collect();
@@ -147,6 +160,7 @@ impl<'a> LiftedRenderIndex<'a> {
                 .flat_map(|b| &b.operations)
                 .map(|o| (o.id, o))
                 .collect(),
+            word_sources: word::WordSources::new(program, ir),
             edges,
             blocks,
             transfers: program.transfers.iter().map(|t| (t.edge, t)).collect(),
@@ -182,6 +196,7 @@ impl<'a> LiftedRenderIndex<'a> {
             shared_definitions: BTreeMap::new(),
             expressions: BTreeMap::new(),
             operations: BTreeMap::new(),
+            word_sources: word::WordSources::default(),
             edges: BTreeMap::new(),
             blocks: BTreeMap::new(),
             transfers: BTreeMap::new(),
@@ -558,8 +573,11 @@ impl<'a> LiftedRenderIndex<'a> {
         if !statement.outputs.is_empty() {
             append(&mut out, " = ", &mut reserve)?;
         }
-        let invocation =
-            self.render_invocation(operation.opcode, &name, &statement.inputs, &mut reserve)?;
+        let invocation = if let Some(recipe) = self.statement_word_rhs(statement, &mut reserve)? {
+            self.render_word_rhs(recipe, &mut reserve)?
+        } else {
+            self.render_invocation(operation.opcode, &name, &statement.inputs, &mut reserve)?
+        };
         append(&mut out, &invocation, &mut reserve)?;
         append(&mut out, ";", &mut reserve)?;
         let memory = match (operation.memory_input, operation.memory_output) {

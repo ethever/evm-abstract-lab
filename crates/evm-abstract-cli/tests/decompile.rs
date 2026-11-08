@@ -11,6 +11,94 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
+fn retained_mask_binding_simplifies_without_changing_raw_witness_or_source() {
+    // The jump forces the second AND result to remain a named cross-block value.
+    let bytecode = "600a5473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16610033565b5f5500";
+    let json = run(&["--hex", bytecode, "--format", "json"]);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
+    let stage = artifact.current().unwrap();
+    let high = stage.ir.lifted.as_ref().unwrap();
+    let masks: Vec<_> = stage
+        .ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.operations)
+        .filter(|operation| operation.opcode == 0x16)
+        .collect();
+    assert_eq!(
+        masks.len(),
+        2,
+        "both original AND instructions remain inspectable"
+    );
+    let outer = masks[1];
+    let statement = high
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find(|statement| statement.operation == outer.id)
+        .unwrap();
+    assert_eq!(statement.outputs, outer.outputs);
+    assert_eq!(statement.inputs.len(), 2);
+    let line = high
+        .render_index(&stage.ir)
+        .render_statement(statement, |_| true)
+        .unwrap();
+    assert!(
+        line.starts_with(&format!("v{} = ", outer.outputs[0].0)),
+        "{line}"
+    );
+    assert_eq!(
+        line.matches("0xffffffffffffffffffffffffffffffffffffffff")
+            .count(),
+        1,
+        "{line}"
+    );
+    assert!(!line.contains("evm.and("), "{line}");
+    assert_eq!(line.matches(" & ").count(), 1, "{line}");
+    let origin = artifact
+        .mappings
+        .origins
+        .iter()
+        .find(|origin| origin.entity.stage == stage.id && origin.entity.entity == statement.id)
+        .unwrap();
+    assert!(origin.source.contains(&outer.source.unwrap()));
+    let raw = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
+        .unwrap();
+    let mut witness = stage.ir.clone();
+    witness.lifted = None;
+    assert_eq!(witness, raw.ir);
+
+    let output = run(&["--hex", bytecode]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        text.trim_end(),
+        evm_decompile::render_text(&artifact).trim_end()
+    );
+    assert_eq!(text.matches(&line).count(), 1, "{text}");
+    assert_eq!(text.matches("evm.sload(").count(), 1, "{text}");
+    assert_eq!(text.matches("evm.sstore(").count(), 1, "{text}");
+    assert!(text.find("evm.sload(").unwrap() < text.find(&line).unwrap());
+    assert!(text.find(&line).unwrap() < text.find("evm.sstore(").unwrap());
+    let decoded: evm_decompile::Artifact =
+        serde_json::from_slice(&serde_json::to_vec(&artifact).unwrap()).unwrap();
+    assert_eq!(decoded, artifact);
+}
+
+#[test]
 fn default_cli_exports_real_certified_definitions_calls_and_retained_raw_witness() {
     let bytecode =
         include_str!("../../evm-decompile/tests/fixtures/shared-procedures/pure-call-inputs.hex")

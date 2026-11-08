@@ -13,10 +13,12 @@ mod payload;
 pub(crate) mod render;
 pub(crate) mod sources;
 mod validate;
+mod word;
 pub use payload::{LiftedConstruction, LiftedErrorPayload, LiftedRevert, MAX_ERROR_PAYLOAD_BYTES};
 pub use render::{
     FailureFirstIf, LiftedIfPlan, LiftedIfSuffix, LiftedRenderError, LiftedRenderIndex, RequireIf,
 };
+pub use word::{WordExpr, WordRewrite, WordSimplifyError, simplify_word};
 
 /// Hard transport admission ceiling, independent of an attempt's smaller limits.
 pub const MAX_LIFTED_RECORDS: usize = 1_000_000;
