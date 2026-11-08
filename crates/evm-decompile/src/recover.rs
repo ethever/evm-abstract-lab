@@ -1,10 +1,13 @@
 //! Independent local fixed point. Identity allocation is outside transfer loops.
 //! Stack height and literal control provenance select separate blocks. Numeric
 //! facts still converge inside each context; its identity never follows widening.
-//! A memory fact survives a merge only when all incoming snapshots agree.
+//! Shared product values and common path guarantees remain private executable
+//! facts. Wire summaries only describe observations across all evaluations.
 
 mod context;
+mod state;
 mod targets;
+mod values;
 
 use crate::budget::{constant_capacity, count as wide_count};
 use crate::{
@@ -15,61 +18,16 @@ use crate::{
 use analysis_kernel::{Worklist, cost};
 use context::ContextKey;
 use evm_bytecode::Program;
-use evm_domain::{DomainSpec, EvmNumericAlgebra, FiniteConstantSet, FiniteSetAlgebra};
+use evm_domain::{
+    DomainSpec, EvmNumericAlgebra, FiniteConstantSet, FiniteSetAlgebra, ProductAlgebra,
+    ValueAlgebra,
+};
+use state::{AbstractValue, Address, Cell, State};
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
 };
 use targets::{JumpSite, TargetPools};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Cell {
-    value: EntityId,
-    fact: ValueFact,
-    // Only literal JUMPDEST addresses, independent of the numeric lattice.
-    control: Option<usize>,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Memory {
-    zero: bool,
-    // Only full exact-offset words; aliasing writes invalidate overlapping cells.
-    words: BTreeMap<u64, Cell>,
-}
-impl Memory {
-    fn clear(&mut self) {
-        self.zero = false;
-        self.words.clear();
-    }
-    fn write(&mut self, offset: Option<u64>, width: u64, value: Option<Cell>) {
-        if width == 0 {
-            return;
-        }
-        self.zero = false;
-        let Some(offset) = offset.filter(|o| o.checked_add(width).is_some()) else {
-            self.words.clear();
-            return;
-        };
-        self.words.retain(|p, _| {
-            p.checked_add(32)
-                .is_some_and(|end| end <= offset || offset + width <= *p)
-        });
-        if let Some(value) = value {
-            self.words.insert(offset, value);
-        }
-    }
-    fn merge(&mut self, other: &Self) -> bool {
-        let before = self.clone();
-        self.zero &= other.zero;
-        self.words
-            .retain(|offset, cell| other.words.get(offset) == Some(cell));
-        *self != before
-    }
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct State {
-    stack: Vec<Cell>,
-    memory: Memory,
-}
 
 pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
     if !owner.pay(1) {
@@ -159,8 +117,14 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         return false;
     }
     owner.notify_phase(Phase::Recovery);
-    let algebra =
-        FiniteSetAlgebra::from_spec(DomainSpec::new(cap, NonZeroUsize::MIN, NonZeroUsize::MIN));
+    // Use the shared default cooperation/retention policy with this run's
+    // finite-set capacity. A precision cap never turns an unknown into bottom.
+    let spec = DomainSpec::new(
+        cap,
+        NonZeroUsize::new(4).expect("nonzero reduction rounds"),
+        NonZeroUsize::new(256).expect("nonzero scalar fact bound"),
+    );
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(spec));
     let blocks = source.blocks.len();
     let mut recovery = Recovery {
         owner,
@@ -179,16 +143,12 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         value_index: BTreeMap::new(),
         target_candidates: BTreeMap::new(),
         operation_count: count,
+        updates: vec![0; blocks],
+        wire_algebra: FiniteSetAlgebra::from_spec(spec),
     };
     recovery.reindex();
     if blocks > 0 {
-        recovery.states[0] = Some(State {
-            stack: Vec::new(),
-            memory: Memory {
-                zero: true,
-                words: BTreeMap::new(),
-            },
-        });
+        recovery.states[0] = Some(State::new());
         recovery.contexts.insert(ContextKey::new(0, &[]), 0);
         if !recovery.enqueue(0) {
             return false;
@@ -438,7 +398,10 @@ struct Recovery<'a, P: FnMut(Progress)> {
     jump_targets: TargetPools,
     queue: Worklist<usize>,
     edges: BTreeMap<(usize, usize, EdgeKind), EntityId>,
-    algebra: FiniteSetAlgebra,
+    algebra: ValueAlgebra<ProductAlgebra>,
+    // Coarse publication joins are separate from the executable product state.
+    wire_algebra: FiniteSetAlgebra,
+    updates: Vec<usize>,
     value_index: BTreeMap<EntityId, usize>,
     // Retain discovered legal targets even if a value reaches top before its
     // first JUMP evaluation. Candidates never close an unresolved jump.
@@ -501,11 +464,13 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             return a.clone();
         }
         Self::fact(
-            self.algebra
+            self.wire_algebra
                 .join_numeric(&Self::numeric(a), &Self::numeric(b)),
         )
     }
-    fn publish(&mut self, id: EntityId, fact: ValueFact) -> Option<ValueFact> {
+    // Publication never returns an executable value: this summary can include
+    // other paths and earlier iterations of the same static SSA operation.
+    fn publish(&mut self, id: EntityId, fact: ValueFact) -> Option<()> {
         if let ValueFact::Constants(values) = &fact {
             if !self
                 .owner
@@ -525,9 +490,28 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             self.remember_targets(id, targets)?;
         }
         let index = self.value_index[&id];
+        let candidates =
+            [&self.ir.values[index].fact, &fact]
+                .into_iter()
+                .fold(0usize, |count, fact| {
+                    count.saturating_add(match fact {
+                        ValueFact::Constants(values) => values.len(),
+                        _ => 0,
+                    })
+                });
+        // The coarse wire carrier uses owned trees/vectors, including operand
+        // import and result export, independently of private product joins.
+        if !self.owner.pay(
+            candidates
+                .saturating_mul(cost::tree_work(candidates).saturating_add(1))
+                .saturating_mul(16)
+                .saturating_add(32),
+        ) {
+            return None;
+        }
         let fact = self.join(&self.ir.values[index].fact, &fact);
-        self.ir.values[index].fact = fact.clone();
-        Some(fact)
+        self.ir.values[index].fact = fact;
+        Some(())
     }
     fn remember_targets(&mut self, id: EntityId, targets: BTreeSet<usize>) -> Option<bool> {
         if targets.is_empty() {
@@ -675,6 +659,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         self.ir.blocks.push(block);
         self.states.push(None);
         self.origins.push(original);
+        self.updates.push(0);
         Some(index)
     }
     fn connect(
@@ -686,6 +671,12 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         memory: EntityId,
         effect: EntityId,
     ) -> Option<EntityId> {
+        if !self.owner.pay(state.work_size().saturating_mul(4)) {
+            return None;
+        }
+        let mut edge_state = state.clone();
+        edge_state.forget_runtime();
+        let state = &edge_state;
         let key = self.context_key(original, state)?;
         let index = if let Some(i) = self.contexts.get(&key) {
             *i
@@ -705,13 +696,14 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             for (slot, cell) in incoming.stack.iter_mut().enumerate() {
                 let id = self.owner.id();
                 parameters.push(id);
+                let fact = self.value_fact(&cell.abstract_value)?;
                 if !self.add_value(Value {
                     id,
                     kind: ValueKind::Parameter {
                         block: block_id,
                         index: slot,
                     },
-                    fact: cell.fact.clone(),
+                    fact,
                 }) {
                     return None;
                 }
@@ -736,22 +728,50 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         memory: EntityId,
         effect: EntityId,
     ) -> Option<EntityId> {
-        let mut incoming = self.states[index].clone().expect("reached context");
+        let previous = self.states[index].as_ref().expect("reached context");
+        // A missing memory key may synthesize its backing's known zero.
+        // Reserve both sides for every possible union key before merging.
+        let zero_factories = previous
+            .memory
+            .words
+            .len()
+            .saturating_add(state.memory.words.len())
+            .saturating_mul(2)
+            .saturating_mul(self.algebra.literal_quote_work(U256::ZERO));
+        if !self
+            .owner
+            .pay(previous.merge_work(state).saturating_add(zero_factories))
+        {
+            return None;
+        }
+        let mut incoming = previous.clone();
         debug_assert_eq!(incoming.stack.len(), state.stack.len());
         let mut changed = false;
+        let widen = self.updates[index] >= self.algebra.spec().widening_after_updates();
         for (old, new) in incoming.stack.iter_mut().zip(&state.stack) {
             // Control tags are immutable context identity, including the active
             // target. Numeric/candidate growth never changes this projection.
             debug_assert_eq!(old.control, new.control);
             changed |= self.inherit_targets(old.value, new.value)?;
-            let next = self.join(&old.fact, &new.fact);
-            if old.fact != next {
-                old.fact = next;
+            let next = self.join_value(&old.abstract_value, &new.abstract_value, widen)?;
+            if old.abstract_value != next {
+                old.abstract_value = next;
                 changed = true;
             }
         }
-        changed |= incoming.memory.merge(&state.memory);
+        incoming.memory.merge(&state.memory, |left, right| {
+            self.join_value(left, right, widen)
+        })?;
+        incoming.storage.merge(&state.storage, |left, right| {
+            self.join_value(left, right, widen)
+        })?;
+        incoming.transient.merge(&state.transient, |left, right| {
+            self.join_value(left, right, widen)
+        })?;
+        incoming.relations = incoming.relations.join(&state.relations);
+        changed |= self.states[index].as_ref() != Some(&incoming);
         if changed {
+            self.updates[index] = self.updates[index].saturating_add(1);
             self.states[index] = Some(incoming);
             if !self.enqueue(index) {
                 return None;
@@ -814,8 +834,15 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 .len(),
             kind,
         };
+        // JUMPI already popped its target. Refine this operand explicitly with
+        // the selected edge's guarantees, rather than only its surviving stack.
+        let mut target_value = target.abstract_value.clone();
+        if !self.refine_value(&mut target_value, &state.relations) {
+            return None;
+        }
         let mut invalid = Vec::new();
-        let (discovered, unresolved) = if let ValueFact::Constants(targets) = &target.fact {
+        let target_fact = self.value_fact(&target_value)?;
+        let (discovered, unresolved) = if let ValueFact::Constants(targets) = &target_fact {
             if !self.owner.pay(
                 targets.len().saturating_mul(
                     cost::key_lookup_work(self.program.jumpdest_blocks().len(), 1)
@@ -903,25 +930,32 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         let origin = self.origins[index];
         let instructions = self.program.blocks()[origin].instructions.clone();
         let mut block = self.ir.blocks[index].clone();
-        let mut state = self.states[index].clone().expect("queued reachable state");
+        let entry = self.states[index].as_ref().expect("queued reachable state");
+        if !self.owner.pay(entry.work_size().saturating_mul(4)) {
+            return false;
+        }
+        let mut state = entry.clone();
         for cell in &mut state.stack {
-            let Some(fact) = self.publish(cell.value, cell.fact.clone()) else {
+            let Some(fact) = self.value_fact(&cell.abstract_value) else {
                 return false;
             };
-            cell.fact = fact;
+            if self.publish(cell.value, fact).is_none() {
+                return false;
+            }
+            // Only live block parameters receive temporary equality identities.
+            // Stored values from previous iterations never inherit these ids.
+            if let Ok(definition) = u32::try_from(cell.value.0) {
+                cell.abstract_value = cell
+                    .abstract_value
+                    .clone()
+                    .with_identity(self.owner.artifact.statistics.evaluations, definition);
+            }
         }
         let mut memory = block.memory_parameter;
         let mut effect = block.effect_parameter;
         let mut terminator = None;
         for (position, instruction) in instructions.iter().enumerate() {
-            if !self.owner.pay(
-                state
-                    .memory
-                    .words
-                    .len()
-                    .saturating_add(state.stack.len())
-                    .saturating_add(8),
-            ) {
+            if !self.owner.pay(state.instruction_work().saturating_add(8)) {
                 return false;
             }
             let op = &mut block.operations[position];
@@ -1006,36 +1040,31 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                     op.memory_input = Some(memory);
                 }
                 if let Some(output) = op.outputs.first().copied() {
-                    let fact = match code {
-                        0x5f..=0x7f => {
-                            ValueFact::Constants(vec![instruction.immediate.unwrap_or(U256::ZERO)])
-                        }
-                        0x58 => ValueFact::Constants(vec![U256::from(instruction.pc)]),
-                        0x38 => ValueFact::Constants(vec![U256::from(self.program.byte_len())]),
-                        0x51 => {
-                            let offset =
-                                args[0].fact.singleton().and_then(|v| u64::try_from(v).ok());
-                            offset
-                                .and_then(|o| state.memory.words.get(&o))
-                                .map(|c| c.fact.clone())
-                                .unwrap_or_else(|| {
-                                    if state.memory.zero {
-                                        ValueFact::Constants(vec![U256::ZERO])
-                                    } else {
-                                        ValueFact::Unknown
-                                    }
-                                })
-                        }
-                        _ if evm_bytecode::word::arity(code).is_some() => {
-                            let numeric: Vec<_> =
-                                args.iter().map(|a| Self::numeric(&a.fact)).collect();
-                            let work = self.algebra.operation_work(code, numeric.iter());
-                            if !self.owner.pay(work) {
-                                return false;
-                            }
-                            Self::fact(self.algebra.apply_numeric(code, numeric.iter()).value)
-                        }
-                        _ => ValueFact::Unknown,
+                    let Some(mut abstract_value) = self.operation_value(
+                        code,
+                        instruction.immediate,
+                        instruction.pc,
+                        &args,
+                        &state,
+                    ) else {
+                        return false;
+                    };
+                    if !self.refine_value(&mut abstract_value, &state.relations) {
+                        return false;
+                    }
+                    // Forwarded observations keep their current execution's
+                    // equality identity; newly computed/unknown values get a
+                    // fresh temporary definition scoped to this transfer.
+                    if abstract_value
+                        .identity()
+                        .runtime_eq(AbstractValue::top().identity())
+                        && let Ok(definition) = u32::try_from(output.0)
+                    {
+                        abstract_value = abstract_value
+                            .with_identity(self.owner.artifact.statistics.evaluations, definition);
+                    }
+                    let Some(fact) = self.value_fact(&abstract_value) else {
+                        return false;
                     };
                     let control = if (0x5f..=0x7f).contains(&code) {
                         u64::try_from(instruction.immediate.unwrap_or(U256::ZERO))
@@ -1045,39 +1074,48 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                     } else {
                         None
                     };
-                    let Some(fact) = self.publish(output, fact) else {
+                    if self.publish(output, fact).is_none() {
                         return false;
-                    };
+                    }
                     state.stack.push(Cell {
                         value: output,
-                        fact,
+                        abstract_value,
                         control,
                     });
                 }
                 if op.effects.memory_write {
+                    let query_operands: &[usize] = match code {
+                        0x52 | 0x53 => &[0],
+                        0xf1 | 0xf2 => &[5, 6],
+                        0xf4 | 0xfa => &[4, 5],
+                        0x37 | 0x39 | 0x3e | 0x5e => &[0, 2],
+                        0x3c => &[1, 3],
+                        _ => &[],
+                    };
+                    let query_work = query_operands.iter().fold(0usize, |work, index| {
+                        work.saturating_add(args[*index].abstract_value.singleton_work())
+                    });
+                    if !self.owner.pay(query_work) {
+                        return false;
+                    }
                     match code {
                         0x52 => state.memory.write(
-                            args[0].fact.singleton().and_then(|v| u64::try_from(v).ok()),
+                            Address::of(&args[0].abstract_value),
                             32,
-                            Some(args[1].clone()),
+                            Some(args[1].abstract_value.clone()),
                         ),
-                        0x53 => state.memory.write(
-                            args[0].fact.singleton().and_then(|v| u64::try_from(v).ok()),
-                            1,
-                            None,
-                        ),
+                        0x53 => state
+                            .memory
+                            .write(Address::of(&args[0].abstract_value), 1, None),
                         0xf1 | 0xf2 | 0xf4 | 0xfa => {
                             let base = if matches!(code, 0xf1 | 0xf2) { 3 } else { 2 };
                             if let Some(width) = args[base + 3]
-                                .fact
+                                .abstract_value
                                 .singleton()
                                 .and_then(|v| u64::try_from(v).ok())
                             {
                                 state.memory.write(
-                                    args[base + 2]
-                                        .fact
-                                        .singleton()
-                                        .and_then(|v| u64::try_from(v).ok()),
+                                    Address::of(&args[base + 2].abstract_value),
                                     width,
                                     None,
                                 );
@@ -1088,15 +1126,12 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                         0x37 | 0x39 | 0x3e | 0x5e | 0x3c => {
                             let (offset, width) = if code == 0x3c { (1, 3) } else { (0, 2) };
                             if let Some(width) = args[width]
-                                .fact
+                                .abstract_value
                                 .singleton()
                                 .and_then(|v| u64::try_from(v).ok())
                             {
                                 state.memory.write(
-                                    args[offset]
-                                        .fact
-                                        .singleton()
-                                        .and_then(|v| u64::try_from(v).ok()),
+                                    Address::of(&args[offset].abstract_value),
                                     width,
                                     None,
                                 );
@@ -1107,6 +1142,29 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                         _ => state.memory.clear(),
                     }
                     memory = op.memory_output.expect("writers own a memory token");
+                }
+                if matches!(code, 0x55 | 0x5d)
+                    && !self.owner.pay(args[0].abstract_value.singleton_work())
+                {
+                    return false;
+                }
+                match code {
+                    0x55 => state.storage.write(
+                        Address::of(&args[0].abstract_value),
+                        args[1].abstract_value.clone(),
+                    ),
+                    0x5d => state.transient.write(
+                        Address::of(&args[0].abstract_value),
+                        args[1].abstract_value.clone(),
+                    ),
+                    _ => {
+                        if op.effects.storage_write {
+                            state.storage.slots.clear();
+                        }
+                        if op.effects.transient_write {
+                            state.transient.slots.clear();
+                        }
+                    }
                 }
                 match code {
                     0x56 => {
@@ -1123,36 +1181,81 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                         });
                     }
                     0x57 => {
-                        let zero = args[1].fact.singleton() == Some(U256::ZERO);
-                        let nonzero = match &args[1].fact {
-                            ValueFact::Constants(v) => v.iter().all(|v| *v != U256::ZERO),
-                            _ => false,
+                        let Some(then_state) =
+                            self.assume_state(&state, &args[1].abstract_value, true)
+                        else {
+                            return false;
                         };
-                        let (then_edges, unresolved, invalid_targets) = if zero {
-                            (Vec::new(), false, Vec::new())
-                        } else {
-                            let Some(result) =
-                                self.jump(index, &args[0], EdgeKind::True, &state, memory, effect)
-                            else {
-                                return false;
+                        let Some(else_state) =
+                            self.assume_state(&state, &args[1].abstract_value, false)
+                        else {
+                            return false;
+                        };
+                        let then_possible = then_state.is_some();
+                        let else_possible = else_state.is_some();
+                        let (then_edges, unresolved, invalid_targets) =
+                            if let Some(then_state) = then_state {
+                                let Some(result) = self.jump(
+                                    index,
+                                    &args[0],
+                                    EdgeKind::True,
+                                    &then_state,
+                                    memory,
+                                    effect,
+                                ) else {
+                                    return false;
+                                };
+                                result
+                            } else {
+                                (Vec::new(), false, Vec::new())
                             };
-                            result
-                        };
-                        let else_edge = if !nonzero && origin + 1 < self.program.blocks().len() {
-                            self.connect(index, origin + 1, EdgeKind::False, &state, memory, effect)
+                        let else_edge = if let Some(else_state) = else_state
+                            && origin + 1 < self.program.blocks().len()
+                        {
+                            self.connect(
+                                index,
+                                origin + 1,
+                                EdgeKind::False,
+                                &else_state,
+                                memory,
+                                effect,
+                            )
                         } else {
                             None
                         };
                         if self.owner.stopped {
                             return false;
                         }
-                        terminator = Some(Terminator::Branch {
-                            condition: args[1].value,
-                            target: args[0].value,
-                            then_edges,
-                            else_edge,
-                            unresolved,
-                            invalid_targets,
+                        // A private path proof need not make the aggregate
+                        // wire condition constant. Represent its actual CFG
+                        // consequence directly so later graph consumers see a
+                        // closed successor, while the original operations keep
+                        // every condition evaluation and ordered effect.
+                        // Missing EOF fallthrough alone is never such a proof.
+                        terminator = Some(if !then_possible {
+                            else_edge.map_or(
+                                Terminator::Exit {
+                                    kind: ExitKind::EndOfCode,
+                                    values: Vec::new(),
+                                },
+                                |edge| Terminator::Fallthrough { edge },
+                            )
+                        } else if !else_possible {
+                            Terminator::Jump {
+                                target: args[0].value,
+                                edges: then_edges,
+                                unresolved,
+                                invalid_targets,
+                            }
+                        } else {
+                            Terminator::Branch {
+                                condition: args[1].value,
+                                target: args[0].value,
+                                then_edges,
+                                else_edge,
+                                unresolved,
+                                invalid_targets,
+                            }
                         });
                     }
                     0x00 | 0xf3 | 0xfd | 0xff => {

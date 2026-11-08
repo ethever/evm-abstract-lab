@@ -165,8 +165,7 @@ fn whole_router_must_share_multiblock_and_context_bodies_with_meaningful_reducti
         unshared_text.len(),
         shared_text.len()
     );
-    assert!(high.reverts.len() >= 129);
-    assert!(high.constructions.len() >= 129);
+    super::assert_error_source_coverage(artifact);
     let bindings: usize = high
         .invocations
         .iter()

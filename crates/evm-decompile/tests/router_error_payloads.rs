@@ -1,8 +1,8 @@
 //! Whole-fixture acceptance is distinct from executing isolated constructors.
 use evm_decompile::{
-    Artifact, Completion, Config, EntityId, ExecutionLimits, ExecutionOutcome, ExitKind,
-    ExternalResponse, Fork, Input, LiftedGuardPayload, Limits, MemoryHost, StageKind, U256,
-    ValueFact, decompile, execute_bytecode, execute_ir, execute_structured,
+    Artifact, Completion, Config, ExecutionLimits, ExecutionOutcome, ExitKind, ExternalResponse,
+    Fork, Input, LiftedGuardPayload, Limits, MemoryHost, StageKind, U256, ValueFact, decompile,
+    execute_bytecode, execute_ir, execute_structured,
 };
 use std::sync::OnceLock;
 
@@ -41,6 +41,13 @@ fn router() -> &'static (Input, Artifact) {
         };
         let input = Input::new(bytes, Fork::Osaka);
         let artifact = decompile(&input, &config);
+        if let Some(directory) = std::env::var_os("DECOMPILE_EVIDENCE_DIR") {
+            let path = std::path::Path::new(&directory).join("router02.json");
+            let file = std::fs::File::create(path).unwrap();
+            let mut writer = std::io::BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &artifact).unwrap();
+            std::io::Write::flush(&mut writer).unwrap();
+        }
         (input, artifact)
     });
     assert_eq!(
@@ -53,46 +60,82 @@ fn router() -> &'static (Input, Artifact) {
 }
 
 #[test]
-fn exact_supplied_v115898_has_terminal_and_original_construction_certificates() {
+fn supplied_dynamic_pointer_source_has_terminal_and_original_construction_certificates() {
     let (_, artifact) = router();
     let stage = artifact.current().unwrap();
     assert_eq!(stage.kind, StageKind::Lifted);
     let program = stage.ir.lifted.as_ref().unwrap();
-    // This is the supplied raw SSA occurrence, retained in the original witness
-    // at base 475cd9ad. Its memory contents require proof beyond ValueFact.
-    let supplied_pointer = EntityId(115898);
-    assert_eq!(
-        stage.ir.value(supplied_pointer).unwrap().fact,
-        ValueFact::Unknown
-    );
-    let block = stage
+    // The original v115898 at base 475cd9ad belongs to this source site.
+    // Recovery improvements can allocate different contextual entity IDs.
+    // Keep the actual contract: certify dynamic pointers at the same bytecode
+    // constructor, while the raw scalar summary is still Unknown.
+    let index = program.render_index(&stage.ir);
+    index.validate_guard_sources().unwrap();
+    let blocks: Vec<_> = stage
         .ir
         .blocks
         .iter()
-        .find(|block| {
-            block
-                .operations
-                .iter()
-                .any(|op| op.opcode == 0x51 && op.outputs.contains(&supplied_pointer))
+        .filter(|block| {
+            block.source.is_some_and(|source| source.pc == 21_011)
+                && block
+                    .operations
+                    .iter()
+                    .find(|op| op.opcode == 0x51)
+                    .is_some_and(|op| {
+                        stage.ir.value(op.outputs[0]).unwrap().fact == ValueFact::Unknown
+                    })
+                && index.revert(block.id).is_some()
         })
-        .unwrap();
-    assert_eq!(block.source.unwrap().pc, 21_011);
-    let index = program.render_index(&stage.ir);
-    index.validate_guard_sources().unwrap();
-    let supplied = index
-        .revert(block.id)
-        .expect("the exact supplied dynamic-loop pointer v115898 requires its terminal proof");
-    assert_eq!(
-        index.payload(supplied.payload).unwrap().message,
-        "ds-math-mul-overflow"
+        .collect();
+    assert!(
+        !blocks.is_empty(),
+        "retain an Unknown-pointer source witness"
     );
-    assert_eq!(
-        index
-            .construction(block.id)
-            .expect("v115898 requires its original lazy construction capsule")
-            .revert,
-        supplied.id
+    for block in blocks {
+        let supplied = index.revert(block.id).unwrap();
+        assert_eq!(
+            index.payload(supplied.payload).unwrap().message,
+            "ds-math-mul-overflow"
+        );
+        assert_eq!(index.construction(block.id).unwrap().revert, supplied.id);
+    }
+}
+
+fn assert_error_source_coverage(artifact: &Artifact) {
+    use std::collections::BTreeSet;
+    let ir = &artifact.current().unwrap().ir;
+    let program = ir.lifted.as_ref().unwrap();
+    let index = program.render_index(ir);
+    // All 26 previously certified bytecode sites must remain covered. A raw
+    // total of 129 contexts counted four redundant EXPIRED continuations at
+    // PC 11634; path refinement now proves those additional copies unreachable.
+    let expected = BTreeSet::from([
+        3569, 3928, 4188, 5348, 5749, 6009, 6664, 7585, 7845, 8465, 8692, 9534, 9902, 10380, 10607,
+        11634, 12839, 13238, 14047, 14274, 16237, 17941, 19253, 20101, 21011, 21125,
+    ]);
+    let actual: BTreeSet<_> = program
+        .reverts
+        .iter()
+        .map(|proof| ir.block(proof.block).unwrap().source.unwrap().pc)
+        .collect();
+    assert!(
+        expected.is_subset(&actual),
+        "lost error source coverage: {actual:?}"
     );
+    for proof in &program.reverts {
+        assert_eq!(index.construction(proof.block).unwrap().revert, proof.id);
+    }
+    for block in ir.blocks.iter().filter(|block| {
+        block.source.is_some_and(|source| {
+            expected.contains(&source.pc) && ![19253, 20101, 21011, 21125].contains(&source.pc)
+        })
+    }) {
+        assert!(
+            index.revert(block.id).is_some(),
+            "lost previously total source coverage at {:?}",
+            block.source
+        );
+    }
 }
 
 #[test]
@@ -103,14 +146,7 @@ fn actual_router_preserves_baseline_coverage_and_raw_witness() {
     let program = stage.ir.lifted.as_ref().unwrap();
     let index = program.render_index(&stage.ir);
     index.validate_guard_sources().unwrap();
-    assert!(
-        program.reverts.len() >= 129,
-        "retain baseline terminal coverage"
-    );
-    assert!(
-        program.constructions.len() >= 129,
-        "retain baseline capsule coverage"
-    );
+    assert_error_source_coverage(artifact);
     assert!(
         program.payloads.len() >= 7,
         "retain baseline byte identities"
@@ -128,7 +164,7 @@ fn actual_router_preserves_baseline_coverage_and_raw_witness() {
         .filter(|r| r.payload == ds_math.id)
         .collect();
     assert!(
-        ds_proofs.len() >= 11,
+        ds_proofs.len() >= 35,
         "retain independently measured real-case positive coverage"
     );
     for proof in &ds_proofs {
@@ -212,6 +248,66 @@ fn actual_get_amounts_out_max_path3_has_terminal_and_original_construction_certi
 fn actual_get_amounts_in_max_path3_has_terminal_and_original_construction_certificates() {
     let (input, artifact) = router();
     concrete_overflow(input, artifact, Route::ArrayIn(3));
+}
+
+#[test]
+fn deadline_refinement_preserves_real_expired_calls_and_error_bytes() {
+    let (input, artifact) = router();
+    let cases = [
+        (
+            "addLiquidity(address,address,uint256,uint256,uint256,uint256,address,uint256)",
+            vec![1_u64, 2, 10, 10, 0, 0, 1, 99],
+        ),
+        (
+            "removeLiquidityETH(address,uint256,uint256,uint256,address,uint256)",
+            vec![1_u64, 10, 0, 0, 1, 99],
+        ),
+    ];
+    for (signature, words) in cases {
+        let mut calldata =
+            alloy_primitives::keccak256(signature.as_bytes()).as_slice()[..4].to_vec();
+        for word in words {
+            calldata.extend(U256::from(word).to_be_bytes::<32>());
+        }
+        let mut host = MemoryHost::new(input, calldata);
+        host.context.insert(0x42, U256::from(100));
+        let limits = ExecutionLimits::default();
+        let mut raw_host = host.clone();
+        let raw = execute_bytecode(input, &mut raw_host, &limits).unwrap();
+        for stage in artifact
+            .stages
+            .iter()
+            .filter(|stage| stage.kind != StageKind::Decoded)
+        {
+            let mut graph_host = host.clone();
+            let graph = execute_ir(stage, &mut graph_host, &limits).unwrap();
+            assert_eq!(raw.outcome, graph.outcome, "{signature}");
+            assert_eq!(raw.observations(), graph.observations(), "{signature}");
+            assert_eq!(raw_host, graph_host, "{signature}");
+        }
+        let ExecutionOutcome::Exit {
+            kind: ExitKind::Revert,
+            values,
+        } = &raw.outcome
+        else {
+            panic!("expired {signature} did not revert: {:?}", raw.outcome);
+        };
+        let message = b"UniswapV2Router: EXPIRED";
+        let offset = usize::try_from(values[0]).unwrap();
+        let size = usize::try_from(values[1]).unwrap();
+        assert_eq!(size, 100);
+        let mut expected = vec![0_u8; 100];
+        expected[..4].copy_from_slice(&[8, 0xc3, 0x79, 0xa0]);
+        expected[35] = 32;
+        expected[67] = u8::try_from(message.len()).unwrap();
+        expected[68..68 + message.len()].copy_from_slice(message);
+        assert_eq!(&raw_host.memory[offset..offset + size], expected.as_slice());
+        let (normalized, normalized_host, capsules) =
+            payload_oracle::certify(input, artifact, host, limits.max_memory_bytes);
+        assert_eq!(normalized.unwrap(), raw.outcome);
+        assert_eq!(normalized_host, raw_host);
+        assert_eq!(capsules, 1, "{signature}");
+    }
 }
 
 enum Route {
