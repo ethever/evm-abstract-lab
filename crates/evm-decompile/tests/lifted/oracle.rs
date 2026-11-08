@@ -3,7 +3,7 @@
 //! elided raw pure outputs cannot accidentally supply a missing dynamic capture.
 use evm_decompile::{
     Artifact, EntityId, Execution, ExecutionOutcome, ExitKind, Input, LiftedProgram, MemoryHost,
-    Stage, StructuredKind, StructuredNode, Terminator, U256,
+    Stage, StructuredKind, StructuredNode, Terminator, U256, WordRewrite,
 };
 use std::collections::BTreeMap;
 
@@ -109,6 +109,7 @@ fn run(stage: &Stage, program: &LiftedProgram, raw: &Execution) -> ExecutionOutc
             values: Vec::new(),
         };
     };
+    let renderer = program.render_base_index_with_budget(&stage.ir, |_| true);
     let mut raw_values = BTreeMap::new();
     let mut high_values = BTreeMap::new();
     let mut position = 0;
@@ -161,6 +162,28 @@ fn run(stage: &Stage, program: &LiftedProgram, raw: &Execution) -> ExecutionOutc
                     "lifted primitive {:?} at {:?} re-evaluated a stale SSA operand",
                     operation.id, operation.source
                 );
+                // Execute the actual typed RHS view selected by the renderer,
+                // using only already-bound high values. Raw/elided pure output
+                // values cannot silently supply a missing displayed dependency.
+                if let Some(recipe) = renderer.statement_word_rhs(statement, |_| true).unwrap() {
+                    let displayed = match recipe {
+                        WordRewrite::Existing(id) => {
+                            word(&evaluate(program, id, current, &high_values))
+                        }
+                        WordRewrite::Literal(value) => value,
+                        WordRewrite::Masked { value, mask } => {
+                            word(&evaluate(program, value, current, &high_values)) & mask
+                        }
+                        WordRewrite::Unchanged => panic!("unchanged roots use the primitive view"),
+                    };
+                    assert_eq!(statement.outputs.len(), 1);
+                    assert_eq!(primitive.outputs.len(), 1);
+                    assert_eq!(
+                        displayed, primitive.outputs[0],
+                        "derived bound-word RHS changed original operation {:?}",
+                        operation.id
+                    );
+                }
                 for output in &statement.outputs {
                     let slot = operation
                         .outputs

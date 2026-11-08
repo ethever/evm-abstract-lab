@@ -16,6 +16,7 @@ use std::{
 };
 
 mod annotations;
+mod bound_words;
 mod error_payloads;
 mod guard_sources;
 mod guards;

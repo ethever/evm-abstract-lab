@@ -1,6 +1,6 @@
 //! Local total-word identities and explicit word/predicate conversions.
 use super::{EntityId, Kind, Projector};
-use crate::{LiftedRelation as Relation, U256};
+use crate::{LiftedRelation as Relation, LiftedType, U256, WordExpr, WordRewrite};
 
 impl<P: FnMut(usize) -> bool> Projector<'_, P> {
     fn literal(&self, id: EntityId) -> Option<U256> {
@@ -51,8 +51,13 @@ impl<P: FnMut(usize) -> bool> Projector<'_, P> {
         &mut self,
         block: EntityId,
         opcode: u8,
-        mut args: Vec<EntityId>,
+        args: Vec<EntityId>,
     ) -> Option<EntityId> {
+        if !matches!(opcode, 0x10..=0x15) {
+            return self.simplify_total_word(block, opcode, args);
+        }
+        // Predicate-producing opcodes keep their explicit Word256 encoding and
+        // conversion path. The shared word algebra never rewrites this boundary.
         if let Some(words) = args
             .iter()
             .map(|id| self.literal(*id))
@@ -97,70 +102,64 @@ impl<P: FnMut(usize) -> bool> Projector<'_, P> {
             };
             return Some(self.expression(block, Kind::WordFromPredicate(predicate), []));
         }
-        let zero = |p: &Self, id| p.literal(id) == Some(U256::ZERO);
-        let one = |p: &Self, id| p.literal(id) == Some(U256::from(1));
-        let all = |p: &Self, id| p.literal(id) == Some(U256::MAX);
-        if args.len() == 2 {
-            let (a, b) = (args[0], args[1]);
-            let identity = match opcode {
-                0x01 | 0x17 | 0x18 if zero(self, a) => Some(b),
-                0x01 | 0x03 | 0x17 | 0x18 if zero(self, b) => Some(a),
-                0x02 if one(self, a) => Some(b),
-                0x02 | 0x04 if one(self, b) => Some(a),
-                0x16 if all(self, a) => Some(b),
-                0x16 if all(self, b) => Some(a),
-                0x16 | 0x17 if a == b => Some(a),
-                0x1b..=0x1d if zero(self, a) => Some(b),
-                _ => None,
-            };
-            if identity.is_some() {
-                return identity;
-            }
-            let is_zero = match opcode {
-                0x02 | 0x16 => zero(self, a) || zero(self, b),
-                0x03 | 0x18 => a == b,
-                // EVM division and remainder by zero are defined as zero.
-                0x04..=0x07 => zero(self, a) || zero(self, b),
-                _ => false,
-            };
-            if is_zero {
-                return Some(self.expression(block, Kind::Word(U256::ZERO), []));
-            }
-            if opcode == 0x16 {
-                // (x & mask) & mask and nested literal masks, in either order.
-                for (nested, other) in [(a, b), (b, a)] {
-                    if let Kind::WordOp {
+        None
+    }
+
+    fn simplify_total_word(
+        &mut self,
+        block: EntityId,
+        opcode: u8,
+        args: Vec<EntityId>,
+    ) -> Option<EntityId> {
+        let expressions = &self.result.program.expressions;
+        let indices = &self.indices;
+        let rewrite = crate::simplify_word(
+            opcode,
+            &args,
+            |id| {
+                let expression = expressions.get(*indices.get(&id)?)?;
+                if expression.ty != LiftedType::Word256
+                    || expression.kind.ty() != LiftedType::Word256
+                {
+                    return None;
+                }
+                Some(match &expression.kind {
+                    Kind::Word(value) => WordExpr::Literal(*value),
+                    Kind::WordOp {
                         opcode: 0x16,
                         arguments,
-                    } = self.kind(nested).clone()
-                    {
-                        if arguments.contains(&other) {
-                            return Some(nested);
-                        }
-                        if let Some(mask) = self.literal(other) {
-                            for (i, inner) in arguments.iter().enumerate() {
-                                if let Some(inner_mask) = self.literal(*inner) {
-                                    let combined =
-                                        self.expression(block, Kind::Word(mask & inner_mask), []);
-                                    args = vec![arguments[1 - i], combined];
-                                    if mask & inner_mask == U256::ZERO {
-                                        return Some(combined);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Some(self.expression(
-            block,
-            Kind::WordOp {
-                opcode,
-                arguments: args,
+                    } if arguments.len() == 2 => WordExpr::And {
+                        left: arguments[0],
+                        right: arguments[1],
+                    },
+                    _ => WordExpr::Opaque,
+                })
             },
-            [],
-        ))
+            &mut self.pay,
+        )
+        .ok()?;
+        Some(match rewrite {
+            WordRewrite::Unchanged => self.expression(
+                block,
+                Kind::WordOp {
+                    opcode,
+                    arguments: args,
+                },
+                [],
+            ),
+            WordRewrite::Existing(id) => id,
+            WordRewrite::Literal(value) => self.expression(block, Kind::Word(value), []),
+            WordRewrite::Masked { value, mask } => {
+                let mask = self.expression(block, Kind::Word(mask), []);
+                self.expression(
+                    block,
+                    Kind::WordOp {
+                        opcode: 0x16,
+                        arguments: vec![value, mask],
+                    },
+                    [],
+                )
+            }
+        })
     }
 }

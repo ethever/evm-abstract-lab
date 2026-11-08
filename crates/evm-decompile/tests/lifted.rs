@@ -7,6 +7,8 @@ use evm_decompile::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "lifted/bound_words.rs"]
+mod bound_words;
 #[path = "lifted/captured.rs"]
 mod captured;
 #[path = "lifted/copies.rs"]
