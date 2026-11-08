@@ -1,4 +1,5 @@
-//! Independent local fixed point. Identity allocation is outside transfer loops.
+//! Independent local fixed point. SSA identities stay stable across transfers;
+//! temporary equality identities belong to one execution of a block.
 //! Stack height and literal control provenance select separate blocks. Numeric
 //! facts still converge inside each context; its identity never follows widening.
 //! Shared product values and common path guarantees remain private executable

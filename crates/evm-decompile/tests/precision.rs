@@ -60,8 +60,9 @@ fn compile(input: &Input, strategy: Strategy) -> Artifact {
     assert_eq!(
         artifact.completion,
         Completion::Complete,
-        "{:?}",
-        artifact.diagnostics
+        "{:?}; statistics: {:?}",
+        artifact.diagnostics,
+        artifact.statistics
     );
     assert!(
         artifact
@@ -98,6 +99,15 @@ fn sound_facts(stage: &Stage, execution: &Execution) {
     for step in &execution.trace {
         let Some(id) = step.operation else { continue };
         let op = operations[&id];
+        for (&id, &concrete) in op.inputs.iter().zip(&step.inputs) {
+            let fact = &stage.ir.value(id).unwrap().fact;
+            assert!(
+                includes(fact, concrete),
+                "stage {:?}, pc {:?}, input {id:?}: {concrete:#x} outside {fact:?}",
+                stage.kind,
+                step.pc
+            );
+        }
         for (&id, &concrete) in op.outputs.iter().zip(&step.outputs) {
             let fact = &stage.ir.value(id).unwrap().fact;
             assert!(
@@ -690,6 +700,85 @@ fn moving_loop_values_converge_without_truncating_the_first_eight_values() {
     let (raw, observed) = oracle(&input, &artifact, host(&input, U256::ZERO));
     assert_eq!(raw.trace.iter().filter(|s| s.opcode == 0x55).count(), 20);
     assert_eq!(observed.storage[&U256::ZERO], U256::from(19));
+}
+
+fn masked_counter_loop(mask: u8) {
+    let mut a = Asm::default();
+    // Stack: (masked counter, iteration count). A separate bounded counter
+    // gives the concrete machines a real STOP after more than two full cycles
+    // while recovery must still converge over the loop-carried values.
+    a.push(0)
+        .push(0)
+        .dest("head")
+        .op(0x80)
+        .push(34)
+        .op(0x90)
+        .op(0x10)
+        .target("body")
+        .op(0x57)
+        .op(0x00)
+        .dest("body")
+        .op(0x81)
+        .push(0)
+        .op(0x55)
+        .op(0x90)
+        .push(1)
+        .op(0x01)
+        .push(mask)
+        .op(0x16)
+        .op(0x90)
+        .push(1)
+        .op(0x01)
+        .target("head")
+        .op(0x56);
+    let input = a.finish();
+    let artifact = compile(&input, Strategy::Dispatcher);
+    let stage = baseline(&artifact);
+    let store = stage
+        .ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.operations)
+        .find(|operation| operation.opcode == 0x55)
+        .unwrap();
+    let fact = &stage.ir.value(store.inputs[1]).unwrap().fact;
+    let cycle: Vec<_> = (0..=mask).map(U256::from).collect();
+    if mask < 8 {
+        assert_eq!(fact, &ValueFact::Constants(cycle.clone()));
+    } else {
+        assert!(cycle.iter().all(|value| includes(fact, *value)));
+    }
+    let (raw, observed) = oracle(&input, &artifact, host(&input, U256::ZERO));
+    let writes: Vec<_> = raw
+        .trace
+        .iter()
+        .filter(|step| step.opcode == 0x55)
+        .map(|step| step.inputs[1])
+        .collect();
+    assert_eq!(writes.len(), 34);
+    assert_eq!(
+        writes
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        cycle.into_iter().collect()
+    );
+    assert_eq!(observed.storage[&U256::ZERO], U256::from(33 & mask));
+}
+
+#[test]
+fn cyclic_four_value_counter_keeps_its_finite_cover_before_widening() {
+    masked_counter_loop(3);
+}
+
+#[test]
+fn cyclic_eight_value_counter_keeps_its_finite_cover_at_capacity() {
+    masked_counter_loop(7);
+}
+
+#[test]
+fn cyclic_sixteen_value_counter_converges_without_truncating_its_cover() {
+    masked_counter_loop(15);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

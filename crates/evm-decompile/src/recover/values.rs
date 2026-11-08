@@ -58,6 +58,52 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         if !widen {
             return Some(joined);
         }
+        if let Some(candidates) = joined.constants() {
+            // A complete finite cover enumerates this product's entire concrete
+            // denotation after membership filtering. Rebuild its numeric fields
+            // through shared joins of exact literals, preserving all metadata.
+            // The canonical sets ascend only up to capacity; their other fields
+            // depend only on that set, so redundant interval chains cannot grow.
+            if !self.owner.pay(
+                candidates
+                    .len()
+                    .saturating_mul(joined.numeric().work_size()),
+            ) {
+                return None;
+            }
+            let mut canonical = None;
+            for candidate in candidates {
+                if !self.owner.pay(0) {
+                    return None;
+                }
+                if !joined.numeric().contains(*candidate) {
+                    continue;
+                }
+                if !self.owner.pay(self.algebra.literal_quote_work(*candidate)) {
+                    return None;
+                }
+                let literal = evm_domain::NumericValue::constant(*candidate);
+                canonical = Some(if let Some(previous) = canonical {
+                    if !self.owner.pay(
+                        self.algebra
+                            .numeric_algebra()
+                            .summary_join_work(&previous, &literal, false),
+                    ) {
+                        return None;
+                    }
+                    self.algebra
+                        .numeric_algebra()
+                        .join_numeric(&previous, &literal)
+                } else {
+                    literal
+                });
+            }
+            // An empty optional projection never invents a bottom state.
+            return Some(match canonical {
+                Some(numeric) => joined.with_numeric(numeric),
+                None => joined,
+            });
+        }
         if !self.owner.pay(
             self.algebra
                 .numeric_algebra()
@@ -70,6 +116,9 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         ) {
             return None;
         }
+        // Once the finite cover exceeds capacity, its Top is absorbing at
+        // later entry joins. The shared procedure policy also prevents
+        // interval-implied bits from undoing acceleration of moving loops.
         Some(self.algebra.widen_procedure(left, &joined))
     }
     /// Shared helpers charge this run's root ledger directly. Its refusal bit
