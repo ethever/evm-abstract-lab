@@ -429,7 +429,7 @@ fn observed_old_word_is_not_reloaded_after_a_store_and_memory_fault_prefix_stays
 }
 
 #[test]
-fn retained_predicate_word_boundaries_keep_their_original_primitive() {
+fn retained_predicate_word_boundaries_keep_explicit_numeric_conversion() {
     let mut a = Asm::default();
     a.op(0x34)
         .op(0x5f)
@@ -446,11 +446,19 @@ fn retained_predicate_word_boundaries_keep_their_original_primitive() {
     let (stage, program) = lifted(&artifact);
     let index = program.render_index(&stage.ir);
     assert_eq!(index.statement_word_rhs(statement, |_| true).unwrap(), None);
-    assert!(
+    let inputs = statement
+        .inputs
+        .iter()
+        .map(|id| index.render_expression(*id, |_| true).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
         index
-            .render_statement(statement, |_| true)
-            .unwrap()
-            .contains("evm.eq(")
+            .render_statement_with_dependencies(statement, false, |_| true)
+            .unwrap(),
+        format!(
+            "v{} = word(({} == {}));",
+            statement.outputs[0].0, inputs[0], inputs[1]
+        )
     );
     for value in values() {
         let mut host = MemoryHost::new(&input, Vec::new());

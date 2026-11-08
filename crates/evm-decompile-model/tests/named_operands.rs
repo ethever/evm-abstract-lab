@@ -94,6 +94,11 @@ fn assert_statements(cases: &[StatementCase]) {
         let original = (program.clone(), ir.clone(), statement.clone());
         let renderer = program.render_index(&ir);
         assert_eq!(
+            renderer.statement_word_rhs(&statement, |_| true).unwrap(),
+            None,
+            "display policy must also apply without a simplification recipe: {name}"
+        );
+        assert_eq!(
             program.render_statement(&statement, &ir),
             expected,
             "{name}"
