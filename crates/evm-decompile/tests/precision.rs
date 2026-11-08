@@ -256,6 +256,86 @@ fn conflicting_memory_stores_join_values_and_byte_overlap_remains_sound() {
     }
 }
 
+fn acyclic_fanin_input(count: usize, memory: bool) -> Input {
+    const LABELS: [&str; 8] = [
+        "case0", "case1", "case2", "case3", "case4", "case5", "case6", "case7",
+    ];
+    assert!((2..=9).contains(&count));
+    let mut a = Asm::default();
+    a.op(0x34);
+    for (selector, label) in LABELS.iter().take(count - 1).enumerate() {
+        a.op(0x80)
+            .push(u8::try_from(selector).unwrap())
+            .op(0x14)
+            .target(label)
+            .op(0x57);
+    }
+    let arm = |a: &mut Asm, selector: usize| {
+        a.op(0x50).push(u8::try_from(7 + selector).unwrap());
+        if memory {
+            a.push(0).op(0x52);
+        }
+        a.target("join").op(0x56);
+    };
+    arm(&mut a, count - 1);
+    for (selector, label) in LABELS.iter().take(count - 1).enumerate() {
+        a.dest(label);
+        arm(&mut a, selector);
+    }
+    a.dest("join");
+    if memory {
+        a.push(0).op(0x51);
+    }
+    a.push(0).op(0x55).op(0x00);
+    a.finish()
+}
+
+fn acyclic_fanin(memory: bool) {
+    // All paths are acyclic: receiving many predecessors must not trigger
+    // loop widening. The last case deliberately exceeds the finite cap of 8.
+    for count in [4, 8, 9] {
+        let input = acyclic_fanin_input(count, memory);
+        let artifact = compile(&input, Strategy::Dispatcher);
+        let stage = baseline(&artifact);
+        let result = if memory {
+            loads(&artifact, 0x51)[0]
+        } else {
+            let store = stage
+                .ir
+                .blocks
+                .iter()
+                .flat_map(|block| &block.operations)
+                .find(|operation| operation.opcode == 0x55)
+                .unwrap();
+            &stage.ir.value(store.inputs[1]).unwrap().fact
+        };
+        let expected = if count <= 8 {
+            ValueFact::Constants((7..7 + count).map(U256::from).collect())
+        } else {
+            ValueFact::Unknown
+        };
+        assert_eq!(result, &expected, "{count}-way memory={memory} fan-in");
+        for selector in (0..count).map(U256::from).chain([U256::MAX]) {
+            let (_, observed) = oracle(&input, &artifact, host(&input, selector));
+            let selected = usize::try_from(selector)
+                .ok()
+                .filter(|s| *s < count - 1)
+                .unwrap_or(count - 1);
+            assert_eq!(observed.storage[&U256::ZERO], U256::from(7 + selected));
+        }
+    }
+}
+
+#[test]
+fn acyclic_stack_fanin_keeps_all_finite_values_without_loop_widening() {
+    acyclic_fanin(false);
+}
+
+#[test]
+fn acyclic_memory_fanin_keeps_all_finite_values_without_loop_widening() {
+    acyclic_fanin(true);
+}
+
 #[test]
 fn joined_paths_do_not_keep_a_predecessors_condition() {
     let mut a = Asm::default();

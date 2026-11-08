@@ -5,6 +5,7 @@
 //! facts. Wire summaries only describe observations across all evaluations.
 
 mod context;
+mod feedback;
 mod state;
 mod targets;
 mod values;
@@ -22,6 +23,7 @@ use evm_domain::{
     DomainSpec, EvmNumericAlgebra, FiniteConstantSet, FiniteSetAlgebra, ProductAlgebra,
     ValueAlgebra,
 };
+use feedback::FeedbackGraph;
 use state::{AbstractValue, Address, Cell, State};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -135,6 +137,7 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
         origins: (0..blocks).collect(),
         contexts: BTreeMap::new(),
         jump_targets: TargetPools::default(),
+        feedback: FeedbackGraph::default(),
         queue: Worklist::default(),
         edges: BTreeMap::new(),
         algebra,
@@ -396,6 +399,7 @@ struct Recovery<'a, P: FnMut(Progress)> {
     origins: Vec<usize>,
     contexts: BTreeMap<ContextKey, usize>,
     jump_targets: TargetPools,
+    feedback: FeedbackGraph,
     queue: Worklist<usize>,
     edges: BTreeMap<(usize, usize, EdgeKind), EntityId>,
     algebra: ValueAlgebra<ProductAlgebra>,
@@ -689,6 +693,9 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             self.contexts.insert(key, i);
             i
         };
+        // Topology uses the actual continuation/height context, never source
+        // PC ordering. Admit cycle-closing edges before choosing acceleration.
+        self.feedback.observe(from, index, self.owner)?;
         if self.states[index].is_none() {
             let block_id = self.ir.blocks[index].id;
             let mut parameters = Vec::new();
@@ -728,6 +735,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         memory: EntityId,
         effect: EntityId,
     ) -> Option<EntityId> {
+        let feedback = self.feedback.is_point(index, self.owner)?;
         let previous = self.states[index].as_ref().expect("reached context");
         // A missing memory key may synthesize its backing's known zero.
         // Reserve both sides for every possible union key before merging.
@@ -747,7 +755,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
         let mut incoming = previous.clone();
         debug_assert_eq!(incoming.stack.len(), state.stack.len());
         let mut changed = false;
-        let widen = self.updates[index] >= self.algebra.spec().widening_after_updates();
+        let widen = feedback && self.updates[index] >= self.algebra.spec().widening_after_updates();
         for (old, new) in incoming.stack.iter_mut().zip(&state.stack) {
             // Control tags are immutable context identity, including the active
             // target. Numeric/candidate growth never changes this projection.
