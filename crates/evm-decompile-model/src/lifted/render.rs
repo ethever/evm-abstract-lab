@@ -16,7 +16,7 @@ use control::ControlPlanIndex;
 pub use control::{LiftedIfPlan, LiftedIfSuffix, RequireIf};
 pub use failure_first::FailureFirstIf;
 use failure_first::FailureFirstIndex;
-use primitive::{CallName, append};
+use primitive::{CallName, PrimitiveFormat, append};
 
 /// Reusable indexes for rendering many semantic rows without rescanning arenas.
 /// Owners reserve index construction from their own work ledger before creating it.
@@ -345,30 +345,32 @@ impl<'a> LiftedRenderIndex<'a> {
             {
                 return Err(LiftedRenderError::Limit);
             }
-            let mut call = |name: CallName<'_>, args: &[EntityId], names: Option<&[&str]>| {
-                // Bound pending expansion before allocating per-argument parts.
-                let parts = if names.is_some() { 3 } else { 2 };
-                if work
-                    .saturating_add(pending.len())
-                    .saturating_add(args.len().saturating_mul(parts))
-                    .saturating_add(2)
-                    > MAX_LIFTED_EXPRESSION_TEXT
-                {
-                    return Err(LiftedRenderError::Limit);
-                }
-                pending.push(Part::Text(")".to_owned()));
-                for (i, arg) in args.iter().enumerate().rev() {
-                    pending.push(Part::Expression(*arg));
-                    if let Some(names) = names {
-                        pending.push(Part::Text(format!("{} = ", names[i])));
+            let mut invocation =
+                |format: PrimitiveFormat, name: CallName<'_>, args: &[EntityId]| {
+                    let names = format.names();
+                    // Bound pending expansion before allocating per-argument parts.
+                    let parts = if names.is_some() { 3 } else { 2 };
+                    if work
+                        .saturating_add(pending.len())
+                        .saturating_add(args.len().saturating_mul(parts))
+                        .saturating_add(2)
+                        > MAX_LIFTED_EXPRESSION_TEXT
+                    {
+                        return Err(LiftedRenderError::Limit);
                     }
-                    if i > 0 {
-                        pending.push(Part::Text(", ".to_owned()));
+                    pending.push(Part::Text(format.closing().to_owned()));
+                    for i in (0..args.len()).rev() {
+                        pending.push(Part::Expression(args[format.argument(i, args.len())]));
+                        if let Some(names) = names {
+                            pending.push(Part::Text(format!("{} = ", names[i])));
+                        }
+                        if i > 0 {
+                            pending.push(Part::Text(format.separator()));
+                        }
                     }
-                }
-                pending.push(Part::Text(name.opening()));
-                Ok(())
-            };
+                    pending.push(Part::Text(format.opening(name)));
+                    Ok(())
+                };
             match part {
                 Part::Text(text) => append(&mut out, &text, &mut reserve)?,
                 Part::Expression(next) => {
@@ -387,7 +389,7 @@ impl<'a> LiftedRenderIndex<'a> {
                             append(&mut out, &format!("v{}", v.0), &mut reserve)?;
                         }
                         LiftedExpressionKind::WordFromPredicate(v) => {
-                            call(CallName::High("word"), &[*v], None)?
+                            invocation(PrimitiveFormat::POSITIONAL, CallName::High("word"), &[*v])?
                         }
                         LiftedExpressionKind::NonZero(v) => {
                             pending.push(Part::Text(" != 0)".to_owned()));
@@ -423,10 +425,10 @@ impl<'a> LiftedRenderIndex<'a> {
                                     | LiftedRelation::Sgt
                                     | LiftedRelation::Sge
                             ) {
-                                call(
+                                invocation(
+                                    PrimitiveFormat::POSITIONAL,
                                     CallName::Evm(symbol),
                                     &[*left, *right],
-                                    Some(primitive::LEFT_RIGHT),
                                 )?;
                             } else {
                                 pending.push(Part::Text(")".to_owned()));
@@ -437,46 +439,29 @@ impl<'a> LiftedRenderIndex<'a> {
                             }
                         }
                         LiftedExpressionKind::WordOp { opcode, arguments } => {
-                            let symbol = match opcode {
-                                0x01 => Some("+"),
-                                0x02 => Some("*"),
-                                0x03 => Some("-"),
-                                0x04 => Some("/"),
-                                0x06 => Some("%"),
-                                0x16 => Some("&"),
-                                0x17 => Some("|"),
-                                0x18 => Some("^"),
-                                _ => None,
+                            let name = match opcode {
+                                0x05 => "sdiv",
+                                0x07 => "smod",
+                                0x08 => "addmod",
+                                0x09 => "mulmod",
+                                0x0a => "exp",
+                                0x0b => "signextend",
+                                0x12 => "slt",
+                                0x13 => "sgt",
+                                0x15 => "iszero",
+                                0x19 => "not",
+                                0x1a => "byte",
+                                0x1b => "shl",
+                                0x1c => "shr",
+                                0x1d => "sar",
+                                0x1e => "clz",
+                                _ => "word_op",
                             };
-                            if let Some(symbol) = symbol.filter(|_| arguments.len() == 2) {
-                                pending.push(Part::Text(")".to_owned()));
-                                pending.push(Part::Expression(arguments[1]));
-                                pending.push(Part::Text(format!(" {symbol} ")));
-                                pending.push(Part::Expression(arguments[0]));
-                                pending.push(Part::Text("(".to_owned()));
-                            } else {
-                                let name = match opcode {
-                                    0x05 => "sdiv",
-                                    0x07 => "smod",
-                                    0x08 => "addmod",
-                                    0x09 => "mulmod",
-                                    0x0a => "exp",
-                                    0x0b => "signextend",
-                                    0x15 => "iszero",
-                                    0x19 => "not",
-                                    0x1a => "byte",
-                                    0x1b => "shl",
-                                    0x1c => "shr",
-                                    0x1d => "sar",
-                                    0x1e => "clz",
-                                    _ => "word_op",
-                                };
-                                call(
-                                    CallName::Evm(name),
-                                    arguments,
-                                    primitive::operand_names(*opcode, arguments.len()),
-                                )?;
-                            }
+                            invocation(
+                                PrimitiveFormat::for_opcode(*opcode, arguments.len()),
+                                CallName::Evm(name),
+                                arguments,
+                            )?;
                         }
                     }
                 }
@@ -487,9 +472,9 @@ impl<'a> LiftedRenderIndex<'a> {
         }
         Ok(out)
     }
-    /// One qualified EVM call from semantic inputs, without a semicolon.
-    /// Operand labels require an exact opcode/arity match; display spelling does
-    /// not select a signature. Names, labels and separators share the expression
+    /// One primitive expression from semantic inputs, without a semicolon.
+    /// Operators and operand labels require an exact opcode/arity match; display
+    /// spelling does not select a signature. All syntax shares the expression
     /// byte ceiling and caller's work allowance. Refusal exposes no partial call.
     pub fn render_invocation(
         &self,
@@ -498,22 +483,25 @@ impl<'a> LiftedRenderIndex<'a> {
         arguments: &[EntityId],
         mut reserve: impl FnMut(usize) -> bool,
     ) -> Result<String, LiftedRenderError> {
-        let names = primitive::operand_names(opcode, arguments.len());
+        let format = PrimitiveFormat::for_opcode(opcode, arguments.len());
+        let names = format.names();
         let mut out = String::new();
-        CallName::Evm(name).append(&mut out, &mut reserve)?;
-        append(&mut out, "(", &mut reserve)?;
-        for (position, argument) in arguments.iter().enumerate() {
+        format.append_opening(CallName::Evm(name), &mut out, &mut reserve)?;
+        for position in 0..arguments.len() {
             if position > 0 {
-                append(&mut out, ", ", &mut reserve)?;
+                append(&mut out, &format.separator(), &mut reserve)?;
             }
             if let Some(names) = names {
                 append(&mut out, names[position], &mut reserve)?;
                 append(&mut out, " = ", &mut reserve)?;
             }
-            let argument = self.render_expression(*argument, &mut reserve)?;
+            let argument = self.render_expression(
+                arguments[format.argument(position, arguments.len())],
+                &mut reserve,
+            )?;
             append(&mut out, &argument, &mut reserve)?;
         }
-        append(&mut out, ")", &mut reserve)?;
+        append(&mut out, format.closing(), &mut reserve)?;
         Ok(out)
     }
 

@@ -1,4 +1,5 @@
 //! Independent typed expression evaluator shared by normalized test machines.
+use alloy_primitives::U512;
 use evm_decompile::{
     EntityId, LiftedExpressionKind as Expr, LiftedProgram, LiftedRelation as Relation, LiftedType,
     LiftedValue, U256,
@@ -92,6 +93,19 @@ fn primitive_word(opcode: u8, args: &[U256]) -> U256 {
             } else {
                 result
             }
+        }
+        0x08 | 0x09 => {
+            if args[2] == U256::ZERO {
+                return U256::ZERO;
+            }
+            let left = U512::from(first);
+            let right = U512::from(second);
+            let wide = if opcode == 0x08 {
+                left + right
+            } else {
+                left * right
+            };
+            U256::from(wide % U512::from(args[2]))
         }
         0x0a => {
             let mut result = U256::from(1);

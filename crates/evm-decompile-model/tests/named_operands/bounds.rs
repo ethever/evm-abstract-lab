@@ -1,6 +1,6 @@
 use super::super::{expression, primitive, words};
 use evm_decompile_model::{
-    EntityId, LiftedExpressionKind as Kind, LiftedProgram, LiftedRenderError,
+    EntityId, LiftedExpressionKind as Kind, LiftedProgram, LiftedRenderError, LiftedRenderIndex,
     MAX_LIFTED_EXPRESSION_TEXT,
 };
 
@@ -115,12 +115,8 @@ fn shared_exponents(depth: u64) -> (LiftedProgram, EntityId) {
 }
 
 #[test]
-fn expression_size_limit_counts_nested_labels_and_separators() {
-    let (program, root) = shared_exponents(12);
-    // The former positional expansion is 45,049 bytes; naming base/exponent
-    // expands this same small shared DAG beyond the 65,536-byte ceiling.
-    let positional_bytes = 11 * (1 << 12) - 7;
-    assert!(positional_bytes < MAX_LIFTED_EXPRESSION_TEXT);
+fn expression_size_limit_counts_nested_operators_and_delimiters() {
+    let (program, root) = shared_exponents(13);
     let ir = Default::default();
     assert_eq!(
         program.render_index(&ir).render_expression(root, |_| true),
@@ -134,9 +130,10 @@ fn expression_size_limit_counts_nested_labels_and_separators() {
 
 #[test]
 fn statement_size_includes_the_combined_named_operands() {
-    let (program, root) = shared_exponents(10);
+    let (program, root) = shared_exponents(12);
     let child = program.render_expression(root);
-    assert!(child.starts_with("evm.exp(base = "));
+    assert_eq!(child.len(), 10 * (1 << 12) - 6);
+    assert!(child.starts_with('(') && child.contains(" ** "));
     assert!(child.len() < MAX_LIFTED_EXPRESSION_TEXT);
     assert!(child.len() * 2 > MAX_LIFTED_EXPRESSION_TEXT);
     let (_, ir, mut statement) = primitive(0x55, "SSTORE", 2);
@@ -153,6 +150,100 @@ fn statement_size_includes_the_combined_named_operands() {
         "statement_limit(s800);"
     );
     assert_eq!((program, ir, statement), original);
+}
+
+fn render_operator(
+    renderer: &LiftedRenderIndex<'_>,
+    opcode: u8,
+    arguments: &[EntityId],
+    invocation: bool,
+    pay: impl FnMut(usize) -> bool,
+) -> Result<String, LiftedRenderError> {
+    if invocation {
+        renderer.render_invocation(opcode, "primitive", arguments, pay)
+    } else {
+        renderer.render_expression(super::super::ROOT, pay)
+    }
+}
+
+#[test]
+fn every_operator_payment_can_cancel_without_exposing_partial_text() {
+    for (opcode, arity) in [
+        (0x01, 2),
+        (0x0a, 2),
+        (0x10, 2),
+        (0x15, 1),
+        (0x19, 1),
+        (0x1b, 2),
+        (0x1c, 2),
+    ] {
+        let (mut program, ir, statement) = primitive(opcode, "PRIMITIVE", arity);
+        program.expressions.push(expression(
+            super::super::ROOT,
+            Kind::WordOp {
+                opcode,
+                arguments: statement.inputs.clone(),
+            },
+        ));
+        let renderer = program.render_index(&ir);
+        for invocation in [false, true] {
+            let mut payments = 0;
+            render_operator(
+                &renderer,
+                opcode,
+                &statement.inputs,
+                invocation,
+                |_: usize| {
+                    payments += 1;
+                    true
+                },
+            )
+            .unwrap();
+            for refuse_at in 0..payments {
+                let mut visited = 0;
+                let mut pay = |_: usize| {
+                    let accept = visited != refuse_at;
+                    visited += 1;
+                    accept
+                };
+                assert_eq!(
+                    render_operator(&renderer, opcode, &statement.inputs, invocation, &mut pay),
+                    Err(LiftedRenderError::Limit),
+                    "opcode={opcode:#x}, invocation={invocation}, payment={refuse_at}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn deep_and_cyclic_operator_arenas_use_the_bounded_iterative_renderer() {
+    let mut program = words(1);
+    let depth = 10_000;
+    for id in 2..=depth + 1 {
+        program.expressions.push(expression(
+            EntityId(id),
+            Kind::WordOp {
+                opcode: 0x19,
+                arguments: vec![EntityId(id - 1)],
+            },
+        ));
+    }
+    program.validate().unwrap();
+    let text = program.render_expression(EntityId(depth + 1));
+    assert_eq!(text.len(), usize::try_from(depth).unwrap() * 3 + 4);
+    assert!(text.starts_with("(~(~(~"));
+    program.expressions[0].kind = Kind::WordOp {
+        opcode: 0x19,
+        arguments: vec![EntityId(1)],
+    };
+    let ir = Default::default();
+    assert_eq!(
+        program
+            .render_index(&ir)
+            .render_expression(EntityId(1), |_| true),
+        Err(LiftedRenderError::Limit)
+    );
 }
 
 #[test]

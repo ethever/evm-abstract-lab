@@ -29,7 +29,8 @@ fn shared_dag_materialization_completes_without_bypassing_export_budget() {
     assert_eq!(host.storage[&U256::ZERO], U256::from(3) << 32);
     let complete = export_text_with_observer(&artifact, &Cancellation::new(), 100_000_000, |_| {});
     assert_eq!(complete.status, TextExportStatus::Complete);
-    assert!(complete.text.contains("evm.add("));
+    assert!(complete.text.contains(" + "), "{}", complete.text);
+    assert!(!complete.text.contains("evm.add("));
     assert_eq!(complete.text.matches("evm.calldataload(").count(), 1);
     assert_eq!(complete.text.matches("evm.sstore(").count(), 1);
     assert!(!complete.text.contains("work limit exhausted"));

@@ -27,10 +27,10 @@ fn truth(text: &str, left: U256, right: U256) -> bool {
         "(v101 <= v102)" => left <= right,
         "(v101 > v102)" => left > right,
         "(v101 >= v102)" => left >= right,
-        "evm.slt(left = v101, right = v102)" => {
+        "evm.slt(v101, v102)" => {
             evm_bytecode::word::evaluate(0x12, &[left, right]).unwrap() != U256::ZERO
         }
-        "evm.sgt(left = v101, right = v102)" => {
+        "evm.sgt(v101, v102)" => {
             evm_bytecode::word::evaluate(0x13, &[left, right]).unwrap() != U256::ZERO
         }
         other => panic!("unexpected predicate spelling {other}"),

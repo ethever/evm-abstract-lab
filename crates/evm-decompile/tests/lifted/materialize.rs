@@ -60,7 +60,17 @@ fn repeated_pure_dag_materializes_real_ssa_operations_and_exports_completely() {
     assert!(
         !export.text.contains("expression_limit(") && !export.text.contains("work limit exhausted")
     );
-    assert_eq!(export.text.matches("evm.mul(").count(), arithmetic.len());
+    assert!(
+        !export.text.contains("evm.mul("),
+        "retained bindings use the same operators as inline expressions"
+    );
+    for statement in &arithmetic {
+        let row = index
+            .render_statement_with_dependencies(statement, false, |_| true)
+            .unwrap();
+        assert!(row.contains(" * "), "{row}");
+        assert_eq!(export.text.matches(&row).count(), 1, "{row}");
+    }
     for word in [
         U256::ZERO,
         U256::from(1),

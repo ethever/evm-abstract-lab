@@ -116,12 +116,20 @@ def observed(page, role, prefix=None):
 
 def inspector_control(page, canvas, prefix, role):
     """Scroll the real inspector, without inventing an alternate activation path."""
+    # Both link families have bounded nested viewports. Target visible rows of
+    # the requested family while its particular entity is still virtualized.
+    nested_prefix = (
+        next((name for name in ("Source descendant", "Reference")
+              if prefix.startswith(name)), None)
+        if role == "decompile-entity-link" else None
+    )
+
     def scroll(direction, inner=False):
         def geometry():
             return [(control["label"], control["role"], control["rect"])
                     for control in ui_controls(page) if control["enabled"]]
         previous = geometry()
-        controls = observed(page, "decompile-entity-link", "Source descendant") if inner else []
+        controls = observed(page, "decompile-entity-link", nested_prefix) if inner else []
         panel = observed(page, "decompile-inspector")[0]["rect"]
         if controls:
             first, last = controls[0]["rect"], controls[-1]["rect"]
@@ -189,7 +197,7 @@ def inspector_control(page, canvas, prefix, role):
                     stage_id, entity_id = reference.groups()
                     expect(page.locator("#analysis-status")).to_contain_text(f"/stage:{stage_id}/entity:{entity_id}")
                 return item
-            if not scroll(direction, prefix.startswith("Source descendant")):
+            if not scroll(direction, nested_prefix is not None):
                 break
     record_input(page, "inspector-target-missing", prefix=prefix, role=role)
     page.locator("#evm-canvas").screenshot(path=str(page.decompile_output / "missing-inspector-target.png"))

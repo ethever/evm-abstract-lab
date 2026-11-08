@@ -141,9 +141,9 @@ fn comparison(
         }
         append(&mut out, "evm.", pay)?;
         append(&mut out, symbol, pay)?;
-        append(&mut out, "(left = ", pay)?;
+        append(&mut out, "(", pay)?;
         append(&mut out, left, pay)?;
-        append(&mut out, ", right = ", pay)?;
+        append(&mut out, ", ", pay)?;
         append(&mut out, right, pay)?;
         append(&mut out, if inverted { "))" } else { ")" }, pay)?;
     } else {

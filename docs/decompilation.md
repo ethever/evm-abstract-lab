@@ -157,7 +157,7 @@ evm.sstore(slot = 0x0, value = 0x2a);
 evm.stop();
 ```
 
-显式失败分支中的 MLOAD、MSTORE、调用、环境读取与传边赋值都留在原失败路径上；REVERT 和 INVALID 保持各自的终结身份。实际执行 `0xfe` 的终结显示为 `evm.invalid();`，栈错误、非法跳转及其他 fault 仍显示各自诊断。`require` 只吸收自身证书覆盖的失败构造，不删除其他分支的构造。成功路径的多个右值仍先同时求值，再写入目标参数。条件翻转使用有类型的谓词，重复逻辑否定会规范化；256 位回绕算术和有符号比较保留，例如 `evm.slt(left = (size - 0x4), right = 0x40)`，不会改写成缺少前提的整数长度比较。嵌套检查的成功路径可以依次显示在同一缩进层，条件和观察操作不会因此合并或提前执行。
+显式失败分支中的 MLOAD、MSTORE、调用、环境读取与传边赋值都留在原失败路径上；REVERT 和 INVALID 保持各自的终结身份。实际执行 `0xfe` 的终结显示为 `evm.invalid();`，栈错误、非法跳转及其他 fault 仍显示各自诊断。`require` 只吸收自身证书覆盖的失败构造，不删除其他分支的构造。成功路径的多个右值仍先同时求值，再写入目标参数。条件翻转使用有类型的谓词，重复逻辑否定会规范化；256 位回绕算术和有符号比较保留，例如 `evm.slt((size - 0x4), 0x40)`，不会改写成缺少前提的整数长度比较。嵌套检查的成功路径可以依次显示在同一缩进层，条件和观察操作不会因此合并或提前执行。
 
 有时原始结构化树将失败块放在当前 `If` 后面的 Sequence 尾部。只有该尾部属于当前显示范围、失败分支与完整尾部共同闭合为失败，且成功分支不会正常落入尾部时，表示计划才把这些原始节点一起移动到失败 `then` 中。共享过程定义使用自己的 body 作为范围；不会借用祖先 Sequence 或其他调用点的尾部。若成功分支仍会流入同一个 REVERT，例如先执行 SSTORE 再 REVERT，该共同尾部继续保留在正常续接之后。经过认证的检查可显示为：
 
@@ -243,7 +243,9 @@ procedure shared_42(v1, v2) -> (v3) {
 
 普通高级代码、共享过程、Inspector 与 CLI 的 EVM 调用统一使用 `evm.` 前缀，包括函数形式的字运算和有符号比较。位取反显示为 `evm.not(...)`，逻辑否定仍使用 `!`；`word(...)` 和共享过程调用保留高级构造的写法。失败体中的原始内存范围终结显示为 `evm.revert(offset = …, size = …)`；已认证的消息在 Inspector 的载荷证书中查看。
 
-高层原语调用按固定的 opcode 签名显示参数名，例如：
+高层代码按 opcode 统一选择运算符或调用形式。ADD、SUB、MUL、无符号 DIV/MOD、EXP、AND、OR、XOR、NOT、SHL、SHR 分别显示为 `+`、`-`、`*`、`/`、`%`、`**`、`&`、`|`、`^`、`~`、`<<`、`>>`；位移写成 `value << shift` 或 `value >> shift`。这套规则同时用于独立 SSA 赋值、内联表达式和共享过程体。例如，保留的 `v20 = evm.add(left = v17, right = 0xa4);` 显示为 `v20 = (v17 + 0xa4);`，结果变量和计算位置仍由原语句确定。
+
+以下 26 条指令始终使用完整命名参数：CALLDATALOAD、CALLDATACOPY、CODECOPY、EXTCODECOPY、RETURNDATACOPY、MLOAD、MSTORE、MSTORE8、SLOAD、SSTORE、TLOAD、TSTORE、MCOPY、LOG0–LOG4、CREATE、CREATE2、CALL、CALLCODE、DELEGATECALL、STATICCALL、RETURN、REVERT。例如：
 
 ```text
 v4210 = evm.call(gas = (v4205 - 0x2c6), target = v4066, value = 0x0, input_offset = v4169, input_size = 0x84, output_offset = v4169, output_size = 0x0);
@@ -251,7 +253,9 @@ evm.calldatacopy(memory_offset = 0x0, calldata_offset = 0x4, size = v12);
 evm.revert(offset = 0x0, size = v13);
 ```
 
-CALL/CALLCODE 显示 `value` 参数，DELEGATECALL/STATICCALL 的六项参数中没有这一项；输出大小为零时仍显示原有输出偏移。创建操作区分 init code 的偏移、长度和 CREATE2 的 salt，LOG 的 topic 按原始弹栈顺序编号。内存、storage、复制、哈希及函数形式的字运算也使用相应的参数名，中缀表达式和 `word(predicate)` 保留现有写法。名字只在已知 opcode 且实参数量精确匹配时使用；未知或异常数量的参数完整地按位置显示。
+CALL/CALLCODE 显示 `value` 参数，DELEGATECALL/STATICCALL 的六项参数中没有这一项；输出大小为零时仍显示原有输出偏移。创建操作区分 init code 的偏移、长度和 CREATE2 的 salt，LOG 的 topic 按原始弹栈顺序编号。CALLDATALOAD 和 MLOAD 始终使用 `offset`；复制操作区分来源与目标偏移，storage 和 transient storage 使用 `slot`。其他调用采用位置参数，例如 `evm.keccak256(p, n)`、`evm.balance(a)`、`evm.selfdestruct(a)`；无参数原语保留原有写法。运算符和命名参数都要求 opcode 与实参数量精确匹配；未知或异常数量的参数完整地按位置显示。
+
+这些符号继续表示 EVM 的 Word256 运算，包括溢出回绕及无符号除零、模零返回零。SDIV、SMOD、SLT、SGT、SAR 保留不同于无符号运算的函数名，并使用位置参数；合成的 SLE、SGE 同样处理。ADDMOD、MULMOD 保留专门调用，表示完整精度中间结果取模。比较和 ISZERO 在条件中使用布尔形式，作为数值使用时保留 `word(predicate)` 的零／一编码。参数显示策略不会改变已有的 `require` 认证、失败分支或栈操作消除规则。
 
 页面、复制文本、语义 Inspector 和 CLI 高层导出共用这套格式化规则，保持单行代码布局、变量身份、参数值及顺序。原始 Structured 和原始操作数视图继续提供位置参数；JSON 中的操作数和语义投影不因显示名字而改变。格式化工作量与长度限制计入新增名字和分隔符，取消或拒绝时不会把半个调用作为完整结果输出。
 

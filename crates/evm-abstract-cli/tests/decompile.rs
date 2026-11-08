@@ -11,6 +11,103 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
+fn retained_add_uses_the_same_operator_style_as_inline_words_and_keeps_named_memory_operands() {
+    // CALLDATALOAD(4), ADD(input, 0xa4), cross-block use, MSTORE(0, sum), RETURN(0, 32).
+    let bytecode = "60043560a4900161000b565b5f5260205ff3";
+    let json = run(&["--hex", bytecode, "--format", "json"]);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let operations: Vec<_> = stage
+        .ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.operations)
+        .collect();
+    let read = operations
+        .iter()
+        .find(|operation| operation.opcode == 0x35)
+        .unwrap();
+    let add = operations
+        .iter()
+        .find(|operation| operation.opcode == 0x01)
+        .unwrap();
+    let statement = program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find(|statement| statement.operation == add.id)
+        .unwrap();
+    assert_eq!(statement.outputs, add.outputs);
+    let renderer = program.render_index(&stage.ir);
+    assert_eq!(
+        renderer.statement_word_rhs(statement, |_| true).unwrap(),
+        None,
+        "operator spelling must also apply when there is no algebraic rewrite"
+    );
+    let expected = format!("v{} = (v{} + 0xa4);", add.outputs[0].0, read.outputs[0].0);
+    assert_eq!(
+        renderer
+            .render_statement_with_dependencies(statement, false, |_| true)
+            .unwrap(),
+        expected
+    );
+    assert!(
+        artifact
+            .origin(evm_decompile::EntityRef {
+                stage: stage.id,
+                entity: statement.id
+            })
+            .unwrap()
+            .source
+            .contains(&add.source.unwrap())
+    );
+    let raw = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
+        .unwrap();
+    let mut witness = stage.ir.clone();
+    witness.lifted = None;
+    assert_eq!(witness, raw.ir);
+
+    let text = run(&["--hex", bytecode]);
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert_eq!(
+        text.trim_end(),
+        evm_decompile::render_text(&artifact).trim_end()
+    );
+    assert_eq!(text.matches(&expected).count(), 1, "{text}");
+    assert!(!text.contains("evm.add("), "{text}");
+    assert!(text.contains("evm.calldataload(offset = 0x4)"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "evm.mstore(offset = 0x0, value = v{});",
+            add.outputs[0].0
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("evm.return(offset = 0x0, size = 0x20);"),
+        "{text}"
+    );
+    let roundtrip: evm_decompile::Artifact =
+        serde_json::from_slice(&serde_json::to_vec(&artifact).unwrap()).unwrap();
+    assert_eq!(roundtrip, artifact);
+}
+
+#[test]
 fn retained_mask_binding_simplifies_without_changing_raw_witness_or_source() {
     // The jump forces the second AND result to remain a named cross-block value.
     let bytecode = "600a5473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16610033565b5f5500";
@@ -453,11 +550,11 @@ fn installed_cli_names_distinct_call_arguments_and_keeps_json_operand_identity()
 }
 
 #[test]
-fn installed_cli_terminal_text_names_offset_size_and_beneficiary() {
+fn installed_cli_terminals_keep_named_memory_ranges_and_positional_selfdestruct() {
     for (bytecode, expected) in [
         ("60226011f3", "evm.return(offset = 0x11, size = 0x22);"),
         ("60226011fd", "evm.revert(offset = 0x11, size = 0x22);"),
-        ("6011ff", "evm.selfdestruct(beneficiary = 0x11);"),
+        ("6011ff", "evm.selfdestruct(0x11);"),
         ("00", "evm.stop();"),
     ] {
         let output = run(&["--hex", bytecode]);

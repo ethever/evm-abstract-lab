@@ -191,18 +191,18 @@ fn registered_nested_mask_view_binds_the_original_output_without_rewriting_witne
             );
         }
         assert_eq!(statement(&program).inputs, vec![id(205), id(204)]);
-        assert!(
+        assert_eq!(
             renderer
                 .render_invocation(0x16, "and", &statement(&program).inputs, |_| true)
-                .unwrap()
-                .starts_with("evm.and(")
+                .unwrap(),
+            format!("(0x{outer:x} & (0x{inner:x} & v7))")
         );
         assert_eq!((ir, program), original);
     }
 }
 
 #[test]
-fn unsupported_or_unproved_statements_keep_the_primitive_invocation() {
+fn unsupported_or_unproved_statements_keep_all_original_operands() {
     for mutation in 0..14 {
         let (mut ir, mut program) = fixture(U256::from(255), U256::from(255));
         match mutation {
@@ -259,8 +259,21 @@ fn unsupported_or_unproved_statements_keep_the_primitive_invocation() {
             continue;
         }
         let text = rendered.unwrap();
-        assert!(
-            text.starts_with("v16 = evm.and("),
+        let expected = match mutation {
+            7 => "v16 = (0xff & (0x7 & v7))",
+            9 => "v16 = (0xff & (0xff & v16))",
+            11 => "v16 = (0x0 & (0xff & v7))",
+            13 => "v16 = (0xff & (0xff & 0x0))",
+            _ => "v16 = (0xff & (0xff & v7))",
+        };
+        assert_eq!(
+            text.split_once(';').unwrap().0,
+            expected,
+            "mutation {mutation}"
+        );
+        assert_eq!(
+            text.matches(" & ").count(),
+            2,
             "mutation {mutation}: {text}"
         );
     }
@@ -408,11 +421,11 @@ fn predicate_cast_correspondence_is_conservative_even_for_an_identity_root() {
             .unwrap(),
         None
     );
-    assert!(
+    assert_eq!(
         renderer
             .render_statement(statement(&program), |_| true)
-            .unwrap()
-            .starts_with("v16 = evm.add(")
+            .unwrap(),
+        "v16 = (0x0 + word((0xff < v7)));"
     );
 }
 
@@ -490,11 +503,9 @@ fn a_foreign_copy_alias_is_not_inlined_from_its_producer() {
         renderer.statement_word_rhs(statement, |_| true).unwrap(),
         None
     );
-    assert!(
-        renderer
-            .render_statement(statement, |_| true)
-            .unwrap()
-            .starts_with("v16 = evm.and(")
+    assert_eq!(
+        renderer.render_statement(statement, |_| true).unwrap(),
+        "v16 = (0xff & (0xff & v7));"
     );
 }
 

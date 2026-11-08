@@ -1,9 +1,119 @@
-//! Operand roles belong to primitive opcodes, never their display spelling.
-//! An incomplete signature must leave the entire invocation positional.
+//! Opcode display policy shared by inline and retained primitive expressions.
+//! Only exact arities select operators or named operands; diagnostic fallbacks
+//! preserve every input. This policy never authorizes an algebraic rewrite.
 
 use super::{LiftedRenderError, MAX_LIFTED_EXPRESSION_TEXT};
 
-pub(super) const LEFT_RIGHT: &[&str] = &["left", "right"];
+/// A fully parenthesized operator cannot inherit a consumer's precedence rules.
+/// Comparisons producing EVM words retain their explicit 0/1 conversion.
+#[derive(Clone, Copy)]
+pub(super) enum PrimitiveFormat {
+    Call(Option<&'static [&'static str]>),
+    Operator {
+        opening: &'static str,
+        separator: &'static str,
+        closing: &'static str,
+        reverse: bool,
+    },
+}
+
+impl PrimitiveFormat {
+    pub(super) const POSITIONAL: Self = Self::Call(None);
+
+    pub(super) fn for_opcode(opcode: u8, arity: usize) -> Self {
+        let symbol = match (opcode, arity) {
+            (0x01, 2) => "+",
+            (0x02, 2) => "*",
+            (0x03, 2) => "-",
+            (0x04, 2) => "/",
+            (0x06, 2) => "%",
+            (0x0a, 2) => "**",
+            (0x10, 2) => "<",
+            (0x11, 2) => ">",
+            (0x14, 2) => "==",
+            (0x16, 2) => "&",
+            (0x17, 2) => "|",
+            (0x18, 2) => "^",
+            (0x1b, 2) => "<<",
+            (0x1c, 2) => ">>",
+            (0x15, 1) => {
+                return Self::Operator {
+                    opening: "word((",
+                    separator: "",
+                    closing: " == 0))",
+                    reverse: false,
+                };
+            }
+            (0x19, 1) => {
+                return Self::Operator {
+                    opening: "(~",
+                    separator: "",
+                    closing: ")",
+                    reverse: false,
+                };
+            }
+            _ => return Self::Call(operand_names(opcode, arity)),
+        };
+        let word_comparison = matches!(opcode, 0x10 | 0x11 | 0x14);
+        Self::Operator {
+            opening: if word_comparison { "word((" } else { "(" },
+            separator: symbol,
+            closing: if word_comparison { "))" } else { ")" },
+            reverse: matches!(opcode, 0x1b | 0x1c),
+        }
+    }
+
+    pub(super) fn names(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Call(names) => names,
+            Self::Operator { .. } => None,
+        }
+    }
+
+    pub(super) fn argument(self, position: usize, arity: usize) -> usize {
+        if matches!(self, Self::Operator { reverse: true, .. }) {
+            arity - 1 - position
+        } else {
+            position
+        }
+    }
+
+    pub(super) fn opening(self, name: CallName<'_>) -> String {
+        match self {
+            Self::Call(_) => name.opening(),
+            Self::Operator { opening, .. } => opening.to_owned(),
+        }
+    }
+
+    pub(super) fn append_opening(
+        self,
+        name: CallName<'_>,
+        output: &mut String,
+        reserve: &mut impl FnMut(usize) -> bool,
+    ) -> Result<(), LiftedRenderError> {
+        match self {
+            Self::Call(_) => {
+                name.append(output, reserve)?;
+                append(output, "(", reserve)
+            }
+            Self::Operator { opening, .. } => append(output, opening, reserve),
+        }
+    }
+
+    pub(super) fn separator(self) -> String {
+        match self {
+            Self::Call(_) => ", ".to_owned(),
+            Self::Operator { separator, .. } => format!(" {separator} "),
+        }
+    }
+
+    pub(super) fn closing(self) -> &'static str {
+        match self {
+            Self::Call(_) => ")",
+            Self::Operator { closing, .. } => closing,
+        }
+    }
+}
 
 /// EVM spellings and high-level constructs have separate naming policies.
 /// Callers may still supply a qualified EVM name; qualification is idempotent.
@@ -45,30 +155,17 @@ impl<'a> CallName<'a> {
     }
 }
 
-pub(crate) fn operand_names(opcode: u8, arity: usize) -> Option<&'static [&'static str]> {
+fn operand_names(opcode: u8, arity: usize) -> Option<&'static [&'static str]> {
     let names: &[&str] = match opcode {
-        0x01..=0x03 | 0x10..=0x14 | 0x16..=0x18 => LEFT_RIGHT,
-        0x04..=0x07 => &["dividend", "divisor"],
-        0x08 | 0x09 => &["left", "right", "modulus"],
-        0x0a => &["base", "exponent"],
-        0x0b => &["byte_index", "value"],
-        0x15 | 0x19 | 0x1e | 0x50 => &["value"],
-        0x1a => &["index", "value"],
-        0x1b..=0x1d => &["shift", "value"],
-        0x20 | 0xa0 | 0xf3 | 0xfd => &["offset", "size"],
-        0x31 | 0x3b | 0x3f => &["address"],
+        0xa0 | 0xf3 | 0xfd => &["offset", "size"],
         0x35 | 0x51 => &["offset"],
         0x37 => &["memory_offset", "calldata_offset", "size"],
         0x39 => &["memory_offset", "code_offset", "size"],
         0x3c => &["address", "memory_offset", "code_offset", "size"],
         0x3e => &["memory_offset", "returndata_offset", "size"],
-        0x40 => &["number"],
-        0x49 => &["index"],
         0x52 | 0x53 => &["offset", "value"],
         0x54 | 0x5c => &["slot"],
         0x55 | 0x5d => &["slot", "value"],
-        0x56 => &["target"],
-        0x57 => &["target", "condition"],
         0x5e => &["dest_offset", "src_offset", "size"],
         0xa1 => &["offset", "size", "topic0"],
         0xa2 => &["offset", "size", "topic0", "topic1"],
@@ -93,7 +190,6 @@ pub(crate) fn operand_names(opcode: u8, arity: usize) -> Option<&'static [&'stat
             "output_size",
         ],
         0xf5 => &["value", "init_offset", "init_size", "salt"],
-        0xff => &["beneficiary"],
         _ => return None,
     };
     (names.len() == arity).then_some(names)

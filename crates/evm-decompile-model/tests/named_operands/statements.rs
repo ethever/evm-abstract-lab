@@ -1,4 +1,4 @@
-use super::super::{SENTINELS, assert_statements, primitive};
+use super::super::{SENTINELS, arguments, assert_statements, primitive, words};
 use evm_decompile_model::EntityId;
 
 #[test]
@@ -25,7 +25,7 @@ fn primitive_and_terminal_consumers_share_one_qualified_spelling() {
             "SELFDESTRUCT",
             1,
             ExitKind::SelfDestruct,
-            "evm.selfdestruct(beneficiary = 0x11);",
+            "evm.selfdestruct(0x11);",
         ),
     ] {
         let (program, ir, statement) = primitive(opcode, name, arity);
@@ -112,15 +112,10 @@ fn external_calls_keep_seven_or_six_distinct_pop_order_operands() {
 }
 
 #[test]
-fn memory_storage_hash_and_copy_labels_identify_each_value() {
+fn memory_storage_and_copy_labels_leave_other_calls_positional() {
     assert_statements(&[
-        (
-            0x20,
-            "KECCAK256",
-            2,
-            "evm.keccak256(offset = 0x11, size = 0x22);",
-        ),
-        (0x31, "BALANCE", 1, "evm.balance(address = 0x11);"),
+        (0x20, "KECCAK256", 2, "evm.keccak256(0x11, 0x22);"),
+        (0x31, "BALANCE", 1, "evm.balance(0x11);"),
         (0x35, "CALLDATALOAD", 1, "evm.calldataload(offset = 0x11);"),
         (
             0x37,
@@ -134,7 +129,7 @@ fn memory_storage_hash_and_copy_labels_identify_each_value() {
             3,
             "evm.codecopy(memory_offset = 0x11, code_offset = 0x22, size = 0x33);",
         ),
-        (0x3b, "EXTCODESIZE", 1, "evm.extcodesize(address = 0x11);"),
+        (0x3b, "EXTCODESIZE", 1, "evm.extcodesize(0x11);"),
         (
             0x3c,
             "EXTCODECOPY",
@@ -147,9 +142,9 @@ fn memory_storage_hash_and_copy_labels_identify_each_value() {
             3,
             "evm.returndatacopy(memory_offset = 0x11, returndata_offset = 0x22, size = 0x33);",
         ),
-        (0x3f, "EXTCODEHASH", 1, "evm.extcodehash(address = 0x11);"),
-        (0x40, "BLOCKHASH", 1, "evm.blockhash(number = 0x11);"),
-        (0x49, "BLOBHASH", 1, "evm.blobhash(index = 0x11);"),
+        (0x3f, "EXTCODEHASH", 1, "evm.extcodehash(0x11);"),
+        (0x40, "BLOCKHASH", 1, "evm.blockhash(0x11);"),
+        (0x49, "BLOBHASH", 1, "evm.blobhash(0x11);"),
         (0x51, "MLOAD", 1, "evm.mload(offset = 0x11);"),
         (
             0x52,
@@ -210,79 +205,44 @@ fn log_topics_follow_pop_order_without_collapsing_equal_looking_positions() {
 #[test]
 fn arithmetic_statement_forms_use_the_contract_even_when_normally_inlined() {
     assert_statements(&[
-        (0x01, "ADD", 2, "evm.add(left = 0x11, right = 0x22);"),
-        (0x02, "MUL", 2, "evm.mul(left = 0x11, right = 0x22);"),
-        (0x03, "SUB", 2, "evm.sub(left = 0x11, right = 0x22);"),
-        (0x04, "DIV", 2, "evm.div(dividend = 0x11, divisor = 0x22);"),
-        (
-            0x05,
-            "SDIV",
-            2,
-            "evm.sdiv(dividend = 0x11, divisor = 0x22);",
-        ),
-        (0x06, "MOD", 2, "evm.mod(dividend = 0x11, divisor = 0x22);"),
-        (
-            0x07,
-            "SMOD",
-            2,
-            "evm.smod(dividend = 0x11, divisor = 0x22);",
-        ),
-        (
-            0x08,
-            "ADDMOD",
-            3,
-            "evm.addmod(left = 0x11, right = 0x22, modulus = 0x33);",
-        ),
-        (
-            0x09,
-            "MULMOD",
-            3,
-            "evm.mulmod(left = 0x11, right = 0x22, modulus = 0x33);",
-        ),
-        (0x0a, "EXP", 2, "evm.exp(base = 0x11, exponent = 0x22);"),
-        (
-            0x0b,
-            "SIGNEXTEND",
-            2,
-            "evm.signextend(byte_index = 0x11, value = 0x22);",
-        ),
-        (0x10, "LT", 2, "evm.lt(left = 0x11, right = 0x22);"),
-        (0x11, "GT", 2, "evm.gt(left = 0x11, right = 0x22);"),
-        (0x12, "SLT", 2, "evm.slt(left = 0x11, right = 0x22);"),
-        (0x13, "SGT", 2, "evm.sgt(left = 0x11, right = 0x22);"),
-        (0x14, "EQ", 2, "evm.eq(left = 0x11, right = 0x22);"),
-        (0x15, "ISZERO", 1, "evm.iszero(value = 0x11);"),
-        (0x16, "AND", 2, "evm.and(left = 0x11, right = 0x22);"),
-        (0x17, "OR", 2, "evm.or(left = 0x11, right = 0x22);"),
-        (0x18, "XOR", 2, "evm.xor(left = 0x11, right = 0x22);"),
-        (0x19, "NOT", 1, "evm.not(value = 0x11);"),
-        (0x1a, "BYTE", 2, "evm.byte(index = 0x11, value = 0x22);"),
-        (0x1b, "SHL", 2, "evm.shl(shift = 0x11, value = 0x22);"),
-        (0x1c, "SHR", 2, "evm.shr(shift = 0x11, value = 0x22);"),
-        (0x1d, "SAR", 2, "evm.sar(shift = 0x11, value = 0x22);"),
-        (0x1e, "CLZ", 1, "evm.clz(value = 0x11);"),
+        (0x01, "ADD", 2, "(0x11 + 0x22);"),
+        (0x02, "MUL", 2, "(0x11 * 0x22);"),
+        (0x03, "SUB", 2, "(0x11 - 0x22);"),
+        (0x04, "DIV", 2, "(0x11 / 0x22);"),
+        (0x05, "SDIV", 2, "evm.sdiv(0x11, 0x22);"),
+        (0x06, "MOD", 2, "(0x11 % 0x22);"),
+        (0x07, "SMOD", 2, "evm.smod(0x11, 0x22);"),
+        (0x08, "ADDMOD", 3, "evm.addmod(0x11, 0x22, 0x33);"),
+        (0x09, "MULMOD", 3, "evm.mulmod(0x11, 0x22, 0x33);"),
+        (0x0a, "EXP", 2, "(0x11 ** 0x22);"),
+        (0x0b, "SIGNEXTEND", 2, "evm.signextend(0x11, 0x22);"),
+        (0x10, "LT", 2, "word((0x11 < 0x22));"),
+        (0x11, "GT", 2, "word((0x11 > 0x22));"),
+        (0x12, "SLT", 2, "evm.slt(0x11, 0x22);"),
+        (0x13, "SGT", 2, "evm.sgt(0x11, 0x22);"),
+        (0x14, "EQ", 2, "word((0x11 == 0x22));"),
+        (0x15, "ISZERO", 1, "word((0x11 == 0));"),
+        (0x16, "AND", 2, "(0x11 & 0x22);"),
+        (0x17, "OR", 2, "(0x11 | 0x22);"),
+        (0x18, "XOR", 2, "(0x11 ^ 0x22);"),
+        (0x19, "NOT", 1, "(~0x11);"),
+        (0x1a, "BYTE", 2, "evm.byte(0x11, 0x22);"),
+        (0x1b, "SHL", 2, "(0x22 << 0x11);"),
+        (0x1c, "SHR", 2, "(0x22 >> 0x11);"),
+        (0x1d, "SAR", 2, "evm.sar(0x11, 0x22);"),
+        (0x1e, "CLZ", 1, "evm.clz(0x11);"),
     ]);
 }
 
 #[test]
-fn exits_and_retained_control_operands_have_meaningful_labels() {
+fn exits_keep_their_allowlisted_labels_and_control_calls_are_positional() {
     assert_statements(&[
-        (0x50, "POP", 1, "evm.pop(value = 0x11);"),
-        (0x56, "JUMP", 1, "evm.jump(target = 0x11);"),
-        (
-            0x57,
-            "JUMPI",
-            2,
-            "evm.jumpi(target = 0x11, condition = 0x22);",
-        ),
+        (0x50, "POP", 1, "evm.pop(0x11);"),
+        (0x56, "JUMP", 1, "evm.jump(0x11);"),
+        (0x57, "JUMPI", 2, "evm.jumpi(0x11, 0x22);"),
         (0xf3, "RETURN", 2, "evm.return(offset = 0x11, size = 0x22);"),
         (0xfd, "REVERT", 2, "evm.revert(offset = 0x11, size = 0x22);"),
-        (
-            0xff,
-            "SELFDESTRUCT",
-            1,
-            "evm.selfdestruct(beneficiary = 0x11);",
-        ),
+        (0xff, "SELFDESTRUCT", 1, "evm.selfdestruct(0x11);"),
         (0x00, "STOP", 0, "evm.stop();"),
         (0x30, "ADDRESS", 0, "evm.address();"),
         (0x36, "CALLDATASIZE", 0, "evm.calldatasize();"),
@@ -379,4 +339,56 @@ fn output_bindings_and_dependency_metadata_do_not_change_named_values() {
         full
     );
     assert_eq!((program, ir, statement), original);
+}
+
+#[test]
+fn only_the_exact_26_opcode_allowlist_uses_named_operands() {
+    // Deliberately independent from opcode metadata and the render policy.
+    let named = [
+        (0x35, 1),
+        (0x37, 3),
+        (0x39, 3),
+        (0x3c, 4),
+        (0x3e, 3),
+        (0x51, 1),
+        (0x52, 2),
+        (0x53, 2),
+        (0x54, 1),
+        (0x55, 2),
+        (0x5c, 1),
+        (0x5d, 2),
+        (0x5e, 3),
+        (0xa0, 2),
+        (0xa1, 3),
+        (0xa2, 4),
+        (0xa3, 5),
+        (0xa4, 6),
+        (0xf0, 3),
+        (0xf1, 7),
+        (0xf2, 7),
+        (0xf3, 2),
+        (0xf4, 6),
+        (0xf5, 4),
+        (0xfa, 6),
+        (0xfd, 2),
+    ];
+    assert_eq!(named.len(), 26);
+    let program = words(SENTINELS.len());
+    let ir = Default::default();
+    let renderer = program.render_index(&ir);
+    for opcode in 0..=u8::MAX {
+        for arity in 0..=SENTINELS.len() {
+            let text = renderer
+                .render_invocation(opcode, "probe", &arguments(arity), |_| true)
+                .unwrap();
+            assert_eq!(
+                text.contains(" = "),
+                named.contains(&(opcode, arity)),
+                "opcode={opcode:#x}, arity={arity}: {text}"
+            );
+            if arity == 0 {
+                assert_eq!(text, "evm.probe()");
+            }
+        }
+    }
 }

@@ -1,7 +1,7 @@
 //! Certified sharing crosses publication, cached code, clipboard and navigation.
 use super::*;
 use crate::decompile::model::EntityKind;
-use evm_abstract_protocol::decompile_model::ValidationStatus;
+use evm_abstract_protocol::decompile_model::{LiftedExpressionKind, U256, ValidationStatus};
 use std::collections::BTreeMap;
 
 // Two different caller words enter the same two-block helper. Each call writes
@@ -506,6 +506,54 @@ fn shared_definitions_and_calls_use_model_text_in_all_display_modes_and_clipboar
     );
     let renderer = program.render_index(&stage.ir);
     renderer.validate_shared_sources().unwrap();
+    let (store, row) = program
+        .procedures
+        .iter()
+        .flat_map(|procedure| {
+            renderer
+                .render_procedure_body(procedure, false, |_| true)
+                .unwrap()
+        })
+        .find_map(|row| {
+            program
+                .blocks
+                .iter()
+                .flat_map(|block| &block.statements)
+                .find(|statement| {
+                    statement.id == row.entity
+                        && statement.inputs.len() == 2
+                        && stage
+                            .ir
+                            .blocks
+                            .iter()
+                            .flat_map(|block| &block.operations)
+                            .any(|operation| {
+                                operation.id == statement.operation && operation.opcode == 0x55
+                            })
+                        && matches!(
+                            program.expression(statement.inputs[1]).unwrap().kind,
+                            LiftedExpressionKind::WordOp { opcode: 0x01, .. }
+                        )
+                })
+                .map(|statement| (statement, row))
+        })
+        .expect("the canonical shared definition must store its inline ADD");
+    let LiftedExpressionKind::WordOp { arguments, .. } =
+        &program.expression(store.inputs[1]).unwrap().kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        program.expression(arguments[0]).unwrap().kind,
+        LiftedExpressionKind::Word(U256::from(1))
+    );
+    let LiftedExpressionKind::Value(input) = program.expression(arguments[1]).unwrap().kind else {
+        panic!("shared ADD must use the original source word")
+    };
+    assert_eq!(
+        row.text,
+        format!("evm.sstore(slot = 0x5, value = (0x1 + v{}));", input.0)
+    );
     let raw = rows(&structured::lines(stage));
     let reading = copied_text(&high(stage, false));
     assert_eq!(reading.matches("evm.log0(").count(), 1, "{reading}");

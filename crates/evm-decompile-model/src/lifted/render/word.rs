@@ -1,7 +1,7 @@
 //! Source-checked, local RHS views for retained pure word bindings.
 //! A view changes no statement record, opcode, evaluation position or output.
 //! Unsupported correspondence (including foreign aliases and predicate DAGs)
-//! retains the diagnostic primitive call instead of guessing a definition.
+//! retains all primitive operands instead of guessing a definition.
 use super::{
     LiftedRenderError as Error, LiftedRenderIndex, MAX_LIFTED_EXPRESSION_TEXT, primitive::append,
 };
@@ -285,7 +285,7 @@ fn paid(pay: &mut impl FnMut(usize) -> bool, amount: usize) -> Result<(), Error>
 
 impl LiftedRenderIndex<'_> {
     /// Exact local word recipe actually used by retained statement rendering.
-    /// None preserves the original primitive call. Source correspondence is
+    /// None preserves the original primitive operands. Source correspondence is
     /// deliberately conservative: no foreign alias, predicate reconstruction,
     /// approximate value fact, or stateful producer is used to remove an input.
     pub fn statement_word_rhs(
@@ -319,7 +319,7 @@ impl LiftedRenderIndex<'_> {
         }
         // Reject non-candidates before walking their DAGs. This prevents a
         // retained FullMath MUL/DIV from replaying a large input merely to keep
-        // the same primitive call. A candidate still proves every input below,
+        // the same primitive operands. A candidate still proves every input below,
         // including the one its algebraic recipe would otherwise eliminate.
         let recipe = match simplify_word(
             raw.operation.opcode,
