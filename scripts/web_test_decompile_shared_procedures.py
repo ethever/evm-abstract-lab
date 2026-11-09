@@ -389,7 +389,7 @@ def excluded_external_calls(context, page, canvas):
     calls = {block["id"] for block in current["ir"]["blocks"]
              if any(operation["opcode"] == 0xfa for operation in block["operations"])}
     assert len(calls) == 2, "two distinct caller contexts retain their actual STATICCALL"
-    for procedure in program["procedures"]:
+    for procedure in program.get("procedures", []):
         pending = [procedure["body"]] if procedure["body"] in nodes else []
         while pending:
             kind = nodes[pending.pop()]
