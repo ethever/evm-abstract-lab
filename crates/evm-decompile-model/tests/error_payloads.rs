@@ -164,7 +164,7 @@ fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     stage.kind = StageKind::Lifted;
     stage.ir.lifted = Some(program());
     assert!(artifact.admits_schema());
-    for version in [1, 2, 3, 7] {
+    for version in [1, 2, 3, SCHEMA_VERSION + 1] {
         let mut wrong = artifact.clone();
         wrong.schema_version = version;
         assert!(!wrong.admits_schema());

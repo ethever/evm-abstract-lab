@@ -116,7 +116,7 @@ fn checked_procedures_require_schema_six_and_retain_legacy_wire_shapes() {
     stage.kind = evm_decompile_model::StageKind::Lifted;
     stage.ir.lifted = Some(program());
     assert!(shared.admits_schema());
-    for version in [1, 2, 3, 4, 5, 7] {
+    for version in [1, 2, 3, 4, 5, SCHEMA_VERSION + 1] {
         let mut wrong = shared.clone();
         wrong.schema_version = version;
         assert!(

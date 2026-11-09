@@ -246,7 +246,7 @@ fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     let artifact = checked(&direct(false, Failure::Empty(U256::ZERO)));
     assert_eq!(artifact.schema_version, 6);
     assert!(artifact.admits_schema());
-    for version in [3, 4] {
+    for version in [3, 4, 5] {
         let mut legacy = artifact.clone();
         legacy.schema_version = version;
         assert!(legacy.admits_schema());
@@ -254,7 +254,7 @@ fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
         assert_eq!(serde_json::from_str::<Artifact>(&encoded).unwrap(), legacy);
         assert!(!encoded.contains("\"payloads\"") && !encoded.contains("\"constructions\""));
     }
-    for version in [1, 2, 6] {
+    for version in [1, 2, evm_decompile::SCHEMA_VERSION + 1] {
         let mut old = artifact.clone();
         old.schema_version = version;
         assert!(
