@@ -8,6 +8,7 @@ mod index;
 mod inspector;
 mod lifted;
 mod model;
+mod readability;
 mod rows;
 mod structured;
 mod task;
@@ -27,6 +28,7 @@ pub(crate) struct Workspace {
     state: model::ViewState,
     views: views::Views,
     inspector: bool,
+    reading: readability::Preferences,
 }
 
 impl Default for Workspace {
@@ -38,6 +40,7 @@ impl Default for Workspace {
             state: model::ViewState::default(),
             views: views::Views::default(),
             inspector: true,
+            reading: readability::Preferences::default(),
         }
     }
 }
@@ -182,9 +185,19 @@ impl Workspace {
                         .max_size(height)
                         .min_size(height.min(80.0))
                 };
-                let panel_response = panel
-                    .frame(palette::chrome_frame())
-                    .show(ui, |ui| inspector::show(ui, artifact, &mut self.state));
+                let panel_response = panel.frame(palette::chrome_frame()).show(ui, |ui| {
+                    inspector::show(
+                        ui,
+                        artifact,
+                        &mut self.state,
+                        &mut self.reading,
+                        self.task.busy(),
+                    )
+                });
+                if let Some(request) = panel_response.inner {
+                    self.form.remember_readability(&request);
+                    command = Some(self.task.start(request));
+                }
                 controls::observe(
                     ui,
                     &panel_response.response,
@@ -303,6 +316,7 @@ impl Workspace {
                     },
                 );
                 self.views.artifact_installed(&result.artifact);
+                self.reading.install(&result.artifact, &self.state);
                 self.artifact = Some(result.artifact);
                 self.task.delivered(result.publication);
             }
@@ -374,6 +388,7 @@ impl Workspace {
                 ));
             }
             status.push_str(&format!("; Diagnostics: {}", artifact.diagnostics.len()));
+            status.push_str(&format!("; {}", self.reading.status()));
         }
         status.push_str(&format!(
             "; Transform inspector: {}",

@@ -2,6 +2,8 @@
 mod budgets;
 #[path = "decompile/error_payloads.rs"]
 mod error_payloads;
+#[path = "decompile/readability.rs"]
+mod readability;
 #[path = "decompile/shared_procedures.rs"]
 mod shared_procedures;
 

@@ -54,14 +54,21 @@ def prepare(page, canvas, bytecode, strategy="Dispatcher", fork=None):
         edit_control(page, canvas, "Runtime bytecode", bytecode)
     record_input(page, "draft-before-submit", expected_draft=bytecode)
     ui_control(page, bytecode, role="bytecode-value")
-    click_control(page, canvas, strategy, role="tab")
+    input_panel = ui_control(page, "Decompiler input", role="decompile-input")
+    click_control(page, canvas, strategy, role="tab", within=input_panel)
     if fork is not None:
         click_control(page, canvas, "EVM fork", role="combobox")
         click_control(page, canvas, fork, role="tab")
 
 
-def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=None):
+def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=None,
+           procedures=None, profile=None):
     prepare(page, canvas, bytecode, strategy, fork)
+    input_panel = ui_control(page, "Decompiler input", role="decompile-input")
+    if procedures is not None:
+        click_control(page, canvas, procedures, role="tab", within=input_panel)
+    if profile is not None:
+        click_control(page, canvas, profile, role="tab", within=input_panel)
     with page.expect_response(lambda response: response.request.method == "GET"
                               and "/api/decompile/tasks/" in response.url
                               and response.url.endswith("/result") and response.status == 200,
@@ -76,7 +83,7 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     assert result["id"] == job["id"]
     assert result["publication"].isdigit()
     artifact = result["artifact"]
-    assert artifact["schema_version"] == 6
+    assert artifact["schema_version"] == 7
     assert artifact["config"]["strategy"] == {"Dispatcher": "dispatcher", "Code duplication": "code_duplication"}[strategy]
     selected_fork = admission.request.post_data_json["fork"]
     assert artifact["input"]["fork"] == selected_fork.lower()

@@ -701,6 +701,7 @@ fn forged_construction_sources_quarantine_the_entire_overlay_even_on_failed_snap
 fn schema_three_empty_guards_remain_readable_and_cannot_advertise_error_payloads() {
     let mut legacy = artifact("5f356008575f5ffd5b602a5f5500");
     legacy.schema_version = 3;
+    legacy.readability.clear();
     model::check_artifact(&legacy).unwrap();
     let wire = serde_json::to_value(&legacy).unwrap();
     for stage in wire["stages"].as_array().unwrap() {

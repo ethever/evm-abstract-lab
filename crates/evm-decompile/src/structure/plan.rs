@@ -1,7 +1,7 @@
 //! Shared immutable region plans, independent of owned AST occurrences.
-use crate::{EntityId, StructuredKind};
+use crate::{EntityId, RegionDecision, StructuredKind};
 mod build;
-pub(super) use build::build;
+pub(super) use build::{build, compact_fallback};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct PlanId(pub usize);
@@ -16,6 +16,7 @@ pub(super) struct Region {
     pub continuation: Option<EntityId>,
     pub loop_header: Option<EntityId>,
     pub body: PlanId,
+    pub decision: Option<RegionDecision>,
 }
 
 pub(super) struct Plan {
@@ -28,6 +29,72 @@ pub(super) struct Plan {
 pub(super) const MAX_SOURCE_REFERENCES: usize = crate::MAX_STRUCTURED_WIRE_NODES;
 
 impl Plan {
+    /// Only retained region roots contribute receipts. Rollback and a replaced
+    /// parent may leave no executable occurrence of a previously tried region.
+    pub fn decisions(
+        &self,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<Vec<RegionDecision>, PlanError> {
+        if !pay(self
+            .nodes
+            .len()
+            .saturating_add(self.regions.len())
+            .saturating_mul(8))
+        {
+            return Err(PlanError::Limit);
+        }
+        let mut seen = vec![false; self.nodes.len()];
+        let mut todo = vec![self.root];
+        while let Some(id) = todo.pop() {
+            if seen[id.0] {
+                continue;
+            }
+            seen[id.0] = true;
+            let children = match &self.nodes[id.0].kind {
+                StructuredKind::Sequence(children) => children.len(),
+                StructuredKind::If { .. } | StructuredKind::While { .. } => 2,
+                StructuredKind::Indirect { arms, .. } => arms.len(),
+                _ => 0,
+            };
+            if !pay(children.saturating_add(1)) {
+                return Err(PlanError::Limit);
+            }
+            match &self.nodes[id.0].kind {
+                StructuredKind::Sequence(children) => todo.extend(children),
+                StructuredKind::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => todo.extend([**then_branch, **else_branch]),
+                StructuredKind::While { header, body, .. } => todo.extend([**header, **body]),
+                StructuredKind::Indirect { arms, .. } => {
+                    todo.extend(arms.iter().map(|arm| arm.body))
+                }
+                _ => {}
+            }
+        }
+        let mut decisions = Vec::new();
+        for region in &self.regions {
+            if seen[region.body.0]
+                && let Some(decision) = &region.decision
+            {
+                if !pay(64) {
+                    return Err(PlanError::Limit);
+                }
+                decisions.push(decision.clone());
+            }
+        }
+        if !pay(decisions
+            .len()
+            .saturating_mul(decisions.len().max(1).ilog2() as usize + 1)
+            .saturating_mul(128))
+        {
+            return Err(PlanError::Limit);
+        }
+        decisions.sort_by(|a, b| a.region.cmp(&b.region));
+        decisions.dedup_by(|a, b| a.region == b.region);
+        Ok(decisions)
+    }
     pub fn has_dispatch(&self, pay: &mut impl FnMut(usize) -> bool) -> Result<bool, PlanError> {
         if !pay(self.nodes.len().saturating_mul(2)) {
             return Err(PlanError::Limit);

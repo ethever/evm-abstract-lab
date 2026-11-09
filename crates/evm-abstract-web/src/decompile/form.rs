@@ -4,7 +4,9 @@ use crate::{
     controls::{self, Density},
     framework, palette,
 };
-use evm_abstract_protocol::{DecompileLimits, DecompileRequest, DecompileStrategy, Fork};
+use evm_abstract_protocol::{
+    DecompileLimits, DecompileRequest, DecompileStrategy, Fork, decompile_model::ReadabilityConfig,
+};
 
 pub(super) struct Form {
     pub open: bool,
@@ -12,6 +14,9 @@ pub(super) struct Form {
     fork: Fork,
     strategy: DecompileStrategy,
     limits: DecompileLimits,
+    readability: ReadabilityConfig,
+    readability_scope: Option<Box<DecompileRequest>>,
+    readability_notice: bool,
     limit_inputs: framework::NumberInputs,
     keyboard: framework::SubmitKeyboard,
     replace_editor: bool,
@@ -25,6 +30,9 @@ impl Default for Form {
             fork: Fork::Osaka,
             strategy: DecompileStrategy::Dispatcher,
             limits: DecompileLimits::default(),
+            readability: ReadabilityConfig::default(),
+            readability_scope: None,
+            readability_notice: false,
             limit_inputs: framework::NumberInputs::default(),
             keyboard: framework::SubmitKeyboard::default(),
             replace_editor: false,
@@ -33,6 +41,38 @@ impl Default for Form {
 }
 
 impl Form {
+    pub fn remember_readability(&mut self, request: &DecompileRequest) {
+        self.readability = request.readability.clone();
+        self.readability_scope = Some(Box::new(request.clone()));
+        self.readability_notice = false;
+    }
+
+    fn clear_stale_regions(&mut self) {
+        if self.readability.regions.is_empty() {
+            return;
+        }
+        let compact: String = self
+            .bytecode
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let code = compact
+            .strip_prefix("0x")
+            .or_else(|| compact.strip_prefix("0X"))
+            .unwrap_or(&compact);
+        let current = self.readability_scope.as_ref().is_some_and(|scope| {
+            let previous = scope.bytecode.strip_prefix("0x").unwrap_or(&scope.bytecode);
+            code.eq_ignore_ascii_case(previous)
+                && self.fork == scope.fork
+                && self.strategy == scope.strategy
+                && self.limits == scope.limits
+        });
+        if !current {
+            self.readability.regions.clear();
+            self.readability_notice = true;
+        }
+    }
+
     pub fn load(&mut self, bytecode: String, fork: Fork) {
         self.bytecode = bytecode;
         self.fork = fork;
@@ -77,7 +117,7 @@ impl Form {
         }
         let keyboard_submit = self.keyboard.submit(ui.ctx());
         let mut submit = false;
-        ui.push_id("decompile_input", |ui| {
+        let input_response = ui.push_id("decompile_input", |ui| {
             ui.label("Runtime bytecode");
             framework::bytecode_editor(
                 ui,
@@ -120,6 +160,7 @@ impl Form {
                     );
                 });
             });
+            super::readability::global_controls(ui, &mut self.readability);
             framework::section(ui, "Decompile budgets", |ui| {
                 egui::Grid::new("decompile_limits")
                     .num_columns(2)
@@ -136,6 +177,13 @@ impl Form {
                         }
                     });
             });
+            self.clear_stale_regions();
+            if self.readability_notice {
+                ui.colored_label(
+                    palette::WARNING,
+                    "Region choices cleared after the input or recovery settings changed.",
+                );
+            }
             if let Some(error) = self.validation() {
                 ui.colored_label(palette::WARNING, error);
             }
@@ -166,6 +214,13 @@ impl Form {
                 );
             });
         });
+        controls::observe(
+            ui,
+            &input_response.response,
+            "Decompiler input",
+            "decompile-input",
+            None,
+        );
         if (submit || keyboard_submit) && self.can_submit(busy) {
             let compact: String = self
                 .bytecode
@@ -184,6 +239,7 @@ impl Form {
                 fork: self.fork,
                 strategy: self.strategy,
                 limits: self.limits.clone(),
+                readability: self.readability.clone(),
             })
         } else {
             None
@@ -193,9 +249,11 @@ impl Form {
     pub fn status(&self) -> String {
         if self.open {
             format!(
-                "Decompiler input: {:?}; Strategy draft: {:?}; Input validation: {}",
+                "Decompiler input: {:?}; Strategy draft: {:?}; Readability draft: {:?}; Procedures draft: {:?}; Input validation: {}",
                 self.fork,
                 self.strategy,
+                self.readability.profile,
+                self.readability.procedures,
                 if !self.limit_inputs.valid() {
                     "Correct invalid decompile budgets"
                 } else {

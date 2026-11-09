@@ -23,6 +23,9 @@ record! {
         pub strategy: DecompileStrategy,
         /// Bounds owned by this independent decompilation attempt.
         pub limits: DecompileLimits,
+        /// Reading preferences and source-bound local structure choices.
+        #[serde(skip_serializing_if = "decompile_model::ReadabilityConfig::is_default")]
+        pub readability: decompile_model::ReadabilityConfig = decompile_model::ReadabilityConfig::default(),
     }
 }
 
@@ -33,6 +36,7 @@ impl Default for DecompileRequest {
             fork: crate::Fork::Osaka,
             strategy: DecompileStrategy::Dispatcher,
             limits: DecompileLimits::default(),
+            readability: decompile_model::ReadabilityConfig::default(),
         }
     }
 }

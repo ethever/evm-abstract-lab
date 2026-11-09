@@ -14,6 +14,7 @@ pub(super) struct Source<'a, 's> {
     pub hidden: &'s BTreeSet<EntityId>,
     pub render: &'s LiftedRenderIndex<'a>,
     pub fingerprints: &'s Fingerprints<'a>,
+    pub reading: &'s crate::ReadabilityConfig,
 }
 
 #[derive(Clone, Copy)]
@@ -321,9 +322,23 @@ impl Source<'_, '_> {
                 // from expanding the same subterms many times. Only maximal
                 // single-use roots qualify, preventing chains of tiny wrappers.
                 let readability = candidate.direct && computations >= 8 && bytes >= 128;
-                let repeated_readability = calls > 1 && computations >= 4 && bytes >= 80;
+                let repeated_readability = calls > 1
+                    && computations >= 4
+                    && bytes >= 80
+                    && (self.reading.procedures == crate::ProcedurePreference::Shared
+                        || (computations > canonical.interface.inputs.len().saturating_mul(2)
+                            && (self.reading.profile != crate::ReadabilityProfile::Linear
+                                || bytes >= 256)));
                 if (calls == 1 && (!readability || outlined.contains(&root)))
-                    || (calls > 1 && source_cost <= shared_cost && !repeated_readability)
+                    || (calls > 1
+                        && !super::reading::profitable(
+                            self.reading,
+                            source_cost,
+                            shared_cost,
+                            canonical.interface.inputs.len() + 1,
+                            calls,
+                        )
+                        && !repeated_readability)
                 {
                     continue;
                 }

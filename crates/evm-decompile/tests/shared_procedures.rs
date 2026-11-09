@@ -21,7 +21,13 @@ use evm_decompile::{
 };
 
 fn checked(input: &evm_decompile::Input) -> evm_decompile::Artifact {
-    let artifact = evm_decompile::decompile(input, &evm_decompile::Config::default());
+    // This suite exercises extraction contracts and fresh call execution even
+    // when automatic reading policy would keep a wide interface inline. Profile
+    // selection and default output are covered independently by readability and
+    // whole-contract regressions.
+    let mut config = evm_decompile::Config::default();
+    config.readability.procedures = evm_decompile::ProcedurePreference::Shared;
+    let artifact = evm_decompile::decompile(input, &config);
     assert_eq!(
         artifact.completion,
         evm_decompile::Completion::Complete,

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod arithmetic;
 mod fingerprint;
+mod reading;
 
 #[derive(Debug)]
 pub(super) struct Plan {
@@ -195,11 +196,30 @@ fn visible_cost(
 fn call_cost(interface: &crate::SharedInterface) -> usize {
     24_usize.saturating_add((interface.inputs.len() + interface.outputs.len()).saturating_mul(9))
 }
+#[cfg(test)]
 pub(super) fn discover(
     ir: &Ir,
     program: &LiftedProgram,
     next: &mut u64,
     max_event_slots: usize,
+    pay: &mut impl FnMut(usize) -> bool,
+) -> Result<Plan, DiscoveryError> {
+    discover_with_readability(
+        ir,
+        program,
+        next,
+        max_event_slots,
+        &crate::ReadabilityConfig::default(),
+        pay,
+    )
+}
+
+pub(super) fn discover_with_readability(
+    ir: &Ir,
+    program: &LiftedProgram,
+    next: &mut u64,
+    max_event_slots: usize,
+    reading: &crate::ReadabilityConfig,
     pay: &mut impl FnMut(usize) -> bool,
 ) -> Result<Plan, DiscoveryError> {
     let index =
@@ -304,7 +324,8 @@ pub(super) fn discover(
             && r.nodes
                 .iter()
                 .any(|id| matches!(nodes[id].kind, StructuredKind::While { .. }));
-        if !r.terminal_closed
+        if reading::keeps_effects_in_place(reading, r.kind)
+            || !r.terminal_closed
             || (retained < 3 && !arithmetic_loop)
             || r.interface.inputs.len() + r.interface.outputs.len() > 64
         {
@@ -420,7 +441,13 @@ pub(super) fn discover(
             let definition_cost = costs[&root]
                 .saturating_add(call_cost(&canonical.interface))
                 .saturating_add(24 + canonical.interface.outputs.len() * 9);
-            if source_cost <= definition_cost.saturating_add(calls_cost) {
+            if !reading::profitable(
+                reading,
+                source_cost,
+                definition_cost.saturating_add(calls_cost),
+                canonical.interface.inputs.len() + canonical.interface.outputs.len(),
+                matches.len() + 1,
+            ) {
                 continue;
             }
             let pid = EntityId(*next);
@@ -495,6 +522,7 @@ pub(super) fn discover(
         hidden: &hidden,
         render: &render,
         fingerprints: &fingerprints,
+        reading,
     }
     .discover(&mut plan, next, pay)?;
     Ok(plan)

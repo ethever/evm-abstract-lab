@@ -241,6 +241,7 @@ fn forced_compact_admission_preserves_simultaneous_phi_and_all_source_effects() 
                 max_structuring_depth: 0,
                 ..evm_decompile::Limits::default()
             },
+            ..Config::default()
         },
     );
     assert_eq!(explicit.completion, Completion::Limited);

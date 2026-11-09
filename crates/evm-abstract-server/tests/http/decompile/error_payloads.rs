@@ -178,6 +178,7 @@ fn nonempty_proof_http_budget_refusal_retains_only_the_prior_validated_publicati
     let config = evm_decompile::Config {
         strategy: input.strategy,
         limits: input.limits.clone(),
+        readability: input.readability.clone(),
     };
     let cancel = evm_decompile::Cancellation::new();
     let before = evm_decompile::decompile_with_progress(&source, &config, &cancel, |progress| {

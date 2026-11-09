@@ -244,11 +244,12 @@ fn guard_identity_and_absorbed_failure_operations_remain_navigable_in_raw_histor
 #[test]
 fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     let artifact = checked(&direct(false, Failure::Empty(U256::ZERO)));
-    assert_eq!(artifact.schema_version, 6);
+    assert_eq!(artifact.schema_version, 7);
     assert!(artifact.admits_schema());
     for version in [3, 4, 5] {
         let mut legacy = artifact.clone();
         legacy.schema_version = version;
+        legacy.readability.clear();
         assert!(legacy.admits_schema());
         let encoded = serde_json::to_string(&legacy).unwrap();
         assert_eq!(serde_json::from_str::<Artifact>(&encoded).unwrap(), legacy);
@@ -264,6 +265,7 @@ fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     }
     let mut table_only = artifact.clone();
     table_only.schema_version = 2;
+    table_only.readability.clear();
     for stage in &mut table_only.stages {
         if let Some(program) = &mut stage.ir.lifted {
             for control in &mut program.controls {
@@ -279,6 +281,7 @@ fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     // on decode/re-encode; current serializers do not insert new empty fields.
     let mut old = checked(&super::super::support::comparison_branch(0x10, 0));
     old.schema_version = 2;
+    old.readability.clear();
     for stage in &mut old.stages {
         if let Some(program) = &mut stage.ir.lifted {
             for control in &mut program.controls {

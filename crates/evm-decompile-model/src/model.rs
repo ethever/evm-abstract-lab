@@ -112,6 +112,9 @@ pub struct Config {
     pub strategy: Strategy,
     /// Work and retained-entity ceilings.
     pub limits: Limits,
+    /// Reading choices never weaken source or control validation.
+    #[serde(skip_serializing_if = "crate::ReadabilityConfig::is_default")]
+    pub readability: crate::ReadabilityConfig = crate::ReadabilityConfig::default(),
 }
 }
 /// A finite upper approximation, with pending bottom separate from unknown.

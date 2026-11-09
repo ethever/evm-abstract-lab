@@ -6,7 +6,7 @@ import re
 from playwright.sync_api import expect
 from web_test_decompile_alignment import code_label, copy_code, scan_document
 from web_test_decompile_helpers import (choose_stage, inspector_control, observed,
-                                       open_decompiler, prepare, stage, submit)
+                                       open_decompiler, prepare, stage, submit as submit_default)
 from web_test_decompile_review import selected_row, source_descendant
 from web_test_harness import (click_control, rendered_frame, resize_view,
                               set_control, ui_control, webgpu_evidence)
@@ -29,6 +29,11 @@ UNSHARED = "5f356040525f546001015f5500"
 DEPENDENCIES = "Show state dependencies"
 ANNOTATIONS = "Show structure annotations"
 STRUCTURE = re.compile(r"^\s*// (?:sequence ast|b\d+\b|block b\d+\b|on e\d+\b)")
+
+
+def submit(context, page, canvas, bytecode, name, **kwargs):
+    return submit_default(context, page, canvas, bytecode, name,
+                          procedures="Shared", **kwargs)
 
 
 def painted_copy(page, canvas):

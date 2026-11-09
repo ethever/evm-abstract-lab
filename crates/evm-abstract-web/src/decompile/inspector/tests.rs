@@ -56,7 +56,7 @@ fn opened_large_event_section_prepares_only_visible_rows_and_reuses_new_entity_i
             |ui| {
                 controls::begin_observation(ui.ctx(), true);
                 rows::begin_frame(ui.ctx());
-                inspector::show(ui, &artifact, &mut state);
+                inspector::show(ui, &artifact, &mut state, &mut Default::default(), false);
             },
         );
         output.textures_delta.clear();

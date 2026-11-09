@@ -104,6 +104,10 @@ fn run_with_sharing_limits(
         owner.adopt_publication(base);
         return;
     }
+    if owner.artifact.config.readability.procedures == crate::ProcedurePreference::Inline {
+        owner.adopt_publication(base);
+        return;
+    }
     let result = owner.optional(allowance, |owner| {
         optional_sharing(owner, &base, projection_work, max_event_slots, explanation)
     });
@@ -151,9 +155,19 @@ fn optional_sharing(
         .max()
         .unwrap_or(0)
         .saturating_add(1);
-    let mut plan = shared::discover(source, program, &mut next, max_event_slots, &mut |work| {
-        owner.pay(work)
-    })?;
+    let reading = crate::ReadabilityConfig {
+        profile: owner.artifact.config.readability.profile,
+        procedures: owner.artifact.config.readability.procedures,
+        regions: Vec::new(),
+    };
+    let mut plan = shared::discover_with_readability(
+        source,
+        program,
+        &mut next,
+        max_event_slots,
+        &reading,
+        &mut |work| owner.pay(work),
+    )?;
     if plan.procedures.is_empty() && plan.invocations.is_empty() {
         return Ok(None);
     }

@@ -4,6 +4,20 @@ use crate::{Input, TextFormat, error::CliError};
 use clap::{Args, ValueEnum};
 use evm_abstract::analysis::control::Control;
 
+#[derive(Clone, Copy, ValueEnum)]
+enum ReadingProfile {
+    Balanced,
+    Linear,
+    Compact,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Procedures {
+    Auto,
+    Inline,
+    Shared,
+}
+
 #[derive(Clone, Copy, Default, ValueEnum)]
 enum Strategy {
     #[default]
@@ -21,6 +35,15 @@ pub(crate) struct DecompileArgs {
     /// Strategy for known irreducible control flow, independent of unknown jumps.
     #[arg(long, value_enum, default_value = "dispatcher")]
     strategy: Strategy,
+    /// Reading priorities for verified structure choices.
+    #[arg(long, value_enum)]
+    readability: Option<ReadingProfile>,
+    /// Optional source-certified procedure extraction.
+    #[arg(long, value_enum)]
+    procedures: Option<Procedures>,
+    /// JSON reading preferences, including source-bound region overrides.
+    #[arg(long)]
+    readability_config: Option<std::path::PathBuf>,
     /// Cumulative recovery and transformation work.
     #[arg(long, default_value_t = evm_decompile::Limits::default().max_work)]
     max_work: u64,
@@ -56,7 +79,27 @@ pub(crate) struct DecompileArgs {
 pub(crate) fn run(args: DecompileArgs, control: &Control) -> Result<(String, bool), CliError> {
     let (text, fork) = args.input.load_text()?;
     let input = evm_decompile::Input::new(evm_bytecode::parse_hex(&text)?, fork);
+    let mut readability = if let Some(path) = &args.readability_config {
+        serde_json::from_slice::<evm_decompile::ReadabilityConfig>(&std::fs::read(path)?)?
+    } else {
+        evm_decompile::ReadabilityConfig::default()
+    };
+    if let Some(profile) = args.readability {
+        readability.profile = match profile {
+            ReadingProfile::Balanced => evm_decompile::ReadabilityProfile::Balanced,
+            ReadingProfile::Linear => evm_decompile::ReadabilityProfile::Linear,
+            ReadingProfile::Compact => evm_decompile::ReadabilityProfile::Compact,
+        };
+    }
+    if let Some(procedures) = args.procedures {
+        readability.procedures = match procedures {
+            Procedures::Auto => evm_decompile::ProcedurePreference::Auto,
+            Procedures::Inline => evm_decompile::ProcedurePreference::Inline,
+            Procedures::Shared => evm_decompile::ProcedurePreference::Shared,
+        };
+    }
     let config = evm_decompile::Config {
+        readability,
         strategy: match args.strategy {
             Strategy::Dispatcher => evm_decompile::Strategy::Dispatcher,
             Strategy::CodeDuplication => evm_decompile::Strategy::CodeDuplication,

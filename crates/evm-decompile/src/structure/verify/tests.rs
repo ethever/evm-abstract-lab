@@ -118,6 +118,7 @@ fn explicit() -> Plan {
         continuation: None,
         loop_header: None,
         body: plan.root,
+        decision: None,
     });
     plan
 }

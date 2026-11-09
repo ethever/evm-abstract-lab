@@ -541,7 +541,13 @@ fn fault_context_is_visible_in_painted_graph_ir_and_selected_inspector_without_c
             },
             |ui| {
                 controls::begin_observation(ui.ctx(), true);
-                crate::decompile::inspector::show(ui, &artifact, &mut state);
+                crate::decompile::inspector::show(
+                    ui,
+                    &artifact,
+                    &mut state,
+                    &mut Default::default(),
+                    false,
+                );
             },
         );
         inspected.textures_delta.clear();

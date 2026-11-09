@@ -1,6 +1,6 @@
 //! Lightweight transport-safe immutable decompilation schemas.
 /// Current immutable artifact wire schema.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 // Declare each record once, retaining explicit null separately from absence.
 // Enum payload adapters use these same object-only field/duplicate checks.
@@ -50,6 +50,7 @@ mod artifact;
 mod codec;
 mod lifted;
 mod model;
+mod readability;
 mod render;
 mod shared;
 mod structured;
@@ -59,6 +60,7 @@ pub use artifact::*;
 pub use evm_bytecode::Fork;
 pub use lifted::*;
 pub use model::*;
+pub use readability::*;
 pub use render::RenderSummary;
 pub use shared::*;
 pub use structured::{MAX_STRUCTURED_WIRE_DEPTH, MAX_STRUCTURED_WIRE_NODES, MAX_STRUCTURING_DEPTH};
