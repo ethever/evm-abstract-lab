@@ -3,7 +3,7 @@
 
 use super::{Details, StageIndex, work::Work};
 use evm_abstract_protocol::decompile_model::{
-    EntityId, EntityRef, LiftedRenderError, SharedInterface, Stage,
+    EntityId, EntityRef, LiftedRenderError, SharedInterface, SharedProcedureKind, Stage,
 };
 
 mod prepare;
@@ -20,10 +20,13 @@ pub(super) fn details(
     if let Some(procedure) = index.procedure(&stage.ir, id) {
         let header = index.shared.header(id, true);
         let admitted = header.is_some();
+        let expression = index.expression(&stage.ir, procedure.body).is_some();
         lines.push(format!(
-            "{} shared procedure p{} · source ast{}",
+            "{} {} procedure p{} · source {}{}",
             status(admitted),
+            classification(procedure.kind),
             id.0,
+            if expression { "x" } else { "ast" },
             procedure.body.0,
         ));
         if let Some(header) = header {
@@ -34,7 +37,12 @@ pub(super) fn details(
         }
         references.push(procedure.body);
         if work.reserve(procedure.interface.record_count().saturating_mul(32)) {
-            interface(&procedure.interface, &mut lines, &mut references);
+            interface(
+                &procedure.interface,
+                expression,
+                &mut lines,
+                &mut references,
+            );
         } else {
             lines.push(LiftedRenderError::Limit.to_string());
         }
@@ -49,11 +57,17 @@ pub(super) fn details(
             .invocation(invocation.source, true)
             .filter(|(entity, _)| *entity == id);
         let admitted = call.is_some();
+        let kind = index
+            .procedure(&stage.ir, invocation.procedure)
+            .map(|procedure| procedure.kind);
+        let expression = index.expression(&stage.ir, invocation.source).is_some();
         lines.push(format!(
-            "{} shared invocation h{} · procedure p{} · source ast{}",
+            "{} {} invocation h{} · procedure p{} · source {}{}",
             status(admitted),
+            kind.map_or("shared", classification),
             id.0,
             invocation.procedure.0,
+            if expression { "x" } else { "ast" },
             invocation.source.0,
         ));
         if let Some((_, call)) = call {
@@ -103,9 +117,28 @@ fn status(admitted: bool) -> &'static str {
     if admitted { "Certified" } else { "Unadmitted" }
 }
 
-fn interface(interface: &SharedInterface, lines: &mut Vec<String>, references: &mut Vec<EntityId>) {
+fn classification(kind: SharedProcedureKind) -> &'static str {
+    match kind {
+        SharedProcedureKind::Legacy | SharedProcedureKind::Normal => "shared",
+        SharedProcedureKind::PureArithmetic => "pure_arithmetic",
+    }
+}
+
+fn interface(
+    interface: &SharedInterface,
+    expression: bool,
+    lines: &mut Vec<String>,
+    references: &mut Vec<EntityId>,
+) {
     for (name, values) in [
-        ("Word inputs", &interface.inputs),
+        (
+            if expression {
+                "Expression inputs"
+            } else {
+                "Word inputs"
+            },
+            &interface.inputs,
+        ),
         ("Word outputs", &interface.outputs),
         ("Memory inputs", &interface.memory_inputs),
         ("Memory outputs", &interface.memory_outputs),

@@ -144,7 +144,7 @@ fn shared_definition_calls_execute_fresh_live_outputs_and_shared_effects() {
 
 #[test]
 fn shared_loop_definition_rebinds_live_phis_and_returns_each_call_result() {
-    let fixture = fixtures::loop_calls();
+    let fixture = fixtures::closed_loop_calls();
     let artifact = checked(&fixture.input);
     let high = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
     assert!(
@@ -153,18 +153,19 @@ fn shared_loop_definition_rebinds_live_phis_and_returns_each_call_result() {
     );
     let index = high.render_index(&artifact.current().unwrap().ir);
     assert!(
-        high.procedures.iter().any(|procedure| boundaries::nodes(
-            index.node(procedure.body).unwrap()
-        )
-        .iter()
-        .any(|node| matches!(node.kind, evm_decompile::StructuredKind::While { .. }))),
+        high.procedures
+            .iter()
+            .filter_map(|procedure| index.node(procedure.body))
+            .any(|root| boundaries::nodes(root)
+                .iter()
+                .any(|node| matches!(node.kind, evm_decompile::StructuredKind::While { .. }))),
         "at least one shared definition must contain its internal loop and live phis"
     );
     for arguments in [[3, 4], [4, 3], [0, 5]] {
         let report = oracle::certify(
             &fixture.input,
             &artifact,
-            fixtures::loop_host(&fixture.input, arguments),
+            MemoryHost::new(&fixture.input, fixtures::words(&arguments.map(U256::from))),
             &ExecutionLimits::default(),
         );
         assert!(
@@ -268,7 +269,7 @@ fn loop_phi_fixture_rebinds_each_iteration_and_each_call() {
 }
 
 #[test]
-fn repeated_same_region_definitions_propagate_evm_terminals_and_faults() {
+fn repeated_normal_prefixes_leave_evm_terminals_and_faults_at_the_source_site() {
     for (terminal, expected_kind) in [
         (0x00, Some(ExitKind::Stop)),
         (0xf3, Some(ExitKind::Return)),
@@ -280,12 +281,23 @@ fn repeated_same_region_definitions_propagate_evm_terminals_and_faults() {
         let high = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
         assert!(
             !high.procedures.is_empty(),
-            "terminal 0x{terminal:02x} must share its repeated useful tail"
+            "terminal 0x{terminal:02x} must retain sharing in its preceding closed block"
         );
         assert!(
             high.invocations.len() >= 2,
             "same-source AST occurrences require separate calls"
         );
+        let index = high.render_index(&artifact.current().unwrap().ir);
+        for procedure in &high.procedures {
+            if let Some(root) = index.node(procedure.body) {
+                assert!(
+                    boundaries::nodes(root).iter().all(|node| !matches!(
+                        node.kind,
+                        evm_decompile::StructuredKind::Exit { .. }
+                    ))
+                );
+            }
+        }
         for flag in [0, 1] {
             let report = oracle::certify(
                 &fixture.input,
@@ -402,6 +414,289 @@ fn pure_caller_arguments_have_real_visible_bindings_and_execute_distinct_constan
     }
 }
 
+fn arithmetic_value(mut value: U256, other: U256, padded: bool, operations: usize) -> U256 {
+    for (position, (opcode, literal)) in [
+        (0x18, 5),
+        (0x02, 7),
+        (0x01, 0),
+        (0x18, 11),
+        (0x02, 13),
+        (0x01, 17),
+        (0x18, 19),
+        (0x02, 23),
+        (0x01, 29),
+        (0x18, 31),
+        (0x02, 37),
+        (0x01, 41),
+        (0x18, 43),
+        (0x02, 47),
+        (0x01, 53),
+        (0x18, 59),
+        (0x02, 61),
+        (0x01, 67),
+        (0x18, 71),
+        (0x02, 73),
+    ]
+    .into_iter()
+    .enumerate()
+    .take(operations)
+    {
+        let operand = if position == 2 {
+            other
+        } else {
+            U256::from(literal + if padded { 100 } else { 0 })
+        };
+        value = match opcode {
+            0x18 => value ^ operand,
+            0x02 => value.wrapping_mul(operand),
+            0x01 => value.wrapping_add(operand),
+            _ => unreachable!(),
+        };
+    }
+    value
+}
+
+#[test]
+fn pure_arithmetic_templates_bind_literals_and_repeated_actual_parameters() {
+    use evm_decompile::{LiftedExpressionKind as X, SharedProcedureKind};
+    use std::collections::BTreeSet;
+    let fixture = fixtures::arithmetic_templates();
+    let artifact = checked(&fixture.input);
+    let stage = artifact.current().unwrap();
+    let high = stage.ir.lifted.as_ref().unwrap();
+    let procedure = high
+        .procedures
+        .iter()
+        .find(|procedure| {
+            procedure.kind == SharedProcedureKind::PureArithmetic
+                && high.expression(procedure.body).is_some()
+                && high
+                    .invocations
+                    .iter()
+                    .filter(|call| call.procedure == procedure.id)
+                    .count()
+                    >= 2
+        })
+        .expect("PUSH widths and literal values must not split arithmetic templates");
+    for state in [
+        &procedure.interface.outputs,
+        &procedure.interface.memory_inputs,
+        &procedure.interface.memory_outputs,
+        &procedure.interface.effect_inputs,
+        &procedure.interface.effect_outputs,
+    ] {
+        assert!(state.is_empty());
+    }
+    assert!(procedure.interface.continuations.is_empty());
+    assert!(procedure.interface.inputs.iter().all(|id| {
+        matches!(
+            high.expression(*id).unwrap().kind,
+            X::Word(_) | X::Predicate(_) | X::Value(_)
+        )
+    }));
+    assert!(
+        high.invocations
+            .iter()
+            .filter(|call| call.procedure == procedure.id)
+            .any(|call| {
+                let actual: BTreeSet<_> = procedure
+                    .interface
+                    .inputs
+                    .iter()
+                    .map(|id| call.actual(*id).unwrap())
+                    .collect();
+                actual.len() < procedure.interface.inputs.len()
+            }),
+        "separate formal arguments must admit repeated actual expressions"
+    );
+    assert!(high.validate_shared_sources(&stage.ir, |_| true).is_ok());
+    let original = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
+        .unwrap();
+    assert_eq!(original.ir.blocks, stage.ir.blocks);
+    assert_eq!(original.ir.edges, stage.ir.edges);
+    assert_eq!(original.ir.structured, stage.ir.structured);
+    for words in [[4, 9, 13], [0, 1, 0], [7, 7, 7]].map(|values| values.map(U256::from)) {
+        let report = oracle::certify(
+            &fixture.input,
+            &artifact,
+            MemoryHost::new(&fixture.input, fixtures::words(&words)),
+            &ExecutionLimits::default(),
+        );
+        assert!(report.calls.len() >= 2);
+        let expected = [
+            arithmetic_value(words[0], words[1], false, 12),
+            arithmetic_value(words[2], words[2], true, 12),
+        ];
+        assert_eq!(&report.host.state.memory[..64], fixtures::words(&expected));
+    }
+}
+
+#[test]
+fn one_long_arithmetic_computation_is_outlined_without_moving_its_evaluation() {
+    let fixture = fixtures::single_arithmetic();
+    let artifact = checked(&fixture.input);
+    let stage = artifact.current().unwrap();
+    let high = stage.ir.lifted.as_ref().unwrap();
+    let expressions: Vec<_> = high
+        .procedures
+        .iter()
+        .filter(|procedure| high.expression(procedure.body).is_some())
+        .collect();
+    assert_eq!(
+        expressions.len(),
+        1,
+        "a long expression needs one useful name, not a chain of wrappers"
+    );
+    let procedure = expressions[0];
+    assert_eq!(
+        high.invocations
+            .iter()
+            .filter(|call| call.procedure == procedure.id)
+            .count(),
+        1
+    );
+    let rows = high
+        .render_index(&stage.ir)
+        .render_procedure_body(procedure, false, |_| true)
+        .unwrap();
+    assert!(
+        rows.len() >= 8,
+        "the arithmetic DAG must use named local results"
+    );
+    assert!(
+        rows.iter().all(|row| row.text.len() < 256),
+        "a named helper must not retain a single huge expanded line"
+    );
+    let words = [U256::MAX, U256::from(3)];
+    let report = oracle::certify(
+        &fixture.input,
+        &artifact,
+        MemoryHost::new(&fixture.input, fixtures::words(&words)),
+        &ExecutionLimits::default(),
+    );
+    assert_eq!(report.calls.len(), 1);
+    assert_eq!(
+        &report.host.state.memory[..32],
+        fixtures::words(&[arithmetic_value(words[0], words[1], false, 20)])
+    );
+}
+
+#[test]
+fn nested_arithmetic_helpers_share_a_prefix_still_used_outside_the_outer_template() {
+    let fixture = fixtures::nested_arithmetic();
+    let artifact = checked(&fixture.input);
+    let stage = artifact.current().unwrap();
+    let high = stage.ir.lifted.as_ref().unwrap();
+    let index = high.render_index(&stage.ir);
+    assert!(
+        high.procedures.iter().any(|procedure| {
+            high.expression(procedure.body).is_some()
+                && index
+                    .render_procedure_body(procedure, false, |_| true)
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.text.contains("pure_arithmetic_"))
+        }),
+        "the canonical outer arithmetic body must call the reused prefix helper"
+    );
+    let words = [4, 9, 13, 17, 23].map(U256::from);
+    let report = oracle::certify(
+        &fixture.input,
+        &artifact,
+        MemoryHost::new(&fixture.input, fixtures::words(&words)),
+        &ExecutionLimits::default(),
+    );
+    assert!(
+        report.calls.len() >= 5,
+        "two outer calls each invoke the prefix, plus its direct occurrence"
+    );
+    let expected = [
+        arithmetic_value(words[0], words[1], false, 20),
+        arithmetic_value(words[2], words[2], true, 20),
+        arithmetic_value(words[3], words[4], true, 12),
+    ];
+    assert_eq!(&report.host.state.memory[..96], fixtures::words(&expected));
+}
+
+#[test]
+fn pure_arithmetic_classification_includes_closed_internal_loops() {
+    let fixture = fixtures::pure_loop_calls();
+    let artifact = checked(&fixture.input);
+    let stage = artifact.current().unwrap();
+    let high = stage.ir.lifted.as_ref().unwrap();
+    let index = high.render_index(&stage.ir);
+    assert!(
+        high.procedures.iter().any(|procedure| {
+            procedure.kind == evm_decompile::SharedProcedureKind::PureArithmetic
+                && index.node(procedure.body).is_some_and(|root| {
+                    boundaries::nodes(root).iter().any(|node| {
+                        matches!(node.kind, evm_decompile::StructuredKind::While { .. })
+                    })
+                })
+        }),
+        "pure arithmetic is a semantic class that includes internal loops"
+    );
+    for counts in [[0, 0], [2, 3], [3, 1]] {
+        let report = oracle::certify(
+            &fixture.input,
+            &artifact,
+            MemoryHost::new(&fixture.input, fixtures::words(&counts.map(U256::from))),
+            &ExecutionLimits::default(),
+        );
+        assert!(report.calls.len() >= 2);
+        let expected = counts.map(|count| {
+            (1..=count).rev().fold(U256::ZERO, |value, other| {
+                arithmetic_value(value, U256::from(other), false, 12)
+            })
+        });
+        assert_eq!(&report.host.state.memory[..64], fixtures::words(&expected));
+        assert!(report.host.state.logs.is_empty());
+        assert!(report.host.state.storage.is_empty());
+    }
+}
+
+#[test]
+fn normalized_block_fingerprints_ignore_push_encoding_widths() {
+    let fixture = fixtures::encoding_variants();
+    let artifact = checked(&fixture.input);
+    let stage = artifact.current().unwrap();
+    let high = stage.ir.lifted.as_ref().unwrap();
+    assert!(
+        high.procedures.iter().any(|procedure| {
+            procedure.kind == evm_decompile::SharedProcedureKind::Normal
+                && high
+                    .invocations
+                    .iter()
+                    .filter(|call| call.procedure == procedure.id)
+                    .count()
+                    >= 2
+        }),
+        "equal lifted regions must not be separated by PUSH1/PUSH2 encodings"
+    );
+    let report = oracle::certify(
+        &fixture.input,
+        &artifact,
+        MemoryHost::new(&fixture.input, fixtures::words(&[U256::from(42)])),
+        &ExecutionLimits::default(),
+    );
+    assert_eq!(report.host.state.storage[&U256::ZERO], U256::from(42));
+    assert_eq!(report.host.state.storage[&U256::from(1)], U256::from(42));
+    assert_eq!(report.host.state.logs.len(), 2);
+    assert_eq!(
+        report
+            .host
+            .invocations
+            .iter()
+            .filter(|call| call.opcode == 0x35)
+            .count(),
+        2,
+        "each source occurrence must read its input again"
+    );
+}
+
 #[test]
 fn independent_normalized_machine_baseline_covers_live_values_effects_and_faults() {
     let fixture = fixtures::sequential();
@@ -483,7 +778,7 @@ fn shared_return_data_faults_preserve_both_dynamic_call_prefixes() {
 #[test]
 fn canonical_loop_body_rows_preserve_word_memory_and_effect_transfers() {
     use std::collections::BTreeSet;
-    let fixture = fixtures::loop_calls();
+    let fixture = fixtures::closed_loop_calls();
     let artifact = checked(&fixture.input);
     let stage = artifact.current().unwrap();
     let high = stage.ir.lifted.as_ref().unwrap();
@@ -491,7 +786,10 @@ fn canonical_loop_body_rows_preserve_word_memory_and_effect_transfers() {
     let mut checked_edges = 0;
     let mut logical_transfers = 0;
     for procedure in &high.procedures {
-        let source = boundaries::nodes(index.node(procedure.body).unwrap());
+        let Some(root) = index.node(procedure.body) else {
+            continue;
+        };
+        let source = boundaries::nodes(root);
         if !source
             .iter()
             .any(|node| matches!(node.kind, evm_decompile::StructuredKind::While { .. }))

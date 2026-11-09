@@ -1,10 +1,12 @@
 //! Bounded candidate selection; source admission lives independently in model.
 use crate::{
     EntityId, Ir, LiftedIfPlan, LiftedProgram, SharedBinding, SharedInvocation, SharedProcedure,
-    SharedProcedureError, SharedRegion, SharedSourceIndex, StructuredKind,
+    SharedProcedureError, SharedSourceIndex, StructuredKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
+
+mod arithmetic;
+mod fingerprint;
 
 #[derive(Debug)]
 pub(super) struct Plan {
@@ -51,50 +53,6 @@ fn rendered(
         Err(crate::LiftedRenderError::Limit) => Ok(None),
         Err(error) => Err(DiscoveryError::Formatting(error)),
     }
-}
-fn fingerprint(
-    ir: &Ir,
-    region: &SharedRegion,
-    blocks: &BTreeMap<EntityId, &crate::Block>,
-    nodes: &BTreeMap<EntityId, &crate::StructuredNode>,
-    pay: &mut impl FnMut(usize) -> bool,
-) -> Option<u64> {
-    if !pay(region.entities.len().saturating_mul(2)) {
-        return None;
-    }
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for id in &region.nodes {
-        let tag = match &nodes[id].kind {
-            StructuredKind::Sequence(v) => {
-                v.len().hash(&mut h);
-                0
-            }
-            StructuredKind::Block { .. } => 1,
-            StructuredKind::Transfer { .. } => 2,
-            StructuredKind::If { .. } => 3,
-            StructuredKind::While {
-                condition,
-                condition_nonzero,
-                ..
-            } => {
-                condition.is_some().hash(&mut h);
-                condition_nonzero.hash(&mut h);
-                4
-            }
-            StructuredKind::Break => 5,
-            StructuredKind::Continue => 6,
-            StructuredKind::Exit { .. } => 7,
-            _ => 8,
-        };
-        tag.hash(&mut h);
-    }
-    for id in &region.blocks {
-        for op in &blocks[id].operations {
-            op.opcode.hash(&mut h);
-        }
-    }
-    let _ = ir;
-    Some(h.finish())
 }
 fn selected_children(
     render: &crate::LiftedRenderIndex<'_>,
@@ -257,7 +215,6 @@ pub(super) fn discover(
     {
         return Err(DiscoveryError::Payment);
     }
-    let blocks: BTreeMap<_, _> = ir.blocks.iter().map(|b| (b.id, b)).collect();
     let mut nodes = BTreeMap::new();
     let ast =
         ir.structured
@@ -274,6 +231,7 @@ pub(super) fn discover(
     render
         .validate_guard_sources()
         .map_err(DiscoveryError::Formatting)?;
+    let fingerprints = fingerprint::Fingerprints::new(ir, program, pay)?;
     // A source occurrence already hidden by a certified guard/suffix cannot
     // contribute a visible call. Keep its witness in a larger visible region,
     // but never emit a standalone unused definition for that hidden subtree.
@@ -318,10 +276,15 @@ pub(super) fn discover(
                 LiftedIfPlan::Original => pending.extend([then_branch.id, else_branch.id]),
             },
             StructuredKind::While { header, body, .. } => pending.extend([header.id, body.id]),
+            StructuredKind::Indirect { arms, .. } => {
+                pending.extend(arms.iter().map(|arm| arm.body.id));
+            }
             _ => {}
         }
     }
     let mut costs = BTreeMap::new();
+    let mut input_counts = BTreeMap::new();
+    let mut sizes = BTreeMap::new();
     let mut groups = BTreeMap::<u64, Vec<(usize, EntityId)>>::new();
     for root in index.node_ids() {
         if !visible.contains(&root) {
@@ -337,33 +300,54 @@ pub(super) fn discover(
         let Some((bytes, retained)) = visible_cost(root, &nodes, &render, pay)? else {
             continue;
         };
+        let arithmetic_loop = bytes >= 128
+            && r.nodes
+                .iter()
+                .any(|id| matches!(nodes[id].kind, StructuredKind::While { .. }));
         if !r.terminal_closed
-            || retained < 3
+            || (retained < 3 && !arithmetic_loop)
             || r.interface.inputs.len() + r.interface.outputs.len() > 64
         {
             continue;
         }
         costs.insert(root, bytes);
-        let hash = fingerprint(ir, &r, &blocks, &nodes, pay).ok_or(DiscoveryError::Payment)?;
+        input_counts.insert(root, r.interface.inputs.len());
+        sizes.insert(root, r.nodes.len());
+        let hash = fingerprints.region(&r, &nodes, pay)?;
         groups.entry(hash).or_default().push((bytes, root));
     }
     let mut groups: Vec<_> = groups.into_values().filter(|v| v.len() > 1).collect();
     if !pay(groups.len().saturating_mul(16)) {
         return Err(DiscoveryError::Payment);
     }
-    groups.sort_by_key(|v| std::cmp::Reverse(v.iter().map(|v| v.0).max().unwrap_or(0)));
+    groups.sort_by_key(|group| {
+        std::cmp::Reverse(
+            group
+                .iter()
+                .map(|(bytes, root)| (*bytes, sizes[root]))
+                .max()
+                .unwrap_or((0, 0)),
+        )
+    });
     let mut plan = Plan {
         procedures: Vec::new(),
         invocations: Vec::new(),
     };
     let mut occupied = BTreeSet::new();
+    let mut hidden = BTreeSet::new();
     let mut weight = program.record_count();
     for mut candidates in groups {
-        candidates.sort_by_key(|(score, id)| (std::cmp::Reverse(*score), *id));
+        candidates.sort_by_key(|(score, id)| {
+            (
+                std::cmp::Reverse(input_counts[id]),
+                std::cmp::Reverse(*score),
+                *id,
+            )
+        });
         let mut cursor = 0;
         while let Some((_, root)) = candidates.get(cursor).copied() {
             cursor += 1;
-            if occupied.contains(&root) {
+            if occupied.contains(&root) || hidden.contains(&root) {
                 continue;
             }
             let canonical = match index.region(root, pay) {
@@ -371,21 +355,18 @@ pub(super) fn discover(
                 Err(SharedProcedureError::Region(_)) => continue,
                 Err(error) => return Err(DiscoveryError::source(error)),
             };
-            if canonical.nodes.iter().any(|id| occupied.contains(id)) {
-                continue;
-            }
             // Keep only sparse substitutions per site. Retaining full region
             // entity domains for repeated same-source AST copies would multiply
             // transient memory by body size even though wire maps are sparse.
             let mut matches = Vec::<(EntityId, Vec<SharedBinding>)>::new();
             let mut pending_weight = weight
                 .saturating_add(canonical.interface.record_count())
-                .saturating_add(8);
-            for (_, actual) in &candidates[cursor..] {
+                .saturating_add(9);
+            for (_, actual) in &candidates {
                 if !pay(1) {
                     return Err(DiscoveryError::Payment);
                 }
-                if occupied.contains(actual) {
+                if *actual == root || occupied.contains(actual) || hidden.contains(actual) {
                     continue;
                 }
                 let actual = match index.region(*actual, pay) {
@@ -393,9 +374,7 @@ pub(super) fn discover(
                     Err(SharedProcedureError::Region(_)) => continue,
                     Err(error) => return Err(DiscoveryError::source(error)),
                 };
-                if canonical.nodes.iter().any(|id| actual.nodes.contains(id))
-                    || actual.nodes.iter().any(|id| occupied.contains(id))
-                {
+                if canonical.nodes.iter().any(|id| actual.nodes.contains(id)) {
                     continue;
                 }
                 let bindings = match index.correspondence(&canonical, &actual, pay) {
@@ -449,11 +428,12 @@ pub(super) fn discover(
             let procedure = SharedProcedure {
                 id: pid,
                 body: root,
+                kind: canonical.kind,
                 interface: canonical.interface.clone(),
             };
             weight = weight
                 .saturating_add(procedure.interface.record_count())
-                .saturating_add(2);
+                .saturating_add(3);
             let mut calls = Vec::new();
             let iid = EntityId(*next);
             *next += 1;
@@ -463,15 +443,15 @@ pub(super) fn discover(
                     .invocation(iid, pid, root, Vec::new())
                     .map_err(DiscoveryError::source)?,
             );
-            occupied.extend(canonical.nodes);
+            // The canonical body remains visible when rendering a definition.
+            // Its strict descendants may independently call another helper.
+            occupied.insert(canonical.root);
             for (root, bindings) in matches {
                 let region = match index.region(root, pay) {
                     Ok(r) => r,
                     Err(error) => return Err(DiscoveryError::source(error)),
                 };
-                if occupied.contains(&region.root)
-                    || region.nodes.iter().any(|id| occupied.contains(id))
-                {
+                if occupied.contains(&region.root) || hidden.contains(&region.root) {
                     continue;
                 }
                 let iid = EntityId(*next);
@@ -484,7 +464,8 @@ pub(super) fn discover(
                         .invocation(iid, pid, region.root, bindings)
                         .map_err(DiscoveryError::source)?,
                 );
-                occupied.extend(region.nodes);
+                occupied.insert(region.root);
+                hidden.extend(region.nodes);
             }
             if calls.len() < 2 {
                 return Err(DiscoveryError::Invalid(SharedProcedureError::Site(root)));
@@ -506,6 +487,16 @@ pub(super) fn discover(
             plan.invocations.extend(calls);
         }
     }
+    arithmetic::Source {
+        program,
+        index: &index,
+        nodes: &nodes,
+        visible: &visible,
+        hidden: &hidden,
+        render: &render,
+        fingerprints: &fingerprints,
+    }
+    .discover(&mut plan, next, pay)?;
     Ok(plan)
 }
 

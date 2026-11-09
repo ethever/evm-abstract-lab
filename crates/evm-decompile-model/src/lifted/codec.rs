@@ -163,7 +163,7 @@ mod tests;
 
 impl WireWeight for crate::SharedProcedure {
     fn wire_weight(&self) -> usize {
-        2 + self.interface.record_count()
+        3 + self.interface.record_count()
     }
 }
 impl WireWeight for crate::SharedInvocation {

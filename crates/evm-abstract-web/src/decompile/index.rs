@@ -146,6 +146,11 @@ impl StageIndex {
                 if let Some(owner) = index
                     .node(ir, procedure.body)
                     .and_then(|node| index.first_block(ir, node))
+                    .or_else(|| {
+                        index
+                            .expression(ir, procedure.body)
+                            .map(|expression| expression.block)
+                    })
                     .and_then(|block| index.blocks.get(&block).copied())
                 {
                     index.semantic_owners.insert(procedure.id, owner);
@@ -156,6 +161,11 @@ impl StageIndex {
                 if let Some(owner) = index
                     .node(ir, invocation.source)
                     .and_then(|node| index.first_block(ir, node))
+                    .or_else(|| {
+                        index
+                            .expression(ir, invocation.source)
+                            .map(|expression| expression.block)
+                    })
                     .and_then(|block| index.blocks.get(&block).copied())
                 {
                     index.semantic_owners.insert(invocation.id, owner);

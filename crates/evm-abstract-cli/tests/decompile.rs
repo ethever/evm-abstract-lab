@@ -208,7 +208,10 @@ fn default_cli_exports_real_certified_definitions_calls_and_retained_raw_witness
         String::from_utf8_lossy(&output.stderr)
     );
     let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(artifact.schema_version, 5);
+    assert_eq!(
+        artifact.schema_version,
+        evm_abstract_protocol::decompile_model::SCHEMA_VERSION
+    );
     let stage = artifact.current().unwrap();
     let high = stage.ir.lifted.as_ref().unwrap();
     assert!(
@@ -275,7 +278,10 @@ fn local_code_produces_structured_output_and_inspectable_json_without_a_world() 
         String::from_utf8_lossy(&output.stderr)
     );
     let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(artifact.schema_version, 5);
+    assert_eq!(
+        artifact.schema_version,
+        evm_abstract_protocol::decompile_model::SCHEMA_VERSION
+    );
     assert!(artifact.admits_schema());
     assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
     assert_eq!(
@@ -670,7 +676,10 @@ fn installed_cli_error_guards_use_exact_router_bytes_and_keep_raw_construction_w
             String::from_utf8_lossy(&output.stderr)
         );
         let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(artifact.schema_version, 5);
+        assert_eq!(
+            artifact.schema_version,
+            evm_abstract_protocol::decompile_model::SCHEMA_VERSION
+        );
         assert!(artifact.admits_schema());
         let current = artifact.current().unwrap();
         let program = current.ir.lifted.as_ref().unwrap();
@@ -843,4 +852,97 @@ fn installed_cli_keeps_observing_and_invalid_failed_arms_explicit_in_both_polari
             "normal STOP must be outside the failed arm: {text}"
         );
     }
+}
+
+#[test]
+fn cli_arithmetic_templates_are_typed_bounded_and_called_at_original_memory_writes() {
+    use evm_abstract_protocol::decompile_model::{SCHEMA_VERSION, SharedProcedureKind};
+    let bytecode = include_str!(
+        "../../evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex"
+    )
+    .trim();
+    let output = run(&["--hex", bytecode, "--format", "json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(artifact.schema_version, SCHEMA_VERSION);
+    assert_eq!(artifact.completion, evm_decompile::Completion::Complete);
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    renderer.validate_shared_sources().unwrap();
+    let arithmetic: Vec<_> = program
+        .procedures
+        .iter()
+        .filter(|procedure| {
+            procedure.kind == SharedProcedureKind::PureArithmetic
+                && renderer.expression(procedure.body).is_some()
+        })
+        .collect();
+    assert!(!arithmetic.is_empty());
+    let output = run(&["--hex", bytecode]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        text.trim_end(),
+        evm_decompile::render_text(&artifact).trim_end()
+    );
+    assert_eq!(text.matches("evm.mstore(").count(), 2);
+    assert_eq!(text.matches("evm.return(").count(), 1);
+    for procedure in arithmetic {
+        let header = renderer
+            .render_procedure_header(procedure, true, |_| true)
+            .unwrap();
+        assert!(header.starts_with(&format!("procedure pure_arithmetic_{}(", procedure.id.0)));
+        assert!(header.contains("-> word256 {"));
+        assert!(text.contains(&header));
+        let rows = renderer
+            .render_procedure_body(procedure, true, |_| true)
+            .unwrap();
+        assert!(rows.len() >= 5);
+        assert!(rows.iter().all(|row| row.text.len() < 256));
+        assert_eq!(
+            rows.last().unwrap().text,
+            format!("yield x{};", procedure.body.0)
+        );
+    }
+    for call in program
+        .invocations
+        .iter()
+        .filter(|call| renderer.expression(call.source).is_some())
+    {
+        let invocation = renderer
+            .render_shared_invocation(call, true, |_| true)
+            .unwrap();
+        assert!(
+            text.lines()
+                .any(|line| line.contains("evm.mstore(") && line.contains(&invocation))
+        );
+        assert!(
+            !artifact
+                .origin(evm_decompile::EntityRef {
+                    stage: stage.id,
+                    entity: call.id
+                })
+                .unwrap()
+                .source
+                .is_empty()
+        );
+    }
+    let raw = artifact
+        .stages
+        .iter()
+        .find(|stage| stage.kind == evm_decompile::StageKind::Structured)
+        .unwrap();
+    let mut witness = stage.ir.clone();
+    witness.lifted = None;
+    assert_eq!(witness, raw.ir);
+    assert_eq!(
+        serde_json::from_slice::<evm_decompile::Artifact>(&serde_json::to_vec(&artifact).unwrap())
+            .unwrap(),
+        artifact
+    );
 }

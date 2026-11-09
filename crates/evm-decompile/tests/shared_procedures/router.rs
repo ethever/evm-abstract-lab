@@ -92,18 +92,34 @@ fn whole_router_must_share_multiblock_and_context_bodies_with_meaningful_reducti
     let mut substantial_multiblock = 0;
     let mut alpha_context_groups = 0;
     let mut repeated_source_groups = 0;
+    let mut arithmetic_definitions = 0;
     for procedure in &high.procedures {
+        let Some(body) = nodes.get(&procedure.body) else {
+            assert!(high.expression(procedure.body).is_some());
+            assert_eq!(
+                procedure.kind,
+                evm_decompile::SharedProcedureKind::PureArithmetic
+            );
+            arithmetic_definitions += 1;
+            continue;
+        };
         let mut definition_blocks = Vec::new();
-        bodies(
-            nodes[&procedure.body],
-            &BTreeSet::new(),
-            &mut definition_blocks,
-        );
+        let mut nested = omitted.clone();
+        nested.remove(&procedure.body);
+        bodies(body, &nested, &mut definition_blocks);
         let distinct: BTreeSet<_> = definition_blocks.iter().copied().collect();
         let operations: usize = distinct
             .iter()
             .map(|id| stage.ir.block(*id).unwrap().operations.len())
             .sum();
+        for block in &distinct {
+            for operation in &stage.ir.block(*block).unwrap().operations {
+                assert!(
+                    !matches!(operation.opcode, 0x00 | 0xf0..=0xf5 | 0xfa | 0xfd..=0xff),
+                    "procedure hid an EVM terminal or external call"
+                );
+            }
+        }
         substantial_multiblock += usize::from(distinct.len() >= 2 && operations >= 8);
         after.extend(definition_blocks);
         let mut same_sources = BTreeMap::<Vec<EntityId>, usize>::new();
@@ -186,7 +202,7 @@ fn whole_router_must_share_multiblock_and_context_bodies_with_meaningful_reducti
         "source-size proportional certificate storage"
     );
     eprintln!(
-        "Router sharing: {} procedures, {} invocations, {substantial_multiblock} substantial multi-block definitions, {alpha_context_groups} alpha-context groups, {repeated_source_groups} repeated-source groups; bodies {} -> {}; bytes {} -> {}; lines {} -> {}; {bindings} binding records / {source_entities} source entities; {} terminal proofs / {} capsules",
+        "Router sharing: {} procedures ({arithmetic_definitions} arithmetic expressions), {} invocations, {substantial_multiblock} substantial multi-block definitions, {alpha_context_groups} alpha-context groups, {repeated_source_groups} repeated-source groups; bodies {} -> {}; bytes {} -> {}; lines {} -> {}; {bindings} binding records / {source_entities} source entities; {} terminal proofs / {} capsules",
         high.procedures.len(),
         high.invocations.len(),
         before.len(),

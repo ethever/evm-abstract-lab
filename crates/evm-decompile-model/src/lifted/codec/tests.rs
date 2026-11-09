@@ -76,6 +76,7 @@ fn new_arena_weights_match_the_global_record_units() {
 #[test]
 fn sharing_wire_weights_cover_body_references_and_identity_invocations() {
     let procedure = crate::SharedProcedure {
+        kind: crate::SharedProcedureKind::Normal,
         id: EntityId(1),
         body: EntityId(100),
         interface: crate::SharedInterface::default(),

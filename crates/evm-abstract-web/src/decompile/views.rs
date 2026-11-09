@@ -217,6 +217,7 @@ impl Views {
                 kind,
                 Some(
                     EntityKind::LiftedBlock
+                        | EntityKind::LiftedExpression
                         | EntityKind::LiftedStatement
                         | EntityKind::LiftedTransfer
                         | EntityKind::LiftedControl
@@ -252,7 +253,10 @@ impl Views {
                 }
                 _ if semantic_code
                     && self.rendered.as_ref().is_some_and(|(_, _, lines)| {
-                        lines.iter().any(|line| line.entity == at.entity)
+                        let stage = state.index.stage(at.stage);
+                        lines
+                            .iter()
+                            .any(|line| stage.shared.row_matches(line.entity, at.entity))
                     }) =>
                 {
                     Route::Lifted
@@ -352,7 +356,15 @@ impl Views {
         ));
         if state.entity_navigation
             && let Some(selected) = state.selected_in(artifact, stage.id)
-            && let Some(position) = lines.iter().position(|line| line.entity == selected)
+            && let Some(position) = lines.iter().position(|line| {
+                line.entity == selected
+                    || self.route == Route::Lifted
+                        && state
+                            .index
+                            .stage(stage.id)
+                            .shared
+                            .row_matches(line.entity, selected)
+            })
         {
             scroll = scroll.vertical_scroll_offset(rows::offset_with_height(
                 ui,
@@ -376,7 +388,19 @@ impl Views {
                         line,
                         self.differences.after.get(&line.entity),
                     );
-                    if visible && state.selected_in(artifact, stage.id) == Some(line.entity) {
+                    if visible
+                        && state
+                            .selected_in(artifact, stage.id)
+                            .is_some_and(|selected| {
+                                line.entity == selected
+                                    || self.route == Route::Lifted
+                                        && state
+                                            .index
+                                            .stage(stage.id)
+                                            .shared
+                                            .row_matches(line.entity, selected)
+                            })
+                    {
                         state.entity_navigation = false;
                     }
                 });

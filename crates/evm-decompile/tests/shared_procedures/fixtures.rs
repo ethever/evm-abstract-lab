@@ -196,6 +196,240 @@ pub(super) fn loop_host(input: &Input, counts: [u64; 2]) -> MemoryHost {
     host
 }
 
+/// A closed stateful loop with neither an external call nor an EVM halt inside.
+pub(super) fn closed_loop_calls() -> Fixture {
+    let mut a = Asm::default();
+    a.target("after_first")
+        .number(0)
+        .op(0x35)
+        .target("helper")
+        .op(0x56)
+        .dest("after_first")
+        .target("after_second")
+        .number(32)
+        .op(0x35)
+        .target("helper")
+        .op(0x56)
+        .dest("after_second")
+        .number(32)
+        .op(0x52)
+        .number(0)
+        .op(0x52)
+        .number(64)
+        .number(0)
+        .op(0xf3)
+        .dest("helper")
+        .number(0)
+        .dest("loop")
+        .op(0x81)
+        .op(0x15)
+        .target("done")
+        .op(0x57)
+        .op(0x81)
+        .op(0x01)
+        .op(0x80)
+        .number(64)
+        .op(0x52)
+        .op(0x81)
+        .number(2)
+        .op(0x55)
+        .number(32)
+        .number(64)
+        .op(0xa0)
+        .op(0x90)
+        .number(1)
+        .op(0x90)
+        .op(0x03)
+        .op(0x90)
+        .target("loop")
+        .op(0x56)
+        .dest("done")
+        .op(0x90)
+        .op(0x50)
+        .op(0x90)
+        .op(0x56);
+    a.finish()
+}
+
+/// Two long arithmetic DAGs differ in literal values and PUSH widths. The
+/// second one aliases the two value parameters without hiding a state read.
+pub(super) fn arithmetic_templates() -> Fixture {
+    let mut a = Asm::default();
+    for (index, (left, right)) in [(0, 32), (64, 64)].into_iter().enumerate() {
+        arithmetic_expression(&mut a, left, right, index != 0, 12);
+        a.number(u64::try_from(index * 32).unwrap()).op(0x52);
+    }
+    a.number(64).number(0).op(0xf3);
+    persisted(
+        a.finish(),
+        include_str!("../fixtures/shared-procedures/arithmetic-template-inputs.hex"),
+    )
+}
+
+pub(super) fn single_arithmetic() -> Fixture {
+    let mut a = Asm::default();
+    arithmetic_expression(&mut a, 0, 32, false, 20);
+    a.number(0).op(0x52).number(32).number(0).op(0xf3);
+    a.finish()
+}
+
+/// One prefix also appears outside the repeated large templates. It remains
+/// useful as a nested helper after the two larger expressions are shared.
+pub(super) fn nested_arithmetic() -> Fixture {
+    let mut a = Asm::default();
+    for (index, (left, right, operations)) in [(0, 32, 20), (64, 64, 20), (96, 128, 12)]
+        .into_iter()
+        .enumerate()
+    {
+        arithmetic_expression(&mut a, left, right, index != 0, operations);
+        a.number(u64::try_from(index * 32).unwrap()).op(0x52);
+    }
+    a.number(96).number(0).op(0xf3);
+    persisted(
+        a.finish(),
+        include_str!("../fixtures/shared-procedures/nested-arithmetic-inputs.hex"),
+    )
+}
+
+fn arithmetic_expression(a: &mut Asm, left: u64, right: u64, padded: bool, operations: usize) {
+    a.number(left).op(0x35);
+    if left == right {
+        a.op(0x80);
+    } else {
+        a.number(right).op(0x35);
+    }
+    a.op(0x90);
+    arithmetic_operations(a, padded, operations);
+}
+
+fn arithmetic_operations(a: &mut Asm, padded: bool, operations: usize) {
+    for (position, (opcode, value)) in [
+        (0x18, 5),
+        (0x02, 7),
+        (0x01, 0),
+        (0x18, 11),
+        (0x02, 13),
+        (0x01, 17),
+        (0x18, 19),
+        (0x02, 23),
+        (0x01, 29),
+        (0x18, 31),
+        (0x02, 37),
+        (0x01, 41),
+        (0x18, 43),
+        (0x02, 47),
+        (0x01, 53),
+        (0x18, 59),
+        (0x02, 61),
+        (0x01, 67),
+        (0x18, 71),
+        (0x02, 73),
+    ]
+    .into_iter()
+    .enumerate()
+    .take(operations)
+    {
+        if position != 2 {
+            if padded {
+                a.op(0x61).op(0).op(u8::try_from(value + 100).unwrap());
+            } else {
+                a.number(value);
+            }
+        }
+        a.op(opcode);
+    }
+}
+
+/// A word-only loop computes a recurrence from explicit entry words. The
+/// terminal caller and both calldata reads remain outside the reusable body.
+pub(super) fn pure_loop_calls() -> Fixture {
+    let mut a = Asm::default();
+    a.target("after_first")
+        .number(0)
+        .op(0x35)
+        .target("helper")
+        .op(0x56)
+        .dest("after_first")
+        .target("after_second")
+        .number(32)
+        .op(0x35)
+        .target("helper")
+        .op(0x56)
+        .dest("after_second")
+        .number(32)
+        .op(0x52)
+        .number(0)
+        .op(0x52)
+        .number(64)
+        .number(0)
+        .op(0xf3)
+        .dest("helper")
+        .number(0)
+        .dest("loop")
+        .op(0x81)
+        .op(0x15)
+        .target("done")
+        .op(0x57)
+        .op(0x81)
+        .op(0x90);
+    arithmetic_operations(&mut a, false, 12);
+    a.op(0x90)
+        .number(1)
+        .op(0x90)
+        .op(0x03)
+        .op(0x90)
+        .target("loop")
+        .op(0x56)
+        .dest("done")
+        .op(0x90)
+        .op(0x50)
+        .op(0x90)
+        .op(0x56);
+    a.finish()
+}
+
+/// Separate source blocks have equal logical bodies despite PUSH padding.
+pub(super) fn encoding_variants() -> Fixture {
+    let mut a = Asm::default();
+    for index in 0..2 {
+        if index != 0 {
+            a.dest("second");
+        }
+        for (opcode, operand) in [
+            (0x35, Some(0)),
+            (0x80, None),
+            (0x52, Some(64)),
+            (0x80, None),
+            (0x55, Some(0)),
+        ] {
+            if let Some(operand) = operand {
+                if index == 0 {
+                    a.number(operand);
+                } else {
+                    a.op(0x61).op(0).op(u8::try_from(operand).unwrap());
+                }
+            }
+            a.op(opcode);
+        }
+        if index == 0 {
+            a.number(32).number(64);
+        } else {
+            a.op(0x61).op(0).op(32).op(0x61).op(0).op(64);
+        }
+        a.op(0xa0).op(0x80);
+        if index == 0 {
+            a.number(96).op(0x52).number(1);
+        } else {
+            a.op(0x61).op(0).op(96).op(0x52).op(0x61).op(0).op(1);
+        }
+        a.op(0x55)
+            .target(if index == 0 { "second" } else { "done" })
+            .op(0x56);
+    }
+    a.dest("done").op(0x00);
+    a.finish()
+}
+
 /// A loop phi is rebound on every iteration and on every helper invocation.
 pub(super) fn loop_calls() -> Fixture {
     let mut a = Asm::default();
@@ -297,7 +531,10 @@ pub(super) fn repeated_tail(terminal: u8) -> Fixture {
         .op(0x55)
         .number(32)
         .number(64)
-        .op(0xa0);
+        .op(0xa0)
+        .target("terminal")
+        .op(0x56)
+        .dest("terminal");
     if matches!(terminal, 0xf3 | 0xfd) {
         a.number(32).number(128).op(0x35);
     } else if terminal == 0xff {

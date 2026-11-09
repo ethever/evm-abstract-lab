@@ -334,7 +334,8 @@ pub struct LiftedProgram {
     /// Canonical source code definitions, checked independently of discovery.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub procedures: Vec<crate::SharedProcedure>,
-    /// Exact nonoverlapping source occurrences and expansion correspondences.
+    /// Exact source occurrences and checked expansion correspondences. Nested
+    /// definitions share subregions without duplicating their source witness.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub invocations: Vec<crate::SharedInvocation>,
 }
@@ -400,7 +401,7 @@ impl LiftedProgram {
             .count()
             .saturating_add(self.procedures.iter().fold(0_usize, |n, p| {
                 n.saturating_add(p.interface.record_count())
-                    .saturating_add(1)
+                    .saturating_add(2)
             }))
             .saturating_add(self.invocations.iter().fold(0_usize, |n, i| {
                 n.saturating_add(i.bindings.len().saturating_mul(2))

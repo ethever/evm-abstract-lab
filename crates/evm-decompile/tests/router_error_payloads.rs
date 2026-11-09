@@ -561,7 +561,7 @@ fn actual_array_allocation_and_call_output_fault_prefixes_match_normalized_execu
 }
 
 #[test]
-fn router_hybrid_guards_cover_certified_sites_and_keep_normal_code_flat() {
+fn router_hybrid_guards_cover_certified_sites_and_preserve_explicit_source_nesting() {
     use evm_decompile::{StructuredKind, Terminator};
     use std::collections::{BTreeMap, BTreeSet};
     let (_, artifact) = router();
@@ -705,14 +705,35 @@ fn router_hybrid_guards_cover_certified_sites_and_keep_normal_code_flat() {
         "selected sites: require={requires}, explicit={explicit}"
     );
     assert!(text.contains("require(") && text.contains("evm.invalid();"));
-    let depth = text
-        .lines()
-        .map(|line| (line.len() - line.trim_start().len()) / 4)
-        .max()
+    let depth = |text: &str| {
+        text.lines()
+            .map(|line| (line.len() - line.trim_start().len()) / 4)
+            .max()
+            .unwrap()
+    };
+    // The old absolute ceiling depended on hiding CALL and REVERT inside a
+    // large shared helper. The optional-return bool decoder must now remain
+    // visible in its caller; its two nested value-producing branches are not
+    // failed-else continuations. Keep the source guard/plan checks above and
+    // independently require outlining not to add nesting to that same fully
+    // expanded, certified projection. Do not count hiding terminals as flattening.
+    let mut source_artifact = artifact.clone();
+    let source_high = source_artifact
+        .stages
+        .last_mut()
+        .unwrap()
+        .ir
+        .lifted
+        .as_mut()
         .unwrap();
+    source_high.procedures.clear();
+    source_high.invocations.clear();
+    let source_text = evm_decompile::render_text(&source_artifact);
+    let shared_depth = depth(&text);
+    let source_depth = depth(&source_text);
     assert!(
-        depth <= 8,
-        "normal Router code regressed into deep failed-else nesting: {depth}"
+        shared_depth <= source_depth,
+        "outlining added control nesting to the explicit source: {source_depth} -> {shared_depth}"
     );
     assert!(
         text.contains("evm.mload(")

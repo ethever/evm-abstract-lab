@@ -288,6 +288,11 @@ impl Artifact {
     pub fn admits_schema(&self) -> bool {
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
+            5 => self.stages.iter().all(|s| {
+                s.ir.lifted
+                    .as_ref()
+                    .is_none_or(|p| p.procedures.iter().all(|p| p.kind.is_legacy()))
+            }),
             4 => self
                 .stages
                 .iter()

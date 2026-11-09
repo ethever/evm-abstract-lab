@@ -22,6 +22,9 @@ TOKEN_ONLY_ELSE = ("61000a60003561001d565b60015561001860203561001d565b600255005b
 SHARED_FAILURE = ("6100095f3561001c565b60015561001760203561001c565b600255005b8061004257"
                   "80604052805f5560206040a06005546001016005556006546007556001019056"
                   "5b604051602a905260205ffd")
+EXTERNAL_LOOP = ("61000a600035610021565b610015602035610021565b60205260005260406000f35b6000"
+                 "5b8115610056578101806040528160025560206040a0602061014060206040611234620186a0"
+                 "fa50906001900390610024565b90509056")
 UNSHARED = "5f356040525f546001015f5500"
 DEPENDENCIES = "Show state dependencies"
 ANNOTATIONS = "Show structure annotations"
@@ -259,65 +262,227 @@ def token_only_else(context, page, canvas):
 def failure_definition(context, page, canvas):
     artifact, _ = submit(context, page, canvas, SHARED_FAILURE, "shared-procedures-failed-if")
     current, program = raw_witness(artifact)
+    assert program["procedures"], "successful work must still share"
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    failed_blocks = {block["id"] for block in current["ir"]["blocks"]
+                     if any(operation["opcode"] == 0xfd for operation in block["operations"])}
+    candidates = [statement for block in program["blocks"] if block["block"] in failed_blocks
+                  for statement in block["statements"]
+                  if operations[statement["operation"]]["opcode"] in {0x51, 0x52, 0xfd}]
+    assert len(candidates) == 6, "both original failed contexts keep MLOAD, MSTORE and REVERT"
     nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
-    procedure = next(procedure for procedure in program["procedures"] if "if" in nodes[procedure["body"]])
-    assert sum(call["procedure"] == procedure["id"] for call in program["invocations"]) >= 2
+    for procedure in program["procedures"]:
+        pending = [procedure["body"]] if procedure["body"] in nodes else []
+        while pending:
+            kind = nodes[pending.pop()]
+            if not isinstance(kind, dict):
+                continue
+            assert not any(name in kind for name in ["exit", "partial_exit", "indirect", "dispatcher"]), kind
+            if "sequence" in kind:
+                pending.extend(kind["sequence"])
+            elif "block" in kind:
+                assert kind["block"]["block"] not in failed_blocks, "REVERT stays in its original caller"
+            elif "if" in kind:
+                pending.extend([kind["if"]["then_branch"], kind["if"]["else_branch"]])
+            elif "while" in kind:
+                pending.extend([kind["while"]["header"], kind["while"]["body"]])
     high(page, canvas)
     reading = painted_copy(page, canvas)
-    lines = reading.splitlines()
-    begin = next(index for index, line in enumerate(lines)
-                 if line.startswith("procedure shared_" + procedure["id"] + "("))
-    end = next(index for index in range(begin + 1, len(lines)) if lines[index] == "}")
-    body = lines[begin + 1:end]
-    assert sum(line.startswith("    if (") for line in body) == 1, reading
-    assert not any("require(" in line or "} else {" in line for line in body), reading
-    load = next(index for index, line in enumerate(body) if "evm.mload(" in line)
-    store = next(index for index, line in enumerate(body) if "evm.mstore(" in line)
-    revert = next(index for index, line in enumerate(body) if "evm.revert(offset =" in line)
-    assert load < store < revert and all(body[index].startswith("        ") for index in [load, store, revert]), reading
+    assert reading.count("evm.revert(offset =") == 2 and "require(" not in reading, reading
     for dependencies, annotations in [(True, False), (True, True), (False, True), (False, False)]:
         set_control(page, canvas, DEPENDENCIES, dependencies)
         set_control(page, canvas, ANNOTATIONS, annotations)
         text = painted_copy(page, canvas)
         projected = without_state(text, current) if dependencies else text.splitlines()
         assert without_structure("\n".join(projected)) == reading.splitlines(), text
-    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
-                  for operation in block["operations"]}
-    statements = {statement["operation"]: statement for block in program["blocks"]
-                  for statement in block["statements"]}
-    pending, failed_blocks = [nodes[procedure["body"]]["if"]["then_branch"]], set()
-    while pending:
-        kind = nodes[pending.pop()]
-        if "sequence" in kind:
-            pending.extend(kind["sequence"])
-        elif "block" in kind:
-            failed_blocks.add(kind["block"]["block"])
-    candidates = [statement for block in program["blocks"] if block["block"] in failed_blocks
-                  for statement in block["statements"]
-                  if operations[statement["operation"]]["opcode"] in {0x51, 0x52, 0xfd}]
     selected = []
-    # Canonical source statements retain code anchors in the definition. The
-    # second caller's distinct substitutions remain available through IR.
-    for opcode in [0x51, 0x52, 0xfd]:
-        found = False
-        for statement in candidates:
-            if operations[statement["operation"]]["opcode"] != opcode:
-                continue
-            source_descendant(page, canvas, artifact, current["id"], statement["id"])
-            if not ui_control(page, "Simplified structured code", role="tab")["selected"]:
-                continue
-            spelling = "evm." + operations[statement["operation"]]["name"].lower() + "("
-            row = selected_row(page, "decompile-code", spelling)
-            inspector_control(page, canvas, "Statement h" + statement["id"] + " ", "decompile-entity-detail")
-            click_control(page, canvas, row["label"], role="decompile-code", id=row["id"])
-            selected.append(statement["id"])
-            found = True
-            break
-        assert found, (opcode, reading)
+    for statement in candidates:
+        source_descendant(page, canvas, artifact, current["id"], statement["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        spelling = "evm." + operations[statement["operation"]]["name"].lower() + "("
+        row = selected_row(page, "decompile-code", spelling)
+        inspector_control(page, canvas, "Statement h" + statement["id"] + " ", "decompile-entity-detail")
+        click_control(page, canvas, row["label"], role="decompile-code", id=row["id"])
+        selected.append(statement["id"])
     high(page, canvas)
     assert painted_copy(page, canvas) == reading
     canvas.screenshot(path=str(context.output / "shared-procedures-failed-if.png"))
-    return {"artifact": artifact["id"], "procedure": procedure["id"], "source_statements": selected}
+    return {"artifact": artifact["id"], "procedures": len(program["procedures"]), "source_statements": selected}
+
+
+def arithmetic_templates(context, page, canvas):
+    code = (SOURCE_ROOT / "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex").read_text().strip()
+    artifact, _ = submit(context, page, canvas, code, "shared-procedures-arithmetic-templates")
+    assert artifact["completion"] == "complete", artifact["diagnostics"]
+    current, program = raw_witness(artifact)
+    expressions = {expression["id"]: expression for expression in program["expressions"]}
+    procedures = [procedure for procedure in program["procedures"]
+                  if procedure["kind"] == "pure_arithmetic" and procedure["body"] in expressions]
+    assert procedures and len(program["invocations"]) >= 2
+    assert all(not procedure["interface"][name] for procedure in procedures
+               for name in ["outputs", "memory_inputs", "memory_outputs", "effect_inputs", "effect_outputs", "continuations"])
+    high(page, canvas)
+    snapshots = {}
+    for dependencies, annotations in [(False, False), (True, False), (True, True), (False, True), (False, False)]:
+        set_control(page, canvas, DEPENDENCIES, dependencies)
+        set_control(page, canvas, ANNOTATIONS, annotations)
+        text = painted_copy(page, canvas)
+        key = (dependencies, annotations)
+        assert key not in snapshots or snapshots[key] == text
+        snapshots[key] = text
+        assert text.count("evm.mstore(") == 2 and text.count("evm.return(") == 1, text
+        lines = text.splitlines()
+        for procedure in procedures:
+            prefix = "procedure pure_arithmetic_" + procedure["id"] + "("
+            begin = next(index for index, line in enumerate(lines) if line.startswith(prefix))
+            assert "-> word256 {" in lines[begin]
+            assert all("x" + identity in lines[begin] for identity in procedure["interface"]["inputs"])
+            end = next(index for index in range(begin + 1, len(lines)) if lines[index] == "}")
+            body = lines[begin + 1:end]
+            assert len(body) >= 5 and all(len(line) < 260 for line in body), body
+            assert body[-1] == "    yield x" + procedure["body"] + ";"
+            assert all("evm.mstore(" not in line and "evm.return(" not in line for line in body)
+    for dependencies in [False, True]:
+        assert without_structure(snapshots[dependencies, True]) == snapshots[dependencies, False].splitlines()
+    for annotations in [False, True]:
+        assert without_state(snapshots[True, annotations], current) == snapshots[False, annotations].splitlines()
+    reading = snapshots[False, False]
+    for call in program["invocations"]:
+        procedure = next(procedure for procedure in procedures if procedure["id"] == call["procedure"])
+        bindings = {binding["formal"]: binding["actual"] for binding in call["bindings"]}
+        arguments = []
+        for formal in procedure["interface"]["inputs"]:
+            kind = expressions[bindings.get(formal, formal)]["kind"]
+            if "value" in kind:
+                arguments.append("v" + kind["value"])
+            elif "word" in kind:
+                arguments.append(f"0x{int(kind['word'], 16):x}")
+            else:
+                assert "predicate" in kind
+                arguments.append(str(kind["predicate"]).lower())
+        invocation = "pure_arithmetic_" + procedure["id"] + "(" + ", ".join(arguments) + ")"
+        assert any("evm.mstore(" in line and invocation in line for line in reading.splitlines()), invocation
+    selected = []
+    for entity, prefix in [(procedure["id"], "Certified pure_arithmetic procedure p") for procedure in procedures] + [
+            (call["id"], "Certified pure_arithmetic invocation h") for call in program["invocations"]]:
+        source_descendant(page, canvas, artifact, current["id"], entity)
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", "pure_arithmetic_")
+        inspector_control(page, canvas, prefix + entity, "decompile-entity-detail")
+        selected.append(entity)
+    for procedure in procedures:
+        source_descendant(page, canvas, artifact, current["id"], procedure["body"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", "x" + procedure["body"] + " =")
+    assert painted_copy(page, canvas) == reading
+    canvas.screenshot(path=str(context.output / "shared-procedures-arithmetic-templates.png"))
+    return {"artifact": artifact["id"], "procedures": len(procedures),
+            "invocations": len(program["invocations"]), "source_entities": selected,
+            "max_line": max(map(len, reading.splitlines()))}
+
+
+def excluded_external_calls(context, page, canvas):
+    artifact, _ = submit(context, page, canvas, EXTERNAL_LOOP, "shared-procedures-excluded-external-loop")
+    current, program = raw_witness(artifact)
+    nodes = {node["id"]: node["kind"] for node in current["ir"]["structured"]["nodes"]}
+    calls = {block["id"] for block in current["ir"]["blocks"]
+             if any(operation["opcode"] == 0xfa for operation in block["operations"])}
+    assert len(calls) == 2, "two distinct caller contexts retain their actual STATICCALL"
+    for procedure in program.get("procedures", []):
+        pending = [procedure["body"]] if procedure["body"] in nodes else []
+        while pending:
+            kind = nodes[pending.pop()]
+            if not isinstance(kind, dict):
+                continue
+            if "block" in kind:
+                assert kind["block"]["block"] not in calls
+            elif "sequence" in kind:
+                pending.extend(kind["sequence"])
+            elif "if" in kind:
+                pending.extend([kind["if"]["then_branch"], kind["if"]["else_branch"]])
+            elif "while" in kind:
+                pending.extend([kind["while"]["header"], kind["while"]["body"]])
+    high(page, canvas)
+    text = painted_copy(page, canvas)
+    assert text.count("evm.staticcall(gas =") == 2, text
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    statements = [statement for block in program["blocks"] if block["block"] in calls
+                  for statement in block["statements"] if operations[statement["operation"]]["opcode"] == 0xfa]
+    for statement in statements:
+        source_descendant(page, canvas, artifact, current["id"], statement["id"])
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", "evm.staticcall(gas =")
+    assert painted_copy(page, canvas) == text
+    return {"artifact": artifact["id"], "external_source_statements": [statement["id"] for statement in statements]}
+
+
+def nested_arithmetic(context, page, canvas):
+    code = (SOURCE_ROOT / "crates/evm-decompile/tests/fixtures/shared-procedures/nested-arithmetic-inputs.hex").read_text().strip()
+    artifact, _ = submit(context, page, canvas, code, "shared-procedures-nested-arithmetic")
+    current, program = raw_witness(artifact)
+    expressions = {expression["id"]: expression for expression in program["expressions"]}
+    procedures = {procedure["id"]: procedure for procedure in program["procedures"]}
+    calls = {call["source"]: call for call in program["invocations"]}
+    assert len(procedures) >= 2
+    graph = {identity: set() for identity in procedures}
+    nested = {}
+    for procedure in procedures.values():
+        pending, seen = [procedure["body"]], set()
+        while pending:
+            identity = pending.pop()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if identity != procedure["body"] and identity in calls:
+                call = calls[identity]
+                graph[procedure["id"]].add(call["procedure"])
+                nested[call["id"]] = call
+                continue
+            kind = expressions[identity]["kind"]
+            if "word_op" in kind:
+                pending.extend(kind["word_op"]["arguments"])
+            elif "compare" in kind:
+                pending.extend([kind["compare"]["left"], kind["compare"]["right"]])
+            else:
+                pending.extend(kind[name] for name in ["word_from_predicate", "non_zero", "not"] if name in kind)
+    assert nested, "fixture must display a real nested helper invocation"
+    for root in graph:
+        pending, seen = list(graph[root]), set()
+        while pending:
+            identity = pending.pop()
+            assert identity != root, "rendered procedure dependency graph must stay acyclic"
+            if identity not in seen:
+                seen.add(identity)
+                pending.extend(graph[identity])
+    high(page, canvas)
+    snapshots = {}
+    for dependencies, annotations in [(False, False), (True, False), (True, True), (False, True), (False, False)]:
+        set_control(page, canvas, DEPENDENCIES, dependencies)
+        set_control(page, canvas, ANNOTATIONS, annotations)
+        text = painted_copy(page, canvas)
+        key = (dependencies, annotations)
+        assert key not in snapshots or snapshots[key] == text
+        snapshots[key] = text
+        assert text.count("evm.mstore(") == 3 and text.count("evm.return(") == 1
+        assert len(text.splitlines()) < 100, "nested helpers must remain finite readable definitions"
+        for call in nested.values():
+            assert any(line.startswith("    x") and "pure_arithmetic_" + call["procedure"] + "(" in line
+                       for line in text.splitlines()), text
+    for dependencies in [False, True]:
+        assert without_structure(snapshots[dependencies, True]) == snapshots[dependencies, False].splitlines()
+    for annotations in [False, True]:
+        assert without_state(snapshots[True, annotations], current) == snapshots[False, annotations].splitlines()
+    for entity, call in nested.items():
+        source_descendant(page, canvas, artifact, current["id"], entity)
+        ui_control(page, "Simplified structured code", role="tab", selected=True)
+        selected_row(page, "decompile-code", "pure_arithmetic_" + call["procedure"] + "(")
+        inspector_control(page, canvas, "Certified pure_arithmetic invocation h" + entity, "decompile-entity-detail")
+    assert painted_copy(page, canvas) == snapshots[False, False]
+    canvas.screenshot(path=str(context.output / "shared-procedures-nested-arithmetic.png"))
+    return {"artifact": artifact["id"], "nested_invocations": sorted(nested, key=int),
+            "dependencies": {identity: sorted(children, key=int) for identity, children in graph.items()}}
 
 
 def run(context):
@@ -404,6 +569,9 @@ def run(context):
 
     empty_else = token_only_else(context, page, canvas)
     failed_if = failure_definition(context, page, canvas)
+    arithmetic = arithmetic_templates(context, page, canvas)
+    nested = nested_arithmetic(context, page, canvas)
+    external_calls = excluded_external_calls(context, page, canvas)
 
     loop_code = (SOURCE_ROOT / "crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex").read_text().strip()
     loop_artifact, _ = submit(context, page, canvas, loop_code, "shared-procedures-loop-state")
@@ -443,6 +611,7 @@ def run(context):
     return {"artifact": artifact["id"], "procedures": len(program["procedures"]),
             "invocations": len(program["invocations"]), "raw_bytes": raw_bytes,
             "high_bytes": high_bytes, "loop_artifact": loop_artifact["id"],
-            "empty_else": empty_else, "failed_if": failed_if,
+            "empty_else": empty_else, "failed_if": failed_if, "arithmetic": arithmetic,
+            "external_calls": external_calls, "nested_arithmetic": nested,
             "definition_state_rows": len(state_tokens),
             "rejected_artifact": rejected["id"], "webgpu": gpu}

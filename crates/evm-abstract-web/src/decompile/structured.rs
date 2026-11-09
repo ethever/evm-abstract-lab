@@ -263,7 +263,14 @@ fn render(
                 let owner = renderer
                     .control(node.id)
                     .map_or(node.id, |control| control.id);
-                match renderer.render_require(plan, |_| true) {
+                match index
+                    .shared
+                    .require_header(node.id)
+                    .filter(|_| scope.shared)
+                    .map_or_else(
+                        || renderer.render_require(plan, |_| true),
+                        |text| Ok(text.to_owned()),
+                    ) {
                     Ok(text) => emit(output, owner, indent, text),
                     Err(error) => {
                         if let Some(aborted) = scope.aborted {
@@ -292,7 +299,14 @@ fn render(
                     .map_or(node.id, |control| control.id);
                 // The suffix skip and this layout are one admitted decision.
                 // A formatting refusal must keep every planned source row.
-                let condition = match renderer.render_failure_first_condition(plan, |_| true) {
+                let condition = match index
+                    .shared
+                    .failure_condition(node.id)
+                    .filter(|_| scope.shared)
+                    .map_or_else(
+                        || renderer.render_failure_first_condition(plan, |_| true),
+                        |text| Ok(text.to_owned()),
+                    ) {
                     Ok(condition) => condition,
                     Err(error) => {
                         if let Some(aborted) = scope.aborted {
@@ -355,7 +369,7 @@ fn render(
                 render(success, ir, index, scope, indent, output);
                 return RenderSummary::CONTENT;
             }
-            let (owner, predicate) = predicate(node.id, *condition, false, ir, index, scope.lifted);
+            let (owner, predicate) = predicate(node.id, *condition, false, ir, index, scope);
             emit(output, owner, indent, format!("if ({predicate}) {{"));
             render(then_branch, ir, index, scope, indent + 1, output);
             let else_start = output.len();
@@ -392,15 +406,7 @@ fn render(
             render(header, ir, index, scope, indent + 1, output);
             if let Some(condition) = condition {
                 let condition = if scope.lifted.is_some() {
-                    predicate(
-                        node.id,
-                        *condition,
-                        *condition_nonzero,
-                        ir,
-                        index,
-                        scope.lifted,
-                    )
-                    .1
+                    predicate(node.id, *condition, *condition_nonzero, ir, index, scope).1
                 } else {
                     format!(
                         "{} {} 0",
@@ -457,7 +463,7 @@ fn render(
                         ..
                     } if index.branch_arm(ir, node.id) == Some(true) => jump_boundary(
                         if scope.lifted.is_some() {
-                            projected_target(block.id, ir, index, scope.lifted)
+                            projected_target(block.id, ir, index, scope)
                         } else {
                             value(*target)
                         },
@@ -465,7 +471,7 @@ fn render(
                         *unresolved,
                         !invalid_targets.is_empty(),
                     ),
-                    term => projected_terminator(block.id, term, ir, index, scope.lifted),
+                    term => projected_terminator(block.id, term, ir, index, scope),
                 };
                 let owner = exit_owner(block.id, node.id, ir, index, scope.lifted);
                 emit(output, owner, indent, text);
@@ -490,7 +496,7 @@ fn render(
                 if scope.lifted.is_some() {
                     format!(
                         "indirect_jump {} {{",
-                        projected_target(*block, ir, index, scope.lifted)
+                        projected_target(*block, ir, index, scope)
                     )
                 } else {
                     format!("indirect_jump b{} {{", block.0)
@@ -600,11 +606,18 @@ fn body(
                 output,
                 statement.id,
                 indent,
-                super::lifted::statement_with_dependencies(
-                    renderer,
-                    statement,
-                    scope.display.show_state_dependencies,
-                ),
+                index
+                    .shared
+                    .statement(statement.id, scope.display.show_state_dependencies)
+                    .filter(|_| scope.shared)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        super::lifted::statement_with_dependencies(
+                            renderer,
+                            statement,
+                            scope.display.show_state_dependencies,
+                        )
+                    }),
             );
         }
         return RenderSummary::from_content(output.len() > content_start);
@@ -650,7 +663,13 @@ fn transfer(
     let owner = semantic.map_or(node, |transfer| transfer.id);
     if let Some(renderer) = scope.lifted {
         if let Some(transfer) = semantic {
-            if let Some(text) = super::lifted::transfer(renderer, transfer) {
+            if let Some(text) = index
+                .shared
+                .transfer(transfer.edge)
+                .filter(|_| scope.shared)
+                .map(|text| text.map(str::to_owned))
+                .unwrap_or_else(|| super::lifted::transfer(renderer, transfer))
+            {
                 emit(output, owner, indent, text);
             }
         } else {
@@ -703,8 +722,9 @@ fn predicate(
     invert: bool,
     ir: &Ir,
     index: &StageIndex,
-    lifted: Option<&LiftedRenderIndex<'_>>,
+    scope: Scope<'_>,
 ) -> (EntityId, String) {
+    let lifted = scope.lifted;
     if lifted.is_none() {
         return (
             node,
@@ -712,27 +732,45 @@ fn predicate(
         );
     }
     match (lifted, index.source_control(ir, node)) {
-        (Some(renderer), Some(control)) => (
+        (Some(_), Some(control)) => (
             control.id,
-            renderer
-                .render_condition(control.condition, invert, |_| true)
+            projected_condition(control.condition, invert, index, scope)
                 .unwrap_or_else(|error| format!("unavailable_predicate(ast{}: {error})", node.0)),
         ),
         _ => (node, format!("unavailable_predicate(ast{})", node.0)),
     }
 }
 
-fn projected_target(
-    block: EntityId,
-    ir: &Ir,
+fn projected_condition(
+    expression: EntityId,
+    invert: bool,
     index: &StageIndex,
-    renderer: Option<&LiftedRenderIndex<'_>>,
-) -> String {
+    scope: Scope<'_>,
+) -> Result<String, LiftedRenderError> {
+    if let Some(text) = index
+        .shared
+        .condition(expression, invert)
+        .filter(|_| scope.shared)
+    {
+        return Ok(text.to_owned());
+    }
+    scope
+        .lifted
+        .ok_or(LiftedRenderError::MissingExpression(expression))?
+        .render_condition(expression, invert, |_| true)
+}
+
+fn projected_target(block: EntityId, ir: &Ir, index: &StageIndex, scope: Scope<'_>) -> String {
     match (
-        renderer,
+        scope.lifted,
         index.source_block(ir, block).and_then(|block| block.target),
     ) {
-        (Some(renderer), Some(target)) => super::lifted::expression(renderer, target),
+        (Some(renderer), Some(target)) => index
+            .shared
+            .expression(target)
+            .filter(|_| scope.shared)
+            .map(str::to_owned)
+            .unwrap_or_else(|| super::lifted::expression(renderer, target)),
         _ => format!("unavailable_target(b{})", block.0),
     }
 }
@@ -766,8 +804,9 @@ fn projected_terminator(
     term: &Terminator,
     ir: &Ir,
     index: &StageIndex,
-    lifted: Option<&LiftedRenderIndex<'_>>,
+    scope: Scope<'_>,
 ) -> String {
+    let lifted = scope.lifted;
     if let Some(text) = index.block(ir, block).and_then(render_explicit_invalid) {
         return text.into();
     }
@@ -790,7 +829,7 @@ fn projected_terminator(
             invalid_targets,
             ..
         } => jump_boundary(
-            projected_target(block, ir, index, lifted),
+            projected_target(block, ir, index, scope),
             known,
             *unresolved,
             !invalid_targets.is_empty(),
@@ -805,16 +844,14 @@ fn projected_terminator(
             let condition = semantic
                 .condition
                 .map(|id| {
-                    renderer
-                        .render_condition(id, false, |_| true)
-                        .unwrap_or_else(|error| {
-                            format!("unavailable_predicate(b{}: {error})", block.0)
-                        })
+                    projected_condition(id, false, index, scope).unwrap_or_else(|error| {
+                        format!("unavailable_predicate(b{}: {error})", block.0)
+                    })
                 })
                 .unwrap_or_else(|| format!("unavailable_predicate(b{})", block.0));
             format!(
                 "branch {condition}: jump {} via [{}]; else {};{}{}",
-                projected_target(block, ir, index, lifted),
+                projected_target(block, ir, index, scope),
                 edges(then_edges),
                 else_edge.map_or_else(
                     || "evm.stop() (end of code)".into(),
@@ -832,8 +869,14 @@ fn projected_terminator(
                 },
             )
         }
-        Terminator::Exit { kind, .. } => renderer
-            .render_exit(*kind, &semantic.exit_values, |_| true)
+        Terminator::Exit { kind, .. } => index
+            .shared
+            .exit(block)
+            .filter(|_| scope.shared)
+            .map_or_else(
+                || renderer.render_exit(*kind, &semantic.exit_values, |_| true),
+                |text| Ok(text.to_owned()),
+            )
             .unwrap_or_else(|error| format!("unavailable_exit(b{}: {error});", block.0)),
         Terminator::Pending => "partial_exit(\"recovery pending\");".into(),
         Terminator::Fallthrough { edge } => format!("follow e{};", edge.0),

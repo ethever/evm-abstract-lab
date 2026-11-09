@@ -61,7 +61,15 @@ impl Layout {
             row.min,
             egui::vec2(self.slot * STATUSES.len() as f32, self.row_height),
         );
-        let selected = state.selected_in(artifact, at.stage) == Some(at.entity);
+        let selected = state
+            .selected_in(artifact, at.stage)
+            .is_some_and(|selected| {
+                state
+                    .index
+                    .stage(at.stage)
+                    .shared
+                    .row_matches(at.entity, selected)
+            });
         let text = format!("{}{}", "    ".repeat(line.indent), line.text);
         for (position, (marker, symbol)) in STATUSES.iter().enumerate() {
             if markers.is_some_and(|markers| markers.contains(marker)) {

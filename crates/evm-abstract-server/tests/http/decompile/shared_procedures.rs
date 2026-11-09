@@ -16,7 +16,10 @@ fn real_compressed_http_preserves_certified_definitions_calls_maps_and_navigatio
     let result = super::error_payloads::fetch(&request, &assets, &pool);
     let artifact = &result.artifact;
     assert_eq!(artifact.completion, Completion::Complete);
-    assert_eq!(artifact.schema_version, 5);
+    assert_eq!(
+        artifact.schema_version,
+        evm_abstract_protocol::decompile_model::SCHEMA_VERSION
+    );
     let stage = artifact.current().unwrap();
     let high = stage.ir.lifted.as_ref().unwrap();
     assert!(
@@ -68,5 +71,71 @@ fn real_compressed_http_preserves_certified_definitions_calls_maps_and_navigatio
         restored, result,
         "source identities and all maps survive the HTTP result schema"
     );
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn real_compressed_http_keeps_arithmetic_classification_evaluation_sites_and_expression_sources() {
+    use evm_abstract_protocol::decompile_model::{SCHEMA_VERSION, SharedProcedureKind};
+    let assets = Assets::new();
+    let pool = pool();
+    let request = DecompileRequest {
+        bytecode: include_str!("../../../../evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex").trim().into(),
+        ..DecompileRequest::default()
+    };
+    let result = super::error_payloads::fetch(&request, &assets, &pool);
+    let artifact = &result.artifact;
+    assert_eq!(artifact.completion, Completion::Complete);
+    assert_eq!(artifact.schema_version, SCHEMA_VERSION);
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    renderer.validate_shared_sources().unwrap();
+    let arithmetic: Vec<_> = program
+        .procedures
+        .iter()
+        .filter(|procedure| {
+            procedure.kind == SharedProcedureKind::PureArithmetic
+                && renderer.expression(procedure.body).is_some()
+        })
+        .collect();
+    assert!(!arithmetic.is_empty());
+    assert!(program.invocations.len() >= 2);
+    for procedure in arithmetic {
+        assert!(
+            renderer
+                .render_procedure_header(procedure, true, |_| true)
+                .unwrap()
+                .contains("pure_arithmetic_")
+        );
+        assert!(
+            !artifact
+                .origin(EntityRef {
+                    stage: stage.id,
+                    entity: procedure.id
+                })
+                .unwrap()
+                .source
+                .is_empty()
+        );
+    }
+    for call in &program.invocations {
+        assert!(renderer.expression(call.source).is_some());
+        assert_eq!(renderer.shared_invocation(call.source), Some(call));
+        assert!(
+            !artifact
+                .origin(EntityRef {
+                    stage: stage.id,
+                    entity: call.id
+                })
+                .unwrap()
+                .source
+                .is_empty()
+        );
+    }
+    let wire = serde_json::to_vec(&result).unwrap();
+    let restored: evm_abstract_protocol::DecompileJobResult =
+        serde_json::from_slice(&wire).unwrap();
+    assert_eq!(restored, result);
     pool.shutdown().unwrap();
 }

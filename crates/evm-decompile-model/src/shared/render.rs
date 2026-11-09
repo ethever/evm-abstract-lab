@@ -1,5 +1,5 @@
 //! Parameterized canonical body rows shared by native and browser consumers.
-use super::{MAX_SHARED_REGION_ENTITIES, SharedInvocation, SharedProcedure};
+use super::{MAX_SHARED_REGION_ENTITIES, SharedInvocation, SharedProcedure, SharedProcedureKind};
 use crate::{EntityId, LiftedIfPlan, RenderSummary};
 use crate::{
     LiftedRenderError as E, LiftedRenderIndex, StructuredKind as K, Terminator as T, ValueKind as V,
@@ -94,6 +94,18 @@ fn tuple(ids: &[EntityId], prefix: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+fn name(p: &SharedProcedure) -> String {
+    format!(
+        "{}_{}",
+        match p.kind {
+            SharedProcedureKind::Legacy | SharedProcedureKind::Normal => "shared",
+            SharedProcedureKind::PureArithmetic => "pure_arithmetic",
+        },
+        p.id.0
+    )
+}
+
 impl<'a> LiftedRenderIndex<'a> {
     /// Direct admission independent of stored snapshot validation status.
     pub fn validate_shared_sources(&self) -> Result<(), E> {
@@ -133,12 +145,24 @@ impl<'a> LiftedRenderIndex<'a> {
             return Err(E::InvalidSharedSource(p.id));
         }
         paid(&mut pay, p.interface.record_count().saturating_mul(32))?;
-        let mut text = format!(
-            "procedure shared_{}({}) -> ({}) {{",
-            p.id.0,
-            tuple(&p.interface.inputs, "v"),
-            tuple(&p.interface.outputs, "v")
-        );
+        let mut text = if let Some(expression) = self.expression(p.body) {
+            format!(
+                "procedure {}({}) -> {} {{",
+                name(p),
+                tuple(&p.interface.inputs, "x"),
+                match expression.ty {
+                    crate::LiftedType::Word256 => "word256",
+                    crate::LiftedType::Predicate => "predicate",
+                }
+            )
+        } else {
+            format!(
+                "procedure {}({}) -> ({}) {{",
+                name(p),
+                tuple(&p.interface.inputs, "v"),
+                tuple(&p.interface.outputs, "v")
+            )
+        };
         if state {
             text.push_str(&format!(
                 " // memory ({}) -> ({}); effect ({}) -> ({})",
@@ -156,6 +180,16 @@ impl<'a> LiftedRenderIndex<'a> {
         &self,
         i: &SharedInvocation,
         state: bool,
+        pay: impl FnMut(usize) -> bool,
+    ) -> Result<String, E> {
+        self.render_shared_invocation_scoped(i, state, None, pay)
+    }
+
+    fn render_shared_invocation_scoped(
+        &self,
+        i: &SharedInvocation,
+        state: bool,
+        scope: Option<&SharedProcedure>,
         mut pay: impl FnMut(usize) -> bool,
     ) -> Result<String, E> {
         self.validate_shared_sources()?;
@@ -171,6 +205,22 @@ impl<'a> LiftedRenderIndex<'a> {
             .ok_or(E::InvalidSharedSource(i.id))?;
         paid(&mut pay, p.interface.record_count().saturating_mul(32))?;
         let actual = |id: EntityId| i.actual(id).ok_or(E::MissingWitness(id));
+        if self.expression(p.body).is_some() {
+            let mut text = format!("{}(", name(p));
+            for (position, id) in p.interface.inputs.iter().enumerate() {
+                if position > 0 {
+                    text.push_str(", ");
+                }
+                let argument = self.render_expression_scoped(actual(*id)?, scope, &mut pay)?;
+                text.push_str(&argument);
+                if text.len() > crate::MAX_LIFTED_EXPRESSION_TEXT {
+                    return Err(E::Limit);
+                }
+            }
+            text.push(')');
+            paid(&mut pay, text.len())?;
+            return Ok(text);
+        }
         let args = p
             .interface
             .inputs
@@ -178,6 +228,11 @@ impl<'a> LiftedRenderIndex<'a> {
             .map(|id| {
                 let id = actual(*id)?;
                 Ok(match source.values.get(&id).map(|v| &v.kind) {
+                    _ if scope
+                        .is_some_and(|scope| scope.interface.inputs.binary_search(&id).is_ok()) =>
+                    {
+                        format!("v{}", id.0)
+                    }
                     Some(V::Constant(w)) => format!("0x{w:x}"),
                     _ => format!("v{}", id.0),
                 })
@@ -194,7 +249,7 @@ impl<'a> LiftedRenderIndex<'a> {
         if !outputs.is_empty() {
             text.push_str(&format!("({}) = ", tuple(&outputs, "v")));
         }
-        text.push_str(&format!("shared_{}({args});", p.id.0));
+        text.push_str(&format!("{}({args});", name(p)));
         if state {
             for (label, prefix, inputs, outputs) in [
                 (
@@ -239,6 +294,47 @@ impl<'a> LiftedRenderIndex<'a> {
         self.validate_shared_sources()?;
         if self.procedure(p.id) != Some(p) {
             return Err(E::InvalidSharedSource(p.id));
+        }
+        if self.expression(p.body).is_some() {
+            let mut output = BodyRows::default();
+            let mut pending = vec![(p.body, false)];
+            let mut locals = std::collections::BTreeSet::new();
+            let mut order = Vec::new();
+            while let Some((id, complete)) = pending.pop() {
+                paid(&mut pay, 1)?;
+                if complete {
+                    order.push(id);
+                    continue;
+                }
+                if p.interface.inputs.binary_search(&id).is_ok() || !locals.insert(id) {
+                    continue;
+                }
+                if locals.len() > MAX_SHARED_REGION_ENTITIES {
+                    return Err(E::Limit);
+                }
+                if id != p.body && self.shared_invocation(id).is_some() {
+                    order.push(id);
+                    continue;
+                }
+                pending.push((id, true));
+                let expression = self.expression(id).ok_or(E::MissingExpression(id))?;
+                let operands = expression.kind.operands();
+                paid(&mut pay, operands.len())?;
+                pending.extend(operands.into_iter().rev().map(|operand| (operand, false)));
+            }
+            // The source-checked DAG's iterative postorder visits only this
+            // body. Each node is bound once, independent of other definitions.
+            for id in order {
+                paid(&mut pay, 1)?;
+                let text = self.render_expression_bound(id, Some(p), Some(&locals), &mut pay)?;
+                let entity = self
+                    .shared_invocation(id)
+                    .filter(|_| id != p.body)
+                    .map_or(id, |call| call.id);
+                output.emit(entity, format!("x{} = {text};", id.0), 0, false, &mut pay)?;
+            }
+            output.emit(p.body, format!("yield x{};", p.body.0), 0, false, &mut pay)?;
+            return Ok(output.rows);
         }
         let source = self
             .shared_source
@@ -318,6 +414,14 @@ impl<'a> LiftedRenderIndex<'a> {
                     }
                 }
                 Task::Node(id, depth, loop_id) => {
+                    if id != p.body
+                        && let Some(call) = self.shared_invocation(id)
+                    {
+                        let text =
+                            self.render_shared_invocation_scoped(call, state, Some(p), &mut pay)?;
+                        output.emit(call.id, text, depth, false, &mut pay)?;
+                        continue;
+                    }
                     let node = source.nodes.get(&id).ok_or(E::MissingWitness(id))?;
                     match &node.kind {
                         K::Sequence(children) => {

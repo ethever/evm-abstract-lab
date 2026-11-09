@@ -241,6 +241,10 @@ impl<'a> LiftedRenderIndex<'a> {
     pub fn node(&self, source: EntityId) -> Option<&'a StructuredNode> {
         self.nodes.get(&source).copied()
     }
+    /// One immutable typed expression, including arithmetic definition roots.
+    pub fn expression(&self, id: EntityId) -> Option<&'a LiftedExpression> {
+        self.expressions.get(&id).copied()
+    }
     /// Shared failure proof fact without rescanning all facts.
     pub fn failure(&self, source: EntityId) -> Option<&'a LiftedFailure> {
         self.failures.get(&source).copied()
@@ -328,6 +332,27 @@ impl<'a> LiftedRenderIndex<'a> {
     pub fn render_expression(
         &self,
         id: EntityId,
+        reserve: impl FnMut(usize) -> bool,
+    ) -> Result<String, LiftedRenderError> {
+        self.render_expression_scoped(id, None, reserve)
+    }
+
+    /// A canonical arithmetic body names its certified leaf inputs and expands
+    /// its own root once. Strictly nested calls retain their original DAG site.
+    pub(crate) fn render_expression_scoped(
+        &self,
+        id: EntityId,
+        scope: Option<&crate::SharedProcedure>,
+        reserve: impl FnMut(usize) -> bool,
+    ) -> Result<String, LiftedRenderError> {
+        self.render_expression_bound(id, scope, None, reserve)
+    }
+
+    pub(crate) fn render_expression_bound(
+        &self,
+        id: EntityId,
+        scope: Option<&crate::SharedProcedure>,
+        locals: Option<&std::collections::BTreeSet<EntityId>>,
         mut reserve: impl FnMut(usize) -> bool,
     ) -> Result<String, LiftedRenderError> {
         enum Part {
@@ -374,6 +399,44 @@ impl<'a> LiftedRenderIndex<'a> {
             match part {
                 Part::Text(text) => append(&mut out, &text, &mut reserve)?,
                 Part::Expression(next) => {
+                    if (next != id && locals.is_some_and(|locals| locals.contains(&next)))
+                        || scope.is_some_and(|p| {
+                            self.expressions.contains_key(&p.body)
+                                && p.interface.inputs.binary_search(&next).is_ok()
+                        })
+                    {
+                        append(&mut out, &format!("x{}", next.0), &mut reserve)?;
+                        continue;
+                    }
+                    if scope.is_none_or(|p| next != p.body)
+                        && let Some(call) = self.shared_invocation(next)
+                        && let Some(procedure) = self.procedure(call.procedure)
+                        && self.expressions.contains_key(&procedure.body)
+                    {
+                        let count = procedure.interface.inputs.len();
+                        if work
+                            .saturating_add(pending.len())
+                            .saturating_add(count.saturating_mul(2))
+                            .saturating_add(2)
+                            > MAX_LIFTED_EXPRESSION_TEXT
+                        {
+                            return Err(LiftedRenderError::Limit);
+                        }
+                        pending.push(Part::Text(")".to_owned()));
+                        for (position, formal) in
+                            procedure.interface.inputs.iter().enumerate().rev()
+                        {
+                            let actual = call
+                                .actual(*formal)
+                                .ok_or(LiftedRenderError::MissingWitness(*formal))?;
+                            pending.push(Part::Expression(actual));
+                            if position > 0 {
+                                pending.push(Part::Text(", ".to_owned()));
+                            }
+                        }
+                        pending.push(Part::Text(format!("pure_arithmetic_{}(", procedure.id.0)));
+                        continue;
+                    }
                     let e = self
                         .expressions
                         .get(&next)
