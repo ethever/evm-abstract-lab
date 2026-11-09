@@ -118,6 +118,8 @@ class BrowserRegistryTests(unittest.TestCase):
                 expected.update({"crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex",
                                  "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex",
                                  "crates/evm-decompile/tests/fixtures/shared-procedures/nested-arithmetic-inputs.hex"})
+            if case_id == "decompile-readability":
+                expected.add("crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex")
             actual = {dependency for dependency in case["dependencies"] if not dependency.endswith(".py")}
             with self.subTest(case=case_id):
                 self.assertEqual(actual, expected)
