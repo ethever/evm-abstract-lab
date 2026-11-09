@@ -861,7 +861,14 @@ fn cli_arithmetic_templates_are_typed_bounded_and_called_at_original_memory_writ
         "../../evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex"
     )
     .trim();
-    let output = run(&["--hex", bytecode, "--format", "json"]);
+    let output = run(&[
+        "--hex",
+        bytecode,
+        "--procedures",
+        "shared",
+        "--format",
+        "json",
+    ]);
     assert!(
         output.status.success(),
         "{}",
@@ -883,7 +890,7 @@ fn cli_arithmetic_templates_are_typed_bounded_and_called_at_original_memory_writ
         })
         .collect();
     assert!(!arithmetic.is_empty());
-    let output = run(&["--hex", bytecode]);
+    let output = run(&["--hex", bytecode, "--procedures", "shared"]);
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
@@ -944,5 +951,99 @@ fn cli_arithmetic_templates_are_typed_bounded_and_called_at_original_memory_writ
         serde_json::from_slice::<evm_decompile::Artifact>(&serde_json::to_vec(&artifact).unwrap())
             .unwrap(),
         artifact
+    );
+}
+
+#[test]
+fn cli_reading_file_keeps_region_identity_and_explicit_flags_override_global_preferences() {
+    use evm_decompile::{
+        Artifact, ProcedurePreference, ReadabilityConfig, ReadabilityProfile, ReadabilityReason,
+        RegionPreference, StructureForm, StructurePreference,
+    };
+    struct PreferenceFile(std::path::PathBuf);
+    impl Drop for PreferenceFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let input = "5f35600a576001600d565b60025b5f5500";
+    let base = run(&["--hex", input, "--format", "json"]);
+    assert!(base.status.success());
+    let base: Artifact = serde_json::from_slice(&base.stdout).unwrap();
+    let entry = base.current().unwrap().ir.entry.unwrap();
+    let anchor = base
+        .readability
+        .iter()
+        .find(|choice| choice.region.entry == entry && choice.region.continuation.is_none())
+        .unwrap()
+        .region
+        .clone();
+    let preferences = ReadabilityConfig {
+        profile: ReadabilityProfile::Compact,
+        procedures: ProcedurePreference::Shared,
+        regions: vec![RegionPreference {
+            region: anchor.clone(),
+            structure: StructurePreference::Dispatcher,
+        }],
+    };
+    let file = PreferenceFile(std::env::temp_dir().join(format!(
+        "decompile-reading-{}-{}.json", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    )));
+    std::fs::write(&file.0, serde_json::to_vec(&preferences).unwrap()).unwrap();
+    let output = run(&[
+        "--hex",
+        input,
+        "--format",
+        "json",
+        "--readability-config",
+        file.0.to_str().unwrap(),
+        "--readability",
+        "linear",
+        "--procedures",
+        "inline",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let artifact: Artifact = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        artifact.config.readability.profile,
+        ReadabilityProfile::Linear
+    );
+    assert_eq!(
+        artifact.config.readability.procedures,
+        ProcedurePreference::Inline
+    );
+    let choice = artifact
+        .readability
+        .iter()
+        .find(|choice| choice.region == anchor)
+        .unwrap();
+    assert_eq!(choice.selected, StructureForm::Dispatcher);
+    assert_eq!(choice.reason, ReadabilityReason::UserPreference);
+    assert!(
+        artifact
+            .current()
+            .unwrap()
+            .ir
+            .lifted
+            .as_ref()
+            .unwrap()
+            .procedures
+            .is_empty()
+    );
+    std::fs::write(&file.0, b"{\"profile\":\"unknown\"}").unwrap();
+    assert!(
+        !run(&[
+            "--hex",
+            input,
+            "--readability-config",
+            file.0.to_str().unwrap()
+        ])
+        .status
+        .success()
     );
 }

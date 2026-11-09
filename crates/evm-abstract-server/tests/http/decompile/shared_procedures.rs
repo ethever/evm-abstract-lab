@@ -81,6 +81,10 @@ fn real_compressed_http_keeps_arithmetic_classification_evaluation_sites_and_exp
     let pool = pool();
     let request = DecompileRequest {
         bytecode: include_str!("../../../../evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex").trim().into(),
+        readability: evm_abstract_protocol::decompile_model::ReadabilityConfig {
+            procedures: evm_abstract_protocol::decompile_model::ProcedurePreference::Shared,
+            ..Default::default()
+        },
         ..DecompileRequest::default()
     };
     let result = super::error_payloads::fetch(&request, &assets, &pool);

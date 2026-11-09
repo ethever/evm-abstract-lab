@@ -258,6 +258,7 @@ fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     for version in [1, 2, evm_decompile::SCHEMA_VERSION + 1] {
         let mut old = artifact.clone();
         old.schema_version = version;
+        old.readability.clear();
         assert!(
             !old.admits_schema(),
             "guard-bearing schema {version} accepted"

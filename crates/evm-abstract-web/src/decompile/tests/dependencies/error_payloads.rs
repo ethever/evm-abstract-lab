@@ -719,6 +719,7 @@ fn schema_three_empty_guards_remain_readable_and_cannot_advertise_error_payloads
     );
     let mut payload = artifact(&runtime(Shape::Standalone, MESSAGE, &[], false));
     payload.schema_version = 3;
+    payload.readability.clear();
     assert!(model::check_artifact(&payload).is_err());
 }
 

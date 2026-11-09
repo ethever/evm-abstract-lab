@@ -130,6 +130,7 @@ fn real_compressed_http_preserves_error_bytes_lazy_ranges_sources_and_legacy_ver
         for version in [1, 2, 3] {
             let mut old = artifact.clone();
             old.schema_version = version;
+            old.readability.clear();
             assert!(!old.admits_schema());
         }
         // Recorded Passed and a valid result envelope do not authorize forged
