@@ -136,7 +136,7 @@ fn malformed_base_envelopes_and_guard_capsules_refuse_without_panics_or_omission
 
 #[test]
 fn supplied_internal_loop_ports_cannot_be_removed_duplicated_or_redirected() {
-    let fixture = fixtures::loop_calls();
+    let fixture = fixtures::closed_loop_calls();
     let artifact = checked(&fixture.input);
     let stage = artifact.current().unwrap();
     let original = stage.ir.lifted.as_ref().unwrap();

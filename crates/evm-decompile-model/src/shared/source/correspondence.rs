@@ -34,6 +34,12 @@ impl SharedSourceIndex<'_> {
         bind: &mut impl FnMut(EntityId, EntityId) -> Result<(), Error>,
         pay: &mut impl FnMut(usize) -> bool,
     ) -> Result<(), Error> {
+        if a.kind != b.kind || a.nodes.is_empty() != b.nodes.is_empty() {
+            return Err(Error::Correspondence(b.root));
+        }
+        if a.nodes.is_empty() {
+            return self.compare_arithmetic(a, b, bind, pay);
+        }
         charge(
             pay,
             a.entities
@@ -107,6 +113,25 @@ impl SharedSourceIndex<'_> {
                             || ao.outputs.len() != bo.outputs.len()
                         {
                             return Err(Error::Correspondence(bo.id));
+                        }
+                        // PUSH's immediate lives in its raw output definition,
+                        // not in an input expression or replacement field.
+                        // Retained PUSH statements therefore need this literal
+                        // check even though ordinary projection inlines them.
+                        if matches!(ao.opcode, 0x5f..=0x7f) {
+                            let ([a], [b]) = (ao.outputs.as_slice(), bo.outputs.as_slice()) else {
+                                return Err(Error::Correspondence(bo.id));
+                            };
+                            match (
+                                self.values.get(a).map(|v| &v.kind),
+                                self.values.get(b).map(|v| &v.kind),
+                            ) {
+                                (
+                                    Some(crate::ValueKind::Constant(a)),
+                                    Some(crate::ValueKind::Constant(b)),
+                                ) if a == b && (ao.opcode != 0x5f || *a == crate::U256::ZERO) => {}
+                                _ => return Err(Error::Correspondence(bo.id)),
+                            }
                         }
                         bind(as_.id, bs.id)?;
                         bind(ao.id, bo.id)?;
@@ -368,8 +393,29 @@ impl SharedSourceIndex<'_> {
         for b in bindings {
             map.insert(b.formal, b.actual);
         }
-        let targets: BTreeSet<_> = map.values().copied().collect();
-        if targets.len() != map.len() || targets.iter().copied().ne(b.entities.iter().copied()) {
+        // Parameter substitution may identify two free words (helper(z, z)).
+        // Definitions, statements, transfers and state versions retain their
+        // distinct source roles. Value-expression wrappers of free inputs may
+        // identify along with those inputs; no internal definition may alias.
+        let mut aliasable: BTreeSet<_> = a.interface.inputs.iter().copied().collect();
+        if !a.nodes.is_empty() {
+            for id in &a.entities {
+                if self.expressions.get(id).is_some_and(|e| {
+                    matches!(e.kind, crate::LiftedExpressionKind::Value(v) if a.interface.inputs.binary_search(&v).is_ok())
+                }) {
+                    aliasable.insert(*id);
+                }
+            }
+        }
+        let mut targets = BTreeMap::new();
+        for (formal, actual) in &map {
+            if let Some(previous) = targets.insert(*actual, *formal)
+                && (!aliasable.contains(formal) || !aliasable.contains(&previous))
+            {
+                return Err(Error::Correspondence(*formal));
+            }
+        }
+        if targets.keys().copied().ne(b.entities.iter().copied()) {
             return Err(Error::Correspondence(b.root));
         }
         self.compare(
@@ -395,7 +441,7 @@ fn interface_matches(
     b: &SharedInterface,
     map: &BTreeMap<EntityId, EntityId>,
 ) -> bool {
-    let equal = |a: &[EntityId], b: &[EntityId]| {
+    let equal = |a: &[EntityId], b: &[EntityId], aliases: bool| {
         let Some(mut actual) = a
             .iter()
             .map(|id| map.get(id).copied())
@@ -404,6 +450,9 @@ fn interface_matches(
             return false;
         };
         actual.sort_unstable();
+        if aliases {
+            actual.dedup();
+        }
         actual == b
     };
     [
@@ -423,7 +472,8 @@ fn interface_matches(
         &b.effect_inputs,
         &b.effect_outputs,
     ])
-    .all(|(a, b)| equal(a, b))
+    .enumerate()
+    .all(|(position, (a, b))| equal(a, b, position == 0))
         && {
             let mapped: Option<BTreeSet<_>> = a
                 .continuations

@@ -18,6 +18,7 @@ pub(super) struct Flow {
     entries: BTreeMap<EntityId, usize>,
     members: BTreeMap<EntityId, usize>,
     loop_exits: BTreeMap<EntityId, usize>,
+    source_blocks: BTreeMap<usize, EntityId>,
     live_out: BTreeMap<usize, BTreeSet<EntityId>>,
 }
 fn op_event(
@@ -111,6 +112,104 @@ fn edge_footprint(index: &SharedSourceIndex<'_>, id: EntityId) -> Result<usize, 
         }))
 }
 impl Flow {
+    /// A reusable syntax body has one source entry and only its own lexical
+    /// continuation. Internal back edges remain ordinary members of the body;
+    /// this proves control closure without requiring loop termination.
+    pub(super) fn check_boundary(
+        &self,
+        index: &SharedSourceIndex<'_>,
+        root: EntityId,
+        nodes: &[EntityId],
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<(), Error> {
+        charge(pay, nodes.len().saturating_mul(4))?;
+        let selected: BTreeSet<_> = nodes
+            .iter()
+            .flat_map(|n| std::iter::once(self.members[n]).chain(self.loop_exits.get(n).copied()))
+            .collect();
+        let entry = self.entries[&root];
+        let continuation = index.sites[&root].continuation.and_then(|id| {
+            // A header finishes at its enclosing loop test. Entering a
+            // later sibling loop instead begins by executing its header.
+            if let K::While { header, .. } = &index.nodes.get(&id)?.kind
+                && index.overlaps(root, header.id)
+            {
+                return self.members.get(&id).copied();
+            }
+            self.entries.get(&id).copied()
+        });
+        for id in &selected {
+            let event = &self.events[*id];
+            charge(
+                pay,
+                event
+                    .next
+                    .len()
+                    .saturating_add(self.predecessors[*id].len())
+                    .saturating_add(1),
+            )?;
+            if event
+                .next
+                .iter()
+                .any(|next| !selected.contains(next) && Some(*next) != continuation)
+                || (*id != entry
+                    && self.predecessors[*id]
+                        .iter()
+                        .any(|previous| !selected.contains(previous)))
+            {
+                return Err(Error::Region(root));
+            }
+        }
+        for id in nodes {
+            match index.nodes[id].kind {
+                K::Transfer { edge } => {
+                    self.check_transfer_target(index, edge, self.members[id], root, pay)?;
+                }
+                K::While {
+                    exit_edge: Some(edge),
+                    ..
+                } => {
+                    self.check_transfer_target(index, edge, self.loop_exits[id], root, pay)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn check_transfer_target(
+        &self,
+        index: &SharedSourceIndex<'_>,
+        edge: EntityId,
+        event: usize,
+        root: EntityId,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<(), Error> {
+        let target = index.edges.get(&edge).ok_or(Error::Missing(edge))?.to;
+        charge(pay, self.events[event].next.len().saturating_add(4))?;
+        let mut pending = self.events[event].next.clone();
+        let mut seen = BTreeSet::new();
+        let mut reached = false;
+        while let Some(next) = pending.pop() {
+            charge(pay, self.events[next].next.len().saturating_add(3))?;
+            if !seen.insert(next) {
+                continue;
+            }
+            if let Some(block) = self.source_blocks.get(&next) {
+                if *block != target {
+                    return Err(Error::Region(root));
+                }
+                reached = true;
+            } else {
+                pending.extend(self.events[next].next.iter().copied());
+            }
+        }
+        if !reached {
+            return Err(Error::Region(root));
+        }
+        Ok(())
+    }
+
     pub(super) fn new(
         index: &SharedSourceIndex<'_>,
         pay: &mut impl FnMut(usize) -> bool,
@@ -130,10 +229,18 @@ impl Flow {
             entries: BTreeMap::new(),
             members: BTreeMap::new(),
             loop_exits: BTreeMap::new(),
+            source_blocks: BTreeMap::new(),
             live_out: BTreeMap::new(),
         };
         for id in index.nodes.keys() {
             flow.members.insert(*id, flow.events.len());
+            if let K::Block { block }
+            | K::Exit { block }
+            | K::PartialExit { block }
+            | K::Indirect { block, .. } = index.nodes[id].kind
+            {
+                flow.source_blocks.insert(flow.events.len(), block);
+            }
             flow.events.push(Event::default());
         }
         // Node.entry is computed bottom-up without recursive descent.

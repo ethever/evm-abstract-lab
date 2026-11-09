@@ -1,7 +1,9 @@
 //! Certified sharing crosses publication, cached code, clipboard and navigation.
 use super::*;
 use crate::decompile::model::EntityKind;
-use evm_abstract_protocol::decompile_model::{LiftedExpressionKind, U256, ValidationStatus};
+use evm_abstract_protocol::decompile_model::{
+    LiftedExpressionKind, SharedProcedureKind, U256, ValidationStatus,
+};
 use std::collections::BTreeMap;
 
 // Two different caller words enter the same two-block helper. Each call writes
@@ -11,6 +13,9 @@ const SHARED: &str = concat!(
     "5b80604052805f5560206040a0600554600101600555600654600755603d565b806001019156",
 );
 const SHARED_LOOP: &str = include_str!("../../../../tests/fixtures/decompile/shared-loop.hex");
+const ARITHMETIC: &str = include_str!(
+    "../../../../../evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex"
+);
 // The helper's false arm has only an empty block and m/q transfers. Two callers
 // retain the live word result, and the true arm has observable memory/log/store.
 const SHARED_TOKEN_ELSE: &str = concat!(
@@ -19,8 +24,8 @@ const SHARED_TOKEN_ELSE: &str = concat!(
     "80600355806004555b6001019056",
 );
 
-// Two return-address contexts share an If whose failed arm reads memory,
-// writes the returned bytes, and reverts; the successful arm resumes its caller.
+// Two return-address contexts retain a failed arm that reads/writes memory and
+// reverts. Only the locally returning successful work may become a procedure.
 const SHARED_FAILURE: &str = concat!(
     "6100095f3561001c565b60015561001760203561001c565b600255005b8061004257",
     "80604052805f5560206040a06005546001016005556006546007556001019056",
@@ -143,79 +148,53 @@ fn shared_success_body_keeps_certified_checks_in_their_actual_caller_scopes() {
 }
 
 #[test]
-fn shared_failure_definition_keeps_original_memory_body_and_terminal_source_rows() {
+fn shared_success_keeps_failure_construction_and_terminal_in_each_caller() {
     let artifact = artifact(SHARED_FAILURE);
     let original = artifact.clone();
     let stage = artifact.current().unwrap();
     let program = stage.ir.lifted.as_ref().unwrap();
     let renderer = program.render_index(&stage.ir);
-    let procedure = program
-        .procedures
+    assert!(!program.procedures.is_empty());
+    let failure_rows: Vec<_> = program
+        .blocks
         .iter()
-        .find(|procedure| {
-            matches!(
-                renderer.node(procedure.body).unwrap().kind,
-                StructuredKind::If { .. }
-            )
+        .filter(|block| {
+            stage
+                .ir
+                .block(block.block)
+                .unwrap()
+                .operations
+                .iter()
+                .any(|operation| operation.opcode == 0xfd)
         })
-        .unwrap();
-    assert!(
-        program
-            .invocations
-            .iter()
-            .filter(|call| call.procedure == procedure.id)
-            .count()
-            >= 2
+        .flat_map(|block| &block.statements)
+        .filter(|statement| {
+            stage
+                .ir
+                .blocks
+                .iter()
+                .flat_map(|block| &block.operations)
+                .any(|operation| {
+                    operation.id == statement.operation
+                        && matches!(operation.opcode, 0x51 | 0x52 | 0xfd)
+                })
+        })
+        .map(|statement| statement.id)
+        .collect();
+    assert_eq!(
+        failure_rows.len(),
+        6,
+        "both failure contexts retain MLOAD, MSTORE and REVERT"
     );
     let raw = rows(&structured::lines(stage));
-    let mut selected_statements = Vec::new();
     for dependencies in [false, true] {
-        let expected = renderer
-            .render_procedure_body(procedure, dependencies, |_| true)
-            .unwrap();
-        assert_eq!(
-            expected
-                .iter()
-                .filter(|row| row.text.starts_with("if ("))
-                .count(),
-            1
-        );
-        assert!(
-            !expected
-                .iter()
-                .any(|row| row.text == "} else {" || row.text.starts_with("require("))
-        );
-        let mut positions = Vec::new();
-        for opcode in [0x51, 0x52, 0xfd] {
-            let (position, row) = expected
-                .iter()
-                .enumerate()
-                .find(|(_, row)| {
-                    program
-                        .blocks
-                        .iter()
-                        .flat_map(|block| &block.statements)
-                        .find(|statement| statement.id == row.entity)
-                        .is_some_and(|statement| {
-                            stage
-                                .ir
-                                .blocks
-                                .iter()
-                                .flat_map(|block| &block.operations)
-                                .any(|operation| {
-                                    operation.id == statement.operation
-                                        && operation.opcode == opcode
-                                })
-                        })
-                })
+        for procedure in &program.procedures {
+            let body = renderer
+                .render_procedure_body(procedure, dependencies, |_| true)
                 .unwrap();
-            assert_eq!(row.depth, 1);
-            positions.push(position);
-            if !dependencies {
-                selected_statements.push(row.entity);
-            }
+            assert!(body.iter().all(|row| !failure_rows.contains(&row.entity)));
+            assert!(body.iter().all(|row| !row.text.contains("evm.revert(")));
         }
-        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
         for annotations in [false, true] {
             let lines = with_display(
                 stage,
@@ -224,16 +203,18 @@ fn shared_failure_definition_keeps_original_memory_body_and_terminal_source_rows
                     show_structure_annotations: annotations,
                 },
             );
-            for row in expected
-                .iter()
-                .filter(|row| annotations || !row.is_structure_annotation)
-            {
-                assert!(lines.iter().any(|line| line.entity == row.entity
-                    && line.indent == row.depth + 1
-                    && line.text == row.text));
+            for entity in &failure_rows {
+                assert_eq!(
+                    lines.iter().filter(|line| line.entity == *entity).count(),
+                    1
+                );
             }
+            let text = copied_text(&lines);
+            assert_eq!(text.matches("evm.revert(offset =").count(), 2);
+            assert!(!text.contains("require("));
         }
     }
+    assert_semantic_rows_survive_toggles(stage);
     let normal = high(stage, false);
     let (ctx, mut workspace) = setup(artifact.clone());
     assert_painted(&frame(&ctx, &mut workspace, vec![]), &normal);
@@ -241,29 +222,7 @@ fn shared_failure_definition_keeps_original_memory_body_and_terminal_source_rows
         click(&ctx, &mut workspace, "Copy structured text").copied,
         [copied_text(&normal)]
     );
-    let body = renderer
-        .render_procedure_body(procedure, false, |_| true)
-        .unwrap();
-    let branch = body
-        .iter()
-        .find(|row| row.text.starts_with("if ("))
-        .unwrap();
-    let details = workspace.state.details(
-        &artifact,
-        EntityRef {
-            stage: stage.id,
-            entity: program.control(branch.entity).unwrap().id,
-        },
-    );
-    assert!(
-        details
-            .lines
-            .iter()
-            .any(|line| line.starts_with("Failure-first If") && line.contains(&branch.text)),
-        "{:?}",
-        details.lines
-    );
-    for entity in selected_statements {
+    for entity in failure_rows {
         let at = EntityRef {
             stage: stage.id,
             entity,
@@ -1129,4 +1088,263 @@ fn inspector_virtualizes_exact_noncanonical_binding_pairs() {
             entity: binding.actual
         }));
     }
+}
+
+#[test]
+fn arithmetic_templates_keep_bounded_local_rows_original_evaluation_sites_and_exact_navigation() {
+    let artifact = artifact(ARITHMETIC.trim());
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    let procedures: Vec<_> = program
+        .procedures
+        .iter()
+        .filter(|procedure| {
+            procedure.kind == SharedProcedureKind::PureArithmetic
+                && renderer.expression(procedure.body).is_some()
+        })
+        .collect();
+    assert!(
+        !procedures.is_empty(),
+        "long arithmetic DAGs need explicit classification"
+    );
+    let calls: Vec<_> = program
+        .invocations
+        .iter()
+        .filter(|call| renderer.expression(call.source).is_some())
+        .collect();
+    assert!(
+        calls.len() >= 2,
+        "the two original arithmetic evaluation sites must survive"
+    );
+    let original = artifact.clone();
+    let (ctx, mut workspace) = setup(artifact.clone());
+    let mut display = structured::HighDisplayOptions::default();
+    for (dependencies, annotations) in [
+        (false, false),
+        (true, false),
+        (true, true),
+        (false, true),
+        (false, false),
+    ] {
+        if dependencies != display.show_state_dependencies {
+            click(&ctx, &mut workspace, "Show state dependencies");
+        }
+        if annotations != display.show_structure_annotations {
+            click(&ctx, &mut workspace, "Show structure annotations");
+        }
+        display = structured::HighDisplayOptions {
+            show_state_dependencies: dependencies,
+            show_structure_annotations: annotations,
+        };
+        let lines = with_display(stage, display);
+        let text = copied_text(&lines);
+        assert_eq!(text.matches("evm.mstore(").count(), 2);
+        assert_eq!(text.matches("evm.return(").count(), 1);
+        for procedure in &procedures {
+            let header = renderer
+                .render_procedure_header(procedure, dependencies, |_| true)
+                .unwrap();
+            assert!(header.starts_with(&format!("procedure pure_arithmetic_{}(", procedure.id.0)));
+            assert!(header.contains("-> word256 {"));
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.entity == procedure.id && line.text == header)
+                    .count(),
+                1
+            );
+            let body = renderer
+                .render_procedure_body(procedure, dependencies, |_| true)
+                .unwrap();
+            assert!(body.len() >= 5);
+            assert!(body.iter().all(|row| row.text.len() < 256
+                && !row.text.contains("evm.mstore(")
+                && !row.text.contains("evm.return(")));
+            assert_eq!(
+                body.last().unwrap().text,
+                format!("yield x{};", procedure.body.0)
+            );
+            for row in body {
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.entity == row.entity && line.text == row.text)
+                );
+            }
+        }
+        for call in &calls {
+            let text = renderer
+                .render_shared_invocation(call, dependencies, |_| true)
+                .unwrap();
+            assert!(
+                lines.iter().any(|line| line.text.contains(&text)),
+                "call lost from its source evaluation site: {text}"
+            );
+        }
+        assert_painted(&frame(&ctx, &mut workspace, vec![]), &lines);
+        assert_eq!(
+            click(&ctx, &mut workspace, "Copy structured text").copied,
+            [copied_text(&lines)]
+        );
+    }
+    for entity in procedures
+        .iter()
+        .map(|procedure| procedure.id)
+        .chain(calls.iter().map(|call| call.id))
+    {
+        let at = EntityRef {
+            stage: stage.id,
+            entity,
+        };
+        let source = artifact.origin(at).unwrap().source[0].pc;
+        assert!(
+            workspace
+                .state
+                .source_descendants(&artifact, source)
+                .contains(&at)
+        );
+        assert!(workspace.state.navigate(&artifact, at));
+        let selected = frame(&ctx, &mut workspace, vec![]);
+        assert_eq!(workspace.views.route_label(), "Simplified structured code");
+        assert_eq!(workspace.state.selected.as_ref().unwrap().at, at);
+        assert!(
+            selected
+                .controls
+                .iter()
+                .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+        );
+        let details = workspace.state.details(&artifact, at);
+        assert!(details.lines[0].starts_with("Certified pure_arithmetic"));
+        assert!(
+            details
+                .references
+                .iter()
+                .all(|reference| workspace.state.index.contains(*reference))
+        );
+    }
+    let local = renderer
+        .render_procedure_body(procedures[0], false, |_| true)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.entity != procedures[0].body && renderer.expression(row.entity).is_some())
+        .unwrap();
+    assert!(workspace.state.navigate(
+        &artifact,
+        EntityRef {
+            stage: stage.id,
+            entity: local.entity
+        }
+    ));
+    let selected = frame(&ctx, &mut workspace, vec![]);
+    assert_eq!(workspace.views.route_label(), "Simplified structured code");
+    assert!(
+        selected
+            .controls
+            .iter()
+            .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+    );
+    assert_semantic_rows_survive_toggles(stage);
+    assert_eq!(artifact, original);
+}
+
+#[test]
+fn nested_arithmetic_calls_keep_finite_definitions_clipboard_and_exact_invocation_navigation() {
+    let artifact = artifact(include_str!("../../../../../evm-decompile/tests/fixtures/shared-procedures/nested-arithmetic-inputs.hex").trim());
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    assert!(program.procedures.len() >= 2);
+    let nested: BTreeSet<_> = program
+        .procedures
+        .iter()
+        .flat_map(|procedure| {
+            let body = renderer
+                .render_procedure_body(procedure, false, |_| true)
+                .unwrap();
+            assert!(
+                body.len() < 100,
+                "finite definitions must not recursively expand nested calls"
+            );
+            body.into_iter()
+                .filter_map(|row| {
+                    program
+                        .invocations
+                        .iter()
+                        .find(|call| call.id == row.entity && call.procedure != procedure.id)
+                        .map(|call| {
+                            assert!(
+                                row.text
+                                    .contains(&format!("pure_arithmetic_{}(", call.procedure.0))
+                            );
+                            call.id
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        !nested.is_empty(),
+        "exercise an actual call inside another arithmetic definition"
+    );
+    let (ctx, mut workspace) = setup(artifact.clone());
+    let mut display = structured::HighDisplayOptions::default();
+    for (dependencies, annotations) in [
+        (false, false),
+        (true, false),
+        (true, true),
+        (false, true),
+        (false, false),
+    ] {
+        if dependencies != display.show_state_dependencies {
+            click(&ctx, &mut workspace, "Show state dependencies");
+        }
+        if annotations != display.show_structure_annotations {
+            click(&ctx, &mut workspace, "Show structure annotations");
+        }
+        display = structured::HighDisplayOptions {
+            show_state_dependencies: dependencies,
+            show_structure_annotations: annotations,
+        };
+        let lines = with_display(stage, display);
+        for call in &nested {
+            assert_eq!(lines.iter().filter(|line| line.entity == *call).count(), 1);
+        }
+        let text = copied_text(&lines);
+        assert_eq!(text.matches("evm.mstore(").count(), 3);
+        assert_eq!(text.matches("evm.return(").count(), 1);
+        assert_painted(&frame(&ctx, &mut workspace, vec![]), &lines);
+        assert_eq!(
+            click(&ctx, &mut workspace, "Copy structured text").copied,
+            [text]
+        );
+    }
+    for entity in nested {
+        let at = EntityRef {
+            stage: stage.id,
+            entity,
+        };
+        let source = artifact.origin(at).unwrap().source[0].pc;
+        assert!(
+            workspace
+                .state
+                .source_descendants(&artifact, source)
+                .contains(&at)
+        );
+        assert!(workspace.state.navigate(&artifact, at));
+        let selected = frame(&ctx, &mut workspace, vec![]);
+        assert_eq!(workspace.views.route_label(), "Simplified structured code");
+        assert_eq!(workspace.state.selected.as_ref().unwrap().at, at);
+        assert!(
+            selected
+                .controls
+                .iter()
+                .any(|row| row["role"] == "decompile-code" && row["selected"] == true)
+        );
+        assert!(
+            workspace.state.details(&artifact, at).lines[0]
+                .starts_with("Certified pure_arithmetic invocation")
+        );
+    }
+    assert_semantic_rows_survive_toggles(stage);
 }

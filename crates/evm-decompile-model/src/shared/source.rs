@@ -1,7 +1,7 @@
 //! Finite role-by-role correspondence. Candidate hashes never enter admission.
 use super::{
     MAX_SHARED_REGION_ENTITIES, MAX_SHARED_REGION_NODES, SharedBinding, SharedInterface,
-    SharedInvocation, SharedProcedureError as Error,
+    SharedInvocation, SharedProcedureError as Error, SharedProcedureKind,
 };
 use crate::{
     Block, Edge, EntityId, Ir, LiftedProgram, StructuredKind as K, StructuredNode, Terminator as T,
@@ -9,9 +9,12 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod admit;
+mod arithmetic;
 mod correspondence;
 mod flow;
 mod region;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Copy)]
 struct Site {
@@ -32,6 +35,7 @@ pub struct SharedSourceIndex<'a> {
     flow: Option<flow::Flow>,
     expression_reads: BTreeMap<EntityId, BTreeSet<EntityId>>,
     expressions: BTreeMap<EntityId, &'a crate::LiftedExpression>,
+    expression_positions: BTreeMap<EntityId, usize>,
     operations: BTreeMap<EntityId, &'a crate::Operation>,
     high_blocks: BTreeMap<EntityId, &'a crate::LiftedBlock>,
     high_transfers: BTreeMap<EntityId, &'a crate::LiftedTransfer>,
@@ -42,7 +46,10 @@ pub struct SharedSourceIndex<'a> {
 }
 /// Bounded source summary. It stores IDs, never another copy of executable code.
 pub struct SharedRegion {
-    /// Exact source Structured region root.
+    /// Independently checked execution contract, including pure loop bodies.
+    pub kind: SharedProcedureKind,
+
+    /// Exact Structured root or arithmetic expression root.
     pub root: EntityId,
 
     /// Source AST occurrences in execution traversal order.
@@ -155,6 +162,11 @@ impl<'a> SharedSourceIndex<'a> {
                 .into_iter()
                 .flat_map(|p| &p.expressions)
                 .map(|e| (e.id, e))
+                .collect(),
+            expression_positions: program
+                .into_iter()
+                .flat_map(|p| p.expressions.iter().enumerate())
+                .map(|(position, e)| (e.id, position))
                 .collect(),
             operations: ir
                 .blocks
@@ -318,11 +330,18 @@ impl<'a> SharedSourceIndex<'a> {
         }
 
         if ir.structured.is_some() {
-            index.flow = Some(if max_event_slots == crate::MAX_LIFTED_RECORDS * 8 {
-                flow::Flow::new(&index, pay)?
+            let flow = if max_event_slots == crate::MAX_LIFTED_RECORDS * 8 {
+                flow::Flow::new(&index, pay)
             } else {
-                flow::Flow::new_with_slots(&index, pay, max_event_slots)?
-            });
+                flow::Flow::new_with_slots(&index, pay, max_event_slots)
+            };
+            index.flow = match flow {
+                Ok(flow) => Some(flow),
+                // An unsupported control shape cannot invalidate an unrelated
+                // expression-only template. It simply has no AST-region proof.
+                Err(Error::Region(_)) => None,
+                Err(error) => return Err(error),
+            };
         }
         Ok(index)
     }
@@ -437,6 +456,34 @@ impl<'a> SharedSourceIndex<'a> {
     /// Every source occurrence, in deterministic AST order.
     pub fn node_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
         self.nodes.keys().copied()
+    }
+    /// Every arithmetic candidate anchor, without traversing or expanding a DAG.
+    pub fn expression_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.expressions.keys().copied()
+    }
+    /// Resolve the body form from the disjoint source arenas, then check the
+    /// advertised contract. A producer cannot relabel a stateful body as pure.
+    pub fn source_region(
+        &self,
+        kind: SharedProcedureKind,
+        root: EntityId,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<SharedRegion, Error> {
+        if kind == SharedProcedureKind::Legacy {
+            return Err(Error::Region(root));
+        }
+        let region = match (
+            self.nodes.contains_key(&root),
+            self.expressions.contains_key(&root),
+        ) {
+            (true, false) => self.region(root, pay)?,
+            (false, true) => self.arithmetic_region(root, pay)?,
+            _ => return Err(Error::Region(root)),
+        };
+        if region.kind != kind {
+            return Err(Error::Interface(root));
+        }
+        Ok(region)
     }
     /// Record actual ownership/continuation without letting candidates invent it.
     pub fn invocation(

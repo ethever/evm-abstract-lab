@@ -36,6 +36,21 @@ impl LiftedRenderIndex<'_> {
                 return Err(Error::MissingWitness(current));
             }
             scope = Some(predicate.block);
+            if let Some(call) = self.shared_invocation(current)
+                && let Some(procedure) = self.procedure(call.procedure)
+                && self.expression(procedure.body).is_some()
+            {
+                let text = self.render_expression(current, &mut pay)?;
+                return if invert {
+                    let mut out = String::new();
+                    append(&mut out, "!(", &mut pay)?;
+                    append(&mut out, &text, &mut pay)?;
+                    append(&mut out, ")", &mut pay)?;
+                    Ok(out)
+                } else {
+                    Ok(text)
+                };
+            }
             match &predicate.kind {
                 Kind::Not(child) => {
                     current = *child;

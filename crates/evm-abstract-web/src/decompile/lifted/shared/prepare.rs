@@ -6,6 +6,8 @@ use evm_abstract_protocol::decompile_model::{
 };
 use std::collections::BTreeMap;
 
+mod arithmetic;
+
 pub(in crate::decompile) struct Definition {
     pub id: EntityId,
     headers: [String; 2],
@@ -41,6 +43,7 @@ pub(in crate::decompile) struct Prepared {
     control_plans: BTreeMap<EntityId, ControlPlan>,
     source_controls: BTreeMap<EntityId, EntityId>,
     invocations: BTreeMap<EntityId, Invocation>,
+    arithmetic: arithmetic::Prepared,
     error: Option<LiftedRenderError>,
 }
 
@@ -166,6 +169,7 @@ impl Prepared {
                 .invocations
                 .insert(call.source, Invocation { id: call.id, text });
         }
+        result.arithmetic = arithmetic::Prepared::new(ir, program, &renderer, work)?;
         Ok(result)
     }
 
@@ -202,5 +206,29 @@ impl Prepared {
     pub fn invocation(&self, source: EntityId, state: bool) -> Option<(EntityId, &str)> {
         let call = self.invocations.get(&source)?;
         Some((call.id, &call.text[usize::from(state)]))
+    }
+    pub fn expression(&self, id: EntityId) -> Option<&str> {
+        self.arithmetic.expression(id)
+    }
+    pub fn condition(&self, id: EntityId, invert: bool) -> Option<&str> {
+        self.arithmetic.condition(id, invert)
+    }
+    pub fn statement(&self, id: EntityId, state: bool) -> Option<&str> {
+        self.arithmetic.statement(id, state)
+    }
+    pub fn transfer(&self, edge: EntityId) -> Option<Option<&str>> {
+        self.arithmetic.transfer(edge)
+    }
+    pub fn exit(&self, block: EntityId) -> Option<&str> {
+        self.arithmetic.exit(block)
+    }
+    pub fn require_header(&self, node: EntityId) -> Option<&str> {
+        self.arithmetic.require_header(node)
+    }
+    pub fn failure_condition(&self, node: EntityId) -> Option<&str> {
+        self.arithmetic.failure_condition(node)
+    }
+    pub fn row_matches(&self, row: EntityId, selected: EntityId) -> bool {
+        self.arithmetic.row_matches(row, selected)
     }
 }

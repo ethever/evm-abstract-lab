@@ -194,6 +194,24 @@ pub(crate) fn evaluate(
     block: EntityId,
     bindings: &BTreeMap<EntityId, U256>,
 ) -> LiftedValue {
+    let result = evaluate_replacing(program, root, block, bindings, &BTreeMap::new());
+    assert_eq!(
+        program.evaluate_expression(root, |id| bindings.get(&id).copied()),
+        Some(result),
+        "public evaluator disagrees with independent word/predicate semantics"
+    );
+    result
+}
+
+/// Evaluate a template with explicit scalar arguments or independently
+/// executed child invocations. Replacements cut the source DAG at exact IDs.
+pub(crate) fn evaluate_replacing(
+    program: &LiftedProgram,
+    root: EntityId,
+    block: EntityId,
+    bindings: &BTreeMap<EntityId, U256>,
+    replacements: &BTreeMap<EntityId, LiftedValue>,
+) -> LiftedValue {
     let mut needed = BTreeSet::new();
     let mut pending = vec![root];
     while let Some(id) = pending.pop() {
@@ -203,7 +221,9 @@ pub(crate) fn evaluate(
                 expression.block, block,
                 "expression crossed its dynamic block scope"
             );
-            pending.extend(dependencies(&expression.kind));
+            if !replacements.contains_key(&id) {
+                pending.extend(dependencies(&expression.kind));
+            }
         }
     }
     let mut evaluated = BTreeMap::new();
@@ -213,29 +233,37 @@ pub(crate) fn evaluate(
         .filter(|expression| needed.contains(&expression.id))
     {
         let operand = |id: &EntityId| evaluated.get(id).expect("topologically earlier operand");
-        let result = match &expression.kind {
-            Expr::Word(value) => LiftedValue::Word(*value),
-            Expr::Predicate(value) => LiftedValue::Predicate(*value),
-            Expr::Value(id) => LiftedValue::Word(*bindings.get(id).unwrap_or_else(|| {
-                panic!("high projection has no capture/binding for {id:?} in block {block:?}")
-            })),
-            Expr::WordFromPredicate(id) => {
-                LiftedValue::Word(U256::from(u64::from(predicate(operand(id)))))
+        let result = if let Some(value) = replacements.get(&expression.id) {
+            *value
+        } else {
+            match &expression.kind {
+                Expr::Word(value) => LiftedValue::Word(*value),
+                Expr::Predicate(value) => LiftedValue::Predicate(*value),
+                Expr::Value(id) => LiftedValue::Word(*bindings.get(id).unwrap_or_else(|| {
+                    panic!("high projection has no capture/binding for {id:?} in block {block:?}")
+                })),
+                Expr::WordFromPredicate(id) => {
+                    LiftedValue::Word(U256::from(u64::from(predicate(operand(id)))))
+                }
+                Expr::NonZero(id) => LiftedValue::Predicate(word(operand(id)) != U256::ZERO),
+                Expr::Not(id) => LiftedValue::Predicate(!predicate(operand(id))),
+                Expr::Compare {
+                    relation: kind,
+                    left,
+                    right,
+                } => LiftedValue::Predicate(relation(
+                    *kind,
+                    word(operand(left)),
+                    word(operand(right)),
+                )),
+                Expr::WordOp { opcode, arguments } => LiftedValue::Word(primitive_word(
+                    *opcode,
+                    &arguments
+                        .iter()
+                        .map(|id| word(operand(id)))
+                        .collect::<Vec<_>>(),
+                )),
             }
-            Expr::NonZero(id) => LiftedValue::Predicate(word(operand(id)) != U256::ZERO),
-            Expr::Not(id) => LiftedValue::Predicate(!predicate(operand(id))),
-            Expr::Compare {
-                relation: kind,
-                left,
-                right,
-            } => LiftedValue::Predicate(relation(*kind, word(operand(left)), word(operand(right)))),
-            Expr::WordOp { opcode, arguments } => LiftedValue::Word(primitive_word(
-                *opcode,
-                &arguments
-                    .iter()
-                    .map(|id| word(operand(id)))
-                    .collect::<Vec<_>>(),
-            )),
         };
         assert!(matches!(
             (&result, expression.ty),
@@ -244,11 +272,5 @@ pub(crate) fn evaluate(
         ));
         evaluated.insert(expression.id, result);
     }
-    let result = evaluated.remove(&root).expect("root evaluated");
-    assert_eq!(
-        program.evaluate_expression(root, |id| bindings.get(&id).copied()),
-        Some(result),
-        "public evaluator disagrees with independent word/predicate semantics"
-    );
-    result
+    evaluated.remove(&root).expect("root evaluated")
 }

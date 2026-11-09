@@ -1,8 +1,10 @@
-//! Source-certified executable sharing over immutable structured regions.
+//! Source-certified sharing over immutable control regions and expression DAGs.
 //!
 //! A body is a reference into the source code arena, not another copy. Calls
-//! carry finite alpha correspondences; neither state nor computed results are
-//! memoized. Source admission is independent of candidate discovery.
+//! carry finite role-checked correspondences; neither state nor computed results
+//! are memoized. Normal exits return locally; EVM frame exits and external calls
+//! remain in the caller. Internal loops need not terminate. Source admission is
+//! independent of candidate discovery.
 use crate::{EntityId, Ir, LiftedProgram};
 use serde::Serialize;
 
@@ -12,8 +14,33 @@ mod source;
 pub use render::SharedRenderRow;
 pub use source::{SharedRegion, SharedSourceIndex};
 
+/// Independently verified behavior of an extracted source procedure.
+///
+/// The classification is separate from body shape: pure arithmetic can be a
+/// scalar expression DAG or a structured region containing internal loops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedProcedureKind {
+    /// Historical pre-v6 overlay. Decode losslessly, but do not use it as a
+    /// certificate for the stricter local-return contract.
+    #[default]
+    Legacy,
+    /// Locally returning control region with explicit state dependencies.
+    Normal,
+    /// Computation depending only on explicit scalar arguments and constants.
+    PureArithmetic,
+}
+
+impl SharedProcedureKind {
+    /// Whether serialization should retain the historical absent-kind spelling.
+    pub fn is_legacy(&self) -> bool {
+        *self == Self::Legacy
+    }
+}
+
 strict_record! {
-/// One role-preserving source alpha correspondence.
+/// One role-preserving source correspondence. Boundary arguments may alias;
+/// internal definitions retain distinct identities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SharedBinding {
     /// Canonical entity in the body source domain.
@@ -33,7 +60,8 @@ pub struct SharedContinuation {
 /// Explicit boundary words and ordered state dependencies of a region.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SharedInterface {
-    /// Free logical word roots captured at occurrence entry.
+    /// Free logical words captured at region entry. For an expression-rooted
+    /// body these are typed leaf expression IDs, including parameterized literals.
     pub inputs: Vec<EntityId>,
     /// Live logical word results exported on normal completion.
     pub outputs: Vec<EntityId>,
@@ -58,8 +86,12 @@ pub struct SharedProcedure {
 
     /// Independent artifact-local semantic entity identity.
     pub id: EntityId,
-    /// Canonical Structured source root interpreted with Lifted semantics.
+    /// Canonical Structured root or pure Lifted expression root. Both refer to
+    /// the unchanged source arena; entity domains are disjoint.
     pub body: EntityId,
+    /// Checked semantic contract, independent of the shape of the body.
+    #[serde(skip_serializing_if = "SharedProcedureKind::is_legacy")]
+    pub kind: SharedProcedureKind = SharedProcedureKind::Legacy,
     /// Checked logical word and state boundary.
     pub interface: SharedInterface,
 }
@@ -71,7 +103,7 @@ pub struct SharedInvocation {
     pub id: EntityId,
     /// Definition invoked at this source occurrence.
     pub procedure: EntityId,
-    /// Exact Structured occurrence replaced by this call.
+    /// Exact Structured or Lifted expression occurrence replaced by this call.
     pub source: EntityId,
 
     /// Immediate original source syntax owner.
@@ -82,6 +114,8 @@ pub struct SharedInvocation {
     /// Exact lexical source continuation after this occurrence.
     pub continuation: Option<EntityId>,
     /// Sorted nonidentity substitutions; absent source entities map to themselves.
+    /// Expression template inputs map to actual typed leaves, allowing constants
+    /// and repeated arguments without collapsing independent source operations.
     pub bindings: Vec<SharedBinding>,
 }
 /// Hard bound on one certificate, before allocating source correspondence maps.
@@ -264,7 +298,7 @@ impl LiftedProgram {
                 || !sites.insert(i.source)
                 || i.owner.is_some_and(|id| id.0 == 0)
                 || i.continuation.is_some_and(|id| id.0 == 0)
-                || i.position > crate::MAX_STRUCTURED_WIRE_NODES
+                || i.position > crate::MAX_STRUCTURED_WIRE_NODES.max(crate::MAX_LIFTED_RECORDS)
                 || i.bindings.len() > MAX_SHARED_REGION_ENTITIES
                 || i.bindings
                     .iter()

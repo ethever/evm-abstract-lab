@@ -31,12 +31,13 @@ struct Frame<'a> {
     values: BTreeMap<EntityId, U256>,
     current: Option<EntityId>,
     invocation: Option<&'a SharedInvocation>,
+    source_maps: Vec<&'a SharedInvocation>,
 }
 
 impl Frame<'_> {
     fn actual(&self, formal: EntityId) -> EntityId {
-        self.invocation.map_or(formal, |call| {
-            call.actual(formal).expect("complete invocation source map")
+        self.source_maps.iter().rev().fold(formal, |id, call| {
+            call.actual(id).expect("complete invocation source map")
         })
     }
 
@@ -91,22 +92,138 @@ fn nodes(root: &StructuredNode) -> BTreeMap<EntityId, &StructuredNode> {
 }
 
 impl<'a> Machine<'a> {
-    fn word(&self, expression: EntityId, frame: &Frame<'a>) -> U256 {
-        let LiftedValue::Word(value) =
-            expressions::evaluate(self.high, expression, frame.current.unwrap(), &frame.values)
-        else {
+    fn word(&mut self, expression: EntityId, frame: &Frame<'a>) -> U256 {
+        let LiftedValue::Word(value) = self.expression(
+            expression,
+            frame.current.unwrap(),
+            &frame.values,
+            &BTreeMap::new(),
+            None,
+            0,
+        ) else {
             panic!("predicate used as a procedure word without a cast")
         };
         value
     }
 
-    fn predicate(&self, expression: EntityId, frame: &Frame<'a>) -> bool {
-        let LiftedValue::Predicate(value) =
-            expressions::evaluate(self.high, expression, frame.current.unwrap(), &frame.values)
-        else {
+    fn predicate(&mut self, expression: EntityId, frame: &Frame<'a>) -> bool {
+        let LiftedValue::Predicate(value) = self.expression(
+            expression,
+            frame.current.unwrap(),
+            &frame.values,
+            &BTreeMap::new(),
+            None,
+            0,
+        ) else {
             panic!("word used as a procedure condition without a truth test")
         };
         value
+    }
+
+    fn expression(
+        &mut self,
+        root: EntityId,
+        block: EntityId,
+        values: &BTreeMap<EntityId, U256>,
+        arguments: &BTreeMap<EntityId, LiftedValue>,
+        definition_root: Option<EntityId>,
+        depth: usize,
+    ) -> LiftedValue {
+        assert!(
+            depth <= self.high.procedures.len(),
+            "cyclic arithmetic call graph"
+        );
+        let mut needed = BTreeSet::new();
+        let mut todo = vec![root];
+        while let Some(id) = todo.pop() {
+            if !needed.insert(id) || arguments.contains_key(&id) {
+                continue;
+            }
+            if let Some(call) = self
+                .high
+                .invocations
+                .iter()
+                .find(|call| call.source == id && Some(id) != definition_root)
+            {
+                let procedure = self
+                    .high
+                    .procedures
+                    .iter()
+                    .find(|p| p.id == call.procedure)
+                    .unwrap();
+                todo.extend(
+                    procedure
+                        .interface
+                        .inputs
+                        .iter()
+                        .map(|id| call.actual(*id).unwrap()),
+                );
+            } else {
+                todo.extend(self.high.expression(id).unwrap().kind.operands());
+            }
+        }
+        let mut replacements = arguments.clone();
+        for expression in self
+            .high
+            .expressions
+            .iter()
+            .filter(|e| needed.contains(&e.id))
+        {
+            if replacements.contains_key(&expression.id) || Some(expression.id) == definition_root {
+                continue;
+            }
+            let Some(call) = self
+                .high
+                .invocations
+                .iter()
+                .find(|i| i.source == expression.id)
+            else {
+                continue;
+            };
+            let procedure = self
+                .high
+                .procedures
+                .iter()
+                .find(|p| p.id == call.procedure)
+                .unwrap();
+            let parameters = procedure
+                .interface
+                .inputs
+                .iter()
+                .map(|formal| {
+                    let actual = call.actual(*formal).unwrap();
+                    (
+                        *formal,
+                        expressions::evaluate_replacing(
+                            self.high,
+                            actual,
+                            block,
+                            values,
+                            &replacements,
+                        ),
+                    )
+                })
+                .collect();
+            self.calls.push(call.id);
+            let result = self.expression(
+                procedure.body,
+                self.high.expression(procedure.body).unwrap().block,
+                &BTreeMap::new(),
+                &parameters,
+                Some(procedure.body),
+                depth + 1,
+            );
+            replacements.insert(expression.id, result);
+        }
+        let result = expressions::evaluate_replacing(self.high, root, block, values, &replacements);
+        if arguments.is_empty() {
+            assert_eq!(
+                result,
+                expressions::evaluate(self.high, root, block, values),
+                "arithmetic template execution differs from original expression"
+            );
+        }
+        result
     }
 
     fn block(&mut self, id: EntityId, frame: &mut Frame<'a>) -> Result<Flow, ExecutionError> {
@@ -210,7 +327,7 @@ impl<'a> Machine<'a> {
         Ok(Flow::Next)
     }
 
-    fn transfer(&self, id: EntityId, frame: &mut Frame<'a>) -> Result<(), ExecutionError> {
+    fn transfer(&mut self, id: EntityId, frame: &mut Frame<'a>) -> Result<(), ExecutionError> {
         let edge = self.stage.ir.edge(id).unwrap();
         assert_eq!(frame.current, Some(edge.from));
         let target = self.high.block(edge.to).unwrap();
@@ -231,7 +348,7 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn terminal(&self, block: EntityId, frame: &Frame<'a>) -> Result<Flow, ExecutionError> {
+    fn terminal(&mut self, block: EntityId, frame: &Frame<'a>) -> Result<Flow, ExecutionError> {
         let outcome = match &self.stage.ir.block(block).unwrap().terminator {
             Terminator::Exit { kind, .. } => ExecutionOutcome::Exit {
                 kind: *kind,
@@ -264,7 +381,7 @@ impl<'a> Machine<'a> {
     }
 
     fn choose(
-        &self,
+        &mut self,
         block: EntityId,
         frame: &Frame<'a>,
     ) -> Result<Result<EntityId, ExecutionOutcome>, ExecutionError> {
@@ -327,8 +444,8 @@ impl<'a> Machine<'a> {
         caller: &mut Frame<'a>,
     ) -> Result<Flow, ExecutionError> {
         assert!(
-            caller.invocation.is_none(),
-            "definition references are acyclic leaf code"
+            caller.source_maps.len() < self.high.procedures.len(),
+            "cyclic procedure call graph"
         );
         let procedure = self
             .high
@@ -347,6 +464,7 @@ impl<'a> Machine<'a> {
             values: BTreeMap::new(),
             current: formal_current,
             invocation: Some(call),
+            source_maps: caller.source_maps.iter().copied().chain([call]).collect(),
         };
         for formal in &procedure.interface.inputs {
             let actual = call.actual(*formal).expect("formal argument map");
@@ -440,7 +558,7 @@ impl<'a> Machine<'a> {
         node: &'a StructuredNode,
         frame: &mut Frame<'a>,
     ) -> Result<Flow, ExecutionError> {
-        if frame.invocation.is_none()
+        if (frame.invocation.is_none() || node.id != self.scope(frame))
             && let Some(call) = self
                 .high
                 .invocations
@@ -613,6 +731,7 @@ pub(super) fn run(stage: &Stage, host: MemoryHost, limits: &ExecutionLimits) -> 
         values: BTreeMap::new(),
         current: stage.ir.entry,
         invocation: None,
+        source_maps: Vec::new(),
     };
     let outcome = machine.syntax(root, &mut frame).map(|flow| {
         let Flow::End(outcome) = flow else {

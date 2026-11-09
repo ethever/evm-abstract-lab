@@ -886,6 +886,8 @@
       "parameters": {},
       "dependencies": [
         "crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex",
+        "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex",
+        "crates/evm-decompile/tests/fixtures/shared-procedures/nested-arithmetic-inputs.hex",
         "scripts/test-web-browser.py",
         "scripts/web_test_decompile_alignment.py",
         "scripts/web_test_decompile_helpers.py",

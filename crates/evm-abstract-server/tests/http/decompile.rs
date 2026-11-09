@@ -421,7 +421,10 @@ fn lifted_predicates_and_origins_cross_the_compressed_result_protocol() {
         artifact.diagnostics
     );
     let program = current.ir.lifted.as_ref().unwrap();
-    assert_eq!(artifact.schema_version, 5);
+    assert_eq!(
+        artifact.schema_version,
+        evm_abstract_protocol::decompile_model::SCHEMA_VERSION
+    );
     assert!(artifact.admits_schema());
     assert!(!program.failures.is_empty());
     let guard_control = program

@@ -51,7 +51,7 @@ fn leaves(high: &LiftedProgram, roots: impl IntoIterator<Item = EntityId>) -> BT
 }
 
 #[test]
-fn condition_terminal_and_body_only_regions_have_executable_boundaries() {
+fn condition_templates_and_nonterminal_bodies_have_executable_boundaries() {
     let mut external_conditions = 0;
     let mut terminal_captures = 0;
     let mut body_outputs = 0;
@@ -63,33 +63,31 @@ fn condition_terminal_and_body_only_regions_have_executable_boundaries() {
         for node in nodes(&stage.ir.structured.as_ref().unwrap().root) {
             match &node.kind {
                 Kind::If { .. } => {
-                    let region = index.region(node.id, &mut |_| true).unwrap();
-                    for value in leaves(high, [high.control(node.id).unwrap().condition]) {
+                    let condition = high.control(node.id).unwrap().condition;
+                    let inputs = if let Ok(region) = index.region(node.id, &mut |_| true) {
+                        region.interface.inputs.into_iter().collect()
+                    } else {
+                        match index.arithmetic_region(condition, &mut |_| true) {
+                            Ok(expression) => leaves(high, expression.interface.inputs),
+                            Err(_) if leaves(high, [condition]).is_empty() => BTreeSet::new(),
+                            Err(error) => panic!("dynamic condition template rejected: {error}"),
+                        }
+                    };
+                    for value in leaves(high, [condition]) {
                         assert!(
-                            region.interface.inputs.contains(&value),
-                            "If-only definition omitted free condition value {value:?}"
+                            inputs.contains(&value),
+                            "condition template omitted free condition value {value:?}"
                         );
                         external_conditions += 1;
                     }
                 }
                 Kind::Exit { block } => {
-                    let region = index.region(node.id, &mut |_| true).unwrap();
-                    assert_eq!(
-                        region.operations, 0,
-                        "Exit-only source does not reexecute its block body"
-                    );
-                    assert_eq!(
-                        region.retained_operations, 0,
-                        "Exit metadata is not profitable executable sharing"
-                    );
+                    assert!(index.region(node.id, &mut |_| true).is_err());
                     for value in leaves(
                         high,
                         high.block(*block).unwrap().exit_values.iter().copied(),
                     ) {
-                        assert!(
-                            region.interface.inputs.contains(&value),
-                            "Exit-only definition omitted captured terminal value {value:?}"
-                        );
+                        assert!(stage.ir.value(value).is_some());
                         terminal_captures += 1;
                     }
                 }
@@ -116,6 +114,14 @@ fn condition_terminal_and_body_only_regions_have_executable_boundaries() {
                             .collect();
                         let required: Vec<_> = required.intersection(&produced).copied().collect();
                         if required.is_empty() {
+                            continue;
+                        }
+                        if matches!(
+                            stage.ir.block(block).unwrap().terminator,
+                            evm_decompile::Terminator::Exit { .. }
+                                | evm_decompile::Terminator::Trap { .. }
+                        ) {
+                            assert!(index.region(pair[0].id, &mut |_| true).is_err());
                             continue;
                         }
                         let region = index.region(pair[0].id, &mut |_| true).unwrap();

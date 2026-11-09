@@ -2,7 +2,7 @@
 use super::{Error, SharedRegion, SharedSourceIndex, charge};
 use super::{MAX_SHARED_REGION_ENTITIES, MAX_SHARED_REGION_NODES};
 use crate::EntityId;
-use crate::{SharedContinuation, StructuredKind as K, Terminator as T};
+use crate::{SharedContinuation, SharedProcedureKind, StructuredKind as K, Terminator as T};
 use std::collections::BTreeSet;
 impl SharedSourceIndex<'_> {
     /// Inspect a supported fragment of the certified logical projection.
@@ -11,6 +11,9 @@ impl SharedSourceIndex<'_> {
         root: EntityId,
         pay: &mut impl FnMut(usize) -> bool,
     ) -> Result<SharedRegion, Error> {
+        if self.flow.is_none() {
+            return Err(Error::Region(root));
+        }
         let mut nodes = Vec::new();
         let mut blocks = Vec::new();
         let mut block_set = BTreeSet::new();
@@ -19,6 +22,7 @@ impl SharedSourceIndex<'_> {
         let mut exprs = Vec::new();
         let mut operations = 0_usize;
         let mut retained_operations = 0_usize;
+        let mut pure_arithmetic = true;
         let mut todo = vec![(root, 0_usize)];
         while let Some((id, loops)) = todo.pop() {
             charge(pay, 8)?;
@@ -43,11 +47,24 @@ impl SharedSourceIndex<'_> {
                 }
                 K::Block { block } => {
                     let raw = self.blocks.get(block).ok_or(Error::Missing(*block))?;
+                    charge(pay, raw.operations.len().saturating_mul(4))?;
                     if raw.terminator.is_partial()
+                        || matches!(raw.terminator, T::Exit { .. } | T::Trap { .. })
                         || matches!(&raw.terminator,T::Jump{invalid_targets,..}|T::Branch{invalid_targets,..} if !invalid_targets.is_empty())
+                        || matches!(&raw.terminator, T::Jump { edges, .. } if edges.is_empty())
+                        || matches!(&raw.terminator, T::Branch { then_edges, else_edge, .. } if then_edges.is_empty() || else_edge.is_none())
+                        || raw.operations.iter().any(|op| {
+                            matches!(op.opcode, 0x00 | 0xf0..=0xf5 | 0xfa | 0xfd..=0xff)
+                                || op.effects.call
+                                || op.effects.create
+                                || op.effects.terminate
+                        })
                     {
                         return Err(Error::Region(root));
                     }
+                    pure_arithmetic &= raw.operations.iter().all(|op| {
+                        op.effects.is_pure() && super::arithmetic::arithmetic_primitive(op.opcode)
+                    });
                     let high = self.high_blocks.get(block).ok_or(Error::Missing(*block))?;
                     if block_set.insert(*block) {
                         blocks.push(*block);
@@ -124,15 +141,7 @@ impl SharedSourceIndex<'_> {
                         entities.extend(r.writes.iter().copied());
                     }
                 }
-                K::Exit { block } => {
-                    let raw = self.blocks.get(block).ok_or(Error::Missing(*block))?;
-                    if !matches!(raw.terminator, T::Exit { .. } | T::Trap { .. }) {
-                        return Err(Error::Region(root));
-                    }
-                    let high = self.high_blocks.get(block).ok_or(Error::Missing(*block))?;
-                    entities.extend([*block, high.id]);
-                    exprs.extend(high.exit_values.iter().copied());
-                }
+                K::Exit { .. } => return Err(Error::Region(root)),
                 K::Transfer { edge } => {
                     transfers.insert(*edge);
                 }
@@ -147,9 +156,13 @@ impl SharedSourceIndex<'_> {
                 K::While {
                     header,
                     body,
+                    condition,
                     exit_edge,
                     ..
                 } => {
+                    if condition.is_none() && exit_edge.is_some() {
+                        return Err(Error::Region(root));
+                    }
                     transfers.extend(*exit_edge);
                     todo.push((body.id, loops + 1));
                     todo.push((header.id, loops + 1));
@@ -225,11 +238,14 @@ impl SharedSourceIndex<'_> {
         }
         let mut visited = BTreeSet::new();
         while let Some(id) = exprs.pop() {
+            charge(pay, 4)?;
             if !visited.insert(id) {
                 continue;
             }
-            charge(pay, 4)?;
             let e = self.expressions.get(&id).ok_or(Error::Missing(id))?;
+            if let crate::LiftedExpressionKind::WordOp { opcode, .. } = e.kind {
+                pure_arithmetic &= super::arithmetic::arithmetic_opcode(opcode);
+            }
             if entities.len().saturating_add(3) > MAX_SHARED_REGION_ENTITIES {
                 return Err(Error::Region(root));
             }
@@ -244,11 +260,9 @@ impl SharedSourceIndex<'_> {
                 return Err(Error::Region(root));
             }
         }
-        let (mut interface, _locals) = self
-            .flow
-            .as_ref()
-            .ok_or(Error::Region(root))?
-            .interface(self, root, &nodes, pay)?;
+        let flow = self.flow.as_ref().ok_or(Error::Region(root))?;
+        flow.check_boundary(self, root, &nodes, pay)?;
+        let (mut interface, _locals) = flow.interface(self, root, &nodes, pay)?;
         for edge in &transfers {
             let e = self.edges[edge];
             if !block_set.contains(&e.to) {
@@ -261,29 +275,12 @@ impl SharedSourceIndex<'_> {
         if interface.references().any(|id| !entities.contains(&id)) {
             return Err(Error::Interface(root));
         }
-        let terminal_bodies: BTreeSet<_> = nodes
-            .iter()
-            .filter_map(|id| match self.nodes[id].kind {
-                K::Block { block }
-                    if matches!(
-                        self.blocks[&block].terminator,
-                        T::Exit { .. } | T::Trap { .. }
-                    ) =>
-                {
-                    Some(block)
-                }
-                _ => None,
-            })
-            .collect();
-        let terminal_exits: BTreeSet<_> = nodes
-            .iter()
-            .filter_map(|id| match self.nodes[id].kind {
-                K::Exit { block } => Some(block),
-                _ => None,
-            })
-            .collect();
-        let terminal_closed = terminal_bodies == terminal_exits;
         Ok(SharedRegion {
+            kind: if pure_arithmetic {
+                SharedProcedureKind::PureArithmetic
+            } else {
+                SharedProcedureKind::Normal
+            },
             root,
             nodes,
             blocks,
@@ -291,7 +288,7 @@ impl SharedSourceIndex<'_> {
             interface,
             operations,
             retained_operations,
-            terminal_closed,
+            terminal_closed: true,
         })
     }
 }

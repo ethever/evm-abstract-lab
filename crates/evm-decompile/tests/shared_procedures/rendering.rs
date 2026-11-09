@@ -4,7 +4,7 @@ use evm_decompile::{ExecutionLimits, MemoryHost, StageKind, StructuredKind, U256
 use std::collections::BTreeSet;
 
 #[test]
-fn terminal_names_match_shared_bodies_and_ordinary_exports() {
+fn terminal_names_stay_visible_in_callers_and_never_enter_shared_bodies() {
     for (opcode, name, implicit) in [
         (0x00, "stop", false),
         (0xf3, "return", false),
@@ -21,6 +21,10 @@ fn terminal_names_match_shared_bodies_and_ordinary_exports() {
         let ir = &artifact.current().unwrap().ir;
         let program = ir.lifted.as_ref().unwrap();
         let renderer = program.render_index(ir);
+        assert!(
+            !program.procedures.is_empty(),
+            "the nonterminal repeated prefix still shares"
+        );
         let mut ordinary = artifact.clone();
         let high = ordinary
             .stages
@@ -32,47 +36,45 @@ fn terminal_names_match_shared_bodies_and_ordinary_exports() {
             .unwrap();
         high.procedures.clear();
         high.invocations.clear();
-        let exported = evm_decompile::render_text(&ordinary);
+        let source = evm_decompile::render_text(&ordinary);
+        let exported = evm_decompile::render_text(&artifact);
         let prefix = format!("evm.{name}(");
-        let mut checked_bodies = 0;
+        assert!(
+            exported.contains(&prefix),
+            "terminal disappeared: {name}, implicit={implicit}"
+        );
+        assert_eq!(
+            exported.matches(&prefix).count(),
+            source.matches(&prefix).count()
+        );
+        assert!(!exported.contains("evm.evm."));
         for procedure in &program.procedures {
-            if !boundaries::nodes(renderer.node(procedure.body).unwrap()).iter().any(|node| {
-                matches!(node.kind, StructuredKind::Exit { block }
-                    if ir.block(block).unwrap().source.is_some_and(|source| source.pc == fixture.labels["tail"]))
-            }) {
-                continue;
+            if let Some(root) = renderer.node(procedure.body) {
+                assert!(boundaries::nodes(root).iter().all(|node| !matches!(
+                    node.kind,
+                    StructuredKind::Exit { .. } | StructuredKind::PartialExit { .. }
+                )));
             }
             for dependencies in [false, true] {
                 let rows = renderer
                     .render_procedure_body(procedure, dependencies, |_| true)
                     .unwrap();
-                let terminals: Vec<_> = rows
-                    .iter()
-                    .filter(|row| row.text.starts_with(&prefix))
-                    .collect();
-                assert_eq!(
-                    terminals.len(),
-                    1,
-                    "terminal must print once: {name}, implicit={implicit}"
-                );
-                let invocation = terminals[0].text.split(" //").next().unwrap();
                 assert!(
-                    exported.contains(invocation),
-                    "ordinary/shared spelling differs: {invocation}\n{exported}"
+                    rows.iter().all(|row| !row.text.contains(&prefix)),
+                    "terminal entered procedure: {rows:#?}"
                 );
-                assert!(!rows.iter().any(|row| row.text.contains("evm.evm.")));
-                assert!(
-                    !rows
-                        .iter()
-                        .any(|row| row.text.starts_with(&format!("{name}(")))
-                );
+                assert!(rows.iter().all(|row| !row.text.contains("evm.evm.")));
             }
-            checked_bodies += 1;
         }
-        assert!(
-            checked_bodies > 0,
-            "fixture must put {name} inside a certified shared body"
-        );
+        for line in exported
+            .lines()
+            .filter(|line| line.trim_start().starts_with(&prefix))
+        {
+            assert!(
+                source.contains(line.trim_start()),
+                "ordinary/shared terminal style differs: {line}"
+            );
+        }
         assert_eq!(artifact, original);
     }
 }
@@ -279,8 +281,7 @@ fn shared_else_display_retains_observable_effects_and_actual_branch_execution() 
 }
 
 #[test]
-fn shared_failed_if_reorders_the_canonical_body_and_executes_each_binding() {
-    // Same fixture is exercised through the browser renderer and HTTP smoke.
+fn failed_if_stays_in_each_caller_while_successful_procedures_execute_fresh() {
     let code = alloy_primitives::hex::decode(concat!(
         "6100095f3561001c565b60015561001760203561001c565b600255005b8061004257",
         "80604052805f5560206040a060055460010160055560065460075560010190565b",
@@ -292,39 +293,45 @@ fn shared_failed_if_reorders_the_canonical_body_and_executes_each_binding() {
     let ir = &artifact.current().unwrap().ir;
     let high = ir.lifted.as_ref().unwrap();
     let index = high.render_index(ir);
-    let procedure = high
+    assert!(!high.procedures.is_empty());
+    let failed: BTreeSet<_> = high
+        .blocks
+        .iter()
+        .filter(|block| {
+            ir.block(block.block)
+                .unwrap()
+                .operations
+                .iter()
+                .any(|operation| operation.opcode == 0xfd)
+        })
+        .flat_map(|block| &block.statements)
+        .map(|statement| statement.id)
+        .collect();
+    for procedure in &high.procedures {
+        let rows = index
+            .render_procedure_body(procedure, false, |_| true)
+            .unwrap();
+        assert!(rows.iter().all(|row| !failed.contains(&row.entity)
+            && !row.text.contains("evm.revert(")
+            && !row.text.contains("require(")));
+    }
+    let text = evm_decompile::render_text(&artifact);
+    assert_eq!(text.matches("evm.revert(offset =").count(), 2);
+    assert_eq!(text.matches("evm.mload(").count(), 2);
+    assert!(!text.contains("require("));
+    let successful: BTreeSet<_> = high
         .procedures
         .iter()
-        .find(|p| matches!(index.node(p.body).unwrap().kind, StructuredKind::If { .. }))
-        .expect("failure If is a real canonical shared definition");
-    let rows = index
-        .render_procedure_body(procedure, false, |_| true)
-        .unwrap();
-    assert!(
-        rows.iter()
-            .any(|r| r.depth == 0 && r.text.starts_with("if ("))
-    );
-    assert!(
-        !rows
-            .iter()
-            .any(|r| r.text.contains("require(") || r.text == "} else {")
-    );
-    let failed: Vec<_> = rows
-        .iter()
-        .filter(|r| r.depth == 1 && !r.is_structure_annotation)
+        .filter(|procedure| {
+            index
+                .render_procedure_body(procedure, false, |_| true)
+                .unwrap()
+                .iter()
+                .any(|row| row.text.contains("evm.log0("))
+        })
+        .map(|procedure| procedure.id)
         .collect();
-    for primitive in ["evm.mload(", "evm.mstore(", "evm.revert("] {
-        assert_eq!(
-            failed.iter().filter(|r| r.text.contains(primitive)).count(),
-            1,
-            "{rows:#?}"
-        );
-    }
-    assert!(
-        failed
-            .windows(2)
-            .all(|pair| pair[0].entity != pair[1].entity)
-    );
+    assert!(!successful.is_empty());
     for arguments in [[0, 0], [0, 1], [1, 0], [1, 1]] {
         let report = oracle::certify(
             &input,
@@ -332,9 +339,29 @@ fn shared_failed_if_reorders_the_canonical_body_and_executes_each_binding() {
             MemoryHost::new(&input, fixtures::words(&arguments.map(U256::from))),
             &ExecutionLimits::default(),
         );
+        let expected_calls = if arguments[0] != 0 {
+            0
+        } else if arguments[1] != 0 {
+            1
+        } else {
+            2
+        };
+        assert_eq!(
+            report
+                .calls
+                .iter()
+                .filter(|id| {
+                    high.invocations
+                        .iter()
+                        .any(|call| call.id == **id && successful.contains(&call.procedure))
+                })
+                .count(),
+            expected_calls,
+            "only reached successful source occurrences invoke a procedure"
+        );
         assert!(
             !report.planned.is_empty(),
-            "execute the new plan, rather than merely the old source oracle"
+            "the independent machine must execute the selected failure-first control plan"
         );
         assert!(
             matches!(report.outcome.unwrap(), evm_decompile::ExecutionOutcome::Exit { kind, .. }

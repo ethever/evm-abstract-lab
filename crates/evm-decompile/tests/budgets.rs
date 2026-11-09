@@ -33,7 +33,7 @@ fn explicit_legacy_configuration_changes_identity_only_with_declared_schema() {
     assert_eq!(artifact.completion, Completion::Complete);
     assert_eq!(artifact.config, config);
     // Preserve the frozen schema-2 key from base 2bc96535. The same explicit
-    // request gets a new key solely because current producers declare schema 5.
+    // request gets a new key solely because current producers declare schema 6.
     let mut schema_two = b"osaka\0\0".to_vec();
     schema_two.extend_from_slice(format!("schema=2;config={config:?}").as_bytes());
     assert_eq!(
@@ -46,12 +46,12 @@ fn explicit_legacy_configuration_changes_identity_only_with_declared_schema() {
         format!("{:x}", alloy_primitives::keccak256(schema_three)),
         "1cbc4f5e0e58c2624819ab4a8a6bd995420398b147f8bbade434acfb4b5e5dfd"
     );
-    assert_eq!(artifact.schema_version, 5);
-    let mut schema_five = b"osaka\0\0".to_vec();
-    schema_five.extend_from_slice(format!("schema=5;config={config:?}").as_bytes());
+    assert_eq!(artifact.schema_version, 6);
+    let mut schema_six = b"osaka\0\0".to_vec();
+    schema_six.extend_from_slice(format!("schema=6;config={config:?}").as_bytes());
     assert_eq!(
         artifact.id.0,
-        format!("{:x}", alloy_primitives::keccak256(schema_five))
+        format!("{:x}", alloy_primitives::keccak256(schema_six))
     );
 }
 

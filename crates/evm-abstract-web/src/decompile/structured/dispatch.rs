@@ -1,8 +1,8 @@
 //! Render actual dispatcher decisions and scoped edge transfers. Labels are
 //! qualified by their AST owner, not frontend-created semantic entities.
 use super::{
-    Line, Scope, StageIndex, body, emit, exit_owner, projected_target, projected_terminator,
-    transfer, value,
+    Line, Scope, StageIndex, body, emit, exit_owner, projected_condition, projected_target,
+    projected_terminator, transfer, value,
 };
 use evm_abstract_protocol::decompile_model::{
     DispatchCase, DispatchTransition, EntityId, Ir, Terminator,
@@ -217,7 +217,7 @@ impl Dispatch<'_> {
                             block,
                             self.context.ir,
                             self.context.index,
-                            self.context.scope.lifted,
+                            self.context.scope,
                         )
                     } else {
                         value(*target)
@@ -238,12 +238,16 @@ impl Dispatch<'_> {
                     let condition = semantic
                         .and_then(|block| block.condition)
                         .and_then(|id| {
-                            self.context.scope.lifted.map(|renderer| {
-                                renderer
-                                    .render_condition(id, false, |_| true)
-                                    .unwrap_or_else(|error| {
-                                        format!("unavailable_predicate(b{}: {error})", block.0)
-                                    })
+                            self.context.scope.lifted.map(|_| {
+                                projected_condition(
+                                    id,
+                                    false,
+                                    self.context.index,
+                                    self.context.scope,
+                                )
+                                .unwrap_or_else(|error| {
+                                    format!("unavailable_predicate(b{}: {error})", block.0)
+                                })
                             })
                         })
                         .unwrap_or_else(|| format!("unavailable_predicate(b{})", block.0));
@@ -264,7 +268,7 @@ impl Dispatch<'_> {
                             block,
                             self.context.ir,
                             self.context.index,
-                            self.context.scope.lifted,
+                            self.context.scope,
                         )
                     } else {
                         value(*target)
@@ -308,7 +312,7 @@ impl Dispatch<'_> {
                         term,
                         self.context.ir,
                         self.context.index,
-                        self.context.scope.lifted,
+                        self.context.scope,
                     ),
                 );
             }

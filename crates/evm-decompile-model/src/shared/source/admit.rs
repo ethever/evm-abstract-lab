@@ -43,7 +43,7 @@ impl SharedSourceIndex<'_> {
             if definitions.contains_key(&p.id) {
                 return Err(Error::Correspondence(p.id));
             }
-            let region = self.region(p.body, pay)?;
+            let region = self.source_region(p.kind, p.body, pay)?;
             if !region.terminal_closed {
                 return Err(Error::Region(p.body));
             }
@@ -65,14 +65,28 @@ impl SharedSourceIndex<'_> {
         }
         let mut sites = BTreeSet::new();
         let mut used = BTreeMap::<EntityId, usize>::new();
-        let mut intervals = Vec::new();
+        let mut dependencies = BTreeMap::<EntityId, BTreeSet<EntityId>>::new();
+        let mut body_owners = BTreeMap::<EntityId, Vec<EntityId>>::new();
+        // The aggregate source domain was paid and bounded above. Index each
+        // canonical body's actual code once; dependency construction therefore
+        // follows retained code size rather than expanding nested definitions.
+        charge(pay, domain_units.saturating_mul(4))?;
+        for (id, (procedure, region)) in &definitions {
+            dependencies.insert(*id, BTreeSet::new());
+            for entity in &region.entities {
+                if *entity != procedure.body
+                    && (self.nodes.contains_key(entity)
+                        || (self.expressions.contains_key(entity)
+                            && (!region.nodes.is_empty()
+                                || region.interface.inputs.binary_search(entity).is_err())))
+                {
+                    body_owners.entry(*entity).or_default().push(*id);
+                }
+            }
+        }
         for i in &program.invocations {
             if source_ids.contains(&i.id) || definitions.contains_key(&i.id) {
                 return Err(Error::Correspondence(i.id));
-            }
-            let s = self.sites.get(&i.source).ok_or(Error::Missing(i.source))?;
-            if (i.owner, i.position, i.continuation) != (s.owner, s.position, s.continuation) {
-                return Err(Error::Site(i.id));
             }
             if !sites.insert(i.source) {
                 return Err(Error::Overlap(i.source));
@@ -80,24 +94,85 @@ impl SharedSourceIndex<'_> {
             let (p, canonical) = definitions
                 .get(&i.procedure)
                 .ok_or(Error::Missing(i.procedure))?;
-            let actual = self.region(i.source, pay)?;
+            let actual = self.source_region(p.kind, i.source, pay)?;
+            let expected = if actual.nodes.is_empty() {
+                self.arithmetic_invocation(i.id, i.procedure, i.source, Vec::new())?
+            } else {
+                self.invocation(i.id, i.procedure, i.source, Vec::new())?
+            };
+            if (i.owner, i.position, i.continuation)
+                != (expected.owner, expected.position, expected.continuation)
+            {
+                return Err(Error::Site(i.id));
+            }
             self.verify_correspondence(canonical, &actual, &i.bindings, pay)?;
             if p.body == i.source && i.bindings.iter().any(|b| b.formal != b.actual) {
                 return Err(Error::Correspondence(i.id));
             }
-            intervals.push((self.order[&i.source], s.end, i.source));
+            if let Some(owners) = body_owners.get(&i.source) {
+                charge(pay, owners.len())?;
+                for owner in owners {
+                    dependencies
+                        .get_mut(owner)
+                        .ok_or(Error::Missing(*owner))?
+                        .insert(i.procedure);
+                }
+            }
             *used.entry(i.procedure).or_default() += 1;
         }
-        charge(pay, intervals.len().saturating_mul(8))?;
-        intervals.sort_unstable();
-        if let Some(w) = intervals.windows(2).find(|w| w[0].1 > w[1].0) {
-            return Err(Error::Overlap(w[1].2));
-        }
+        check_dependencies(&dependencies, pay)?;
         for (id, (p, _)) in definitions {
-            if used.get(&id).copied().unwrap_or(0) < 2 || !sites.contains(&p.body) {
+            let minimum = if self.expressions.contains_key(&p.body) {
+                1
+            } else {
+                2
+            };
+            if used.get(&id).copied().unwrap_or(0) < minimum || !sites.contains(&p.body) {
                 return Err(Error::Missing(id));
             }
         }
         Ok(())
     }
+}
+
+/// Calls form a finite syntax dependency DAG. Cyclic definitions would make
+/// rendering/execution expand forever even when every source loop is valid.
+fn check_dependencies(
+    dependencies: &BTreeMap<EntityId, BTreeSet<EntityId>>,
+    pay: &mut impl FnMut(usize) -> bool,
+) -> Result<(), Error> {
+    let slots = dependencies
+        .values()
+        .fold(dependencies.len(), |n, edges| n.saturating_add(edges.len()));
+    charge(pay, slots.saturating_mul(4))?;
+    let mut incoming: BTreeMap<_, usize> = dependencies.keys().map(|id| (*id, 0)).collect();
+    for children in dependencies.values() {
+        for child in children {
+            *incoming.get_mut(child).ok_or(Error::Missing(*child))? += 1;
+        }
+    }
+    let mut ready: Vec<_> = incoming
+        .iter()
+        .filter_map(|(id, count)| (*count == 0).then_some(*id))
+        .collect();
+    let mut removed = 0_usize;
+    while let Some(id) = ready.pop() {
+        removed += 1;
+        for child in &dependencies[&id] {
+            let count = incoming.get_mut(child).ok_or(Error::Missing(*child))?;
+            *count -= 1;
+            if *count == 0 {
+                ready.push(*child);
+            }
+        }
+    }
+    if removed != dependencies.len() {
+        return Err(Error::Overlap(
+            incoming
+                .iter()
+                .find(|(_, count)| **count > 0)
+                .map_or(EntityId(0), |(id, _)| *id),
+        ));
+    }
+    Ok(())
 }

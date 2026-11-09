@@ -154,7 +154,7 @@ fn canonical_content_admission_checks_every_header_message_and_padding_byte() {
 #[test]
 fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     assert_eq!(
-        SCHEMA_VERSION, 5,
+        SCHEMA_VERSION, 6,
         "shared procedure semantics change the current wire contract"
     );
     let mut artifact: Artifact =
@@ -164,7 +164,7 @@ fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     stage.kind = StageKind::Lifted;
     stage.ir.lifted = Some(program());
     assert!(artifact.admits_schema());
-    for version in [1, 2, 3, 6] {
+    for version in [1, 2, 3, 7] {
         let mut wrong = artifact.clone();
         wrong.schema_version = version;
         assert!(!wrong.admits_schema());

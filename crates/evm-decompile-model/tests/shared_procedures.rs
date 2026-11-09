@@ -9,6 +9,7 @@ use serde_json::json;
 fn program() -> LiftedProgram {
     LiftedProgram {
         procedures: vec![SharedProcedure {
+            kind: evm_decompile_model::SharedProcedureKind::Normal,
             id: EntityId(100),
             body: EntityId(21),
             interface: SharedInterface {
@@ -47,6 +48,12 @@ fn strict<T: Serialize + DeserializeOwned>(value: &T) {
     for key in fields.keys() {
         let mut missing = wire.clone();
         missing.as_object_mut().unwrap().remove(key);
+        if key == "kind" {
+            // A missing contract is a legacy record, never an implicit claim
+            // that an old body satisfies the new local-return rules.
+            assert!(serde_json::from_value::<T>(missing).is_ok());
+            continue;
+        }
         assert!(
             serde_json::from_value::<T>(missing).is_err(),
             "missing {key}"
@@ -93,23 +100,23 @@ fn shared_definition_call_and_state_maps_are_strict_lossless_records() {
 }
 
 #[test]
-fn sharing_requires_schema_five_and_retains_all_four_legacy_wire_shapes() {
-    assert_eq!(SCHEMA_VERSION, 5);
+fn checked_procedures_require_schema_six_and_retain_legacy_wire_shapes() {
+    assert_eq!(SCHEMA_VERSION, 6);
     let legacy = include_str!("fixtures/partial-artifact.json").trim_end();
     let original: Artifact = serde_json::from_str(legacy).unwrap();
     assert_eq!(serde_json::to_string(&original).unwrap(), legacy);
-    for version in 1..=4 {
+    for version in 1..=5 {
         let mut artifact = original.clone();
         artifact.schema_version = version;
         assert!(artifact.admits_schema(), "legacy v{version}");
     }
     let mut shared = original;
-    shared.schema_version = 5;
+    shared.schema_version = 6;
     let stage = shared.stages.last_mut().unwrap();
     stage.kind = evm_decompile_model::StageKind::Lifted;
     stage.ir.lifted = Some(program());
     assert!(shared.admits_schema());
-    for version in [1, 2, 3, 4, 6] {
+    for version in [1, 2, 3, 4, 5, 7] {
         let mut wrong = shared.clone();
         wrong.schema_version = version;
         assert!(
@@ -117,6 +124,24 @@ fn sharing_requires_schema_five_and_retains_all_four_legacy_wire_shapes() {
             "procedure semantics forged as schema {version}"
         );
     }
+    let mut legacy_shared = shared.clone();
+    legacy_shared.schema_version = 5;
+    let high = legacy_shared
+        .stages
+        .last_mut()
+        .unwrap()
+        .ir
+        .lifted
+        .as_mut()
+        .unwrap();
+    high.procedures[0].kind = evm_decompile_model::SharedProcedureKind::Legacy;
+    let wire = serde_json::to_value(&high.procedures[0]).unwrap();
+    assert!(wire.get("kind").is_none());
+    assert_eq!(
+        serde_json::from_value::<SharedProcedure>(wire).unwrap(),
+        high.procedures[0]
+    );
+    assert!(legacy_shared.admits_schema());
     for legacy_high in [
         r#"{"expressions":[],"blocks":[],"transfers":[],"controls":[]}"#,
         r#"{"expressions":[],"blocks":[],"transfers":[],"controls":[],"failures":[]}"#,

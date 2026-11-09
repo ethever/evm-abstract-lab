@@ -297,7 +297,7 @@ fn exact_error_bytes_and_lazy_construction_links_survive_the_result_envelope() {
     let restored: DecompileJobResultReply = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(restored, reply);
     let artifact = &restored.result.as_ref().unwrap().artifact;
-    assert_eq!(artifact.schema_version, 5);
+    assert_eq!(artifact.schema_version, 6);
     assert!(artifact.admits_schema());
     for old in [1, 2, 3] {
         let mut wrong = artifact.clone();
@@ -314,7 +314,7 @@ fn exact_error_bytes_and_lazy_construction_links_survive_the_result_envelope() {
 }
 
 #[test]
-fn schema_five_procedure_invocation_entities_and_sparse_maps_survive_result_envelope() {
+fn schema_six_procedure_invocation_entities_and_sparse_maps_survive_result_envelope() {
     use evm_abstract_protocol::decompile_model::{
         SharedBinding, SharedInterface, SharedInvocation, SharedProcedure,
     };
@@ -324,6 +324,7 @@ fn schema_five_procedure_invocation_entities_and_sparse_maps_survive_result_enve
     let high = stage.ir.lifted.as_mut().unwrap();
     let procedure = EntityId(u64::MAX - 20);
     high.procedures.push(SharedProcedure {
+        kind: evm_abstract_protocol::decompile_model::SharedProcedureKind::Normal,
         id: procedure,
         body: EntityId(1002),
         interface: SharedInterface {
@@ -365,7 +366,7 @@ fn schema_five_procedure_invocation_entities_and_sparse_maps_survive_result_enve
         high.invocations[0].actual(EntityId(2001)),
         Some(EntityId(2001))
     );
-    for version in [1, 2, 3, 4] {
+    for version in [1, 2, 3, 4, 5] {
         let mut old = artifact.clone();
         old.schema_version = version;
         assert!(

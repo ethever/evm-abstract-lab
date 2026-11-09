@@ -27,7 +27,7 @@ enum Mutation {
     AliasedState,
     DropStore,
     DuplicateStore,
-    DropCall,
+    ForbiddenCall,
     DropLog,
     DifferentOpcode,
     DifferentConstant,
@@ -35,6 +35,8 @@ enum Mutation {
     HiddenPathAssumption,
     EffectOrder,
     StaleInvocationValue,
+    ArithmeticContract,
+    LegacyContract,
 }
 
 fn call(stage: &Stage) -> SharedInvocation {
@@ -70,6 +72,15 @@ fn operation(stage: &Stage, opcode: u8) -> (EntityId, EntityId) {
             }
         }
     }
+    if let Some(op) = stage
+        .ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.operations)
+        .find(|op| op.opcode == opcode)
+    {
+        return (op.id, op.id);
+    }
     panic!("opcode 0x{opcode:02x} must be covered by actual alpha-context sharing")
 }
 
@@ -87,6 +98,13 @@ fn mutate(stage: &mut Stage, mutation: Mutation) {
         .position(|call| call.id == selected.id)
         .unwrap();
     match mutation {
+        Mutation::ArithmeticContract => {
+            high.procedures[procedure_position].kind =
+                evm_decompile::SharedProcedureKind::PureArithmetic
+        }
+        Mutation::LegacyContract => {
+            high.procedures[procedure_position].kind = evm_decompile::SharedProcedureKind::Legacy
+        }
         Mutation::MissingBody => high.procedures[procedure_position].body = EntityId(u64::MAX),
         Mutation::RecursiveBody => high.procedures[procedure_position].body = selected.procedure,
         Mutation::MissingDefinition => {
@@ -206,13 +224,12 @@ fn mutate(stage: &mut Stage, mutation: Mutation) {
         },
         Mutation::DropStore
         | Mutation::DuplicateStore
-        | Mutation::DropCall
+        | Mutation::ForbiddenCall
         | Mutation::DropLog
         | Mutation::DifferentOpcode
         | Mutation::HiddenPathAssumption
         | Mutation::EffectOrder => {
             let opcode = match mutation {
-                Mutation::DropCall => 0xfa,
                 Mutation::DropLog => 0xa0,
                 _ => 0x55,
             };
@@ -229,7 +246,7 @@ fn mutate(stage: &mut Stage, mutation: Mutation) {
                 .position(|op| op.id == actual)
                 .unwrap();
             match mutation {
-                Mutation::DropStore | Mutation::DropCall | Mutation::DropLog => {
+                Mutation::DropStore | Mutation::DropLog => {
                     block.operations.remove(position);
                 }
                 Mutation::DuplicateStore => {
@@ -238,6 +255,7 @@ fn mutate(stage: &mut Stage, mutation: Mutation) {
                         .insert(position, block.operations[position].clone());
                 }
                 Mutation::DifferentOpcode => block.operations[position].opcode = 0x5d,
+                Mutation::ForbiddenCall => block.operations[position].opcode = 0xfa,
                 Mutation::HiddenPathAssumption => {
                     block.operations[position].replacement = Some(U256::ZERO)
                 }
@@ -252,6 +270,12 @@ fn mutate(stage: &mut Stage, mutation: Mutation) {
             let expression = high
                 .invocations
                 .iter()
+                .filter(|call| {
+                    high.procedures
+                        .iter()
+                        .find(|procedure| procedure.id == call.procedure)
+                        .is_some_and(|procedure| high.expression(procedure.body).is_none())
+                })
                 .flat_map(|call| &call.bindings)
                 .find_map(|binding| {
                     if binding.formal == binding.actual {
@@ -339,7 +363,7 @@ fn rejects(original: &Stage, mutation: Mutation) {
         mutation,
         Mutation::DropStore
             | Mutation::DuplicateStore
-            | Mutation::DropCall
+            | Mutation::ForbiddenCall
             | Mutation::DropLog
             | Mutation::DifferentOpcode
             | Mutation::DifferentValueType
@@ -378,8 +402,6 @@ fn direct_source_admission_rejects_corrupt_definitions_calls_maps_and_effects() 
         .unwrap()
         .validate_shared_sources(&original.ir, |_| true)
         .unwrap();
-    let loop_fixture = fixtures::loop_calls();
-    let loop_artifact = checked(&loop_fixture.input);
     let pure_fixture = fixtures::pure_call_inputs();
     let pure_artifact = checked(&pure_fixture.input);
     // Automatic scope joining attempts every case and fails the test on any panic.
@@ -407,7 +429,7 @@ fn direct_source_admission_rejects_corrupt_definitions_calls_maps_and_effects() 
             Mutation::AliasedState,
             Mutation::DropStore,
             Mutation::DuplicateStore,
-            Mutation::DropCall,
+            Mutation::ForbiddenCall,
             Mutation::DropLog,
             Mutation::DifferentOpcode,
             Mutation::DifferentConstant,
@@ -415,9 +437,10 @@ fn direct_source_admission_rejects_corrupt_definitions_calls_maps_and_effects() 
             Mutation::HiddenPathAssumption,
             Mutation::EffectOrder,
             Mutation::StaleInvocationValue,
+            Mutation::ArithmeticContract,
+            Mutation::LegacyContract,
         ] {
             let source = match mutation {
-                Mutation::DropCall => loop_artifact.current().unwrap(),
                 Mutation::DropLog => pure_artifact.current().unwrap(),
                 _ => original,
             };
@@ -514,7 +537,8 @@ fn caller_metered_render_admission_stops_on_refusal_and_preserves_source() {
         assert!(
             super::boundaries::nodes(&stage.ir.structured.as_ref().unwrap().root)
                 .iter()
-                .any(|node| node.id == call.source),
+                .any(|node| node.id == call.source)
+                || high.expression(call.source).is_some(),
             "safe original source must remain reachable in its retained arena"
         );
     }
@@ -552,7 +576,7 @@ fn directly_supplied_terminal_body_and_exit_splits_are_rejected() {
                     .block(block)
                     .unwrap()
                     .source
-                    .is_some_and(|source| source.pc == fixture.labels["tail"])
+                    .is_some_and(|source| source.pc == fixture.labels["terminal"])
             })
             .collect();
         assert_eq!(
@@ -560,24 +584,28 @@ fn directly_supplied_terminal_body_and_exit_splits_are_rejected() {
             2,
             "two distinct AST occurrences of the terminal source"
         );
-        let canonical = index.region(occurrences[0].id, &mut |_| true).unwrap();
-        let actual = index.region(occurrences[1].id, &mut |_| true).unwrap();
-        let bindings = index
-            .correspondence(&canonical, &actual, &mut |_| true)
-            .unwrap();
+        assert!(matches!(
+            index.region(occurrences[0].id, &mut |_| true),
+            Err(evm_decompile::SharedProcedureError::Region(_))
+        ));
+        assert!(matches!(
+            index.region(occurrences[1].id, &mut |_| true),
+            Err(evm_decompile::SharedProcedureError::Region(_))
+        ));
         let mut supplied = stage.ir.lifted.as_ref().unwrap().clone();
         let procedure = EntityId(u64::MAX - 2);
         supplied.procedures = vec![SharedProcedure {
             id: procedure,
-            body: canonical.root,
-            interface: canonical.interface,
+            kind: evm_decompile::SharedProcedureKind::Normal,
+            body: occurrences[0].id,
+            interface: evm_decompile::SharedInterface::default(),
         }];
         supplied.invocations = vec![
             index
                 .invocation(EntityId(u64::MAX - 1), procedure, occurrences[0].id, vec![])
                 .unwrap(),
             index
-                .invocation(EntityId(u64::MAX), procedure, occurrences[1].id, bindings)
+                .invocation(EntityId(u64::MAX), procedure, occurrences[1].id, vec![])
                 .unwrap(),
         ];
         supplied.validate().unwrap();

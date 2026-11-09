@@ -3,8 +3,8 @@ use crate::{
 };
 
 fn witness() -> crate::Artifact {
-    // Two arms with independent terminal exits materialize the useful common
-    // tail twice. This fixture tests syntax occurrences, not source-PC equality.
+    // Two arms materialize a common nonterminal block twice. The terminal lives
+    // in its following block, outside every procedure body.
     let mut code = Vec::new();
     let mut patches = Vec::new();
     fn branch(code: &mut Vec<u8>, patches: &mut Vec<(usize, bool)>, offset: u8, left: bool) {
@@ -21,8 +21,12 @@ fn witness() -> crate::Artifact {
     let tail = code.len();
     code.extend([
         0x5b, 0x60, 96, 0x35, 0x80, 0x60, 64, 0x52, 0x60, 5, 0x55, 0x60, 32, 0x60, 64, 0xa0, 0x60,
-        9, 0x60, 8, 0x55, 0x00,
+        9, 0x60, 8, 0x55,
     ]);
+    let terminal = u16::try_from(code.len() + 4).unwrap();
+    code.push(0x61);
+    code.extend(terminal.to_be_bytes());
+    code.extend([0x56, 0x5b, 0x00]);
     for (at, is_left) in patches {
         let pc = u16::try_from(if is_left { left } else { tail }).unwrap();
         code[at..at + 2].copy_from_slice(&pc.to_be_bytes());
@@ -177,7 +181,7 @@ fn source_primitive_duplicates_and_effectful_replacements_cannot_hide_behind_sha
 
 #[test]
 fn canonical_loop_rows_preserve_simultaneous_words_and_state_transfers() {
-    let hex = "61000a600035610021565b610015602035610021565b60205260005260406000f35b60005b8115610056578101806040528160025560206040a0602061014060206040611234620186a0fa50906001900390610024565b90509056";
+    let hex = "61000a600035610021565b610015602035610021565b60205260005260406000f35b60005b8115610044578101806040528160025560206040a0906001900390610024565b90509056";
     let code = hex
         .as_bytes()
         .as_chunks::<2>()
