@@ -1,0 +1,15 @@
+{
+  "description": "Countdown loop carrying two values; the left diamond arm swaps them and may fail before a shared storage/log suffix. Calldata words: iterations, choose_left, fail_at_remaining.",
+  "labels": {
+    "header": 8,
+    "left": 26,
+    "join": 43,
+    "done": 70,
+    "early": 80
+  },
+  "initial_values": [
+    4660,
+    22136
+  ],
+  "byte_length": 90
+}

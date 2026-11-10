@@ -141,18 +141,18 @@ fn source_join_memo_including_negative_answers_survives_proposal_rollback() {
         .id;
     let checkpoint = planner.checkpoint();
     let before = planner.owner.budget.used();
-    assert_eq!(planner.common_join(left, right, None), Ok(Some(tail)));
+    assert_eq!(planner.common_join(left, right, None, None), Ok(Some(tail)));
     assert!(planner.owner.budget.used() - before > 8);
     planner.rollback(checkpoint);
     let before = planner.owner.budget.used();
-    assert_eq!(planner.common_join(left, right, None), Ok(Some(tail)));
+    assert_eq!(planner.common_join(left, right, None, None), Ok(Some(tail)));
     assert_eq!(
         planner.owner.budget.used() - before,
         8,
         "the source fact requires no second graph walk"
     );
     let before = planner.owner.budget.used();
-    assert_eq!(planner.common_join(failed, tail, None), Ok(None));
+    assert_eq!(planner.common_join(failed, tail, None, None), Ok(None));
     assert_eq!(
         planner.owner.budget.used() - before,
         8,
@@ -160,7 +160,95 @@ fn source_join_memo_including_negative_answers_survives_proposal_rollback() {
     );
     planner.rollback(checkpoint);
     assert_eq!(planner.join_cache.len(), 2);
-    assert_eq!(planner.common_join(failed, tail, None), Ok(None));
+    assert_eq!(planner.common_join(failed, tail, None, None), Ok(None));
+}
+
+#[test]
+fn scoped_join_memo_keeps_distinct_stops_and_survives_proposal_rollback() {
+    let input = Input::new(
+        evm_bytecode::parse_hex(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/structure/regions/loop-normal-join.hex"
+        )))
+        .unwrap(),
+        Fork::Osaka,
+    );
+    let cancel = Cancellation::new();
+    let artifact = decompile_with_progress(&input, &Config::default(), &cancel, |progress| {
+        if progress.phase == Phase::Structure {
+            cancel.cancel();
+        }
+    });
+    let ir = &artifact.current().unwrap().ir;
+    let at_pc = |pc| {
+        ir.blocks
+            .iter()
+            .find(|block| block.source.is_some_and(|source| source.pc == pc))
+            .unwrap()
+            .id
+    };
+    let header = at_pc(8);
+    let join = at_pc(43);
+    let mut owner = Builder::new(&input, &Config::default(), &Cancellation::new(), |_| {});
+    let dom = crate::transform::dominators(ir, &mut owner).unwrap();
+    let facts = Facts::new(ir, &dom, &mut owner).unwrap();
+    let info = &facts.loops[&header];
+    let local = facts
+        .normal_region(
+            ir,
+            RegionScope {
+                continuation: Some(header),
+                loop_header: Some(header),
+            },
+            &mut |n| owner.pay(n),
+        )
+        .unwrap();
+    let (left, right) = ir
+        .blocks
+        .iter()
+        .find_map(|block| {
+            let Terminator::Branch {
+                then_edges,
+                else_edge: Some(other),
+                ..
+            } = &block.terminator
+            else {
+                return None;
+            };
+            if then_edges.len() != 1 {
+                return None;
+            }
+            let left = ir.edge(then_edges[0])?.to;
+            let right = ir.edge(*other)?.to;
+            (local.postdom.get(&left)?.contains(&join)
+                && local.postdom.get(&right)?.contains(&join))
+            .then_some((left, right))
+        })
+        .unwrap();
+    assert!(!facts.finite.contains(&left));
+    assert!(!facts.finite.contains(&right));
+    let mut planner = Planner::new(ir, &facts, &mut owner, MAX_PLAN_SLOTS).unwrap();
+    assert_eq!(
+        planner.common_join(left, right, Some(header), Some(info)),
+        Ok(Some(join))
+    );
+    let checkpoint = planner.checkpoint();
+    assert_eq!(
+        planner.common_join(left, right, Some(left), Some(info)),
+        Ok(None)
+    );
+    planner.rollback(checkpoint);
+    let before = planner.owner.budget.used();
+    assert_eq!(
+        planner.common_join(left, right, Some(header), Some(info)),
+        Ok(Some(join))
+    );
+    assert_eq!(planner.owner.budget.used() - before, 8);
+    assert_eq!(planner.join_cache.len(), 2);
+    assert_eq!(
+        planner.normal_region.as_ref().unwrap().0.continuation,
+        Some(left)
+    );
 }
 
 #[test]
