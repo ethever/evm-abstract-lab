@@ -6,9 +6,9 @@ use evm_abstract_protocol::{
     DecompileArtifact, DecompileRequest, JobState,
     decompile_model::{
         Block, Edge, EdgeKind, Effects, EntityId, ExitKind, Ir, LiftedBlock, LiftedControl,
-        LiftedExpression, LiftedExpressionKind, LiftedProgram, LiftedStatement, LiftedType,
-        Operation, SourceSpan, Stage, StageId, StageKind, StructuredKind, StructuredNode,
-        StructuredProgram, Terminator, U256,
+        LiftedExpression, LiftedExpressionKind, LiftedProgram, LiftedRelation, LiftedStatement,
+        LiftedType, Operation, SourceSpan, Stage, StageId, StageKind, StructuredKind,
+        StructuredNode, StructuredProgram, Terminator, U256,
     },
 };
 use evm_abstract_server::jobs::{Config, Pool};
@@ -22,6 +22,9 @@ use std::{
 const REVERT_GUARD: &str = "5f35600a57602a5f55005b5f5ffd";
 // Both arms define a word consumed by the joined SSTORE.
 const LIVE_PHI: &str = "5f35600a576001600d565b60025b5f5500";
+// The zero-delta path has POP/JUMP stack plumbing; only the other path TSTOREs.
+const POOL_STYLE_EMPTY_THEN: &str =
+    include_str!("../../../tests/fixtures/decompile/pool-style-empty-then.hex");
 
 type Row = (EntityId, usize, String);
 
@@ -305,6 +308,108 @@ fn real_live_phi_else_survives_with_dependencies_hidden_or_shown() {
     assert_eq!(rows(structured::lines(stage)), raw);
 }
 
+#[test]
+fn real_pool_style_bypass_moves_the_original_effect_arm_before_rows_are_emitted() {
+    let artifact = artifact(POOL_STYLE_EMPTY_THEN.trim());
+    let original = artifact.clone();
+    let stage = artifact.current().unwrap();
+    let index = StageIndex::new(&stage.ir);
+    let branch = index.node(&stage.ir, only_if(stage)).unwrap();
+    let StructuredKind::If {
+        then_branch,
+        else_branch,
+        ..
+    } = &branch.kind
+    else {
+        unreachable!()
+    };
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let renderer = program.render_index(&stage.ir);
+    let control = program.control(branch.id).unwrap();
+    let mut bypass_nodes = BTreeSet::new();
+    let mut pops = 0;
+    structured::visit(then_branch, &mut |node| {
+        bypass_nodes.insert(node.id);
+        match node.kind {
+            StructuredKind::Block { block } => {
+                let raw = index.block(&stage.ir, block).unwrap();
+                pops += raw.operations.iter().filter(|op| op.opcode == 0x50).count();
+                assert!(renderer.block(block).unwrap().statements.is_empty());
+                assert!(raw.operations.iter().all(|op| op.effects.is_pure()));
+            }
+            StructuredKind::Transfer { edge } => {
+                assert!(renderer.transfer(edge).unwrap().arguments.is_empty());
+            }
+            StructuredKind::Sequence(_) => {}
+            _ => panic!("the zero-delta bypass must contain only stack plumbing"),
+        }
+    });
+    assert_eq!(pops, 1);
+    let store = program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find(|statement| {
+            index
+                .operation(&stage.ir, statement.operation)
+                .unwrap()
+                .opcode
+                == 0x5d
+        })
+        .unwrap();
+    let raw = rows(structured::lines(stage));
+    assert!(raw.iter().any(|(_, _, text)| text == "} else {"));
+    for dependencies in [false, true] {
+        for annotations in [false, true] {
+            let lines = rows(structured::lifted_lines_indexed(
+                stage,
+                &index,
+                structured::HighDisplayOptions {
+                    show_state_dependencies: dependencies,
+                    show_structure_annotations: annotations,
+                },
+            ));
+            let header = lines.iter().find(|row| row.0 == control.id).unwrap();
+            assert!(
+                header.2.starts_with("if (") && header.2.contains("!= 0"),
+                "{lines:#?}"
+            );
+            assert!(!lines.iter().any(|row| row.2 == "} else {"));
+            assert!(!lines.iter().any(|row| bypass_nodes.contains(&row.0)));
+            assert!(
+                lines
+                    .iter()
+                    .any(|row| row.0 == store.id && row.1 == header.1 + 1)
+            );
+        }
+    }
+    let work = index.render_work();
+    let details =
+        crate::decompile::lifted::details(stage, &index, control.id, &renderer, &work).unwrap();
+    assert!(details.lines[0].contains("!= 0"));
+    assert!(
+        details
+            .lines
+            .iter()
+            .any(|line| line.starts_with("Original predicate"))
+    );
+    for entity in [
+        control.node,
+        control.condition,
+        then_branch.id,
+        else_branch.id,
+    ] {
+        assert!(
+            details
+                .references
+                .iter()
+                .any(|at| at.stage == stage.id && at.entity == entity)
+        );
+    }
+    assert_eq!(rows(structured::lines(stage)), raw);
+    assert_eq!(artifact, original);
+}
+
 fn node(id: u64, kind: StructuredKind) -> StructuredNode {
     StructuredNode {
         id: EntityId(id),
@@ -380,18 +485,14 @@ fn renderer_stage(otherwise: StructuredNode) -> Stage {
 }
 
 fn with_else(body: Vec<Row>) -> Vec<Row> {
-    let mut expected = vec![
-        row(103, 0, "if ((v2 != 0)) {"),
-        row(11, 1, "// sequence ast11 · 0 children"),
-        row(103, 0, "} else {"),
-    ];
+    let mut expected = vec![row(103, 0, "if ((v2 == 0)) {")];
     expected.extend(body);
     expected.push(row(103, 0, "}"));
     expected
 }
 
 fn with_clean_else(body: Vec<Row>) -> Vec<Row> {
-    let mut expected = vec![row(103, 0, "if ((v2 != 0)) {"), row(103, 0, "} else {")];
+    let mut expected = vec![row(103, 0, "if ((v2 == 0)) {")];
     expected.extend(body);
     expected.push(row(103, 0, "}"));
     expected
@@ -488,7 +589,7 @@ fn an_inner_if_remains_substantive_after_its_own_empty_else_is_omitted() {
 }
 
 #[test]
-fn break_and_continue_else_keep_loop_indentation_and_do_not_invert_empty_then() {
+fn break_and_continue_move_under_the_complement_and_keep_original_loop_sources() {
     for (kind, text) in [
         (StructuredKind::Break, "break;"),
         (StructuredKind::Continue, "continue;"),
@@ -511,15 +612,68 @@ fn break_and_continue_else_keep_loop_indentation_and_do_not_invert_empty_then() 
                 vec![
                     row(20, 0, "'loop20: while (true) {"),
                     row(21, 1, "// sequence ast21 · 0 children"),
-                    row(103, 1, "if ((v2 != 0)) {"),
-                    row(11, 2, "// sequence ast11 · 0 children"),
-                    row(103, 1, "} else {"),
+                    row(103, 1, "if ((v2 == 0)) {"),
                     row(12, 2, text),
                     row(103, 1, "}"),
                     row(20, 0, "}"),
                 ]
             );
         }
+    }
+}
+
+#[test]
+fn generic_signed_complement_keeps_the_minimum_word_boundary_and_source_control() {
+    let mut stage = renderer_stage(node(12, StructuredKind::Break));
+    let program = stage.ir.lifted.as_mut().unwrap();
+    let value = program.expressions[0].clone();
+    let minimum = U256::from(1) << 255;
+    program.expressions = vec![
+        value,
+        LiftedExpression {
+            id: EntityId(106),
+            block: EntityId(1),
+            ty: LiftedType::Word256,
+            kind: LiftedExpressionKind::Word(minimum),
+        },
+        LiftedExpression {
+            id: EntityId(102),
+            block: EntityId(1),
+            ty: LiftedType::Predicate,
+            kind: LiftedExpressionKind::Compare {
+                relation: LiftedRelation::Sgt,
+                left: EntityId(101),
+                right: EntityId(106),
+            },
+        },
+    ];
+    let header = format!("if (!(evm.sgt(v2, {minimum:#x}))) {{");
+    for dependencies in [false, true] {
+        for annotations in [false, true] {
+            let lines = rows(structured::lifted_lines_indexed(
+                &stage,
+                &StageIndex::new(&stage.ir),
+                structured::HighDisplayOptions {
+                    show_state_dependencies: dependencies,
+                    show_structure_annotations: annotations,
+                },
+            ));
+            assert_eq!(lines[0], row(103, 0, &header));
+            assert!(lines.contains(&row(12, 1, "break;")));
+            assert!(!lines.iter().any(|row| row.2 == "} else {"));
+        }
+    }
+    for word in [
+        U256::ZERO,
+        U256::from(1),
+        minimum - U256::from(1),
+        minimum,
+        U256::MAX,
+    ] {
+        assert_eq!(
+            LiftedRelation::Sgt.complement().evaluate(word, minimum),
+            word == minimum
+        );
     }
 }
 

@@ -1,6 +1,6 @@
 //! Parameterized canonical body rows shared by native and browser consumers.
 use super::{MAX_SHARED_REGION_ENTITIES, SharedInvocation, SharedProcedure, SharedProcedureKind};
-use crate::{EntityId, LiftedIfPlan, RenderSummary};
+use crate::{EntityId, LiftedIfPlan};
 use crate::{
     LiftedRenderError as E, LiftedRenderIndex, StructuredKind as K, Terminator as T, ValueKind as V,
 };
@@ -29,36 +29,9 @@ struct BodyRows {
     rows: Vec<SharedRenderRow>,
     text_bytes: usize,
     emitted_rows: usize,
-    summary: RenderSummary,
-}
-
-struct ElseCheckpoint {
-    start: usize,
-    content: RenderSummary,
 }
 
 impl BodyRows {
-    fn begin_else(
-        &mut self,
-        owner: EntityId,
-        depth: usize,
-        pay: &mut impl FnMut(usize) -> bool,
-    ) -> Result<ElseCheckpoint, E> {
-        let start = self.rows.len();
-        self.emit(owner, "} else {".to_owned(), depth, false, pay)?;
-        // The tentative separator is not content of its own arm.
-        Ok(ElseCheckpoint {
-            start,
-            content: self.summary,
-        })
-    }
-
-    fn end_else(&mut self, checkpoint: ElseCheckpoint) {
-        if !self.summary.since(checkpoint.content).has_content() {
-            self.rows.truncate(checkpoint.start);
-        }
-    }
-
     fn emit(
         &mut self,
         entity: EntityId,
@@ -73,11 +46,6 @@ impl BodyRows {
             return Err(E::Limit);
         }
         self.emitted_rows += 1;
-        if !annotation {
-            // The cumulative row ceiling bounds this monotone counter, even
-            // when empty arms remove previously emitted contextual rows.
-            self.summary.include(RenderSummary::CONTENT);
-        }
         self.rows.push(SharedRenderRow {
             entity,
             text,
@@ -360,13 +328,17 @@ impl<'a> LiftedRenderIndex<'a> {
             .shared_source
             .as_ref()
             .ok_or(E::InvalidSharedSource(p.id))?;
+        let layouts = self.plan_branch_layouts(
+            p.body,
+            |id| id != p.body && self.shared_invocation(id).is_some(),
+            &mut pay,
+        )?;
         enum Task {
             Node(EntityId, usize, Option<EntityId>),
             Sequence(EntityId, usize, usize, usize, Option<EntityId>),
             Text(EntityId, String, usize),
             Transfer(EntityId, usize),
             Else(EntityId, EntityId, usize, Option<EntityId>),
-            EndElse(ElseCheckpoint),
         }
         let mut todo = vec![Task::Node(p.body, 0, None)];
         let mut output = BodyRows::default();
@@ -400,11 +372,9 @@ impl<'a> LiftedRenderIndex<'a> {
                 }
                 Task::Text(id, text, depth) => output.emit(id, text, depth, false, &mut pay)?,
                 Task::Else(owner, body, depth, loop_id) => {
-                    let checkpoint = output.begin_else(owner, depth, &mut pay)?;
-                    todo.push(Task::EndElse(checkpoint));
+                    output.emit(owner, "} else {".to_owned(), depth, false, &mut pay)?;
                     todo.push(Task::Node(body, depth + 1, loop_id));
                 }
-                Task::EndElse(checkpoint) => output.end_else(checkpoint),
                 Task::Transfer(id, depth) => {
                     let transfer = self.transfer(id).ok_or(E::MissingWitness(id))?;
                     if let Some(text) = self.render_transfer(transfer, &mut pay)? {
@@ -473,11 +443,7 @@ impl<'a> LiftedRenderIndex<'a> {
                             }
                         }
                         K::Transfer { edge } => todo.push(Task::Transfer(*edge, depth)),
-                        K::If {
-                            then_branch,
-                            else_branch,
-                            ..
-                        } => {
+                        K::If { .. } => {
                             let control = self.control(id).ok_or(E::MissingWitness(id))?;
                             if let LiftedIfPlan::Require(plan) = self.expanded_if_plan(id, p.body) {
                                 output.emit(
@@ -515,19 +481,26 @@ impl<'a> LiftedRenderIndex<'a> {
                                 }
                                 todo.push(Task::Node(plan.failure_node(), depth + 1, loop_id));
                             } else {
+                                let layout = layouts.get(id).ok_or(E::MissingWitness(id))?;
                                 output.emit(
                                     id,
                                     format!(
                                         "if ({}) {{",
-                                        self.render_condition(control.condition, false, &mut pay)?
+                                        self.render_condition(
+                                            control.condition,
+                                            layout.invert,
+                                            &mut pay
+                                        )?
                                     ),
                                     depth,
                                     false,
                                     &mut pay,
                                 )?;
                                 todo.push(Task::Text(id, "}".to_owned(), depth));
-                                todo.push(Task::Else(id, else_branch.id, depth, loop_id));
-                                todo.push(Task::Node(then_branch.id, depth + 1, loop_id));
+                                if let Some(otherwise) = layout.else_node {
+                                    todo.push(Task::Else(id, otherwise, depth, loop_id));
+                                }
+                                todo.push(Task::Node(layout.then_node, depth + 1, loop_id));
                             }
                         }
                         K::While {

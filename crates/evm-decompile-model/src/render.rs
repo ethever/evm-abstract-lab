@@ -1,8 +1,9 @@
-//! Presentation content accounting shared by ordinary and reusable bodies.
+//! Monotone output accounting; ordinary branch layouts are planned separately
+//! from typed semantic metadata before rendering, never inferred from this count.
 
 /// Monotone summary of substantive rendered content. Structural annotations
 /// are context; operations, diagnostics and control constructs are content.
-/// A copy is a checkpoint: removing an empty else never refunds prior output.
+/// A copy is a checkpoint: discarding a span never refunds prior output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderSummary {
     content: usize,
@@ -38,7 +39,7 @@ impl RenderSummary {
         }
     }
 
-    /// Empty arms may omit their else separator; whole controls remain content.
+    /// Whether this output span contains substantive rows.
     pub const fn has_content(self) -> bool {
         self.content != 0
     }

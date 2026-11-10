@@ -1,9 +1,9 @@
 //! Human-readable output is a view of typed syntax, never the semantic owner.
 use crate::budget::{count, work_budget};
 use crate::{
-    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, LiftedBlock, LiftedControl,
-    LiftedIfPlan, LiftedProgram, LiftedRenderError, LiftedRenderIndex, LiftedStatement,
-    LiftedTransfer, Operation, RenderSummary, StageKind, StructuredKind, StructuredNode,
+    Artifact, Block, Cancellation, Edge, EntityId, ExitKind, LiftedBlock, LiftedBranchLayouts,
+    LiftedControl, LiftedIfPlan, LiftedProgram, LiftedRenderError, LiftedRenderIndex,
+    LiftedStatement, LiftedTransfer, Operation, StageKind, StructuredKind, StructuredNode,
     Terminator, Value, ValueKind,
 };
 use evm_resource::{ResourceError, WorkBudget};
@@ -100,6 +100,7 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
         boundary: EntityId(0),
         lifted: None,
         lifted_renderer: None,
+        branch_layouts: None,
     };
     // Scope admission touches every retained snapshot and its certificate
     // markers. Reserve that history before reading any of those records.
@@ -191,6 +192,19 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
             status: TextExportStatus::Limited,
             work: count(index.budget.used()),
         };
+    }
+    if index.lifted_renderer.is_some() && stage.ir.structured.is_some() {
+        let boundary = index.boundary;
+        let Some(layouts) = index.semantic(|renderer, owner| {
+            renderer.plan_branch_layouts(
+                boundary,
+                |source| renderer.shared_invocation(source).is_some(),
+                |work| owner.pay(work),
+            )
+        }) else {
+            return index.finish(out);
+        };
+        index.branch_layouts = Some(layouts);
     }
     let procedures: Vec<_> = index
         .lifted_renderer
@@ -323,6 +337,7 @@ struct RenderIndex<'a, P: FnMut(u64)> {
     boundary: EntityId,
     lifted: Option<&'a LiftedProgram>,
     lifted_renderer: Option<LiftedRenderIndex<'a>>,
+    branch_layouts: Option<LiftedBranchLayouts>,
 }
 #[derive(Clone, Copy)]
 struct LoopControl {
@@ -605,9 +620,9 @@ fn syntax(
     n: &StructuredNode,
     ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
-) -> RenderSummary {
+) {
     if !ir.pay(1) {
-        return RenderSummary::CONTENT;
+        return;
     }
     if let Some(invocation) = ir
         .lifted_renderer
@@ -617,28 +632,23 @@ fn syntax(
         let Some(text) =
             ir.semantic(|r, owner| r.render_shared_invocation(invocation, true, |n| owner.pay(n)))
         else {
-            return RenderSummary::CONTENT;
+            return;
         };
         indent(out, depth);
         let _ = writeln!(out, "{text}");
-        return RenderSummary::CONTENT;
+        return;
     }
-    let mut summary = RenderSummary::CONTENT;
     match &n.kind {
         StructuredKind::Sequence(v) => {
-            summary = syntax_sequence(out, n.id, v, 0..v.len(), ir, depth);
+            syntax_sequence(out, n.id, v, 0..v.len(), ir, depth);
         }
         StructuredKind::Block { block } => {
-            let start = out.len();
             if let Some(b) = ir.block(*block) {
                 body(out, b, ir, depth);
             }
-            summary = RenderSummary::from_content(ir.stopped || out.len() > start);
         }
         StructuredKind::Transfer { edge } => {
-            let start = out.len();
             transfer(out, *edge, ir, depth);
-            summary = RenderSummary::from_content(ir.stopped || out.len() > start);
         }
         StructuredKind::If {
             condition,
@@ -658,7 +668,7 @@ fn syntax(
                 let Some(text) = ir.semantic(|renderer, owner| {
                     renderer.render_require(&plan, |work| owner.pay(work))
                 }) else {
-                    return RenderSummary::CONTENT;
+                    return;
                 };
                 let success = ir
                     .lifted_renderer
@@ -667,18 +677,18 @@ fn syntax(
                 let Some(success) = success else {
                     ir.stopped = true;
                     ir.status = TextExportStatus::Limited;
-                    return RenderSummary::CONTENT;
+                    return;
                 };
                 indent(out, depth);
                 let _ = writeln!(out, "{text}");
                 syntax(out, success, ir, depth);
-                return RenderSummary::CONTENT;
+                return;
             }
             if let Some(plan) = failure_first {
                 let Some(condition) = ir.semantic(|renderer, owner| {
                     renderer.render_failure_first_condition(&plan, |work| owner.pay(work))
                 }) else {
-                    return RenderSummary::CONTENT;
+                    return;
                 };
                 indent(out, depth);
                 let _ = writeln!(out, "if ({condition}) {{");
@@ -693,7 +703,7 @@ fn syntax(
                 let (Some(failure), Some(success)) = (failure, success) else {
                     ir.stopped = true;
                     ir.status = TextExportStatus::Limited;
-                    return RenderSummary::CONTENT;
+                    return;
                 };
                 syntax(out, failure, ir, depth + 1);
                 let suffix = ir
@@ -710,30 +720,60 @@ fn syntax(
                 if let Some((sequence, children, range)) = suffix {
                     syntax_sequence(out, sequence, children, range, ir, depth + 1);
                     if ir.stopped {
-                        return RenderSummary::CONTENT;
+                        return;
                     }
                 }
                 indent(out, depth);
                 out.push_str("}\n");
                 syntax(out, success, ir, depth);
-                return RenderSummary::CONTENT;
+                return;
             }
+            // The shared high projection chose source arms and polarity before
+            // any rows were emitted. Raw structured export keeps its own shape.
+            let layout = ir
+                .branch_layouts
+                .as_ref()
+                .and_then(|layouts| layouts.get(n.id))
+                .map(|layout| (layout.invert, layout.then_node, layout.else_node));
+            let (invert, then_branch, else_branch) =
+                if let Some((invert, then_id, else_id)) = layout {
+                    let renderer = ir.lifted_renderer.as_ref().unwrap();
+                    let Some(then_node) = renderer.node(then_id) else {
+                        ir.stopped = true;
+                        ir.status = TextExportStatus::Limited;
+                        return;
+                    };
+                    let else_node = match else_id {
+                        Some(id) => {
+                            let Some(node) = renderer.node(id) else {
+                                ir.stopped = true;
+                                ir.status = TextExportStatus::Limited;
+                                return;
+                            };
+                            Some(node)
+                        }
+                        None => None,
+                    };
+                    (invert, then_node, else_node)
+                } else {
+                    (false, &**then_branch, Some(&**else_branch))
+                };
             indent(out, depth);
             let condition = ir
                 .lifted_control(n.id)
-                .map(|c| ir.high_condition(c.condition, false))
-                .unwrap_or_else(|| format!("{} != 0", expression(ir, *condition)));
+                .map(|c| ir.high_condition(c.condition, invert))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{} {} 0",
+                        expression(ir, *condition),
+                        if invert { "==" } else { "!=" }
+                    )
+                });
             let _ = writeln!(out, "if ({condition}) {{");
             syntax(out, then_branch, ir, depth + 1);
-            if ir.lifted.is_some() {
-                let else_start = out.len();
-                indent(out, depth);
-                out.push_str("} else {\n");
-                let otherwise = syntax(out, else_branch, ir, depth + 1);
-                if !otherwise.has_content() {
-                    out.truncate(else_start);
-                }
-            } else if visible(else_branch, ir) {
+            if let Some(else_branch) = else_branch
+                && (ir.lifted.is_some() || visible(else_branch, ir))
+            {
                 indent(out, depth);
                 out.push_str("} else {\n");
                 syntax(out, else_branch, ir, depth + 1);
@@ -842,7 +882,7 @@ fn syntax(
         }
         StructuredKind::Dispatcher { entry, cases } => {
             if !ir.pay(cases.len().saturating_mul(2)) {
-                return RenderSummary::CONTENT;
+                return;
             }
             let dispatch = DispatchControl {
                 node: n.id,
@@ -875,7 +915,6 @@ fn syntax(
             out.push_str("}\n");
         }
     }
-    summary
 }
 
 fn syntax_sequence(
@@ -885,8 +924,7 @@ fn syntax_sequence(
     range: std::ops::Range<usize>,
     ir: &mut RenderIndex<'_, impl FnMut(u64)>,
     depth: usize,
-) -> RenderSummary {
-    let mut summary = RenderSummary::default();
+) {
     let outer_next = ir.next_block;
     let mut position = range.start;
     while position < range.end {
@@ -909,14 +947,13 @@ fn syntax_sequence(
             .get(position + 1)
             .map(|next| ir.first_block(next))
             .unwrap_or(outer_next);
-        summary.include(syntax(out, node, ir, depth));
+        syntax(out, node, ir, depth);
         if ir.stopped {
             break;
         }
         position += 1;
     }
     ir.next_block = outer_next;
-    summary
 }
 
 fn visible(node: &StructuredNode, ir: &RenderIndex<'_, impl FnMut(u64)>) -> bool {

@@ -1074,6 +1074,26 @@
       ]
     },
     {
+      "id": "decompile-branch-layout",
+      "group": "decompile",
+      "module": "web_test_decompile_branch_layout",
+      "dependencies": [
+        "crates/evm-abstract-web/tests/fixtures/decompile/pool-style-empty-then.hex",
+        "crates/evm-abstract-web/tests/fixtures/decompile/shared-empty-then.hex",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_alignment.py",
+        "scripts/web_test_decompile_branch_layout.py",
+        "scripts/web_test_decompile_guards.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http_errors.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
       "id": "decompile-readability",
       "group": "decompile",
       "module": "web_test_decompile_readability",

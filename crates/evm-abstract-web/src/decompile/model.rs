@@ -146,6 +146,7 @@ pub(super) struct ViewState {
     pub source_navigation: bool,
     pub entity_navigation: bool,
     pub compare_navigation: bool,
+    pub expanded_calls: BTreeSet<EntityRef>,
     source_descendants: Option<(usize, Rc<Vec<EntityRef>>)>,
     entity_descendants: Option<(EntityRef, Rc<Vec<EntityRef>>)>,
     details: Option<(EntityRef, Rc<super::details::Details>)>,
@@ -176,6 +177,7 @@ impl ViewState {
         self.source_descendants = None;
         self.entity_descendants = None;
         self.details = None;
+        self.expanded_calls.clear();
         self.event_created = None;
         self.history.clear();
         self.cursor = 0;
@@ -364,15 +366,29 @@ impl ViewState {
     pub fn details(&mut self, artifact: &Artifact, at: EntityRef) -> Rc<super::details::Details> {
         if self.details.as_ref().is_none_or(|(old, _)| *old != at) {
             let stage = artifact.stage(at.stage).expect("selected stage exists");
-            let details = super::details::build(
+            let expanded = self
+                .expanded_calls
+                .iter()
+                .filter(|call| call.stage == at.stage)
+                .map(|call| call.entity)
+                .collect();
+            let details = super::details::build_expanded(
                 stage,
                 &self.index.stage(at.stage),
                 at.entity,
                 &artifact.input.runtime_bytecode,
+                &expanded,
             );
             self.details = Some((at, Rc::new(details)));
         }
         Rc::clone(&self.details.as_ref().expect("prepared details").1)
+    }
+
+    pub fn toggle_call_expansion(&mut self, call: EntityRef) {
+        if !self.expanded_calls.remove(&call) {
+            self.expanded_calls.insert(call);
+        }
+        self.details = None;
     }
 
     pub fn new_entities(

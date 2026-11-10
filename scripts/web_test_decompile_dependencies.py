@@ -196,8 +196,8 @@ def run(context):
 
     # An ordinary terminal true arm leaves only false-edge tokens in the else.
     # Both alternatives stop normally, so this remains an ordinary branch.
-    # Hiding those tokens must also omit the empty syntax, while retaining the
-    # true STOP and the following storage write outside the conditional.
+    # Dependency visibility keeps the same semantic layout: the metadata-only
+    # false arm is omitted, while its raw witness and the true arm stay intact.
     artifact, _ = submit(context, page, canvas, ORDINARY_EMPTY_ELSE, "dependencies-empty-else")
     current = stage(artifact, "lifted")
     admitted = len(posts)
@@ -222,6 +222,23 @@ def run(context):
     edge = nodes[branch["else_branch"]]["kind"]["transfer"]["edge"]
     transfer = next(item for item in current["ir"]["lifted"]["transfers"] if item["edge"] == edge)
     assert not transfer["arguments"], transfer
+    retained_edges, pending = set(), [branch["then_branch"]]
+    while pending:
+        kind = nodes[pending.pop()]["kind"]
+        if isinstance(kind, dict) and "sequence" in kind:
+            pending.extend(kind["sequence"])
+        elif isinstance(kind, dict) and "transfer" in kind:
+            retained_edges.add(kind["transfer"]["edge"])
+    assert retained_edges and edge not in retained_edges
+    raw_edges = {item["id"]: item for item in current["ir"]["edges"]}
+    blocks = {block["id"]: block for block in current["ir"]["blocks"]}
+
+    def state_tokens(identity):
+        source = raw_edges[identity]
+        target = blocks[source["to"]]
+        return [f"m{target['memory_parameter']} = m{source['memory']}; // memory token on e{identity}",
+                f"q{target['effect_parameter']} = q{source['effect']}; // effect token on e{identity}"]
+
     source_descendant(page, canvas, artifact, current["id"], transfer["id"])
     ui_control(page, "IR", role="tab", selected=True)
     selected_row(page, "decompile-ir", "Live transfer h" + transfer["id"])
@@ -230,17 +247,26 @@ def run(context):
 
     set_control(page, canvas, TOGGLE, True)
     detailed = painted_copy(page, canvas)
-    assert detailed.count("} else {") == 1, detailed
-    assert "memory token on e" + edge in detailed and "effect token on e" + edge in detailed
+    assert "} else {" not in detailed, detailed
+    detailed_rows = [line.strip() for line in detailed.splitlines()]
+    for retained_edge in retained_edges:
+        assert all(token in detailed_rows for token in state_tokens(retained_edge)), detailed
+    assert all(token not in detailed_rows for token in state_tokens(edge)), detailed
+    projected = [line.split(" // ", 1)[0] for line in detailed.splitlines()
+                 if not ALIASES.match(line)]
+    assert projected == reading.splitlines(), "state metadata must preserve every semantic row and its depth"
     source_descendant(page, canvas, artifact, current["id"], transfer["id"])
-    ui_control(page, "Simplified structured code", role="tab", selected=True)
-    selected_row(page, "decompile-code", "memory token on e" + edge)
-    canvas.screenshot(path=str(context.output / "dependencies-empty-else-restored.png"))
+    ui_control(page, "IR", role="tab", selected=True)
+    selected_row(page, "decompile-ir", "Live transfer h" + transfer["id"])
+    high(page, canvas)
+    assert painted_copy(page, canvas) == detailed
+    canvas.screenshot(path=str(context.output / "dependencies-empty-else-state-invariant.png"))
     set_control(page, canvas, TOGGLE, False)
     assert painted_copy(page, canvas) == reading
     click_control(page, canvas, "Structured code", role="tab")
     raw = copy_code(page, canvas)
-    assert "} else {" in raw and "memory token on e" + edge in raw, raw
+    assert "} else {" in raw and all(token in [line.strip() for line in raw.splitlines()]
+                                    for token in state_tokens(edge)), raw
     high(page, canvas)
     assert painted_copy(page, canvas) == reading
     retained = page.request.get(result_url)

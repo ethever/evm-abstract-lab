@@ -4,8 +4,8 @@
 use super::index::StageIndex;
 
 use evm_abstract_protocol::decompile_model::{
-    Block, EntityId, ExitKind, Ir, LiftedIfPlan, LiftedRenderError, LiftedRenderIndex, Operation,
-    RenderSummary, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
+    Block, EntityId, ExitKind, Ir, LiftedBranchLayouts, LiftedIfPlan, LiftedRenderError,
+    LiftedRenderIndex, Operation, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
     render_explicit_invalid,
 };
 use std::{cell::Cell, collections::BTreeSet};
@@ -29,6 +29,7 @@ struct Scope<'a> {
     expanded: Option<&'a BTreeSet<EntityId>>,
     prepared: Option<&'a super::lifted::shared::Prepared>,
     boundary: Option<EntityId>,
+    branch_layouts: Option<&'a LiftedBranchLayouts>,
     aborted: Option<&'a Cell<bool>>,
     display: HighDisplayOptions,
 }
@@ -129,7 +130,7 @@ fn render_lines(
     let prepared = expanded_prepared.as_ref().unwrap_or(&index.shared);
     // Shared proof and formatting are already cached on this immutable stage.
     // This lightweight index cannot authorize procedure omissions on its own.
-    let renderer = lifted
+    let mut renderer = lifted
         .then(|| {
             stage.ir.lifted.as_ref().map(|program| {
                 program.render_base_index_with_budget(&stage.ir, |amount| work.reserve(amount))
@@ -139,10 +140,30 @@ fn render_lines(
         .filter(|renderer| renderer.validate_shared_sources() != Err(LiftedRenderError::Limit));
     // Prepare complete definitions before allowing any call to replace its
     // source occurrence. A formatting failure retains the full source tree.
-    let definitions = renderer
+    let mut definitions = renderer
         .as_ref()
         .filter(|_| prepared.error().is_none())
         .and_then(|_| shared_definitions(prepared, display, &work));
+    // Decide arm order and omitted metadata-only arms before emitting any row.
+    // The predicate describes calls actually admitted by this display attempt,
+    // including an expanded invocation's original source subtree.
+    let branch_layouts = if let Some(renderer) = renderer.as_ref()
+        && let Some(program) = &stage.ir.structured
+    {
+        renderer
+            .plan_branch_layouts(
+                program.root.id,
+                |source| definitions.is_some() && prepared.invocation(source, false).is_some(),
+                |amount| work.reserve(amount),
+            )
+            .ok()
+    } else {
+        None
+    };
+    if renderer.is_some() && branch_layouts.is_none() {
+        renderer = None;
+        definitions = None;
+    }
     let shared = definitions.is_some();
     let mut output = Vec::new();
     if let Some(program) = &stage.ir.structured
@@ -164,6 +185,7 @@ fn render_lines(
                 expanded,
                 prepared: Some(prepared),
                 boundary: Some(program.root.id),
+                branch_layouts: branch_layouts.as_ref(),
                 aborted: Some(&aborted),
                 display,
                 ..Scope::default()
@@ -200,7 +222,7 @@ fn shared_definitions(
             }
             emit(
                 &mut output,
-                prepared.require_owner(row.entity).unwrap_or(row.entity),
+                prepared.control_owner(row.entity).unwrap_or(row.entity),
                 row.depth + 1,
                 row.text.clone(),
             );
@@ -225,9 +247,9 @@ fn render(
     scope: Scope<'_>,
     indent: usize,
     output: &mut Vec<Line>,
-) -> RenderSummary {
+) {
     if scope.aborted.is_some_and(Cell::get) {
-        return RenderSummary::default();
+        return;
     }
     if scope.shared
         && let Some((entity, text)) = index
@@ -242,10 +264,9 @@ fn render(
             emit(output, entity, indent, format!("// Expanded: {text}"));
         } else {
             emit(output, entity, indent, text.to_owned());
-            return RenderSummary::CONTENT;
+            return;
         }
     }
-    let mut summary = RenderSummary::CONTENT;
     match &node.kind {
         StructuredKind::Sequence(nodes) => {
             if scope.show_structure_annotations() {
@@ -256,7 +277,6 @@ fn render(
                     format!("// sequence ast{} · {} children", node.id.0, nodes.len()),
                 );
             }
-            summary = RenderSummary::default();
             let mut position = 0;
             while let Some(child) = nodes.get(position) {
                 if scope.aborted.is_some_and(Cell::get) {
@@ -273,24 +293,22 @@ fn render(
                     .get(position + 1)
                     .map(|next| index.first_block(ir, next))
                     .unwrap_or(scope.following);
-                summary.include(render(
+                render(
                     child,
                     ir,
                     index,
                     Scope { following, ..scope },
                     indent,
                     output,
-                ));
+                );
                 position += 1;
             }
         }
         StructuredKind::Block { block } => {
-            summary = body(node.id, *block, ir, index, scope, indent, output);
+            body(node.id, *block, ir, index, scope, indent, output);
         }
         StructuredKind::Transfer { edge } => {
-            let start = output.len();
             transfer(node.id, *edge, ir, index, scope, indent, output);
-            summary = RenderSummary::from_content(output.len() > start);
         }
         StructuredKind::If {
             condition,
@@ -328,11 +346,11 @@ fn render(
                             indent,
                             format!("unavailable_require(ast{}: {error});", node.id.0),
                         );
-                        return RenderSummary::CONTENT;
+                        return;
                     }
                 }
                 render(success, ir, index, scope, indent, output);
-                return RenderSummary::CONTENT;
+                return;
             }
             if let Some(renderer) = scope.lifted
                 && let Some(boundary) = scope.boundary
@@ -363,7 +381,7 @@ fn render(
                             indent,
                             format!("unavailable_predicate(ast{}: {error});", node.id.0),
                         );
-                        return RenderSummary::CONTENT;
+                        return;
                     }
                 };
                 emit(output, owner, indent, format!("if ({condition}) {{"));
@@ -412,19 +430,39 @@ fn render(
                 // The success arm retains its original simultaneous bindings
                 // and continues at the failed If's indentation.
                 render(success, ir, index, scope, indent, output);
-                return RenderSummary::CONTENT;
+                return;
             }
-            let (owner, predicate) = predicate(node.id, *condition, false, ir, index, scope);
+            let layout = scope
+                .branch_layouts
+                .and_then(|layouts| layouts.get(node.id));
+            let arm = |id| {
+                if id == then_branch.id {
+                    Some(&**then_branch)
+                } else if id == else_branch.id {
+                    Some(&**else_branch)
+                } else {
+                    None
+                }
+            };
+            let shown_then = layout
+                .and_then(|layout| arm(layout.then_node))
+                .unwrap_or(then_branch);
+            let shown_else = layout.map_or(Some(&**else_branch), |layout| {
+                layout.else_node.and_then(arm)
+            });
+            let (owner, predicate) = predicate(
+                node.id,
+                *condition,
+                layout.is_some_and(|layout| layout.invert),
+                ir,
+                index,
+                scope,
+            );
             emit(output, owner, indent, format!("if ({predicate}) {{"));
-            render(then_branch, ir, index, scope, indent + 1, output);
-            let else_start = output.len();
-            emit(output, owner, indent, "} else {");
-            let otherwise = render(else_branch, ir, index, scope, indent + 1, output);
-            if scope.lifted.is_some() && !otherwise.has_content() {
-                // Remove only this tentative separator and its contextual rows;
-                // the final brace still closes the then branch. Each subtree
-                // renders once into the shared buffer, without rescanning it.
-                output.truncate(else_start);
+            render(shown_then, ir, index, scope, indent + 1, output);
+            if let Some(shown_else) = shown_else {
+                emit(output, owner, indent, "} else {");
+                render(shown_else, ir, index, scope, indent + 1, output);
             }
             emit(output, owner, indent, "}");
         }
@@ -585,7 +623,6 @@ fn render(
             );
         }
     }
-    summary
 }
 
 fn body(
@@ -596,9 +633,9 @@ fn body(
     scope: Scope<'_>,
     indent: usize,
     output: &mut Vec<Line>,
-) -> RenderSummary {
+) {
     let Some(block) = index.block(ir, block) else {
-        return RenderSummary::default();
+        return;
     };
     let semantic = scope.lifted.and_then(|_| index.source_block(ir, block.id));
     let owner = semantic.map_or(node, |block| block.id);
@@ -617,8 +654,6 @@ fn body(
             ),
         );
     }
-    // Everything after the block header is content, including diagnostics.
-    let content_start = output.len();
     if let Some(renderer) = scope.lifted {
         let Some(semantic) = semantic else {
             emit(
@@ -627,7 +662,7 @@ fn body(
                 indent,
                 format!("unavailable_high_block(b{});", block.id.0),
             );
-            return RenderSummary::CONTENT;
+            return;
         };
         // Payload certificates describe the original memory operations. Keep
         // those operations in their source arm instead of replacing them with
@@ -664,7 +699,7 @@ fn body(
                     }),
             );
         }
-        return RenderSummary::from_content(output.len() > content_start);
+        return;
     }
     for op in &block.operations {
         if let Some(reason) = fault_reason(op, ir, index) {
@@ -683,7 +718,6 @@ fn body(
         }
         emit(output, op.id, indent, operation(op, ir, index));
     }
-    RenderSummary::from_content(output.len() > content_start)
 }
 
 fn transfer(

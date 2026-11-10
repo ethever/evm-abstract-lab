@@ -245,7 +245,7 @@ fn high_export_omits_an_empty_block_else_and_keeps_the_whole_if() {
 }
 
 #[test]
-fn high_export_retains_an_empty_nested_if_as_else_content() {
+fn high_export_inverts_empty_then_before_a_nested_condition() {
     let artifact = branch_artifact(node(
         202,
         StructuredKind::If {
@@ -257,13 +257,74 @@ fn high_export_retains_an_empty_nested_if_as_else_content() {
     let result = export_text(&artifact, &Cancellation::default());
     assert_eq!(result.status, TextExportStatus::Complete);
     assert_eq!(result.text.matches("if (").count(), 2, "{}", result.text);
-    assert_eq!(
-        result.text.matches("} else {").count(),
-        1,
-        "{}",
-        result.text
-    );
+    assert!(!result.text.contains("} else {"), "{}", result.text);
+    assert!(result.text.contains("if (v999 == 0) {"), "{}", result.text);
+    assert!(result.text.contains("if (v998 != 0) {"), "{}", result.text);
     assert!(result.text.ends_with("    }\n}\n"), "{}", result.text);
+}
+
+#[test]
+fn real_empty_then_layout_complements_word_truth_without_moving_its_read() {
+    use crate::{ExecutionLimits, MemoryHost, U256, execute_bytecode, execute_structured};
+
+    for source_iszero in [false, true] {
+        // Both paths meet at STOP. The non-jumping path writes slot zero;
+        // the jumping path has only the original empty logical edge transfer.
+        let mut bytes = vec![0x5f, 0x35];
+        if source_iszero {
+            bytes.push(0x15);
+        }
+        bytes.extend([0x60, if source_iszero { 10 } else { 9 }, 0x57]);
+        bytes.extend([0x60, 7, 0x5f, 0x55, 0x5b, 0x00]);
+        let input = Input::new(bytes, Fork::Osaka);
+        let artifact = decompile(&input, &Config::default());
+        assert_eq!(artifact.completion, Completion::Complete);
+        let original = artifact.clone();
+        let stage = artifact.current().unwrap();
+        let load = stage
+            .ir
+            .blocks
+            .iter()
+            .flat_map(|b| &b.operations)
+            .find(|op| op.opcode == 0x35)
+            .unwrap()
+            .outputs[0];
+        let result = export_text(&artifact, &Cancellation::default());
+        assert_eq!(result.status, TextExportStatus::Complete);
+        let predicate = format!(
+            "if ((v{} {} 0)) {{",
+            load.0,
+            if source_iszero { "!=" } else { "==" }
+        );
+        assert!(result.text.contains(&predicate), "{}", result.text);
+        assert!(!result.text.contains("} else {"), "{}", result.text);
+        assert_eq!(result.text.matches("evm.calldataload(").count(), 1);
+        assert_eq!(result.text.matches("evm.sstore(").count(), 1);
+        assert!(result.text.find("evm.calldataload(") < result.text.find(&predicate));
+        for value in [U256::ZERO, U256::from(1), U256::MAX] {
+            let mut raw_host = MemoryHost::new(&input, value.to_be_bytes::<32>().to_vec());
+            let mut syntax_host = raw_host.clone();
+            let raw = execute_bytecode(&input, &mut raw_host, &ExecutionLimits::default()).unwrap();
+            let syntax =
+                execute_structured(stage, &mut syntax_host, &ExecutionLimits::default()).unwrap();
+            assert_eq!(raw.outcome, syntax.outcome);
+            assert_eq!(raw.observations(), syntax.observations());
+            assert_eq!(raw_host, syntax_host);
+            let stores = if source_iszero {
+                value != U256::ZERO
+            } else {
+                value == U256::ZERO
+            };
+            assert_eq!(
+                raw_host.storage.get(&U256::ZERO).copied(),
+                stores.then_some(U256::from(7))
+            );
+        }
+        assert_eq!(
+            artifact, original,
+            "presentation must not mutate the executable witness"
+        );
+    }
 }
 
 #[test]

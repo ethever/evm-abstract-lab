@@ -57,8 +57,8 @@ pub(super) struct Views {
     pub differences: Differences,
     rendered: Option<(ArtifactId, StageId, Vec<structured::Line>)>,
     rendered_high_display: Option<structured::HighDisplayOptions>,
+    rendered_expanded: BTreeSet<evm_abstract_protocol::decompile_model::EntityId>,
     high_display: structured::HighDisplayOptions,
-    expanded_calls: BTreeSet<EntityRef>,
     lifted_seen: bool,
     narrow_before: bool,
     source: source::Source,
@@ -415,7 +415,7 @@ impl Views {
         ui: &mut Ui,
         artifact: &Artifact,
         stage: &Stage,
-        state: &ViewState,
+        state: &mut ViewState,
     ) {
         let Some(selected) = state.selected_in(artifact, stage.id) else {
             return;
@@ -437,7 +437,7 @@ impl Views {
                 stage: stage.id,
                 entity: call.id,
             };
-            let expanded = self.expanded_calls.contains(&at);
+            let expanded = state.expanded_calls.contains(&at);
             let action = if expanded { "Collapse" } else { "Expand" };
             let label = if calls.len() == 1 {
                 format!("{action} call here")
@@ -445,11 +445,7 @@ impl Views {
                 format!("{action} procedure p{} here", call.procedure.0)
             };
             if controls::action(ui, &label, Density::Compact).clicked() {
-                if expanded {
-                    self.expanded_calls.remove(&at);
-                } else {
-                    self.expanded_calls.insert(at);
-                }
+                state.toggle_call_expansion(at);
                 self.rendered = None;
             }
         }
@@ -458,23 +454,29 @@ impl Views {
     fn prepare_code(&mut self, artifact: &Artifact, stage: &Stage, state: &ViewState) {
         let key = (artifact.id.clone(), stage.id);
         let high_display = (self.route == Route::Lifted).then_some(self.high_display);
+        let expanded = if high_display.is_some() {
+            state
+                .expanded_calls
+                .iter()
+                .filter(|at| at.stage == stage.id)
+                .map(|at| at.entity)
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         if self
             .rendered
             .as_ref()
             .is_none_or(|(artifact, stage, _)| (artifact, *stage) != (&key.0, key.1))
             || self.rendered_high_display != high_display
+            || self.rendered_expanded != expanded
         {
             self.rendered_high_display = high_display;
+            self.rendered_expanded = expanded.clone();
             self.rendered = Some((
                 key.0,
                 key.1,
                 if let Some(display) = high_display {
-                    let expanded = self
-                        .expanded_calls
-                        .iter()
-                        .filter(|at| at.stage == stage.id)
-                        .map(|at| at.entity)
-                        .collect();
                     structured::lifted_lines_expanded(
                         stage,
                         &state.index.stage(stage.id),

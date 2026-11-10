@@ -117,6 +117,9 @@ class BrowserRegistryTests(unittest.TestCase):
             if case_id == "decompile-structure-plan":
                 expected.update({"crates/evm-decompile/tests/fixtures/structure/regions/loop-normal-join.hex",
                                  "crates/evm-decompile/tests/fixtures/structure/regions/loop-normal-join.json"})
+            if case_id == "decompile-branch-layout":
+                expected.update({"crates/evm-abstract-web/tests/fixtures/decompile/pool-style-empty-then.hex",
+                                 "crates/evm-abstract-web/tests/fixtures/decompile/shared-empty-then.hex"})
             if case_id == "decompile-execution-domain":
                 expected.update({"crates/evm-decompile/tests/fixtures/error-payloads/pair-returndata-allocation-guard.hex",
                                  "crates/evm-decompile/tests/fixtures/structure/ethereum-uniswap-v2-usdc-weth-pair.hex"})
