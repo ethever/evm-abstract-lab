@@ -62,7 +62,7 @@ def prepare(page, canvas, bytecode, strategy="Dispatcher", fork=None):
 
 
 def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=None,
-           procedures=None, profile=None, execution_scope=None):
+           procedures=None, profile=None, execution_scope=None, retained_result=False):
     prepare(page, canvas, bytecode, strategy, fork)
     input_panel = ui_control(page, "Decompiler input", role="decompile-input")
     if execution_scope is not None:
@@ -82,7 +82,15 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     admission, response = admitted.value, publication.value
     assert admission.status == 202, admission.text()
     job = admission.json()["result"]["Ok"]
-    result = response.json()["result"]["Ok"]
+    # Chromium may evict large bodies from its inspector cache after the page
+    # has consumed them. Read the same immutable task when requested; the page
+    # must still publish that exact artifact identity below.
+    if retained_result:
+        retained = page.request.get(response.url)
+        assert retained.ok, retained.text()
+        result = retained.json()["result"]["Ok"]
+    else:
+        result = response.json()["result"]["Ok"]
     assert result["id"] == job["id"]
     assert result["publication"].isdigit()
     artifact = result["artifact"]

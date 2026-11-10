@@ -23,7 +23,9 @@ RESIDUAL = "5f3561001b575b5f54600101805f556004901061001b57610030565b5f5460010180
 
 def choices(page, canvas):
     set_control(page, canvas, "Transform inspector", True)
-    inspector_control(page, canvas, "Reading choices", "section")
+    if not observed(page, "section", "Reading choices"):
+        inspector_control(page, canvas, "Reading choices", "section")
+    set_control(page, canvas, "Reading choices", True, role="section")
     ui_control(page, "Reading choices", role="section", selected=True)
 
 
@@ -77,7 +79,8 @@ def check_loop_causes(context, page, canvas):
     canvas.screenshot(path=str(context.output / "reading-residual-cause.png"))
 
     multicall, _ = submit(context, page, canvas, (SOURCE_ROOT / MULTICALL).read_text().strip(),
-                         "reading-multicall", procedures="Auto procedures", profile="Balanced")
+                         "reading-multicall", procedures="Auto procedures", profile="Balanced",
+                         retained_result=True)
     assert multicall["completion"] == "complete" and not multicall["diagnostics"]
     ir = stage(multicall, "structured")["ir"]
     nodes = {node["id"]: node["kind"] for node in ir["structured"]["nodes"]}

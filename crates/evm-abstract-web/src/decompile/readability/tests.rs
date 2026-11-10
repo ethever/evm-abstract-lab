@@ -394,10 +394,11 @@ fn rendered_fallbacks_keep_the_cause_when_a_natural_preference_is_unavailable() 
             natural: None,
             dispatcher: None,
         };
-        let _ = ctx.run_ui(RawInput::default(), |ui| {
+        let mut output = ctx.run_ui(RawInput::default(), |ui| {
             controls::begin_observation(ui.ctx(), true);
             decision_details(ui, &decision);
         });
+        output.textures_delta.clear();
         let controls: Vec<serde_json::Value> =
             serde_json::from_str(&controls::observed(&ctx).unwrap()).unwrap();
         let rendered = controls

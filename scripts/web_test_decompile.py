@@ -3,7 +3,7 @@
 from playwright.sync_api import expect
 from web_test_decompile_helpers import (BRANCH, LOOP, choose_stage, contains_ast,
                                        inspector_control, observed, open_decompiler,
-                                       prepare, stage, submit)
+                                       prepare, record_input, stage, submit)
 from web_test_harness import click_control, resize_view, ui_control, webgpu_evidence
 from web_test_pixels import text_pixels
 
@@ -51,11 +51,24 @@ def run(context):
     click_control(page, canvas, "Original bytecode", role="tab")
     source = observed(page, "decompile-source")[0]
     click_control(page, canvas, source["label"], role="decompile-source", id=source["id"])
-    descendants = observed(page, "decompile-entity-link", "Source descendant")
+    source_pc = int(source["label"].split(": ", 1)[0].removeprefix("Source "), 16)
+    descendants = [origin["entity"] for origin in artifact["mappings"]["origins"]
+                   if any(span["pc"] <= source_pc < span["end_pc"] for span in origin["source"])]
     assert descendants, "an original instruction has no navigable descendants"
-    selected = next((item for item in descendants if f"s{artifact['current_stage']}/" in item["label"]), descendants[0])
-    inspector_control(page, canvas, selected["label"], "decompile-entity-link")
-    expect(status).to_contain_text("Selected entity: " + artifact["id"] + "/stage:")
+    current = [entity for entity in descendants if entity["stage"] == artifact["current_stage"]]
+    assert current, "an original instruction has no current-stage descendant"
+    selected = current[0]
+    # Transform inspection can leave this virtual list outside the viewport.
+    # Choose an actual origin, then reveal and click its real inspector row.
+    record_input(page, "source-descendant-target", source=source, target=selected)
+    prefix = f"Source descendant s{selected['stage']}/e{selected['entity']} "
+    clicked = inspector_control(page, canvas, prefix, "decompile-entity-link")
+    assert clicked["label"].startswith(prefix)
+    expect(status).to_contain_text(
+        f"Selected entity: {artifact['id']}/stage:{selected['stage']}/entity:{selected['entity']};")
+    expect(status).to_contain_text(f"Current stage: {selected['stage']}")
+    expect(status).to_contain_text("Route: IR")
+    assert observed(page, "decompile-ir"), "source descendant navigation did not paint current IR"
     inspector_control(page, canvas, "Original ", "decompile-origin")
     expect(status).to_contain_text("Route: Original bytecode")
     canvas.screenshot(path=str(context.output / "original-descendant-navigation.png"))
