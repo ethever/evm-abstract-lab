@@ -58,6 +58,12 @@ pub(in crate::lifted) fn check(
     }
     for proof in &program.reverts {
         let fail = || LiftedModelError::Payload(proof.id);
+        if proof.execution_domain != ir.execution_domain
+            || proof.execution_fork != ir.execution_fork
+            || !ir.has_valid_execution_scope()
+        {
+            return Err(fail());
+        }
         let block = raw.get(&proof.block).ok_or_else(fail)?;
         let op = block.operations.last().ok_or_else(fail)?;
         if op.opcode != 0xfd

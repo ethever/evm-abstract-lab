@@ -4,7 +4,7 @@
 use crate::{JobOperation, TransportError};
 use evm_abstract_protocol::{
     ApiError, DecompileJobReply, DecompileJobResultReply, DecompileJobSnapshot, DecompileRequest,
-    JobId, JobState, PublicationVersion,
+    Fork, JobId, JobState, PublicationVersion, decompile_model::ExecutionDomain,
 };
 
 pub(crate) enum Command {
@@ -51,6 +51,13 @@ pub(super) enum Error {
     Publication,
     #[error("Invalid decompiler artifact: {0}")]
     Artifact(String),
+    #[error("Execution scope mismatch: requested {expected:?}, received {received:?}")]
+    ExecutionScope {
+        expected: ExecutionDomain,
+        received: ExecutionDomain,
+    },
+    #[error("Result fork mismatch: requested {expected:?}, received {received:?}")]
+    ForkMismatch { expected: Fork, received: Fork },
     #[error("Attempt {completion:?} has no validated stage; previous artifact retained. {message}")]
     UnvalidatedAttempt {
         completion: evm_abstract_protocol::decompile_model::Completion,
@@ -89,6 +96,8 @@ pub(super) struct Task {
     cancel_requested: bool,
     cancel_pending: bool,
     next_poll: f64,
+    execution_domain: ExecutionDomain,
+    fork: Option<Fork>,
 }
 
 impl Task {
@@ -97,6 +106,8 @@ impl Task {
     }
 
     pub fn start(&mut self, request: DecompileRequest) -> Command {
+        self.execution_domain = request.execution_domain;
+        self.fork = Some(request.fork);
         self.generation = self
             .generation
             .checked_add(1)
@@ -115,6 +126,14 @@ impl Task {
             generation: self.generation,
             request: Box::new(request),
         }
+    }
+
+    pub fn execution_domain(&self) -> ExecutionDomain {
+        self.execution_domain
+    }
+    pub fn fork(&self) -> Fork {
+        self.fork
+            .expect("an accepted task result has a submitted fork")
     }
 
     pub fn request_cancel(&mut self) {

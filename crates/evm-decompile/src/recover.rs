@@ -291,6 +291,9 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
 
 fn source_ir(owner: &mut Builder<impl FnMut(Progress)>, program: &Program) -> Ir {
     let mut ir = Ir {
+        execution_domain: owner.artifact.config.execution_domain,
+        execution_fork: (!owner.artifact.config.execution_domain.is_generic())
+            .then_some(owner.artifact.input.fork),
         bytecode_len: program.byte_len(),
         ..Ir::default()
     };

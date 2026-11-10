@@ -19,6 +19,9 @@ record! {
         pub bytecode: String,
         /// Instruction rules shared with bytecode inspection.
         pub fork: crate::Fork,
+        /// Declared class of executions; transaction bounds require explicit selection.
+        #[serde(skip_serializing_if = "decompile_model::ExecutionDomain::is_generic")]
+        pub execution_domain: decompile_model::ExecutionDomain = decompile_model::ExecutionDomain::Generic,
         /// Selected handling of irreducible control flow.
         pub strategy: DecompileStrategy,
         /// Bounds owned by this independent decompilation attempt.
@@ -34,6 +37,7 @@ impl Default for DecompileRequest {
         Self {
             bytecode: "600260030100".into(),
             fork: crate::Fork::Osaka,
+            execution_domain: decompile_model::ExecutionDomain::Generic,
             strategy: DecompileStrategy::Dispatcher,
             limits: DecompileLimits::default(),
             readability: decompile_model::ReadabilityConfig::default(),

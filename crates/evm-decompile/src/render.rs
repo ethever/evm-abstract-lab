@@ -71,6 +71,11 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
         "// fork={} strategy={:?} recovery={:?}\n",
         artifact.input.fork, artifact.config.strategy, artifact.completion
     );
+    if artifact.config.execution_domain == crate::ExecutionDomain::EthereumTransactions {
+        out.push_str(
+            "// Execution scope: valid included Ethereum transactions and their contract calls.\n",
+        );
+    }
     let budget = match work_budget(max_work) {
         Ok(budget) => budget,
         Err(error) => {
@@ -96,6 +101,43 @@ fn export_scoped(artifact: &Artifact, max_work: u64, observer: impl FnMut(u64)) 
         lifted: None,
         lifted_renderer: None,
     };
+    // Scope admission touches every retained snapshot and its certificate
+    // markers. Reserve that history before reading any of those records.
+    if !index.pay(artifact.stages.len()) {
+        return index.finish(out);
+    }
+    for stage in &artifact.stages {
+        let records = stage.ir.lifted.as_ref().map_or(1, |program| {
+            program
+                .reverts
+                .len()
+                .saturating_add(program.procedures.len())
+                .saturating_add(if artifact.schema_version == 2 {
+                    program.controls.len()
+                } else {
+                    0
+                })
+                .saturating_add(1)
+        });
+        if !index.pay(records) {
+            return index.finish(out);
+        }
+    }
+    if !index.checkpoint() {
+        return index.finish(out);
+    }
+    let admitted = artifact.admits_schema();
+    if !index.checkpoint() {
+        return index.finish(out);
+    }
+    if !admitted {
+        out.push_str("// invalid artifact schema or execution scope\n");
+        return TextExport {
+            text: out,
+            status: TextExportStatus::Limited,
+            work: count(index.budget.used()),
+        };
+    }
     let stage = artifact.current();
     if stage.is_none() {
         out.push_str("// no validated stage; local recovery unavailable\n");
@@ -358,6 +400,20 @@ impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
             return false;
         }
         (self.observer)(count(self.budget.used()));
+        true
+    }
+    fn checkpoint(&mut self) -> bool {
+        if self.stopped {
+            return false;
+        }
+        if let Err(error) = evm_resource::checkpoint(&self.budget) {
+            self.stopped = true;
+            self.status = match error {
+                ResourceError::Cancelled => TextExportStatus::Cancelled,
+                ResourceError::Work => TextExportStatus::Limited,
+            };
+            return false;
+        }
         true
     }
     fn finish(mut self, mut text: String) -> TextExport {

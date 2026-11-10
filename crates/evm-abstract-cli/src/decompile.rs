@@ -25,6 +25,13 @@ enum Strategy {
     CodeDuplication,
 }
 
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum ExecutionDomain {
+    #[default]
+    Generic,
+    EthereumTransactions,
+}
+
 #[derive(Args)]
 pub(crate) struct DecompileArgs {
     #[command(flatten)]
@@ -35,6 +42,10 @@ pub(crate) struct DecompileArgs {
     /// Strategy for known irreducible control flow, independent of unknown jumps.
     #[arg(long, value_enum, default_value = "dispatcher")]
     strategy: Strategy,
+    /// Executions covered by the analysis. Ethereum transactions assumes valid
+    /// included transactions and their descendant contract calls.
+    #[arg(long, value_enum, default_value = "generic")]
+    execution_domain: ExecutionDomain,
     /// Reading priorities for verified structure choices.
     #[arg(long, value_enum)]
     readability: Option<ReadingProfile>,
@@ -99,6 +110,12 @@ pub(crate) fn run(args: DecompileArgs, control: &Control) -> Result<(String, boo
         };
     }
     let config = evm_decompile::Config {
+        execution_domain: match args.execution_domain {
+            ExecutionDomain::Generic => evm_decompile::ExecutionDomain::Generic,
+            ExecutionDomain::EthereumTransactions => {
+                evm_decompile::ExecutionDomain::EthereumTransactions
+            }
+        },
         readability,
         strategy: match args.strategy {
             Strategy::Dispatcher => evm_decompile::Strategy::Dispatcher,

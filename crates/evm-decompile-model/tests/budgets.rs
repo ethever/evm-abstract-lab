@@ -83,7 +83,7 @@ fn defaults_maximize_resource_ceilings_and_preserve_precision_and_hard_depth() {
     assert_eq!(limits.max_constant_set, 8_u64);
     assert_eq!(limits.max_structuring_depth, 512_u64);
     assert_eq!(MAX_STRUCTURING_DEPTH, 512);
-    assert_eq!(SCHEMA_VERSION, 7);
+    assert_eq!(SCHEMA_VERSION, 8);
 }
 
 #[test]

@@ -18,9 +18,14 @@ nix run . -- decompile --hex 600260030100
 nix run . -- decompile --hex 600260030100 --format json
 nix run . -- decompile --file examples/diamond.hex --fork osaka
 nix run . -- decompile --file examples/diamond.hex --strategy code-duplication
+nix run . -- decompile --file examples/diamond.hex --execution-domain ethereum-transactions
 ```
 
 默认不可约控制流策略为 `dispatcher`；`code-duplication` 显式选择代码复制。JSON 保留基线 IR、转换阶段、验证结果、诊断和来源关系。完整本地结果返回退出码 0；部分恢复或预算限制等非完整结果保留可检查的产物并返回退出码 2。输入格式错误通过普通 CLI 错误边界报告。
+
+执行域默认是 `generic`，不增加交易资源前提。显式选择 `--execution-domain ethereum-transactions`，或 Web 的 `Ethereum valid transactions`，表示只对有效 Ethereum 区块中的交易及其内部调用提出语义等价声明；这不会查询或验证某笔交易。该域从已支持 fork 的共识 gas 上限、内存成本和 precompile 输出规则推导返回数据长度上界。配置、每个 IR 快照及实际使用该域的载荷证书都保留域和 fork 限定，文本与复制结果也注明适用范围；移植或删除限定必须重新验证。工作预算和测试 host 的内存限制不参与这项推导。详见[执行域及返回数据上界证明](decompile-execution-domains.md)。
+
+内存关系分析同时改进无符号 AND 的上界传播，以及固定地址单元在无环合流和外部循环入口处的区间合并。不同路径的值不被当作同一个常量：新的内容身份绑定到内存版本和单元地址；循环内部变化的值不能因此获得跨迭代不变身份。这些通用规则在两个执行域都使用，缺少合法尺寸或无回绕证明时仍保留原始内存操作。
 
 工作量、块、值、复制数量、历史保留和结构深度有独立的配置边界，使用 `decompile --help` 查看参数。历史保留按阶段、引用和来源记录的保守单位计费，不等于唯一节点数量。达到预算不能当作已经收敛；任务生命周期结束也不等于控制流已经完整恢复。
 

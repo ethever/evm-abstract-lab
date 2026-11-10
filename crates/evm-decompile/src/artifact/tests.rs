@@ -83,6 +83,25 @@ fn preparation_has_no_partial_artifact_and_adoption_needs_no_more_work() {
 }
 
 #[test]
+fn a_candidate_cannot_strengthen_the_frozen_execution_domain() {
+    let (mut owner, mut ir, parents) = source();
+    let before = owner.artifact.clone();
+    ir.execution_domain = crate::ExecutionDomain::EthereumTransactions;
+    ir.execution_fork = Some(owner.artifact.input.fork);
+    let transaction = prepare(&mut owner, ir, parents);
+    assert!(!transaction.passed());
+    assert!(
+        transaction
+            .stage
+            .validation
+            .checks
+            .iter()
+            .any(|c| c.name == "frozen_execution_scope" && !c.passed)
+    );
+    assert_eq!(owner.artifact, before);
+}
+
+#[test]
 fn local_optional_refusal_keeps_real_spend_and_the_paid_base_publishable() {
     let (mut owner, ir, parents) = source();
     let base = prepare(&mut owner, ir, parents);

@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Atom {
     Source(EntityId),
+    /// One fixed-address content at a checked acyclic/entry memory phi.
+    Content(EntityId, U256),
     Iteration(EntityId),
     Local(EntityId, EntityId),
 }

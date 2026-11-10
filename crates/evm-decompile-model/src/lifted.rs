@@ -413,7 +413,7 @@ impl LiftedProgram {
                     .saturating_add(p.bytes.len())
             }))
             .saturating_add(self.reverts.iter().fold(0_usize, |n, r| {
-                n.saturating_add(r.writes.len()).saturating_add(7)
+                n.saturating_add(r.writes.len()).saturating_add(9)
             }))
             .saturating_add(self.constructions.len().saturating_mul(5))
             .saturating_add(

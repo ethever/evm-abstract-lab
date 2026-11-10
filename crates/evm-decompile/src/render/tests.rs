@@ -318,3 +318,80 @@ fn require_formatting_refusal_stops_before_any_absorbed_suffix_can_resume() {
     assert_eq!(artifact.current().unwrap().ir.blocks, raw);
     assert_eq!(artifact.current().unwrap().ir.structured, source);
 }
+
+#[test]
+fn export_requires_consistent_execution_premises_before_publishing_semantic_code() {
+    let input = Input::new(
+        evm_bytecode::parse_hex(include_str!(
+            "../../tests/fixtures/error-payloads/pair-returndata-allocation-guard.hex"
+        ))
+        .unwrap(),
+        Fork::Osaka,
+    );
+    let artifact = decompile(
+        &input,
+        &Config {
+            execution_domain: crate::ExecutionDomain::EthereumTransactions,
+            ..Default::default()
+        },
+    );
+    assert!(artifact.admits_schema());
+    assert!(
+        !artifact
+            .current()
+            .unwrap()
+            .ir
+            .lifted
+            .as_ref()
+            .unwrap()
+            .reverts
+            .is_empty()
+    );
+    for mutation in ["config", "stage", "fork", "schema"] {
+        let mut changed = artifact.clone();
+        match mutation {
+            "config" => changed.config.execution_domain = crate::ExecutionDomain::Generic,
+            "stage" => {
+                let stage = changed.stages.last_mut().unwrap();
+                stage.ir.execution_domain = crate::ExecutionDomain::Generic;
+                stage.ir.execution_fork = None;
+            }
+            "fork" => changed.input.fork = Fork::Cancun,
+            "schema" => changed.schema_version = crate::SCHEMA_VERSION - 1,
+            _ => unreachable!(),
+        }
+        let result = export_text(&changed, &Cancellation::default());
+        assert_eq!(result.status, TextExportStatus::Limited, "{mutation}");
+        assert!(
+            result
+                .text
+                .contains("// invalid artifact schema or execution scope")
+        );
+        assert!(
+            !result.text.contains("evm.") && !result.text.contains("require("),
+            "{mutation}: {}",
+            result.text
+        );
+    }
+}
+
+#[test]
+fn export_scope_admission_is_paid_and_cancellation_takes_priority_over_invalid_metadata() {
+    let mut artifact = decompile(&Input::new(vec![0x00], Fork::Osaka), &Config::default());
+    artifact.stages[0].ir.execution_domain = crate::ExecutionDomain::EthereumTransactions;
+    artifact.stages[0].ir.execution_fork = Some(Fork::Osaka);
+    let refused = export_text_with_observer(&artifact, &Cancellation::default(), 0, |_| {});
+    assert_eq!(refused.status, TextExportStatus::Limited);
+    assert_eq!(refused.work, 0);
+    assert!(
+        !refused.text.contains("invalid artifact"),
+        "work refusal precedes metadata scanning"
+    );
+    let cancelled = Cancellation::new();
+    let result = export_text_with_observer(&artifact, &cancelled, u64::MAX, |_| {
+        cancelled.cancel();
+    });
+    assert_eq!(result.status, TextExportStatus::Cancelled);
+    assert!(!result.text.contains("invalid artifact"));
+    assert!(!result.text.contains("evm."));
+}

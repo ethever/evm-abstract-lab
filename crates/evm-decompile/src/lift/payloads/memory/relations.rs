@@ -9,6 +9,8 @@ mod affine;
 use affine::{Atom, Expr, Range};
 mod execute;
 mod induction;
+mod join;
+mod retain;
 #[cfg(test)]
 mod tests;
 
@@ -93,6 +95,7 @@ struct Source<'a, P> {
     arities: BTreeMap<u8, (usize, usize)>,
     edge_truth: BTreeMap<EntityId, Option<bool>>,
     valid_cfg: bool,
+    return_data_size_bound: Option<U256>,
     literals: BTreeSet<EntityId>,
     certificates: BTreeMap<EntityId, induction::Proof>,
 }
@@ -135,7 +138,7 @@ pub(super) fn analyze(
                     ..State::default()
                 })
             } else {
-                source.join(block, &flows)
+                source.join(block, &flows, None)
             };
             source.process(block, flow, None, false, &mut flows, true);
         } else {
@@ -146,6 +149,7 @@ pub(super) fn analyze(
 }
 impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
     fn new(ir: &'a Ir, mut pay: P) -> Option<Self> {
+        let return_data_size_bound = super::execution_bound(ir)?;
         if !pay(ir
             .values
             .len()
@@ -278,6 +282,7 @@ impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
             arities,
             edge_truth,
             valid_cfg,
+            return_data_size_bound,
             literals,
             certificates: BTreeMap::new(),
         })
@@ -315,71 +320,6 @@ impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
                 .saturating_mul(MAX_TERMS * MAX_TERMS)
                 .saturating_add(extra),
         )
-    }
-    fn join(&mut self, block: &Block, flows: &BTreeMap<EntityId, Flow>) -> Flow {
-        if !self.charge(
-            self.incoming
-                .get(&block.id)
-                .map_or(0, Vec::len)
-                .saturating_add(1),
-        ) {
-            return Flow::Unknown;
-        }
-        let Some(incoming) = self.incoming.get(&block.id).cloned() else {
-            return Flow::Unknown;
-        };
-        let mut joined = None;
-        for edge in incoming {
-            if !self.charge(1) {
-                return Flow::Unknown;
-            }
-            match flows.get(&edge.id) {
-                Some(Flow::Dead) => {}
-                Some(Flow::Known(state)) => {
-                    if !self.work(state, 1) {
-                        return Flow::Unknown;
-                    }
-                    joined = Some(match joined {
-                        None => state.clone(),
-                        Some(previous) => {
-                            if !self.work(&previous, 1) {
-                                return Flow::Unknown;
-                            }
-                            self.merge(previous, state)
-                        }
-                    });
-                }
-                _ => return Flow::Unknown,
-            }
-        }
-        joined.map_or(Flow::Dead, Flow::Known)
-    }
-    fn merge(&self, mut a: State, b: &State) -> State {
-        a.values.retain(|id, value| b.values.get(id) == Some(value));
-        a.cells
-            .retain(|address, value| b.cells.get(address) == Some(value));
-        a.predicates.retain(|id, value| {
-            b.predicates
-                .get(id)
-                .is_some_and(|other| other.opcode == value.opcode && other.inputs == value.inputs)
-        });
-        a.atoms.retain(|id, range| {
-            *range = range.hull(b.atoms.get(id).copied().unwrap_or(Range::FULL));
-            *range != Range::FULL
-        });
-        a.real.retain(|expr, range| {
-            if let Some(other) = b.ordinary(expr) {
-                *range = range.hull(other);
-                true
-            } else {
-                false
-            }
-        });
-        a.bounds.retain(|expr, range| {
-            *range = range.hull(b.range(expr));
-            *range != Range::FULL
-        });
-        a
     }
     fn export(&mut self, state: &State) {
         if !self.work(state, state.values.len().saturating_mul(MAX_TERMS)) {
@@ -469,7 +409,11 @@ impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
                             .unwrap_or_default();
                         next.memory = self.blocks.get(&edge.to).map(|b| b.memory_parameter);
                         next.effect = self.blocks.get(&edge.to).map(|b| b.effect_parameter);
-                        Flow::Known(next)
+                        if self.retain_contents(&mut next) {
+                            Flow::Known(next)
+                        } else {
+                            Flow::Unknown
+                        }
                     }
                 }
             } else {

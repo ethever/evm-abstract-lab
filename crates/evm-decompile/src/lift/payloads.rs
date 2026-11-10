@@ -121,6 +121,8 @@ pub(super) fn discover(
         );
         reverts.push(LiftedRevert {
             id,
+            execution_domain: ir.execution_domain,
+            execution_fork: ir.execution_fork,
             block: block.id,
             operation: op.id,
             memory: op.memory_input?,

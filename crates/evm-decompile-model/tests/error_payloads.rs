@@ -7,6 +7,34 @@ use evm_decompile_model::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 
+#[test]
+fn payload_certificate_premises_are_explicit_strict_and_lossless() {
+    let high = program();
+    let mut proof = high.reverts[0].clone();
+    let generic = serde_json::to_value(&proof).unwrap();
+    assert!(generic.get("execution_domain").is_none());
+    assert!(generic.get("execution_fork").is_none());
+    proof.execution_domain = evm_decompile_model::ExecutionDomain::EthereumTransactions;
+    proof.execution_fork = Some(evm_decompile_model::Fork::Osaka);
+    let encoded = serde_json::to_value(&proof).unwrap();
+    assert_eq!(
+        serde_json::from_value::<LiftedRevert>(encoded.clone()).unwrap(),
+        proof
+    );
+    for field in ["execution_domain", "execution_fork"] {
+        let mut missing = encoded.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<LiftedRevert>(missing).is_err(),
+            "missing {field}"
+        );
+    }
+    let mut wrong = high;
+    wrong.reverts[0] = proof;
+    wrong.reverts[0].execution_fork = None;
+    assert!(wrong.validate().is_err());
+}
+
 fn payload(message: &str) -> LiftedErrorPayload {
     let mut bytes = vec![0; 68 + message.len().div_ceil(32) * 32];
     bytes[..4].copy_from_slice(&[8, 0xc3, 0x79, 0xa0]);
@@ -38,6 +66,8 @@ fn program() -> LiftedProgram {
         }],
         payloads: vec![payload("ds-math-mul-overflow")],
         reverts: vec![LiftedRevert {
+            execution_domain: evm_decompile_model::ExecutionDomain::Generic,
+            execution_fork: None,
             id: EntityId(1001),
             block: EntityId(100),
             operation: EntityId(200),
@@ -154,7 +184,7 @@ fn canonical_content_admission_checks_every_header_message_and_padding_byte() {
 #[test]
 fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     assert_eq!(
-        SCHEMA_VERSION, 7,
+        SCHEMA_VERSION, 8,
         "source-bound reading preferences change the current wire contract"
     );
     let mut artifact: Artifact =

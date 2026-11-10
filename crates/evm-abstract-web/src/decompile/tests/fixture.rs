@@ -82,6 +82,8 @@ pub(in crate::decompile) fn artifact(strategy: Strategy) -> Artifact {
         kind: StageKind::Baseline,
         validation: passed(),
         ir: Ir {
+            execution_domain: Default::default(),
+            execution_fork: None,
             bytecode_len: 4,
             fact_scope: FactScope::CompleteLocalCfg,
             entry: Some(first.id),
@@ -324,6 +326,7 @@ pub(in crate::decompile) fn artifact(strategy: Strategy) -> Artifact {
         id: ArtifactId(format!("fixture-{strategy:?}")),
         input: Input::new(vec![0x60, 0x01, 0x55, 0x00], Fork::Osaka),
         config: Config {
+            execution_domain: Default::default(),
             strategy,
             limits: Limits::default(),
             readability: Default::default(),

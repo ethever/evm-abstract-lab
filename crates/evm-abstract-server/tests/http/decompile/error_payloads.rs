@@ -177,6 +177,7 @@ fn nonempty_proof_http_budget_refusal_retains_only_the_prior_validated_publicati
     };
     let source = evm_decompile::Input::new(evm_bytecode::parse_hex(&input.bytecode).unwrap(), fork);
     let config = evm_decompile::Config {
+        execution_domain: input.execution_domain,
         strategy: input.strategy,
         limits: input.limits.clone(),
         readability: input.readability.clone(),
@@ -275,5 +276,85 @@ fn nonempty_proof_http_budget_refusal_retains_only_the_prior_validated_publicati
         assert!(artifact.statistics.work <= limited.limits.max_work);
         assert!(artifact.statistics.history_entities <= limited.limits.max_history_entities);
     }
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn pair_constructor_domain_and_certificate_cross_actual_compressed_http_without_erasing_raw_operations()
+ {
+    use evm_abstract_protocol::decompile_model::ExecutionDomain;
+    let assets = Assets::new();
+    let pool = pool();
+    let code = include_str!("../../../../evm-decompile/tests/fixtures/error-payloads/pair-returndata-allocation-guard.hex").trim();
+    let mut identities = Vec::new();
+    for domain in [
+        ExecutionDomain::Generic,
+        ExecutionDomain::EthereumTransactions,
+    ] {
+        let request = DecompileRequest {
+            bytecode: code.into(),
+            execution_domain: domain,
+            ..Default::default()
+        };
+        let result = fetch(&request, &assets, &pool);
+        let artifact = &result.artifact;
+        assert_eq!(artifact.config.execution_domain, domain);
+        assert!(
+            artifact
+                .stages
+                .iter()
+                .all(|stage| stage.ir.execution_domain == domain)
+        );
+        let stage = artifact.current().unwrap();
+        let program = stage.ir.lifted.as_ref().unwrap();
+        let payload = program
+            .payloads
+            .iter()
+            .find(|payload| payload.message == "UniswapV2: TRANSFER_FAILED");
+        assert_eq!(
+            payload.is_some(),
+            domain == ExecutionDomain::EthereumTransactions
+        );
+        if let Some(payload) = payload {
+            let proof = program
+                .reverts
+                .iter()
+                .find(|proof| proof.payload == payload.id)
+                .unwrap();
+            assert_eq!(proof.writes.len(), 4);
+            let renderer = program.render_index(&stage.ir);
+            renderer.validate_guard_sources().unwrap();
+            let construction = renderer.construction(proof.block).unwrap();
+            for entity in [payload.id, proof.id, construction.id, proof.operation] {
+                assert!(
+                    !artifact
+                        .origin(evm_abstract_protocol::decompile_model::EntityRef {
+                            stage: stage.id,
+                            entity
+                        })
+                        .unwrap()
+                        .source
+                        .is_empty()
+                );
+            }
+        }
+        let original = artifact
+            .stages
+            .iter()
+            .find(|stage| {
+                stage.kind == evm_abstract_protocol::decompile_model::StageKind::Structured
+            })
+            .unwrap();
+        let mut current = stage.ir.clone();
+        current.lifted = None;
+        assert_eq!(current, original.ir);
+        assert_eq!(
+            serde_json::from_slice::<DecompileJobResult>(&serde_json::to_vec(&result).unwrap())
+                .unwrap(),
+            result
+        );
+        identities.push(artifact.id.clone());
+    }
+    assert_ne!(identities[0], identities[1]);
     pool.shutdown().unwrap();
 }

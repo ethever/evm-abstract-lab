@@ -175,7 +175,7 @@ fn entries<P: FnMut(usize) -> bool>(
                 ..State::default()
             })
         } else {
-            source.join(block, &flows)
+            source.join(block, &flows, None)
         };
         source.process(block, flow, None, false, &mut flows, false);
     }
@@ -884,7 +884,7 @@ fn chained_candidate(ir: &Ir) -> (Vec<EntityId>, Candidate) {
                     ..State::default()
                 })
             } else {
-                source.join(block, &flows)
+                source.join(block, &flows, None)
             };
             source.process(block, flow, None, false, &mut flows, false);
         }

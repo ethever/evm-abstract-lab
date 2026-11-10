@@ -108,6 +108,9 @@ strict_record! {
 /// Frozen per-artifact policy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Config {
+    /// Declared execution semantics, separate from analysis resource budgets.
+    #[serde(skip_serializing_if = "crate::ExecutionDomain::is_generic")]
+    pub execution_domain: crate::ExecutionDomain = crate::ExecutionDomain::Generic,
     /// Irreducible control strategy (dispatcher by default).
     pub strategy: Strategy,
     /// Work and retained-entity ceilings.
@@ -425,6 +428,13 @@ strict_record! {
 /// Semantic graph and optional actual structured representation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ir {
+    /// Semantic premise under which facts and certificates in this snapshot hold.
+    #[serde(skip_serializing_if = "crate::ExecutionDomain::is_generic")]
+    pub execution_domain: crate::ExecutionDomain = crate::ExecutionDomain::Generic,
+    /// Fork qualifying a bounded execution domain. Generic and legacy snapshots
+    /// omit this field; an Ethereum premise must name the artifact's input fork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_fork: Option<Fork> = None,
     /// Original input length, including unreachable bytes and PUSH padding boundaries.
     pub bytecode_len: usize,
     /// Explicit qualification of numeric facts in open recovery.
@@ -445,6 +455,14 @@ pub struct Ir {
 }
 }
 impl Ir {
+    /// Check the local declaration without assuming that a bare fork selection
+    /// also declares valid-transaction resource semantics.
+    pub fn has_valid_execution_scope(&self) -> bool {
+        match self.execution_domain {
+            crate::ExecutionDomain::Generic => self.execution_fork.is_none(),
+            crate::ExecutionDomain::EthereumTransactions => self.execution_fork.is_some(),
+        }
+    }
     /// Find a block by artifact-local identity.
     pub fn block(&self, id: EntityId) -> Option<&Block> {
         self.blocks.iter().find(|b| b.id == id)

@@ -112,6 +112,9 @@ impl LiftedProgram {
         let mut revert_blocks = BTreeSet::new();
         let mut reverts = BTreeMap::new();
         for r in &self.reverts {
+            if r.execution_domain.is_generic() != r.execution_fork.is_none() {
+                return Err(LiftedModelError::Payload(r.id));
+            }
             if !payloads.contains(&r.payload)
                 || !blocks.contains(&r.block)
                 || !revert_blocks.insert(r.block)

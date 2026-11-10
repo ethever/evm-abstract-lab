@@ -95,7 +95,7 @@ fn lifted_entities_have_roundtrip_provenance_and_deterministic_artifact_diffs() 
     let artifact = checked(&input);
     assert_eq!(artifact, decompile(&input, &Config::default()));
     assert_eq!(
-        artifact.schema_version, 7,
+        artifact.schema_version, 8,
         "new high semantics require a truthful wire version"
     );
     let encoded = serde_json::to_vec(&artifact).unwrap();

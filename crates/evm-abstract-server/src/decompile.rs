@@ -58,6 +58,7 @@ pub(crate) fn run(
     let bytes = evm_bytecode::parse_hex(&request.bytecode).map_err(invalid_hex)?;
     let input = evm_decompile::Input::new(bytes, fork);
     let config = DecompileConfig {
+        execution_domain: request.execution_domain,
         strategy: request.strategy,
         limits: request.limits,
         readability: request.readability,
