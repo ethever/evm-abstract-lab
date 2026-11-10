@@ -64,6 +64,9 @@ def loop_normal_join(context, page, canvas):
         set_control(page, canvas, DEPENDENCIES, dependencies)
         set_control(page, canvas, ANNOTATIONS, annotations)
         assert semantic_lines(painted_copy(page, canvas)) == semantic_lines(text)
+    # Raw stack/token rows are longer than the high projection. Keep its final
+    # loop brace visible so painted_copy can compare every row with the clipboard.
+    resize_view(page, 1920, 3400)
     choose_stage(page, canvas, artifact, "structured")
     click_control(page, canvas, "Structured code", role="tab")
     assert painted_copy(page, canvas).count("evm.sstore(") == 3
