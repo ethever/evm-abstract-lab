@@ -8,10 +8,14 @@ use evm_decompile::{
 
 #[path = "error_payloads/depth.rs"]
 mod depth;
+#[path = "error_payloads/domain_bounds.rs"]
+mod domain_bounds;
 #[path = "error_payloads/fixtures.rs"]
 mod fixtures;
 #[path = "error_payloads/oracle.rs"]
 mod oracle;
+#[path = "error_payloads/pair.rs"]
+mod pair;
 #[path = "error_payloads/proofs.rs"]
 mod proofs;
 #[path = "error_payloads/real_case.rs"]

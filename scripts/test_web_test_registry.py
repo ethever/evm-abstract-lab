@@ -114,6 +114,9 @@ class BrowserRegistryTests(unittest.TestCase):
                 expected.add(layout + "nested-call-world.json")
             if case_id in {"storage-table", "storage-scroll"}:
                 expected.add("scripts/web_test_storage_literals.json")
+            if case_id == "decompile-execution-domain":
+                expected.update({"crates/evm-decompile/tests/fixtures/error-payloads/pair-returndata-allocation-guard.hex",
+                                 "crates/evm-decompile/tests/fixtures/structure/ethereum-uniswap-v2-usdc-weth-pair.hex"})
             if case_id == "decompile-shared-procedures":
                 expected.update({"crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex",
                                  "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex",

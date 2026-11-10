@@ -70,17 +70,32 @@ fn decoded_source_export_obeys_explicit_work_and_cancellation() {
     assert_eq!(limited.status, TextExportStatus::Limited);
     assert!(limited.work <= 1);
     assert!(limited.text.contains("work limit exhausted"));
-    let mut checks = 0;
-    let cancelled = export_text_with_observer(&artifact, &cancel, u64::MAX, |_| {
-        checks += 1;
-        // Diagnostic and stage reservations precede the first two source ops.
-        if checks == 4 {
-            cancel.cancel();
-        }
-    });
+    let mut checkpoints = Vec::new();
+    let complete =
+        export_text_with_observer(&artifact, &Cancellation::default(), u64::MAX, |work| {
+            checkpoints.push(work)
+        });
+    assert_eq!(complete.status, TextExportStatus::Complete);
+    checkpoints.dedup();
+    // Locate an actual source-output boundary, independent of the number of
+    // preceding metadata, diagnostic and stage reservations.
+    let cancelled = checkpoints
+        .into_iter()
+        .find_map(|checkpoint| {
+            let cancel = Cancellation::new();
+            let partial = export_text_with_observer(&artifact, &cancel, u64::MAX, |work| {
+                if work >= checkpoint {
+                    cancel.cancel();
+                }
+            });
+            (partial.text.contains("0x0000: PUSH1") && !partial.text.contains("0x0002: PUSH1"))
+                .then_some(partial)
+        })
+        .expect("source export must admit cancellation between its first two instructions");
     assert_eq!(cancelled.status, TextExportStatus::Cancelled);
     assert!(cancelled.work > 0);
     assert!(cancelled.text.contains("0x0000: PUSH1"));
+    assert!(!cancelled.text.contains("0x0002: PUSH1"));
     assert!(!cancelled.text.contains("0x0007: STOP"));
     assert!(cancelled.text.contains("export cancelled"));
 }

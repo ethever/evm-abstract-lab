@@ -29,7 +29,7 @@ pub(super) struct Preferences {
 
 impl Preferences {
     pub fn install(&mut self, artifact: &Artifact, state: &ViewState) {
-        let source = readability_source(&artifact.input, &artifact.config);
+        let source = artifact.readability_source();
         let changed = self.source.as_ref().is_some_and(|prior| prior != &source);
         let selection_lost = self.region.as_ref().is_some_and(|region| {
             !artifact
@@ -60,6 +60,11 @@ impl Preferences {
         if self.config.regions.len() != previous_count {
             self.notice = Some(
                 "Stale or unavailable region choices were cleared. Current region choices remain available.",
+            );
+        }
+        if self.source.as_ref() != Some(&readability_source(&artifact.input, &artifact.config)) {
+            self.notice = Some(
+                "Region choices from this artifact version are cleared when reanalyzing. Select regions from the new result.",
             );
         }
         self.seen_selection = self.region.as_ref().and(state.selected.clone());
@@ -188,6 +193,11 @@ impl Preferences {
     }
 
     fn request(&self, artifact: &Artifact) -> DecompileRequest {
+        let source = readability_source(&artifact.input, &artifact.config);
+        let mut readability = self.config.clone();
+        readability
+            .regions
+            .retain(|preference| preference.region.source == source);
         DecompileRequest {
             bytecode: artifact
                 .input
@@ -201,8 +211,9 @@ impl Preferences {
                 evm_abstract_protocol::decompile_model::Fork::Osaka => Fork::Osaka,
             },
             strategy: artifact.config.strategy,
+            execution_domain: artifact.config.execution_domain,
             limits: artifact.config.limits.clone(),
-            readability: self.config.clone(),
+            readability,
         }
     }
 

@@ -23,6 +23,14 @@ pub struct LiftedErrorPayload {
 /// Terminal-on-reaching byte equality; alone this cannot hide earlier faults.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LiftedRevert {
+    /// Execution premise used to prove this source-memory result. A certificate
+    /// cannot be transplanted into an IR with a different declared domain.
+    #[serde(skip_serializing_if = "crate::ExecutionDomain::is_generic")]
+    pub execution_domain: crate::ExecutionDomain,
+    /// Fork qualifying the transaction resource premise; absent in legacy and
+    /// generic certificates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_fork: Option<crate::Fork>,
     /// Semantic certificate identity.
     pub id: EntityId,
     /// Source terminal block.

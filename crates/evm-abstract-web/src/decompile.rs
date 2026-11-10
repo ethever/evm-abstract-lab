@@ -3,6 +3,7 @@
 
 mod details;
 mod diff;
+mod domain;
 mod form;
 mod index;
 mod inspector;
@@ -152,6 +153,11 @@ impl Workspace {
                             "Artifact: {:?} · {:?} · {:?}",
                             artifact.completion, artifact.input.fork, artifact.config.strategy
                         ));
+                        let declaration = domain::declaration(artifact.config.execution_domain);
+                        let response = ui
+                            .label(&declaration)
+                            .on_hover_text(domain::assumption(artifact.config.execution_domain));
+                        controls::observe(ui, &response, &declaration, "decompile-domain", None);
                     }
                 });
                 if let Some(error) = &self.task.error {
@@ -278,6 +284,31 @@ impl Workspace {
                     self.task.result_failed(task::Error::Publication);
                     return;
                 }
+                if result.artifact.config.execution_domain != self.task.execution_domain() {
+                    self.task.reject(
+                        result.publication,
+                        task::Error::ExecutionScope {
+                            expected: self.task.execution_domain(),
+                            received: result.artifact.config.execution_domain,
+                        },
+                    );
+                    return;
+                }
+                let received_fork = match result.artifact.input.fork {
+                    evm_abstract_protocol::decompile_model::Fork::Cancun => Fork::Cancun,
+                    evm_abstract_protocol::decompile_model::Fork::Prague => Fork::Prague,
+                    evm_abstract_protocol::decompile_model::Fork::Osaka => Fork::Osaka,
+                };
+                if received_fork != self.task.fork() {
+                    self.task.reject(
+                        result.publication,
+                        task::Error::ForkMismatch {
+                            expected: self.task.fork(),
+                            received: received_fork,
+                        },
+                    );
+                    return;
+                }
                 if let Err(error) = model::check_artifact(&result.artifact) {
                     self.task
                         .reject(result.publication, task::Error::Artifact(error));
@@ -350,6 +381,10 @@ impl Workspace {
                 ));
             }
             status.push_str(&format!("; Artifact: {}; Completion: {:?}; Fork: {:?}; Strategy: {:?}; Stages: {}; Route: {}", artifact.id.0, artifact.completion, artifact.input.fork, artifact.config.strategy, artifact.stages.len(), self.views.route_label()));
+            status.push_str(&format!(
+                "; {}",
+                domain::declaration(artifact.config.execution_domain)
+            ));
             if let Some(stage) = self.state.current.and_then(|id| artifact.stage(id)) {
                 status.push_str(&format!(
                     "; Current stage: {} {:?}; Validation: {:?}",

@@ -10,6 +10,8 @@ mod cycles;
 mod edge;
 mod invariant;
 mod relations;
+#[cfg(test)]
+mod tests;
 mod word;
 const MAX_DEPTH: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +71,7 @@ pub(super) struct Memory<'a, P> {
     incoming: BTreeMap<EntityId, Vec<&'a crate::Edge>>,
     words: BTreeMap<EntityId, Word>,
     certified: BTreeMap<EntityId, Word>,
+    return_data_size_bound: Option<U256>,
     loads: BTreeMap<(EntityId, U256), Option<Word>>,
     active_words: BTreeSet<EntityId>,
     active_loads: BTreeSet<(EntityId, U256)>,
@@ -89,6 +92,7 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
         {
             return None;
         }
+        let return_data_size_bound = execution_bound(ir)?;
         let mut incoming = BTreeMap::<_, Vec<_>>::new();
         for edge in &ir.edges {
             incoming.entry(edge.to).or_default().push(edge);
@@ -99,6 +103,7 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
             ir,
             cyclic_blocks,
             certified,
+            return_data_size_bound,
             blocks: ir.blocks.iter().map(|b| (b.id, b)).collect(),
             operation_blocks: ir
                 .blocks
@@ -315,5 +320,17 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
             return true;
         }
         a.end(an).is_some_and(|end| end <= b.low) || b.end(bn).is_some_and(|end| end <= a.low)
+    }
+}
+
+/// A semantic bound is usable only with its complete declared execution domain.
+/// Generic source has no fork-dependent size axiom. Producer and certificate
+/// replay both construct this same memory kernel from the immutable IR witness.
+fn execution_bound(ir: &Ir) -> Option<Option<U256>> {
+    if ir.execution_domain.is_generic() {
+        ir.execution_fork.is_none().then_some(None)
+    } else {
+        let fork = ir.execution_fork?;
+        ir.execution_domain.return_data_size_bound(fork).map(Some)
     }
 }

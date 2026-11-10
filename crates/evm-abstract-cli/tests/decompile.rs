@@ -1047,3 +1047,146 @@ fn cli_reading_file_keeps_region_identity_and_explicit_flags_override_global_pre
         .success()
     );
 }
+
+#[test]
+fn execution_scope_defaults_to_generic_and_requires_an_explicit_transaction_option() {
+    use evm_decompile::{Artifact, ExecutionDomain};
+    let generic = run(&["--hex", "00", "--fork", "osaka", "--format", "json"]);
+    assert!(generic.status.success());
+    let generic: Artifact = serde_json::from_slice(&generic.stdout).unwrap();
+    assert_eq!(generic.config.execution_domain, ExecutionDomain::Generic);
+    assert!(generic.stages.iter().all(|stage| stage.ir.execution_domain
+        == ExecutionDomain::Generic
+        && stage.ir.execution_fork.is_none()));
+    for fork in ["cancun", "prague", "osaka"] {
+        let selected = run(&[
+            "--hex",
+            "00",
+            "--fork",
+            fork,
+            "--execution-domain",
+            "ethereum-transactions",
+            "--format",
+            "json",
+        ]);
+        assert!(
+            selected.status.success(),
+            "{}",
+            String::from_utf8_lossy(&selected.stderr)
+        );
+        let selected: Artifact = serde_json::from_slice(&selected.stdout).unwrap();
+        assert_eq!(
+            selected.config.execution_domain,
+            ExecutionDomain::EthereumTransactions
+        );
+        assert!(selected.stages.iter().all(|stage| stage.ir.execution_domain
+            == ExecutionDomain::EthereumTransactions
+            && stage.ir.execution_fork == Some(selected.input.fork)));
+        assert_ne!(generic.id, selected.id);
+        let text = run(&[
+            "--hex",
+            "00",
+            "--fork",
+            fork,
+            "--execution-domain",
+            "ethereum-transactions",
+        ]);
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert!(text.contains(
+            "// Execution scope: valid included Ethereum transactions and their contract calls."
+        ));
+    }
+    let explicit = run(&[
+        "--hex",
+        "00",
+        "--execution-domain",
+        "generic",
+        "--format",
+        "json",
+    ]);
+    assert!(explicit.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Artifact>(&explicit.stdout).unwrap(),
+        generic
+    );
+    assert!(
+        !run(&["--hex", "00", "--execution-domain", "eth-call"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn pair_constructor_certificate_requires_the_declared_transaction_domain_and_keeps_primitive_faults()
+ {
+    use evm_decompile::{Artifact, ExecutionDomain};
+    let code = include_str!(
+        "../../evm-decompile/tests/fixtures/error-payloads/pair-returndata-allocation-guard.hex"
+    )
+    .trim();
+    let mut published = Vec::new();
+    for selected in [false, true] {
+        let mut args = vec!["--hex", code, "--format", "json"];
+        if selected {
+            args.extend(["--execution-domain", "ethereum-transactions"]);
+        }
+        let output = run(&args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let artifact: Artifact = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            artifact.config.execution_domain,
+            if selected {
+                ExecutionDomain::EthereumTransactions
+            } else {
+                ExecutionDomain::Generic
+            }
+        );
+        let stage = artifact.current().unwrap();
+        let program = stage.ir.lifted.as_ref().unwrap();
+        let payload = program
+            .payloads
+            .iter()
+            .find(|payload| payload.message == "UniswapV2: TRANSFER_FAILED");
+        assert_eq!(payload.is_some(), selected);
+        if let Some(payload) = payload {
+            assert_eq!(payload.bytes.len(), 100);
+            let proof = program
+                .reverts
+                .iter()
+                .find(|proof| proof.payload == payload.id)
+                .unwrap();
+            assert_eq!(proof.writes.len(), 4);
+            let operation = stage
+                .ir
+                .blocks
+                .iter()
+                .flat_map(|block| &block.operations)
+                .find(|operation| operation.id == proof.operation)
+                .unwrap();
+            assert_eq!(operation.source.unwrap().pc, 189);
+            let renderer = program.render_index(&stage.ir);
+            renderer.validate_guard_sources().unwrap();
+            assert!(renderer.construction(proof.block).is_some());
+        }
+        let text = evm_decompile::render_text(&artifact);
+        assert!(
+            text.contains("evm.call(gas =") && text.contains("evm.returndatacopy(memory_offset =")
+        );
+        assert!(text.contains("evm.mstore(offset =") && text.contains("evm.revert(offset ="));
+        assert!(
+            !text.contains("evm.revert(\""),
+            "standalone proof must retain the original construction and faults"
+        );
+        assert_eq!(
+            text.contains("// Execution scope: valid included Ethereum transactions"),
+            selected
+        );
+        published.push(artifact);
+    }
+    assert_ne!(published[0].id, published[1].id);
+}

@@ -321,6 +321,8 @@ fn renderer_stage(otherwise: StructuredNode) -> Stage {
         kind: StageKind::Lifted,
         validation: fixture::passed(),
         ir: Ir {
+            execution_domain: Default::default(),
+            execution_fork: None,
             blocks: vec![Block {
                 id: EntityId(1),
                 source: None,

@@ -267,6 +267,8 @@ fn error_reply() -> evm_abstract_protocol::DecompileJobResultReply {
         outputs: vec![],
     });
     program.reverts.push(LiftedRevert {
+        execution_domain: Default::default(),
+        execution_fork: None,
         id: proof,
         block,
         operation: EntityId(900_005),
@@ -485,4 +487,44 @@ fn protocol_guard_failure_and_continuation_payloads_reject_unknown_duplicate_and
                 .is_err()
         );
     }
+}
+
+#[test]
+fn execution_domain_is_explicit_optional_for_legacy_requests_and_strictly_typed() {
+    use evm_abstract_protocol::decompile_model::ExecutionDomain;
+    let generic = DecompileRequest::default();
+    let legacy = serde_json::to_value(&generic).unwrap();
+    assert!(legacy.get("execution_domain").is_none());
+    assert_eq!(
+        serde_json::from_value::<DecompileRequest>(legacy.clone())
+            .unwrap()
+            .execution_domain,
+        ExecutionDomain::Generic
+    );
+    let selected = DecompileRequest {
+        execution_domain: ExecutionDomain::EthereumTransactions,
+        ..generic
+    };
+    let wire = serde_json::to_value(&selected).unwrap();
+    assert_eq!(wire["execution_domain"], "ethereum_transactions");
+    assert_eq!(
+        serde_json::from_value::<DecompileRequest>(wire.clone()).unwrap(),
+        selected
+    );
+    for invalid in [
+        serde_json::json!(null),
+        serde_json::json!(false),
+        serde_json::json!({}),
+        serde_json::json!("eth_call"),
+    ] {
+        let mut changed = wire.clone();
+        changed["execution_domain"] = invalid;
+        assert!(serde_json::from_value::<DecompileRequest>(changed).is_err());
+    }
+    let raw = serde_json::to_string(&selected).unwrap();
+    let duplicate = raw.replace(
+        "\"execution_domain\":",
+        "\"execution_domain\":\"generic\",\"execution_domain\":",
+    );
+    assert!(serde_json::from_str::<DecompileRequest>(&duplicate).is_err());
 }

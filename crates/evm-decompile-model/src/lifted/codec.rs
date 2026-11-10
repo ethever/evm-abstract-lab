@@ -96,7 +96,7 @@ impl WireWeight for LiftedErrorPayload {
 }
 impl WireWeight for LiftedRevert {
     fn wire_weight(&self) -> usize {
-        8_usize.saturating_add(self.writes.len())
+        10_usize.saturating_add(self.writes.len())
     }
 }
 impl WireWeight for LiftedConstruction {

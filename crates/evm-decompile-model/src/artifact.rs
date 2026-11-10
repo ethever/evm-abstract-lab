@@ -289,13 +289,32 @@ impl Artifact {
     /// Lightweight version admission. Full source/proof certification belongs
     /// to core; older advertised schemas cannot opt in to newer semantic fields.
     pub fn admits_schema(&self) -> bool {
-        if self.schema_version < crate::SCHEMA_VERSION
+        if self.stages.iter().any(|s| {
+            !s.ir.has_valid_execution_scope()
+                || s.ir.execution_domain != self.config.execution_domain
+                || s.ir
+                    .execution_fork
+                    .is_some_and(|fork| fork != self.input.fork)
+                || s.ir.lifted.as_ref().is_some_and(|p| {
+                    p.reverts.iter().any(|r| {
+                        r.execution_domain != s.ir.execution_domain
+                            || r.execution_fork != s.ir.execution_fork
+                    })
+                })
+        }) {
+            return false;
+        }
+        if self.schema_version < 8 && !self.config.execution_domain.is_generic() {
+            return false;
+        }
+        if self.schema_version < 7
             && (!self.config.readability.is_default() || !self.readability.is_empty())
         {
             return false;
         }
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
+            7 => true,
             6 => true,
             5 => self.stages.iter().all(|s| {
                 s.ir.lifted

@@ -412,3 +412,87 @@ fn valid_prefix_and_whitespace_drafts_send_parser_compatible_payloads_without_re
         assert_eq!(form.bytecode, draft);
     }
 }
+
+#[test]
+fn execution_scope_is_a_separate_explicit_choice_with_a_visible_transaction_assumption() {
+    use evm_abstract_protocol::decompile_model::ExecutionDomain;
+    let mut editor = Editor::new();
+    assert_eq!(
+        editor
+            .click("Decompile", "action")
+            .request
+            .unwrap()
+            .execution_domain,
+        ExecutionDomain::Generic
+    );
+    editor.click("Execution scope", "combobox");
+    editor.click("Ethereum valid transactions", "tab");
+    let frame = editor.frame(vec![]);
+    frame.control(
+        "Assumes a valid included Ethereum transaction, including its contract calls.",
+        "decompile-domain-assumption",
+    );
+    let request = editor.click("Decompile", "action").request.unwrap();
+    assert_eq!(
+        request.execution_domain,
+        ExecutionDomain::EthereumTransactions
+    );
+    assert_eq!(
+        wire(&request).1["execution_domain"],
+        "ethereum_transactions"
+    );
+    editor.click("EVM fork", "combobox");
+    editor.click("Cancun", "tab");
+    let request = editor.shortcut().request.unwrap();
+    assert_eq!(
+        request.execution_domain,
+        ExecutionDomain::EthereumTransactions
+    );
+    assert_eq!(request.fork, Fork::Cancun);
+    editor.click("Execution scope", "combobox");
+    editor.click("Generic EVM", "tab");
+    let request = editor.click("Decompile", "action").request.unwrap();
+    assert_eq!(request.execution_domain, ExecutionDomain::Generic);
+    assert!(wire(&request).1.get("execution_domain").is_none());
+}
+
+#[test]
+fn changing_execution_scope_clears_choices_bound_to_the_previous_source() {
+    use evm_abstract_protocol::decompile_model::{
+        ArtifactId, EntityId, RegionAnchor, RegionPreference, StructurePreference,
+    };
+    let mut editor = Editor::new();
+    let mut previous = editor.click("Decompile", "action").request.unwrap();
+    previous.readability.regions.push(RegionPreference {
+        region: RegionAnchor {
+            source: ArtifactId("original scope".into()),
+            entry: EntityId(1),
+            continuation: None,
+            loop_header: None,
+        },
+        structure: StructurePreference::Dispatcher,
+    });
+    editor.form.remember_readability(&previous);
+    assert!(
+        editor
+            .frame(vec![])
+            .text_count("Region choices cleared after the input or analysis settings changed.")
+            == 0
+    );
+    editor.click("Execution scope", "combobox");
+    editor.click("Ethereum valid transactions", "tab");
+    let frame = editor.frame(vec![]);
+    assert_eq!(
+        frame.text_count("Region choices cleared after the input or analysis settings changed."),
+        1
+    );
+    assert!(
+        editor
+            .click("Decompile", "action")
+            .request
+            .unwrap()
+            .readability
+            .regions
+            .is_empty()
+    );
+}

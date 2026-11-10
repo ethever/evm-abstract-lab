@@ -62,9 +62,12 @@ def prepare(page, canvas, bytecode, strategy="Dispatcher", fork=None):
 
 
 def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=None,
-           procedures=None, profile=None):
+           procedures=None, profile=None, execution_scope=None):
     prepare(page, canvas, bytecode, strategy, fork)
     input_panel = ui_control(page, "Decompiler input", role="decompile-input")
+    if execution_scope is not None:
+        click_control(page, canvas, "Execution scope", role="combobox", within=input_panel)
+        click_control(page, canvas, execution_scope, role="tab")
     if procedures is not None:
         click_control(page, canvas, procedures, role="tab", within=input_panel)
     if profile is not None:
@@ -83,10 +86,18 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     assert result["id"] == job["id"]
     assert result["publication"].isdigit()
     artifact = result["artifact"]
-    assert artifact["schema_version"] == 7
+    assert artifact["schema_version"] == 8
     assert artifact["config"]["strategy"] == {"Dispatcher": "dispatcher", "Code duplication": "code_duplication"}[strategy]
     selected_fork = admission.request.post_data_json["fork"]
     assert artifact["input"]["fork"] == selected_fork.lower()
+    declared = admission.request.post_data_json.get("execution_domain", "generic")
+    assert artifact["config"].get("execution_domain", "generic") == declared
+    for current in artifact["stages"]:
+        assert current["ir"].get("execution_domain", "generic") == declared
+        assert current["ir"].get("execution_fork") == (selected_fork.lower() if declared == "ethereum_transactions" else None)
+    scope = {"generic": "Generic EVM", "ethereum_transactions": "Ethereum valid transactions"}[declared]
+    expect(page.locator("#analysis-status")).to_contain_text("Execution scope: " + scope)
+    ui_control(page, "Execution scope: " + scope, role="decompile-domain")
     expect(page.locator("#analysis-status")).to_contain_text("Fork: " + selected_fork)
     expect(page.locator("#analysis-status")).to_contain_text("Artifact: " + artifact["id"])
     expect(page.locator("#analysis-status")).to_contain_text("Decompile task: Ready")

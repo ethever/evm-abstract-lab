@@ -487,3 +487,46 @@ fn lifted_predicates_and_origins_cross_the_compressed_result_protocol() {
     );
     pool.shutdown().unwrap();
 }
+
+#[test]
+fn execution_scope_survives_real_compressed_http_and_pins_every_stage_to_the_requested_fork() {
+    use evm_abstract_protocol::decompile_model::ExecutionDomain;
+    let assets = Assets::new();
+    let pool = pool();
+    let generic = DecompileRequest {
+        bytecode: "00".into(),
+        ..DecompileRequest::default()
+    };
+    let baseline = error_payloads::fetch(&generic, &assets, &pool).artifact;
+    assert_eq!(baseline.config.execution_domain, ExecutionDomain::Generic);
+    assert!(baseline.stages.iter().all(|stage| stage.ir.execution_domain
+        == ExecutionDomain::Generic
+        && stage.ir.execution_fork.is_none()));
+    for fork in [
+        evm_abstract_protocol::Fork::Cancun,
+        evm_abstract_protocol::Fork::Prague,
+        evm_abstract_protocol::Fork::Osaka,
+    ] {
+        let request = DecompileRequest {
+            fork,
+            execution_domain: ExecutionDomain::EthereumTransactions,
+            ..generic.clone()
+        };
+        let result = error_payloads::fetch(&request, &assets, &pool);
+        let artifact = &result.artifact;
+        assert!(artifact.admits_schema());
+        assert_eq!(artifact.config.execution_domain, request.execution_domain);
+        assert_ne!(artifact.id, baseline.id);
+        assert!(artifact.stages.iter().all(|stage| stage.ir.execution_domain
+            == request.execution_domain
+            && stage.ir.execution_fork == Some(artifact.input.fork)));
+        assert_eq!(
+            serde_json::from_slice::<evm_abstract_protocol::DecompileJobResult>(
+                &serde_json::to_vec(&result).unwrap()
+            )
+            .unwrap(),
+            result
+        );
+    }
+    pool.shutdown().unwrap();
+}

@@ -5,13 +5,15 @@ use crate::{
     framework, palette,
 };
 use evm_abstract_protocol::{
-    DecompileLimits, DecompileRequest, DecompileStrategy, Fork, decompile_model::ReadabilityConfig,
+    DecompileLimits, DecompileRequest, DecompileStrategy, Fork,
+    decompile_model::{ExecutionDomain, ReadabilityConfig},
 };
 
 pub(super) struct Form {
     pub open: bool,
     pub bytecode: String,
     fork: Fork,
+    execution_domain: ExecutionDomain,
     strategy: DecompileStrategy,
     limits: DecompileLimits,
     readability: ReadabilityConfig,
@@ -28,6 +30,7 @@ impl Default for Form {
             open: true,
             bytecode: "5f35600a576001600d565b60025b60030100".into(),
             fork: Fork::Osaka,
+            execution_domain: ExecutionDomain::Generic,
             strategy: DecompileStrategy::Dispatcher,
             limits: DecompileLimits::default(),
             readability: ReadabilityConfig::default(),
@@ -64,6 +67,7 @@ impl Form {
             let previous = scope.bytecode.strip_prefix("0x").unwrap_or(&scope.bytecode);
             code.eq_ignore_ascii_case(previous)
                 && self.fork == scope.fork
+                && self.execution_domain == scope.execution_domain
                 && self.strategy == scope.strategy
                 && self.limits == scope.limits
         });
@@ -143,6 +147,25 @@ impl Form {
                         });
                     controls::observe(ui, &fork.response, "EVM fork", "combobox", None);
                     ui.separator();
+                    ui.label("Execution scope");
+                    let domain = egui::ComboBox::from_id_salt("decompile_execution_domain")
+                        .selected_text(super::domain::label(self.execution_domain))
+                        .show_ui(ui, |ui| {
+                            for domain in [
+                                ExecutionDomain::Generic,
+                                ExecutionDomain::EthereumTransactions,
+                            ] {
+                                controls::tab_value(
+                                    ui,
+                                    &mut self.execution_domain,
+                                    domain,
+                                    super::domain::label(domain),
+                                    Density::Regular,
+                                );
+                            }
+                        });
+                    controls::observe(ui, &domain.response, "Execution scope", "combobox", None);
+                    ui.separator();
                     ui.label("Irreducible control flow");
                     controls::tab_value(
                         ui,
@@ -160,6 +183,19 @@ impl Form {
                     );
                 });
             });
+            let assumption = super::domain::assumption(self.execution_domain);
+            let response = ui.label(
+                egui::RichText::new(assumption)
+                    .small()
+                    .color(palette::MUTED),
+            );
+            controls::observe(
+                ui,
+                &response,
+                assumption,
+                "decompile-domain-assumption",
+                None,
+            );
             super::readability::global_controls(ui, &mut self.readability);
             framework::section(ui, "Decompile budgets", |ui| {
                 egui::Grid::new("decompile_limits")
@@ -181,7 +217,7 @@ impl Form {
             if self.readability_notice {
                 ui.colored_label(
                     palette::WARNING,
-                    "Region choices cleared after the input or recovery settings changed.",
+                    "Region choices cleared after the input or analysis settings changed.",
                 );
             }
             if let Some(error) = self.validation() {
@@ -237,6 +273,7 @@ impl Form {
             Some(DecompileRequest {
                 bytecode,
                 fork: self.fork,
+                execution_domain: self.execution_domain,
                 strategy: self.strategy,
                 limits: self.limits.clone(),
                 readability: self.readability.clone(),
@@ -249,8 +286,9 @@ impl Form {
     pub fn status(&self) -> String {
         if self.open {
             format!(
-                "Decompiler input: {:?}; Strategy draft: {:?}; Readability draft: {:?}; Procedures draft: {:?}; Input validation: {}",
+                "Decompiler input: {:?}; Execution scope draft: {}; Strategy draft: {:?}; Readability draft: {:?}; Procedures draft: {:?}; Input validation: {}",
                 self.fork,
+                super::domain::label(self.execution_domain),
                 self.strategy,
                 self.readability.profile,
                 self.readability.procedures,

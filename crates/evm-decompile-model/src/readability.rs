@@ -164,17 +164,29 @@ pub struct RegionDecision {
 /// Bind preferences to the same recovery policies while allowing their own change.
 /// This does not certify a region; the planner must still match its full boundary.
 pub fn readability_source(input: &Input, config: &Config) -> ArtifactId {
+    versioned_source(input, config, crate::SCHEMA_VERSION)
+}
+
+impl crate::Artifact {
+    /// Source namespace of this stored publication. Existing schema-7 reading
+    /// decisions retain their original hash; new attempts use the current free
+    /// function and must not transplant older region identities by relabeling.
+    pub fn readability_source(&self) -> ArtifactId {
+        versioned_source(&self.input, &self.config, self.schema_version)
+    }
+}
+
+fn versioned_source(input: &Input, config: &Config, schema: u32) -> ArtifactId {
     let mut bytes = input.fork.to_string().into_bytes();
     bytes.push(0);
     bytes.extend_from_slice(&input.runtime_bytecode);
-    bytes.extend_from_slice(
-        format!(
-            "recovery-schema={};strategy={:?};limits={:?}",
-            crate::SCHEMA_VERSION,
-            config.strategy,
-            config.limits,
-        )
-        .as_bytes(),
+    let mut policy = format!(
+        "recovery-schema={schema};strategy={:?};limits={:?}",
+        config.strategy, config.limits
     );
+    if schema >= 8 {
+        policy.push_str(&format!(";execution={:?}", config.execution_domain));
+    }
+    bytes.extend_from_slice(policy.as_bytes());
     ArtifactId(format!("{:x}", alloy_primitives::keccak256(bytes)))
 }

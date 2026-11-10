@@ -18,6 +18,7 @@ use std::{
 mod annotations;
 mod bound_words;
 mod error_payloads;
+mod execution_domain;
 mod guard_sources;
 mod guards;
 mod named_operands;
@@ -46,19 +47,21 @@ fn artifact_with_readability(
     bytecode: &str,
     readability: evm_abstract_protocol::decompile_model::ReadabilityConfig,
 ) -> DecompileArtifact {
+    artifact_with_request(DecompileRequest {
+        bytecode: bytecode.into(),
+        readability,
+        ..DecompileRequest::default()
+    })
+}
+
+fn artifact_with_request(request: DecompileRequest) -> DecompileArtifact {
     let pool = Pool::new(Config {
         workers: 1,
         queue_capacity: 1,
         retained_jobs: 1,
     })
     .unwrap();
-    let job = pool
-        .submit_decompile(DecompileRequest {
-            bytecode: bytecode.into(),
-            readability,
-            ..DecompileRequest::default()
-        })
-        .unwrap();
+    let job = pool.submit_decompile(request).unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let snapshot = pool.decompile_status(job.id).unwrap();

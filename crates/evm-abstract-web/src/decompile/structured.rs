@@ -144,7 +144,13 @@ fn render_lines(
         .filter(|_| prepared.error().is_none())
         .and_then(|_| shared_definitions(prepared, display, &work));
     let shared = definitions.is_some();
-    let mut output = definitions.unwrap_or_default();
+    let mut output = Vec::new();
+    if let Some(program) = &stage.ir.structured
+        && let Some(comment) = super::domain::source_comment(stage.ir.execution_domain)
+    {
+        emit(&mut output, program.root.id, 0, comment);
+    }
+    output.extend(definitions.unwrap_or_default());
     let aborted = Cell::new(false);
     if let Some(program) = &stage.ir.structured {
         render(

@@ -27,6 +27,14 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
     let blocks: BTreeMap<_, _> = ir.blocks.iter().map(|b| (b.id, b)).collect();
     let values: BTreeMap<_, _> = ir.values.iter().map(|v| (v.id, v)).collect();
     let edges: BTreeMap<_, _> = ir.edges.iter().map(|e| (e.id, e)).collect();
+    add(
+        "execution_scope",
+        if ir.has_valid_execution_scope() {
+            Vec::new()
+        } else {
+            vec!["execution domain has a missing or incompatible fork qualification".to_owned()]
+        },
+    );
     let mut all = Vec::new();
     for b in &ir.blocks {
         if cancel.is_cancelled() {
@@ -494,6 +502,11 @@ pub(crate) fn validate_transition(
     let normalize = |id: &EntityId| ancestry.get(id).copied().unwrap_or(*id);
     let mut projections = BTreeMap::new();
     let mut errors = Vec::new();
+    if before.ir.execution_domain != after.ir.execution_domain
+        || before.ir.execution_fork != after.ir.execution_fork
+    {
+        errors.push("execution domain or fork qualification changed".to_owned());
+    }
     if after.kind == StageKind::Lifted
         && (before.kind != StageKind::Structured
             || before.ir.bytecode_len != after.ir.bytecode_len

@@ -15,6 +15,11 @@ pub(in crate::lift) fn verify(
     let raw: BTreeMap<_, _> = ir.blocks.iter().map(|b| (b.id, b)).collect();
     let payloads: BTreeMap<_, _> = program.payloads.iter().map(|p| (p.id, p)).collect();
     for proof in &program.reverts {
+        if proof.execution_domain != ir.execution_domain
+            || proof.execution_fork != ir.execution_fork
+        {
+            return Some(false);
+        }
         if !memory.charge(proof.writes.len().saturating_add(1)) {
             return None;
         }

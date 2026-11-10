@@ -415,10 +415,7 @@ pub(super) fn check_artifact(artifact: &Artifact) -> Result<(), String> {
         ));
     }
     if !artifact.readability.is_empty() {
-        let source = evm_abstract_protocol::decompile_model::readability_source(
-            &artifact.input,
-            &artifact.config,
-        );
+        let source = artifact.readability_source();
         let blocks: BTreeSet<_> = artifact
             .stages
             .iter()

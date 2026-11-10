@@ -126,7 +126,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                             if !self.work(&previous, 1) {
                                 return None;
                             }
-                            self.merge(previous, state)
+                            self.merge(previous, state, None)
                         }
                     });
                 }
@@ -151,7 +151,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                     Flow::Known(initial.clone())
                 }
             } else {
-                self.join(block, &result)
+                self.join(block, &result, Some(shape.header))
             };
             self.process(
                 block,
@@ -520,7 +520,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                         ..State::default()
                     })
                 } else {
-                    self.join(block, &flows)
+                    self.join(block, &flows, None)
                 };
                 self.process(block, flow, None, false, &mut flows, false);
             }

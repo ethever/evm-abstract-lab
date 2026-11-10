@@ -51,6 +51,8 @@ impl<'de> Deserialize<'de> for Text {
 }
 strict_record! { pub struct PayloadWire { pub id:EntityId,pub message:Text,pub bytes:Items<u8> } }
 strict_record! { pub struct RevertWire {
+    pub execution_domain:crate::ExecutionDomain = crate::ExecutionDomain::Generic,
+    pub execution_fork:Option<crate::Fork> = None,
     pub id:EntityId,pub block:EntityId,pub operation:EntityId,pub memory:EntityId,
     pub offset:EntityId,pub size:EntityId,pub payload:EntityId,pub writes:Items<EntityId>,
 } }
@@ -71,7 +73,14 @@ impl<'de> Deserialize<'de> for LiftedErrorPayload {
 impl<'de> Deserialize<'de> for LiftedRevert {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let w = RevertWire::deserialize(d)?;
+        if w.execution_domain.is_generic() != w.execution_fork.is_none() {
+            return Err(serde::de::Error::custom(
+                "inconsistent payload execution scope",
+            ));
+        }
         Ok(Self {
+            execution_domain: w.execution_domain,
+            execution_fork: w.execution_fork,
             id: w.id,
             block: w.block,
             operation: w.operation,

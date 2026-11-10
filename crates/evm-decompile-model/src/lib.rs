@@ -1,6 +1,6 @@
 //! Lightweight transport-safe immutable decompilation schemas.
 /// Current immutable artifact wire schema.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 // Declare each record once, retaining explicit null separately from absence.
 // Enum payload adapters use these same object-only field/duplicate checks.
@@ -48,6 +48,7 @@ macro_rules! strict_record {
 
 mod artifact;
 mod codec;
+mod execution_domain;
 mod lifted;
 mod model;
 mod readability;
@@ -58,6 +59,7 @@ mod terminal;
 pub use alloy_primitives::U256;
 pub use artifact::*;
 pub use evm_bytecode::Fork;
+pub use execution_domain::*;
 pub use lifted::*;
 pub use model::*;
 pub use readability::*;

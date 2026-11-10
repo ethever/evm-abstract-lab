@@ -83,7 +83,14 @@ impl<P: FnMut(usize) -> bool> Memory<'_, P> {
                     return self.load(op.memory_input?, address, depth + 1);
                 }
                 if evm_bytecode::word::arity(op.opcode) != Some(op.inputs.len()) {
-                    return Some(Word::opaque(id));
+                    let mut word = Word::opaque(id);
+                    if op.opcode == 0x3d
+                        && op.inputs.is_empty()
+                        && let Some(high) = self.return_data_size_bound
+                    {
+                        word.high = high;
+                    }
+                    return Some(word);
                 }
                 if !self.charge(evm_bytecode::word::evaluation_work(op.opcode)) {
                     return None;
@@ -132,9 +139,7 @@ impl<P: FnMut(usize) -> bool> Memory<'_, P> {
                         }
                     }
                 } else if op.opcode == 0x16 {
-                    if let Some(mask) = args.iter().find_map(|a| a.exact()) {
-                        result.high = mask;
-                    }
+                    result.high = args[0].high.min(args[1].high);
                 } else if matches!(op.opcode, 0x10..=0x15) {
                     result.high = U256::from(1);
                 } else if op.opcode == 0x1c

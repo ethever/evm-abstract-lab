@@ -4,6 +4,54 @@ fn source() -> Source<'static, impl FnMut(usize) -> bool> {
     static IR: std::sync::OnceLock<Ir> = std::sync::OnceLock::new();
     Source::new(IR.get_or_init(Ir::default), |_| true).unwrap()
 }
+
+#[test]
+fn and_retains_the_other_operands_proved_upper_bound_through_alignment() {
+    let mut source = source();
+    let mut state = State::default();
+    let length = Atom::Source(EntityId(10));
+    state.atoms.insert(
+        length,
+        Range {
+            low: U256::ZERO,
+            high: U256::from(1023),
+        },
+    );
+    let operation = Operation {
+        id: EntityId(20),
+        source: None,
+        opcode: 0x16,
+        name: "AND".into(),
+        inputs: vec![EntityId(10), EntityId(11)],
+        outputs: vec![EntityId(12)],
+        effects: crate::Effects::default(),
+        memory_input: None,
+        memory_output: None,
+        replacement: None,
+        effect_input: None,
+        effect_output: None,
+    };
+    let aligned = source
+        .calculate(
+            &operation,
+            &[
+                Expr::atom(length).add(&Expr::constant(U256::from(63))),
+                Expr::constant(!U256::from(31)),
+            ],
+            &mut state,
+            Atom::Source(EntityId(12)),
+        )
+        .unwrap();
+    assert_eq!(state.range(&aligned).high, U256::from(1086));
+    let free_pointer = Expr::constant(U256::from(292)).add(&aligned);
+    assert_eq!(
+        state.ordinary(&free_pointer),
+        Some(Range {
+            low: U256::from(292),
+            high: U256::from(1378)
+        })
+    );
+}
 #[test]
 fn ordinary_ordering_rejects_equal_and_reversed_overlapping_ranges() {
     let source = source();
@@ -326,7 +374,7 @@ fn a_join_reserves_work_for_the_accumulated_left_operand() {
     // Enough for both incoming clones, but not another scan of the accumulated
     // large state when the tiny second contribution is merged.
     remaining.set(64 * MAX_TERMS * MAX_TERMS + 6);
-    assert!(matches!(source.join(&block, &flows), Flow::Unknown));
+    assert!(matches!(source.join(&block, &flows, None), Flow::Unknown));
     assert!(source.refused);
     assert!(source.admitted.is_empty());
 }

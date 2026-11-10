@@ -235,3 +235,82 @@ fn foreign_or_dangling_decision_records_cannot_supply_region_controls() {
             .contains("recovered source region")
     );
 }
+
+#[test]
+fn readability_resubmission_preserves_the_artifacts_declared_execution_scope() {
+    let artifact = analyze(DecompileRequest {
+        bytecode: BRANCH.into(),
+        execution_domain:
+            evm_abstract_protocol::decompile_model::ExecutionDomain::EthereumTransactions,
+        ..Default::default()
+    });
+    let editor = Editor::new(artifact);
+    let request = editor.preferences.request(&editor.artifact);
+    assert_eq!(
+        request.execution_domain,
+        editor.artifact.config.execution_domain
+    );
+    assert_eq!(
+        request.execution_domain,
+        evm_abstract_protocol::decompile_model::ExecutionDomain::EthereumTransactions
+    );
+}
+
+#[test]
+fn legacy_seven_region_decisions_remain_readable_and_are_not_retargeted_on_resubmission() {
+    let artifact = analyze(DecompileRequest {
+        bytecode: BRANCH.into(),
+        ..Default::default()
+    });
+    let mut original = Editor::new(artifact);
+    original.click("Compact");
+    original.click("Dispatcher");
+    let actual = analyze(original.click("Apply reading choices").unwrap());
+    assert!(!actual.readability.is_empty() && !actual.config.readability.regions.is_empty());
+    let mut legacy = actual;
+    legacy.schema_version = 7;
+    let source = legacy.readability_source();
+    assert_ne!(source, readability_source(&legacy.input, &legacy.config));
+    for decision in &mut legacy.readability {
+        decision.region.source = source.clone();
+    }
+    for preference in &mut legacy.config.readability.regions {
+        preference.region.source = source.clone();
+    }
+    assert!(legacy.admits_schema());
+    crate::decompile::model::check_artifact(&legacy).unwrap();
+    let retained = legacy.readability.clone();
+    let editor = Editor::new(legacy.clone());
+    assert_eq!(editor.preferences.source.as_ref(), Some(&source));
+    assert_eq!(
+        editor.artifact.readability, retained,
+        "legacy region identities remain unchanged for display"
+    );
+    assert!(
+        editor
+            .preferences
+            .notice
+            .unwrap()
+            .contains("cleared when reanalyzing")
+    );
+    let request = editor.preferences.request(&legacy);
+    assert!(
+        request.readability.regions.is_empty(),
+        "old region IDs cannot be sent as current source choices"
+    );
+    assert_eq!(
+        request.readability.profile,
+        legacy.config.readability.profile
+    );
+    assert_eq!(
+        request.readability.procedures,
+        legacy.config.readability.procedures
+    );
+    let refreshed = analyze(request);
+    assert!(
+        refreshed
+            .readability
+            .iter()
+            .all(|decision| decision.region.source != source)
+    );
+}

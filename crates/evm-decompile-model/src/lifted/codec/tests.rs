@@ -17,6 +17,8 @@ fn payload() -> LiftedErrorPayload {
 
 fn revert() -> LiftedRevert {
     LiftedRevert {
+        execution_domain: crate::ExecutionDomain::Generic,
+        execution_fork: None,
         id: EntityId(2),
         block: EntityId(3),
         operation: EntityId(4),

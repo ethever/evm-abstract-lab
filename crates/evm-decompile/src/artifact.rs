@@ -314,6 +314,22 @@ impl<P: FnMut(Progress)> Builder<P> {
         let prior_phase = self.progress.phase;
         self.notify_phase(Phase::Validate);
         stage.validation = crate::validate::validate_with_cancel(&stage, &self.cancel);
+        let scope_matches = stage.ir.execution_domain == self.artifact.config.execution_domain
+            && stage.ir.execution_fork
+                == (!self.artifact.config.execution_domain.is_generic())
+                    .then_some(self.artifact.input.fork);
+        if !scope_matches {
+            stage.validation.status = ValidationStatus::Failed;
+        }
+        stage.validation.checks.push(ValidationCheck {
+            name: "frozen_execution_scope".to_owned(),
+            passed: scope_matches,
+            message: if scope_matches {
+                "snapshot uses the frozen input and execution domain".to_owned()
+            } else {
+                "snapshot changes the frozen execution domain or its fork".to_owned()
+            },
+        });
         if !self.pay(0) {
             return None;
         }

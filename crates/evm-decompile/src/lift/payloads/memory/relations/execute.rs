@@ -125,6 +125,17 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                     result = self.calculate(op, &args, state, atom);
                 }
                 let result = result.unwrap_or_else(|| Expr::atom(atom));
+                if op.opcode == 0x3d
+                    && let Some(high) = self.return_data_size_bound
+                {
+                    state.atoms.insert(
+                        atom,
+                        Range {
+                            low: U256::ZERO,
+                            high,
+                        },
+                    );
+                }
                 state.values.insert(output, result);
             }
             if effects.memory_write {
@@ -279,9 +290,9 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 low: U256::ZERO,
                 high: U256::from(1),
             }),
-            (0x16, [a, b]) => a.exact().or_else(|| b.exact()).map(|mask| Range {
+            (0x16, [a, b]) => Some(Range {
                 low: U256::ZERO,
-                high: mask,
+                high: state.range(a).high.min(state.range(b).high),
             }),
             (0x1c, [shift, value]) => {
                 shift
