@@ -33,6 +33,8 @@ const SHARED_TOKEN_ELSE: &str = concat!(
     "5b80604052806000558061002f57610041565b8060605260206040a0",
     "80600355806004555b6001019056",
 );
+const SHARED_EMPTY_THEN: &str =
+    include_str!("../../../../tests/fixtures/decompile/shared-empty-then.hex");
 
 // Two return-address contexts retain a failed arm that reads/writes memory and
 // reverts. Only the locally returning successful work may become a procedure.
@@ -267,7 +269,7 @@ fn with_display(stage: &Stage, display: structured::HighDisplayOptions) -> Vec<s
 }
 
 #[test]
-fn cached_shared_else_follows_substantive_content_in_all_display_modes() {
+fn cached_shared_else_uses_one_semantic_layout_in_all_display_modes() {
     let artifact = artifact(SHARED_TOKEN_ELSE);
     let original = artifact.clone();
     let stage = artifact.current().unwrap();
@@ -277,6 +279,11 @@ fn cached_shared_else_follows_substantive_content_in_all_display_modes() {
     let renderer = program.render_index(&stage.ir);
     let procedure = &program.procedures[0];
     let branch = renderer.node(procedure.body).unwrap();
+    let control = program
+        .controls
+        .iter()
+        .find(|control| control.node == branch.id)
+        .unwrap();
     let StructuredKind::If { else_branch, .. } = &branch.kind else {
         panic!("the certified shared body must contain the conditional itself")
     };
@@ -334,37 +341,167 @@ fn cached_shared_else_follows_substantive_content_in_all_display_modes() {
         assert_eq!(
             rendered
                 .iter()
-                .filter(|(entity, depth, text)| *entity == branch.id
+                .filter(|(entity, depth, text)| *entity == control.id
                     && *depth == 1
                     && text == "} else {")
                 .count(),
-            usize::from(dependencies),
+            0,
             "{rendered:#?}"
         );
         assert!(rendered.iter().any(|(entity, depth, text)| {
-            *entity == branch.id && *depth == 1 && text.starts_with("if (")
+            *entity == control.id && *depth == 1 && text.starts_with("if (")
         }));
-        assert!(rendered.contains(&(branch.id, 1, "}".into())));
+        assert!(rendered.contains(&(control.id, 1, "}".into())));
         for token in &tokens {
-            assert_eq!(rendered.contains(token), dependencies, "{rendered:#?}");
+            assert!(!rendered.contains(token), "{rendered:#?}");
         }
-        if !dependencies {
-            assert!(
-                !rendered
-                    .iter()
-                    .any(|(entity, _, _)| context.contains(entity))
-            );
-        }
-        let copied = copied_text(&lines);
-        assert_eq!(
-            copied.matches("} else {").count(),
-            usize::from(dependencies)
+        assert!(
+            !rendered
+                .iter()
+                .any(|(entity, _, _)| context.contains(entity))
         );
+        let copied = copied_text(&lines);
+        assert_eq!(copied.matches("} else {").count(), 0);
         assert_eq!(copied.matches("evm.log0(").count(), 1);
         assert_eq!(copied.matches("evm.sstore(slot = 0x3,").count(), 1);
         assert_eq!(copied.matches("evm.sstore(slot = 0x4,").count(), 1);
         assert_eq!(rows(&structured::lines(stage)), raw);
     }
+    assert_eq!(artifact, original);
+}
+
+#[test]
+fn shared_empty_then_layout_survives_expansion_copy_and_condition_navigation() {
+    let artifact = artifact(SHARED_EMPTY_THEN.trim());
+    let original = artifact.clone();
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let index = crate::decompile::index::StageIndex::new(&stage.ir);
+    let renderer = program.render_index(&stage.ir);
+    let procedure = program
+        .procedures
+        .iter()
+        .find(|procedure| {
+            renderer
+                .node(procedure.body)
+                .is_some_and(|node| matches!(node.kind, StructuredKind::If { .. }))
+        })
+        .expect("the repeated conditional itself must share");
+    let canonical = program
+        .controls
+        .iter()
+        .find(|control| control.node == procedure.body)
+        .unwrap();
+    let call = program
+        .invocations
+        .iter()
+        .find(|call| call.procedure == procedure.id && call.source != procedure.body)
+        .unwrap();
+    let actual = program
+        .controls
+        .iter()
+        .find(|control| control.node == call.source)
+        .unwrap();
+    let expanded_calls = BTreeSet::from([call.id]);
+    let raw = rows(&structured::lines(stage));
+    for dependencies in [false, true] {
+        for annotations in [false, true] {
+            let display = structured::HighDisplayOptions {
+                show_state_dependencies: dependencies,
+                show_structure_annotations: annotations,
+            };
+            let collapsed = with_display(stage, display);
+            let expanded =
+                structured::lifted_lines_expanded(stage, &index, display, &expanded_calls);
+            for (lines, controls) in [
+                (&collapsed, vec![canonical]),
+                (&expanded, vec![canonical, actual]),
+            ] {
+                assert!(!lines.iter().any(|line| line.text == "} else {"));
+                for control in controls {
+                    let header = lines
+                        .iter()
+                        .find(|line| line.entity == control.id && line.text.starts_with("if ("))
+                        .unwrap();
+                    assert!(header.text.contains("!= 0"), "{}", header.text);
+                }
+            }
+            assert!(
+                expanded
+                    .iter()
+                    .any(|line| line.entity == call.id && line.text.starts_with("// Expanded:"))
+            );
+        }
+    }
+    let (ctx, mut workspace) = setup(artifact.clone());
+    let canonical_at = EntityRef {
+        stage: stage.id,
+        entity: canonical.id,
+    };
+    assert!(workspace.state.navigate(&artifact, canonical_at));
+    let before = workspace.state.details(&artifact, canonical_at);
+    assert!(Rc::ptr_eq(
+        &before,
+        &workspace.state.details(&artifact, canonical_at)
+    ));
+    frame(&ctx, &mut workspace, vec![]);
+    workspace.state.toggle_call_expansion(EntityRef {
+        stage: stage.id,
+        entity: call.id,
+    });
+    let after = workspace.state.details(&artifact, canonical_at);
+    assert!(
+        !Rc::ptr_eq(&before, &after),
+        "expansion invalidates the prepared detail scope"
+    );
+    let actual_at = EntityRef {
+        stage: stage.id,
+        entity: actual.id,
+    };
+    assert!(workspace.state.navigate(&artifact, actual_at));
+    let details = workspace.state.details(&artifact, actual_at);
+    assert!(details.lines[0].contains("!= 0"));
+    assert!(
+        details
+            .lines
+            .iter()
+            .any(|line| line.starts_with("Original predicate"))
+    );
+    let StructuredKind::If {
+        then_branch,
+        else_branch,
+        ..
+    } = &renderer.node(actual.node).unwrap().kind
+    else {
+        unreachable!()
+    };
+    for entity in [
+        actual.node,
+        actual.condition,
+        then_branch.id,
+        else_branch.id,
+    ] {
+        assert!(details.references.contains(&EntityRef {
+            stage: stage.id,
+            entity
+        }));
+    }
+    let expected =
+        structured::lifted_lines_expanded(stage, &index, Default::default(), &expanded_calls);
+    let visible = frame(&ctx, &mut workspace, vec![]);
+    assert_eq!(workspace.state.selected.as_ref().unwrap().at, actual_at);
+    assert!(visible.controls.iter().any(|row| {
+        row["role"] == "decompile-code"
+            && row["selected"] == true
+            && row["label"]
+                .as_str()
+                .is_some_and(|label| label.contains("if (") && label.contains("!= 0"))
+    }));
+    assert_eq!(
+        click(&ctx, &mut workspace, "Copy structured text").copied,
+        [copied_text(&expected)]
+    );
+    assert_eq!(rows(&structured::lines(stage)), raw);
     assert_eq!(artifact, original);
 }
 

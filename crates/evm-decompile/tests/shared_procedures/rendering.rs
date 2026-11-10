@@ -80,7 +80,7 @@ fn terminal_names_stay_visible_in_callers_and_never_enter_shared_bodies() {
 }
 
 #[test]
-fn shared_token_only_else_is_hidden_without_state_dependencies() {
+fn shared_token_only_else_keeps_one_layout_across_dependency_modes() {
     let fixture = fixtures::token_only_else();
     // The browser case uses these same bytes through the real HTTP boundary.
     assert_eq!(
@@ -160,16 +160,22 @@ fn shared_token_only_else_is_hidden_without_state_dependencies() {
     assert_eq!(if_rows[0].depth, 0);
     assert_eq!(if_rows[1].text, "}");
     assert_eq!(if_rows[1].depth, 0);
+    assert!(shown.iter().all(|row| row.text != "} else {"));
     assert!(
         shown
             .iter()
-            .any(|row| { row.entity == node.id && row.text == "} else {" && row.depth == 0 })
+            .all(|row| !hidden_sources.contains(&row.entity))
     );
     for (edge, token) in tokens {
         assert!(
             shown
                 .iter()
-                .any(|row| { row.entity == edge && row.text == token && row.depth == 1 })
+                .all(|row| row.entity != edge || row.text != token),
+            "context-only rows cannot restore an omitted source arm"
+        );
+        assert!(
+            stage.ir.edge(edge).is_some(),
+            "the original state transfer remains inspectable"
         );
     }
     let input = procedure.interface.inputs[0].0;
@@ -240,7 +246,7 @@ fn shared_else_display_retains_observable_effects_and_actual_branch_execution() 
                 .unwrap();
             assert_eq!(
                 rows.iter().filter(|row| row.text == "} else {").count(),
-                usize::from(observable_else || dependencies)
+                usize::from(observable_else)
             );
             if observable_else {
                 assert!(

@@ -204,20 +204,19 @@ def token_only_else(context, page, canvas):
         assert key not in snapshots or snapshots[key] == text, "toggle roundtrip changed a cached projection"
         snapshots[key] = text
         lines = [line.strip() for line in text.splitlines()]
-        assert lines.count("} else {") == int(dependencies), "only displayed state makes this else substantive"
+        assert lines.count("} else {") == 0, "metadata-only else uses one preplanned layout"
         assert lines.count(f"if ((v{procedure['interface']['inputs'][0]} != 0)) {{") == 1
         for _, token in tokens:
-            assert (token in lines) == dependencies
+            assert token not in lines
         for annotation in annotations:
-            assert (annotation in lines) == (dependencies and structure)
+            assert annotation not in lines
         assert text.count("evm.sstore(slot = 0x3,") == text.count("evm.sstore(slot = 0x4,") == 1
         assert text.count("evm.log0(") == 1, "the substantive true arm must survive every display mode"
     for dependencies in [False, True]:
         assert without_structure(snapshots[dependencies, True]) == snapshots[dependencies, False].splitlines()
     for structure in [False, True]:
-        projected = [line for line in without_state(snapshots[True, structure], current)
-                     if line.strip() != "} else {" and line.strip() not in annotations]
-        assert projected == snapshots[False, structure].splitlines(), "only this typed empty arm may disappear"
+        projected = without_state(snapshots[True, structure], current)
+        assert projected == snapshots[False, structure].splitlines(), "state toggles preserve the planned control layout"
     reading = snapshots[False, False]
     source_descendant(page, canvas, artifact, current["id"], procedure["body"])
     # Source nodes keep their raw navigation routes. The same entity must still
@@ -231,7 +230,7 @@ def token_only_else(context, page, canvas):
     source_descendant(page, canvas, artifact, current["id"], edge)
     ui_control(page, "IR", role="tab", selected=True)
     high(page, canvas)
-    selected_row(page, "decompile-code", token)
+    assert token not in painted_copy(page, canvas), "raw edge navigation must not resurrect an omitted metadata arm"
     assert painted_copy(page, canvas) == snapshots[True, False]
     set_control(page, canvas, DEPENDENCIES, False)
     assert painted_copy(page, canvas) == reading
@@ -258,7 +257,7 @@ def token_only_else(context, page, canvas):
     canvas.screenshot(path=str(context.output / "shared-procedures-empty-else.png"))
     return {"artifact": artifact["id"], "runtime_bytes": len(bytes.fromhex(TOKEN_ONLY_ELSE)),
             "if_source": procedure["body"], "false_arm_edges": sorted(edges, key=int),
-            "restored_state_rows": len(tokens), "default_bytes": len(reading.encode("utf-8")),
+            "retained_raw_state_rows": len(tokens), "default_bytes": len(reading.encode("utf-8")),
             "state_bytes": len(snapshots[True, False].encode("utf-8")),
             "raw_bytes": len(raw_text.encode("utf-8")),
             "raw_rows": len(raw_rows), "raw_windows": len(raw_samples)}

@@ -7,11 +7,13 @@ use super::{LiftedModelError, sources::GuardSources};
 use crate::{EntityId, ExitKind, Ir, StructuredNode};
 use std::collections::BTreeMap;
 
+mod branch;
 mod condition;
 mod control;
 mod failure_first;
 pub(crate) mod primitive;
 mod word;
+pub use branch::{LiftedBranchLayout, LiftedBranchLayouts};
 use control::ControlPlanIndex;
 pub use control::{LiftedIfPlan, LiftedIfSuffix, RequireIf};
 pub use failure_first::FailureFirstIf;
@@ -31,6 +33,7 @@ pub struct LiftedRenderIndex<'a> {
     operations: BTreeMap<EntityId, &'a crate::Operation>,
     word_sources: word::WordSources<'a>,
     edges: BTreeMap<EntityId, &'a crate::Edge>,
+    raw_blocks: std::collections::BTreeSet<EntityId>,
     blocks: BTreeMap<EntityId, &'a LiftedBlock>,
     transfers: BTreeMap<EntityId, &'a LiftedTransfer>,
     controls: BTreeMap<EntityId, &'a LiftedControl>,
@@ -76,7 +79,10 @@ impl<'a> LiftedRenderIndex<'a> {
         if let Some(ir) = ir {
             basic = basic
                 .saturating_add(ir.values.len())
-                .saturating_add(ir.edges.len());
+                .saturating_add(ir.edges.len())
+                // Raw-presence admission is indexed independently of high
+                // blocks; pay its retained identities before allocating it.
+                .saturating_add(ir.blocks.len());
             for b in &ir.blocks {
                 basic = basic
                     .saturating_add(b.operations.len())
@@ -164,6 +170,11 @@ impl<'a> LiftedRenderIndex<'a> {
                 .collect(),
             word_sources: word::WordSources::new(program, ir),
             edges,
+            raw_blocks: ir
+                .into_iter()
+                .flat_map(|ir| &ir.blocks)
+                .map(|block| block.id)
+                .collect(),
             blocks,
             transfers: program.transfers.iter().map(|t| (t.edge, t)).collect(),
             controls: program.controls.iter().map(|c| (c.node, c)).collect(),
@@ -201,6 +212,7 @@ impl<'a> LiftedRenderIndex<'a> {
             operations: BTreeMap::new(),
             word_sources: word::WordSources::default(),
             edges: BTreeMap::new(),
+            raw_blocks: Default::default(),
             blocks: BTreeMap::new(),
             transfers: BTreeMap::new(),
             controls: BTreeMap::new(),

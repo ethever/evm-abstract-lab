@@ -80,6 +80,36 @@ fn pool_manager() -> &'static Fixture {
     })
 }
 
+#[test]
+fn pool_manager_high_projection_omits_empty_then_else_pairs() {
+    let fixture = pool_manager();
+    let export = export_text(&fixture.artifact, &Cancellation::default());
+    assert_eq!(export.status, TextExportStatus::Complete);
+    let rows: Vec<_> = export.text.lines().collect();
+    let mut checked = 0;
+    for (index, row) in rows.iter().enumerate() {
+        if !row.trim_start().starts_with("if (") || !row.ends_with('{') {
+            continue;
+        }
+        checked += 1;
+        let next = rows[index + 1..]
+            .iter()
+            .find(|row| !row.trim().is_empty() && !row.trim_start().starts_with("//"));
+        assert!(
+            next.is_none_or(|row| row.trim() != "} else {"),
+            "empty then retained at line {}: {}",
+            index + 1,
+            row,
+        );
+    }
+    assert!(
+        checked > 100,
+        "exercise the real contract, not an empty/refused export"
+    );
+    assert!(export.text.contains("evm.tstore("));
+    assert!(export.text.contains("evm.revert("));
+}
+
 // A dispatcher case/transition remains real retained structure, even though it
 // is not a separate owned AST node. Count it so fallback cannot hide growth.
 fn structure_weight(root: &StructuredNode) -> usize {

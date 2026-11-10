@@ -5,7 +5,7 @@ use super::{details::Details, index::StageIndex, model::EntityKind, structured};
 use evm_abstract_protocol::decompile_model::{
     EntityId, EntityRef, LiftedConstruction, LiftedExpressionKind, LiftedGuardPayload,
     LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex, LiftedStatement,
-    LiftedTransfer, Stage,
+    LiftedTransfer, Stage, StructuredKind,
 };
 
 pub(super) mod shared;
@@ -84,6 +84,17 @@ pub(super) fn details(
     id: EntityId,
     renderer: &LiftedRenderIndex<'_>,
     work: &work::Work,
+) -> Option<Details> {
+    details_prepared(stage, index, id, renderer, work, &index.shared)
+}
+
+pub(super) fn details_prepared(
+    stage: &Stage,
+    index: &StageIndex,
+    id: EntityId,
+    renderer: &LiftedRenderIndex<'_>,
+    work: &work::Work,
+    prepared: &shared::Prepared,
 ) -> Option<Details> {
     if let Some(details) = shared::details(stage, index, id, work) {
         return Some(details);
@@ -260,7 +271,7 @@ pub(super) fn details(
     } else {
         let control = index.control(&stage.ir, id)?;
         references.extend([control.node, control.condition]);
-        let canonical = index.shared.control_plan(control.id);
+        let canonical = prepared.control_plan(control.id);
         let selected = if canonical.is_some() {
             LiftedIfPlan::Original
         } else {
@@ -291,7 +302,47 @@ pub(super) fn details(
                         .ok()
                         .map(|condition| format!("if ({condition}) {{"))
                 }
-                LiftedIfPlan::Original => None,
+                LiftedIfPlan::Original => {
+                    if let Some(error) = prepared.error() {
+                        lines.push(format!(
+                            "Display preparation unavailable ({error}); original predicate retained"
+                        ));
+                        None
+                    } else {
+                        // A selected source control is expanded at its own site,
+                        // even when an ancestor is normally represented by a call.
+                        let layouts = renderer
+                            .plan_branch_layouts(
+                                control.node,
+                                |source| {
+                                    source != control.node
+                                        && prepared.invocation(source, false).is_some()
+                                },
+                                |amount| work.reserve(amount),
+                            )
+                            .ok();
+                        if let Some(source) = renderer.node(control.node)
+                            && let StructuredKind::If {
+                                then_branch,
+                                else_branch,
+                                ..
+                            } = &source.kind
+                        {
+                            references.extend([then_branch.id, else_branch.id]);
+                        }
+                        layouts
+                            .as_ref()
+                            .and_then(|layouts| layouts.get(control.node))
+                            .and_then(|layout| {
+                                renderer
+                                    .render_condition(control.condition, layout.invert, |amount| {
+                                        work.reserve(amount)
+                                    })
+                                    .ok()
+                            })
+                            .map(|condition| format!("if ({condition}) {{"))
+                    }
+                }
             }
         };
         if let Some(guard) = &control.guard {
@@ -391,11 +442,21 @@ pub(super) fn details(
                     )
                 },
                 |header| {
-                    format!(
-                        "Failure-first If h{} · ast{}: {header}",
-                        id.0, control.node.0
-                    )
+                    let label = if canonical
+                        .map_or(matches!(&selected, LiftedIfPlan::FailureFirst(_)), |plan| {
+                            plan.failure_first
+                        }) {
+                        "Failure-first If"
+                    } else {
+                        "Control"
+                    };
+                    format!("{label} h{} · ast{}: {header}", id.0, control.node.0)
                 },
+            ));
+            lines.push(format!(
+                "Original predicate x{}: {}",
+                control.condition.0,
+                expression(renderer, control.condition)
             ));
         }
     }

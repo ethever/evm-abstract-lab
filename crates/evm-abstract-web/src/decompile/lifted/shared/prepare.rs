@@ -2,7 +2,7 @@
 //! or proof algorithm is copied. The publication owns cache invalidation.
 use super::super::work::Work;
 use evm_abstract_protocol::decompile_model::{
-    EntityId, Ir, LiftedIfPlan, LiftedIfSuffix, LiftedRenderError, SharedRenderRow,
+    EntityId, Ir, LiftedIfPlan, LiftedIfSuffix, LiftedRenderError, SharedRenderRow, StructuredKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +31,7 @@ struct Invocation {
 
 pub(in crate::decompile) struct ControlPlan {
     pub require: bool,
+    pub failure_first: bool,
     pub header: Option<String>,
     pub suffix: LiftedIfSuffix,
     pub references: Vec<EntityId>,
@@ -96,6 +97,18 @@ impl Prepared {
             .flat_map(|control| [(control.id, control), (control.node, control)])
             .collect();
         for procedure in renderer.procedures() {
+            let branch_layouts = renderer
+                .node(procedure.body)
+                .map(|_| {
+                    renderer.plan_branch_layouts(
+                        procedure.body,
+                        |source| {
+                            source != procedure.body && renderer.shared_invocation(source).is_some()
+                        },
+                        |amount| work.reserve(amount),
+                    )
+                })
+                .transpose()?;
             let headers = [
                 renderer
                     .render_procedure_header(procedure, false, |amount| work.reserve(amount))?,
@@ -135,7 +148,32 @@ impl Prepared {
                                 .reserve(amount))?
                         ))
                     }
-                    LiftedIfPlan::Original => None,
+                    LiftedIfPlan::Original => {
+                        if let Some(layout) = branch_layouts
+                            .as_ref()
+                            .and_then(|layouts| layouts.get(control.node))
+                        {
+                            if let Some(source) = renderer.node(control.node)
+                                && let StructuredKind::If {
+                                    then_branch,
+                                    else_branch,
+                                    ..
+                                } = &source.kind
+                            {
+                                references.extend([then_branch.id, else_branch.id]);
+                            }
+                            Some(format!(
+                                "if ({}) {{",
+                                renderer.render_condition(
+                                    control.condition,
+                                    layout.invert,
+                                    |amount| work.reserve(amount),
+                                )?
+                            ))
+                        } else {
+                            None
+                        }
+                    }
                 };
                 if !work.reserve(references.len()) {
                     return Err(LiftedRenderError::Limit);
@@ -144,6 +182,7 @@ impl Prepared {
                     control.id,
                     ControlPlan {
                         require: matches!(selected, LiftedIfPlan::Require(_)),
+                        failure_first: matches!(selected, LiftedIfPlan::FailureFirst(_)),
                         header,
                         suffix: selected.suffix(),
                         references,
@@ -200,9 +239,13 @@ impl Prepared {
     pub fn control_plan(&self, entity: EntityId) -> Option<&ControlPlan> {
         self.control_plans.get(&entity)
     }
-    pub fn require_owner(&self, source: EntityId) -> Option<EntityId> {
+    pub fn control_owner(&self, source: EntityId) -> Option<EntityId> {
         let control = *self.source_controls.get(&source)?;
-        self.control_plans.get(&control)?.require.then_some(control)
+        self.control_plans
+            .get(&control)?
+            .header
+            .as_ref()
+            .map(|_| control)
     }
     pub fn header(&self, id: EntityId, state: bool) -> Option<&str> {
         Some(
@@ -243,6 +286,6 @@ impl Prepared {
         self.arithmetic.failure_condition(node)
     }
     pub fn row_matches(&self, row: EntityId, selected: EntityId) -> bool {
-        self.arithmetic.row_matches(row, selected)
+        self.arithmetic.row_matches(row, selected) || self.control_owner(selected) == Some(row)
     }
 }

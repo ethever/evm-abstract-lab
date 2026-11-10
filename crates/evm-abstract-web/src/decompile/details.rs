@@ -7,6 +7,7 @@ use super::{
 use evm_abstract_protocol::decompile_model::{
     EntityId, EntityRef, Stage, StageKind, StructuredKind,
 };
+use std::collections::BTreeSet;
 
 #[derive(Default)]
 pub(super) struct Details {
@@ -14,15 +15,39 @@ pub(super) struct Details {
     pub references: Vec<EntityRef>,
 }
 
+#[cfg(test)]
 pub(super) fn build(stage: &Stage, index: &StageIndex, id: EntityId, bytecode: &[u8]) -> Details {
+    build_expanded(stage, index, id, bytecode, &BTreeSet::new())
+}
+
+pub(super) fn build_expanded(
+    stage: &Stage,
+    index: &StageIndex,
+    id: EntityId,
+    bytecode: &[u8],
+    expanded: &BTreeSet<EntityId>,
+) -> Details {
     let work = index.render_work();
+    let sources: BTreeSet<_> = stage
+        .ir
+        .lifted
+        .as_ref()
+        .into_iter()
+        .flat_map(|program| &program.invocations)
+        .filter(|call| expanded.contains(&call.id))
+        .map(|call| call.source)
+        .collect();
+    let expanded_prepared = (!sources.is_empty())
+        .then(|| super::lifted::shared::Prepared::with_expanded(&stage.ir, &work, &sources));
+    let prepared = expanded_prepared.as_ref().unwrap_or(&index.shared);
     if let Some(program) = &stage.ir.lifted
-        && let Some(details) = super::lifted::details(
+        && let Some(details) = super::lifted::details_prepared(
             stage,
             index,
             id,
             &program.render_base_index_with_budget(&stage.ir, |amount| work.reserve(amount)),
             &work,
+            prepared,
         )
     {
         return details;

@@ -16,7 +16,8 @@ mod validate;
 mod word;
 pub use payload::{LiftedConstruction, LiftedErrorPayload, LiftedRevert, MAX_ERROR_PAYLOAD_BYTES};
 pub use render::{
-    FailureFirstIf, LiftedIfPlan, LiftedIfSuffix, LiftedRenderError, LiftedRenderIndex, RequireIf,
+    FailureFirstIf, LiftedBranchLayout, LiftedBranchLayouts, LiftedIfPlan, LiftedIfSuffix,
+    LiftedRenderError, LiftedRenderIndex, RequireIf,
 };
 pub use word::{WordExpr, WordRewrite, WordSimplifyError, simplify_word};
 
