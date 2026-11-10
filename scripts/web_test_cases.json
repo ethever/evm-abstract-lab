@@ -1058,6 +1058,8 @@
       "group": "decompile",
       "module": "web_test_decompile_structure_plan",
       "dependencies": [
+        "crates/evm-decompile/tests/fixtures/structure/regions/loop-normal-join.hex",
+        "crates/evm-decompile/tests/fixtures/structure/regions/loop-normal-join.json",
         "scripts/test-web-browser.py",
         "scripts/web_test_decompile_alignment.py",
         "scripts/web_test_decompile_guards.py",

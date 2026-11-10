@@ -1,5 +1,5 @@
 //! Build shared, source-scoped region plans before allocating syntax occurrences.
-use super::super::facts::{Facts, Loop};
+use super::super::facts::{Facts, Loop, NormalRegion, RegionScope};
 use super::{MAX_SOURCE_REFERENCES, Plan, PlanError, PlanId, PlanNode, Quote, Region, quote_node};
 use crate::{
     ArtifactId, Completion, DiagnosticCode, DispatchCase, DispatchTransition, EntityId,
@@ -28,6 +28,7 @@ struct RegionKey {
 struct JoinKey {
     left: EntityId,
     right: EntityId,
+    continuation: Option<EntityId>,
     loop_header: Option<EntityId>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +71,10 @@ pub(super) struct Planner<'a, P: FnMut(Progress)> {
     // They contain no PlanId that a truncated arena could invalidate.
     join_cache: BTreeMap<JoinKey, Option<EntityId>>,
     cycle_cache: BTreeMap<CycleKey, bool>,
+    // A complete scoped proof may contain source sets for many blocks. Retain
+    // only one scope; small positive/negative join answers remain independently
+    // memoized under their complete boundary even when this proof is replaced.
+    normal_region: Option<(RegionScope, NormalRegion)>,
     memo_limit: usize,
     compact_pressure: bool,
     // Failed expansion evidence is local to source blocks and survives rollback.
@@ -238,6 +243,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
             capacity_refused: false,
             join_cache: BTreeMap::new(),
             cycle_cache: BTreeMap::new(),
+            normal_region: None,
             memo_limit: natural_limit.saturating_mul(2).min(MAX_PLAN_SLOTS / 8),
             compact_pressure: false,
             expanded_sources: BTreeSet::new(),
@@ -769,8 +775,13 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                 let simple = then_edges.len() == 1 && !unresolved && invalid_targets.is_empty();
                 let join = if simple {
                     if let Some(other) = else_edge {
-                        self.common_join(self.edge(then_edges[0])?.to, self.edge(other)?.to, lp)
-                            .ok()?
+                        self.common_join(
+                            self.edge(then_edges[0])?.to,
+                            self.edge(other)?.to,
+                            stop,
+                            lp,
+                        )
+                        .ok()?
                     } else {
                         None
                     }
@@ -1078,6 +1089,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         &mut self,
         a: EntityId,
         b: EntityId,
+        stop: Option<EntityId>,
         lp: Option<&Loop>,
     ) -> Result<Option<EntityId>, PlanError> {
         if !self.owner.pay(8) {
@@ -1086,6 +1098,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         let key = JoinKey {
             left: a,
             right: b,
+            continuation: stop,
             loop_header: lp.map(|l| l.header),
         };
         if let Some(answer) = self.join_cache.get(&key) {
@@ -1097,7 +1110,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
             .filter(allowed)
             .copied()
             .collect();
-        let normal: BTreeSet<_> = if self.facts.finite.contains(&a)
+        let mut normal: BTreeSet<_> = if self.facts.finite.contains(&a)
             && self.facts.finite.contains(&b)
             && !self.facts.failed.contains(&a)
             && !self.facts.failed.contains(&b)
@@ -1110,6 +1123,36 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         } else {
             BTreeSet::new()
         };
+        if strict.is_empty()
+            && normal.is_empty()
+            && (stop.is_some() || !self.facts.loops.is_empty())
+        {
+            let scope = RegionScope {
+                continuation: stop,
+                loop_header: lp.map(|info| info.header),
+            };
+            if self.normal_region.as_ref().map(|(key, _)| *key) != Some(scope) {
+                // The facts are source-only. Dropping an old scope before
+                // constructing its replacement bounds retained source storage
+                // independently of recursive plan depth and arena rollback.
+                self.normal_region = None;
+                let facts = self
+                    .facts
+                    .normal_region(self.ir, scope, &mut |n| self.owner.pay(n))
+                    .ok_or(PlanError::Limit)?;
+                self.normal_region = Some((scope, facts));
+            }
+            let facts = &self.normal_region.as_ref().unwrap().1.postdom;
+            if let (Some(left), Some(right)) = (facts.get(&a), facts.get(&b)) {
+                if !self
+                    .owner
+                    .pay(left.len().saturating_add(right.len()).saturating_mul(8))
+                {
+                    return Err(PlanError::Limit);
+                }
+                normal = left.intersection(right).filter(allowed).copied().collect();
+            }
+        }
         // Most early-terminal pairs have no candidate at all. In that case no
         // distance arrays or graph walks are necessary; cache the negative fact.
         let answer = if strict.is_empty() && normal.is_empty() {

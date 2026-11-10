@@ -2,6 +2,8 @@
 use crate::transform::reachable;
 use crate::{EntityId, ExitKind, Ir, Progress, Terminator, artifact::Builder};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+mod region;
+pub(super) use region::{NormalRegion, RegionScope};
 #[cfg(test)]
 mod tests;
 #[derive(Clone)]
@@ -22,6 +24,7 @@ pub(super) struct Facts {
     // Exact terminator successors, shared by all indexed planning queries.
     pub successors: Vec<Vec<usize>>,
     predecessors: Vec<Vec<usize>>,
+    known: Vec<bool>,
 }
 impl Facts {
     pub fn new(
@@ -188,6 +191,7 @@ impl Facts {
             edges,
             successors,
             predecessors,
+            known,
         })
     }
 

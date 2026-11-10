@@ -49,6 +49,14 @@ fn fixture(hex: &str, metadata: &str) -> Fixture {
             .iter()
             .all(|s| s.validation.status == ValidationStatus::Passed)
     );
+    assert!(
+        artifact.diagnostics.iter().all(|diagnostic| {
+            !diagnostic.message.contains("source-control verification")
+                && !diagnostic.message.contains("whole-source dispatcher")
+        }),
+        "real-contract structure must not rely on verification fallback: {:?}",
+        artifact.diagnostics
+    );
     Fixture { input, artifact }
 }
 
@@ -127,6 +135,18 @@ fn real_pair_and_pool_manager_finish_with_structure_proportional_to_their_cfg() 
             .iter()
             .find(|s| s.kind == StageKind::Structured)
             .unwrap();
+        let simplified = fixture
+            .artifact
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Simplified)
+            .unwrap();
+        let mut primitive = structured.ir.clone();
+        primitive.structured = None;
+        assert_eq!(
+            primitive, simplified.ir,
+            "region planning must preserve every primitive body and edge transfer"
+        );
         let mut witness = stage.ir.clone();
         witness.lifted = None;
         assert_eq!(
@@ -140,6 +160,50 @@ fn real_pair_and_pool_manager_finish_with_structure_proportional_to_their_cfg() 
             "a completed artifact must also export its entire fixed contract"
         );
     }
+}
+
+#[test]
+fn pool_manager_keeps_four_natural_loops_and_one_loop_local_normal_join() {
+    let ir = &pool_manager().artifact.current().unwrap().ir;
+    let root = &ir.structured.as_ref().unwrap().root;
+    let mut pending = vec![root];
+    let mut loops = 0;
+    let mut dispatchers = 0;
+    let mut joins = 0;
+    while let Some(node) = pending.pop() {
+        match &node.kind {
+            StructuredKind::Sequence(children) => pending.extend(children),
+            StructuredKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => pending.extend([&**then_branch, &**else_branch]),
+            StructuredKind::While { header, body, .. } => {
+                loops += 1;
+                pending.extend([&**header, &**body]);
+            }
+            StructuredKind::Indirect { arms, .. } => {
+                pending.extend(arms.iter().map(|arm| &arm.body));
+            }
+            StructuredKind::Dispatcher { .. } => dispatchers += 1,
+            StructuredKind::Block { block } => {
+                // The captured loop diamond's two nonfailing arms meet here.
+                // A finite REVERT alternative must not duplicate this suffix.
+                joins += usize::from(ir.block(*block).unwrap().source.unwrap().pc == 0x53bb);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        dispatchers, 0,
+        "the captured CFG has no irreducible residual"
+    );
+    assert_eq!(loops, 4);
+    assert_eq!(joins, 1, "loop-local normal continuation must be shared");
+    assert!(
+        structure_weight(root) <= 2 * (ir.blocks.len() + ir.edges.len()),
+        "natural regions must not replace the former 655-case dispatcher with an expanded tree"
+    );
 }
 
 fn execute(fixture: &Fixture, host: MemoryHost) -> (ExecutionOutcome, Vec<u8>) {
