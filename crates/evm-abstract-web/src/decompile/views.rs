@@ -58,6 +58,7 @@ pub(super) struct Views {
     rendered: Option<(ArtifactId, StageId, Vec<structured::Line>)>,
     rendered_high_display: Option<structured::HighDisplayOptions>,
     high_display: structured::HighDisplayOptions,
+    expanded_calls: BTreeSet<EntityRef>,
     lifted_seen: bool,
     narrow_before: bool,
     source: source::Source,
@@ -333,6 +334,7 @@ impl Views {
                     "Show state dependencies",
                     Density::Compact,
                 );
+                self.expansion_controls(ui, artifact, stage, state);
             }
             copy = controls::action(ui, "Copy structured text", Density::Compact).clicked();
         });
@@ -408,6 +410,51 @@ impl Views {
         });
     }
 
+    fn expansion_controls(
+        &mut self,
+        ui: &mut Ui,
+        artifact: &Artifact,
+        stage: &Stage,
+        state: &ViewState,
+    ) {
+        let Some(selected) = state.selected_in(artifact, stage.id) else {
+            return;
+        };
+        let Some(program) = stage.ir.lifted.as_ref() else {
+            return;
+        };
+        let index = state.index.stage(stage.id);
+        let calls: Vec<_> = program
+            .invocations
+            .iter()
+            .filter(|call| {
+                index.shared.row_matches(selected, call.id)
+                    && index.shared.invocation(call.source, false).is_some()
+            })
+            .collect();
+        for call in &calls {
+            let at = EntityRef {
+                stage: stage.id,
+                entity: call.id,
+            };
+            let expanded = self.expanded_calls.contains(&at);
+            let action = if expanded { "Collapse" } else { "Expand" };
+            let label = if calls.len() == 1 {
+                format!("{action} call here")
+            } else {
+                format!("{action} procedure p{} here", call.procedure.0)
+            };
+            if controls::action(ui, &label, Density::Compact).clicked() {
+                if expanded {
+                    self.expanded_calls.remove(&at);
+                } else {
+                    self.expanded_calls.insert(at);
+                }
+                self.rendered = None;
+            }
+        }
+    }
+
     fn prepare_code(&mut self, artifact: &Artifact, stage: &Stage, state: &ViewState) {
         let key = (artifact.id.clone(), stage.id);
         let high_display = (self.route == Route::Lifted).then_some(self.high_display);
@@ -422,7 +469,18 @@ impl Views {
                 key.0,
                 key.1,
                 if let Some(display) = high_display {
-                    structured::lifted_lines_indexed(stage, &state.index.stage(stage.id), display)
+                    let expanded = self
+                        .expanded_calls
+                        .iter()
+                        .filter(|at| at.stage == stage.id)
+                        .map(|at| at.entity)
+                        .collect();
+                    structured::lifted_lines_expanded(
+                        stage,
+                        &state.index.stage(stage.id),
+                        display,
+                        &expanded,
+                    )
                 } else {
                     structured::lines_indexed(stage, &state.index.stage(stage.id))
                 },

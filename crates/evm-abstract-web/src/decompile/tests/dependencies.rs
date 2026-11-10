@@ -39,6 +39,13 @@ const DISPATCHER: &str = concat!(
 );
 
 fn artifact(bytecode: &str) -> DecompileArtifact {
+    artifact_with_readability(bytecode, Default::default())
+}
+
+fn artifact_with_readability(
+    bytecode: &str,
+    readability: evm_abstract_protocol::decompile_model::ReadabilityConfig,
+) -> DecompileArtifact {
     let pool = Pool::new(Config {
         workers: 1,
         queue_capacity: 1,
@@ -48,6 +55,7 @@ fn artifact(bytecode: &str) -> DecompileArtifact {
     let job = pool
         .submit_decompile(DecompileRequest {
             bytecode: bytecode.into(),
+            readability,
             ..DecompileRequest::default()
         })
         .unwrap();

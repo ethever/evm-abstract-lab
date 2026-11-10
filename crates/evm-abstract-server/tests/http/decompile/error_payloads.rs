@@ -130,6 +130,7 @@ fn real_compressed_http_preserves_error_bytes_lazy_ranges_sources_and_legacy_ver
         for version in [1, 2, 3] {
             let mut old = artifact.clone();
             old.schema_version = version;
+            old.readability.clear();
             assert!(!old.admits_schema());
         }
         // Recorded Passed and a valid result envelope do not authorize forged
@@ -178,6 +179,7 @@ fn nonempty_proof_http_budget_refusal_retains_only_the_prior_validated_publicati
     let config = evm_decompile::Config {
         strategy: input.strategy,
         limits: input.limits.clone(),
+        readability: input.readability.clone(),
     };
     let cancel = evm_decompile::Cancellation::new();
     let before = evm_decompile::decompile_with_progress(&source, &config, &cancel, |progress| {

@@ -326,9 +326,11 @@ pub(in crate::decompile) fn artifact(strategy: Strategy) -> Artifact {
         config: Config {
             strategy,
             limits: Limits::default(),
+            readability: Default::default(),
         },
         completion: Completion::Complete,
         diagnostics: vec![],
+        readability: vec![],
         stages,
         events,
         mappings: SourceMappings { origins },

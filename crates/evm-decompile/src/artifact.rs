@@ -97,6 +97,7 @@ impl<P: FnMut(Progress)> Builder<P> {
                 mappings: SourceMappings::default(),
                 current_stage: None,
                 statistics: Statistics::default(),
+                readability: Vec::new(),
             },
             budget,
             cancel: cancel.clone(),

@@ -21,6 +21,7 @@ pub(super) struct Facts {
     pub edges: BTreeMap<EntityId, usize>,
     // Exact terminator successors, shared by all indexed planning queries.
     pub successors: Vec<Vec<usize>>,
+    predecessors: Vec<Vec<usize>>,
 }
 impl Facts {
     pub fn new(
@@ -186,7 +187,62 @@ impl Facts {
             blocks,
             edges,
             successors,
+            predecessors,
         })
+    }
+
+    /// A source continuation outside the cyclic component. This is a safe
+    /// boundary candidate, not a claim that the resulting dispatch is minimal.
+    /// Strict postdominance keeps failure/unknown exits out of this shortcut.
+    pub fn residual_continuation(
+        &self,
+        ir: &Ir,
+        start: EntityId,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Option<Option<EntityId>> {
+        let distances = self.indexed_distances(start, pay)?;
+        if !pay(self.blocks.len().saturating_mul(3)) {
+            return None;
+        }
+        let root = *self.blocks.get(&start)?;
+        let mut reaches_entry = vec![false; self.blocks.len()];
+        let mut pending = vec![root];
+        while let Some(index) = pending.pop() {
+            if reaches_entry[index] {
+                continue;
+            }
+            reaches_entry[index] = true;
+            if !pay(self.predecessors[index].len().saturating_add(1)) {
+                return None;
+            }
+            pending.extend_from_slice(&self.predecessors[index]);
+        }
+        // Forward-and-reverse reachability identifies the actual source SCC.
+        // A postdominator outside it may still require exit bridges in dispatch.
+        let component: Vec<_> = ir
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| distances[*index].is_some() && reaches_entry[*index])
+            .map(|(_, block)| block.id)
+            .collect();
+        let mut candidates = self.postdom[&start].clone();
+        for member in &component {
+            if !pay(candidates.len().saturating_add(1)) {
+                return None;
+            }
+            candidates.retain(|candidate| self.postdom[member].contains(candidate));
+        }
+        Some(
+            candidates
+                .into_iter()
+                .filter_map(|candidate| {
+                    let index = *self.blocks.get(&candidate)?;
+                    (!reaches_entry[index]).then_some((distances[index]?, candidate))
+                })
+                .min()
+                .map(|(_, candidate)| candidate),
+        )
     }
 
     pub fn indexed_distances(

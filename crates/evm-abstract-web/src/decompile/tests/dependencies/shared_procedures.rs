@@ -6,6 +6,16 @@ use evm_abstract_protocol::decompile_model::{
 };
 use std::collections::BTreeMap;
 
+fn artifact(bytecode: &str) -> DecompileArtifact {
+    super::artifact_with_readability(
+        bytecode,
+        evm_abstract_protocol::decompile_model::ReadabilityConfig {
+            procedures: evm_abstract_protocol::decompile_model::ProcedurePreference::Shared,
+            ..Default::default()
+        },
+    )
+}
+
 // Two different caller words enter the same two-block helper. Each call writes
 // memory/storage and emits LOG0, then returns two words to a distinct caller.
 const SHARED: &str = concat!(
@@ -1347,4 +1357,162 @@ fn nested_arithmetic_calls_keep_finite_definitions_clipboard_and_exact_invocatio
         );
     }
     assert_semantic_rows_survive_toggles(stage);
+}
+
+#[test]
+fn expand_one_certified_call_in_place_preserves_other_calls_copy_and_publication_identity() {
+    let artifact = artifact(SHARED);
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let index = crate::decompile::index::StageIndex::new(&stage.ir);
+    let call = program
+        .invocations
+        .iter()
+        .find(|call| index.node(&stage.ir, call.source).is_some())
+        .unwrap();
+    let other = program
+        .invocations
+        .iter()
+        .find(|other| other.id != call.id && index.node(&stage.ir, other.source).is_some())
+        .unwrap();
+    let before = high(stage, false);
+    let expected = structured::lifted_lines_expanded(
+        stage,
+        &index,
+        Default::default(),
+        &BTreeSet::from([call.id]),
+    );
+    assert!(
+        expected
+            .iter()
+            .any(|line| line.entity == call.id && line.text.starts_with("// Expanded:"))
+    );
+    assert!(
+        expected
+            .iter()
+            .any(|line| line.entity == other.id && !line.text.starts_with("// Expanded:"))
+    );
+    assert!(expected.len() > before.len());
+    let source = index.node(&stage.ir, call.source).unwrap();
+    let mut source_blocks = BTreeSet::new();
+    structured::visit(source, &mut |node| {
+        if let StructuredKind::Block { block } = node.kind {
+            source_blocks.insert(block);
+        }
+    });
+    let renderer = program.render_base_index_with_budget(&stage.ir, |_| true);
+    let actual_store = program
+        .blocks
+        .iter()
+        .filter(|block| source_blocks.contains(&block.block))
+        .flat_map(|block| &block.statements)
+        .find(|statement| {
+            index
+                .operation(&stage.ir, statement.operation)
+                .is_some_and(|operation| operation.opcode == 0x55)
+        })
+        .unwrap();
+    let actual_text = renderer
+        .render_statement_with_dependencies(actual_store, false, |_| true)
+        .unwrap();
+    assert!(
+        expected
+            .iter()
+            .any(|line| line.entity == actual_store.id && line.text == actual_text)
+    );
+    let (ctx, mut workspace) = setup(artifact.clone());
+    workspace.state.navigate(
+        &artifact,
+        EntityRef {
+            stage: stage.id,
+            entity: call.id,
+        },
+    );
+    frame(&ctx, &mut workspace, vec![]);
+    let expanded = click(&ctx, &mut workspace, "Expand call here");
+    assert_painted(&expanded, &expected);
+    assert_eq!(
+        click(&ctx, &mut workspace, "Copy structured text").copied,
+        [copied_text(&expected)]
+    );
+    assert_eq!(workspace.artifact.as_ref(), Some(&artifact));
+    let collapsed = click(&ctx, &mut workspace, "Collapse call here");
+    assert_painted(&collapsed, &before);
+    click(&ctx, &mut workspace, "Expand call here");
+    deliver(&mut workspace, artifact.clone(), 11);
+    assert_eq!(
+        click(&ctx, &mut workspace, "Copy structured text").copied,
+        [copied_text(&before)]
+    );
+    let stale = structured::lifted_lines_expanded(
+        stage,
+        &index,
+        Default::default(),
+        &BTreeSet::from([EntityId(u64::MAX)]),
+    );
+    assert_eq!(rows(&stale), rows(&before));
+}
+
+#[test]
+fn expanding_a_nested_arithmetic_call_uses_its_original_source_expression() {
+    let artifact = artifact(ARITHMETIC);
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let index = crate::decompile::index::StageIndex::new(&stage.ir);
+    let call = program
+        .invocations
+        .iter()
+        .find(|call| index.expression(&stage.ir, call.source).is_some())
+        .unwrap();
+    let baseline = high(stage, false);
+    let expected = structured::lifted_lines_expanded(
+        stage,
+        &index,
+        Default::default(),
+        &BTreeSet::from([call.id]),
+    );
+    assert_ne!(copied_text(&expected), copied_text(&baseline));
+    let before_rows: Vec<_> = baseline
+        .iter()
+        .filter(|line| index.shared.row_matches(line.entity, call.id))
+        .collect();
+    assert!(!before_rows.is_empty());
+    assert!(
+        before_rows
+            .iter()
+            .any(|line| line.text.contains("pure_arithmetic_"))
+    );
+    let mut renderer = program.render_index(&stage.ir);
+    renderer
+        .expand_shared_sources(&BTreeSet::from([call.source]), |_| true)
+        .unwrap();
+    let statement = program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find(|statement| before_rows.iter().any(|line| line.entity == statement.id))
+        .unwrap();
+    let caller_text = renderer
+        .render_statement_with_dependencies(statement, false, |_| true)
+        .unwrap();
+    assert!(
+        expected
+            .iter()
+            .any(|line| line.entity == statement.id && line.text == caller_text)
+    );
+    let (ctx, mut workspace) = setup(artifact.clone());
+    workspace.state.navigate(
+        &artifact,
+        EntityRef {
+            stage: stage.id,
+            entity: call.id,
+        },
+    );
+    frame(&ctx, &mut workspace, vec![]);
+    assert_painted(&click(&ctx, &mut workspace, "Expand call here"), &expected);
+    assert_eq!(
+        click(&ctx, &mut workspace, "Copy structured text").copied,
+        [copied_text(&expected)]
+    );
+    assert_eq!(workspace.artifact.as_ref(), Some(&artifact));
 }

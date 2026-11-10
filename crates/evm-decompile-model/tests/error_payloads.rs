@@ -154,8 +154,8 @@ fn canonical_content_admission_checks_every_header_message_and_padding_byte() {
 #[test]
 fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     assert_eq!(
-        SCHEMA_VERSION, 6,
-        "shared procedure semantics change the current wire contract"
+        SCHEMA_VERSION, 7,
+        "source-bound reading preferences change the current wire contract"
     );
     let mut artifact: Artifact =
         serde_json::from_str(include_str!("fixtures/partial-artifact.json")).unwrap();

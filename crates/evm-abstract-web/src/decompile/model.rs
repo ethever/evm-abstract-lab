@@ -414,6 +414,30 @@ pub(super) fn check_artifact(artifact: &Artifact) -> Result<(), String> {
             artifact.schema_version
         ));
     }
+    if !artifact.readability.is_empty() {
+        let source = evm_abstract_protocol::decompile_model::readability_source(
+            &artifact.input,
+            &artifact.config,
+        );
+        let blocks: BTreeSet<_> = artifact
+            .stages
+            .iter()
+            .filter(|stage| stage.validation.status == ValidationStatus::Passed)
+            .flat_map(|stage| stage.ir.blocks.iter().map(|block| block.id))
+            .collect();
+        for decision in &artifact.readability {
+            let region = &decision.region;
+            if region.source != source
+                || !blocks.contains(&region.entry)
+                || region.continuation.is_some_and(|id| !blocks.contains(&id))
+                || region.loop_header.is_some_and(|id| !blocks.contains(&id))
+            {
+                return Err(
+                    "reading decision does not belong to this recovered source region".into(),
+                );
+            }
+        }
+    }
     let mut stages = BTreeSet::new();
     for stage in &artifact.stages {
         if !stages.insert(stage.id) {

@@ -280,14 +280,23 @@ pub struct Artifact {
     pub current_stage: Option<StageId>,
     /// Actual paid work and retained sizes.
     pub statistics: Statistics,
+    /// Source-scoped structural choices retained by a verified publication.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub readability: Vec<crate::RegionDecision> = Vec::new(),
 }
 }
 impl Artifact {
     /// Lightweight version admission. Full source/proof certification belongs
     /// to core; older advertised schemas cannot opt in to newer semantic fields.
     pub fn admits_schema(&self) -> bool {
+        if self.schema_version < crate::SCHEMA_VERSION
+            && (!self.config.readability.is_default() || !self.readability.is_empty())
+        {
+            return false;
+        }
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
+            6 => true,
             5 => self.stages.iter().all(|s| {
                 s.ir.lifted
                     .as_ref()

@@ -101,7 +101,7 @@ fn shared_definition_call_and_state_maps_are_strict_lossless_records() {
 
 #[test]
 fn checked_procedures_require_schema_six_and_retain_legacy_wire_shapes() {
-    assert_eq!(SCHEMA_VERSION, 6);
+    assert_eq!(SCHEMA_VERSION, 7);
     let legacy = include_str!("fixtures/partial-artifact.json").trim_end();
     let original: Artifact = serde_json::from_str(legacy).unwrap();
     assert_eq!(serde_json::to_string(&original).unwrap(), legacy);

@@ -4,7 +4,7 @@ use super::super::work::Work;
 use evm_abstract_protocol::decompile_model::{
     EntityId, Ir, LiftedIfPlan, LiftedIfSuffix, LiftedRenderError, SharedRenderRow,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod arithmetic;
 
@@ -49,13 +49,21 @@ pub(in crate::decompile) struct Prepared {
 
 impl Prepared {
     pub fn new(ir: &Ir, work: &Work) -> Self {
-        Self::prepare(ir, work).unwrap_or_else(|error| Self {
+        Self::with_expanded(ir, work, &BTreeSet::new())
+    }
+
+    pub fn with_expanded(ir: &Ir, work: &Work, sources: &BTreeSet<EntityId>) -> Self {
+        Self::prepare(ir, work, sources).unwrap_or_else(|error| Self {
             error: Some(error),
             ..Self::default()
         })
     }
 
-    fn prepare(ir: &Ir, work: &Work) -> Result<Self, LiftedRenderError> {
+    fn prepare(
+        ir: &Ir,
+        work: &Work,
+        sources: &BTreeSet<EntityId>,
+    ) -> Result<Self, LiftedRenderError> {
         let Some(program) = ir
             .lifted
             .as_ref()
@@ -63,9 +71,12 @@ impl Prepared {
         else {
             return Ok(Self::default());
         };
-        let renderer = program.render_index_with_budget(ir, |amount| work.reserve(amount));
+        let mut renderer = program.render_index_with_budget(ir, |amount| work.reserve(amount));
         renderer.validate_shared_sources()?;
         renderer.validate_guard_sources()?;
+        if !sources.is_empty() {
+            renderer.expand_shared_sources(sources, |amount| work.reserve(amount))?;
+        }
         if !work.reserve(
             program
                 .procedures
@@ -151,6 +162,9 @@ impl Prepared {
             });
         }
         for call in &program.invocations {
+            if sources.contains(&call.source) {
+                continue;
+            }
             let text = [
                 renderer.render_shared_invocation(call, false, |amount| work.reserve(amount))?,
                 renderer.render_shared_invocation(call, true, |amount| work.reserve(amount))?,

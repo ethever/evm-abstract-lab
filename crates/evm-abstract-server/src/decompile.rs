@@ -60,6 +60,7 @@ pub(crate) fn run(
     let config = DecompileConfig {
         strategy: request.strategy,
         limits: request.limits,
+        readability: request.readability,
     };
     Ok(control.scope(|| {
         evm_decompile::decompile_with_progress(

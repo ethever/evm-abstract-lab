@@ -107,6 +107,23 @@ fn name(p: &SharedProcedure) -> String {
 }
 
 impl<'a> LiftedRenderIndex<'a> {
+    /// Expand exact original occurrences in this presentation without weakening
+    /// source admission or changing the artifact. Unknown identities are rejected.
+    pub fn expand_shared_sources(
+        &mut self,
+        sources: &std::collections::BTreeSet<EntityId>,
+        mut pay: impl FnMut(usize) -> bool,
+    ) -> Result<(), E> {
+        self.validate_shared_sources()?;
+        paid(&mut pay, sources.len().saturating_mul(64).saturating_add(1))?;
+        for source in sources {
+            if !self.shared_calls.contains_key(source) {
+                return Err(E::InvalidSharedSource(*source));
+            }
+        }
+        self.expanded_shared_sources = sources.clone();
+        Ok(())
+    }
     /// Direct admission independent of stored snapshot validation status.
     pub fn validate_shared_sources(&self) -> Result<(), E> {
         self.shared_error.map_or(Ok(()), Err)
@@ -128,7 +145,10 @@ impl<'a> LiftedRenderIndex<'a> {
     }
     /// Replace only this certified occurrence, never a matching-looking block.
     pub fn shared_invocation(&self, source: EntityId) -> Option<&'a SharedInvocation> {
-        if self.shared_error.is_some() || self.shared_source.is_none() {
+        if self.shared_error.is_some()
+            || self.shared_source.is_none()
+            || self.expanded_shared_sources.contains(&source)
+        {
             return None;
         }
         self.shared_calls.get(&source).copied()

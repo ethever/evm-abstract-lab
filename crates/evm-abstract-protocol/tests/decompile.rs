@@ -297,7 +297,10 @@ fn exact_error_bytes_and_lazy_construction_links_survive_the_result_envelope() {
     let restored: DecompileJobResultReply = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(restored, reply);
     let artifact = &restored.result.as_ref().unwrap().artifact;
-    assert_eq!(artifact.schema_version, 6);
+    assert_eq!(
+        artifact.schema_version,
+        evm_abstract_protocol::decompile_model::SCHEMA_VERSION
+    );
     assert!(artifact.admits_schema());
     for old in [1, 2, 3] {
         let mut wrong = artifact.clone();

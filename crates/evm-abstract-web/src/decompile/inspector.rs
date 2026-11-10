@@ -10,11 +10,19 @@ use evm_abstract_protocol::decompile_model::{Artifact, EntityRef, TransformEvent
 #[cfg(test)]
 mod tests;
 
-pub(super) fn show(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState) {
+pub(super) fn show(
+    ui: &mut Ui,
+    artifact: &Artifact,
+    state: &mut ViewState,
+    reading: &mut super::readability::Preferences,
+    busy: bool,
+) -> Option<evm_abstract_protocol::DecompileRequest> {
     ui.strong("Transform inspector");
+    let mut request = None;
     egui::ScrollArea::vertical()
         .id_salt("decompile_inspector_scroll")
         .show(ui, |ui| {
+            request = reading.show(ui, artifact, state, busy);
             ui.label(
                 RichText::new(format!("Artifact {}", artifact.id.0))
                     .small()
@@ -218,6 +226,7 @@ pub(super) fn show(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState) {
                 },
             );
         });
+    request
 }
 
 fn link(ui: &mut Ui, artifact: &Artifact, state: &mut ViewState, at: EntityRef, prefix: &str) {

@@ -2,10 +2,13 @@
 use super::super::facts::{Facts, Loop};
 use super::{MAX_SOURCE_REFERENCES, Plan, PlanError, PlanId, PlanNode, Quote, Region, quote_node};
 use crate::{
-    Completion, DiagnosticCode, DispatchCase, DispatchTransition, EntityId, IndirectArm, Ir,
-    Progress, Strategy, StructuredKind, Terminator, artifact::Builder, budget::count,
+    ArtifactId, Completion, DiagnosticCode, DispatchCase, DispatchTransition, EntityId,
+    IndirectArm, Ir, Progress, ReadabilityMetrics, ReadabilityReason, RegionAnchor, RegionDecision,
+    Strategy, StructureForm, StructurePreference, StructuredKind, Terminator, artifact::Builder,
+    budget::count,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod readability;
 
 // Admission policy for retained representation, not a semantic complexity claim.
 // Small natural regions retain their existing syntax; large repeated regions
@@ -33,8 +36,13 @@ struct CycleKey {
     loop_header: Option<EntityId>,
 }
 enum Admission {
-    Keep(PlanId),
-    Compact(BTreeSet<EntityId>),
+    Keep(PlanId, Assessment),
+    Compact(BTreeSet<EntityId>, Assessment),
+}
+struct Assessment {
+    natural: Option<ReadabilityMetrics>,
+    dispatcher: Option<ReadabilityMetrics>,
+    reason: ReadabilityReason,
 }
 #[derive(Clone, Copy)]
 struct Checkpoint {
@@ -64,8 +72,16 @@ pub(super) struct Planner<'a, P: FnMut(Progress)> {
     cycle_cache: BTreeMap<CycleKey, bool>,
     memo_limit: usize,
     compact_pressure: bool,
+    // Failed expansion evidence is local to source blocks and survives rollback.
+    // Unlike arena exhaustion, it does not compact unrelated regions.
+    expanded_sources: BTreeSet<EntityId>,
     natural_attempts: usize,
     natural_limit: usize,
+    metrics: Vec<ReadabilityMetrics>,
+    failed_operations: Vec<u64>,
+    preferred: Vec<bool>,
+    source: ArtifactId,
+    preferences: BTreeMap<RegionKey, StructurePreference>,
 }
 pub(in crate::structure) fn build(
     ir: &Ir,
@@ -74,13 +90,67 @@ pub(in crate::structure) fn build(
 ) -> Option<Plan> {
     build_with_slot_limit(ir, facts, owner, MAX_PLAN_SLOTS)
 }
+/// A rejected optional shape may still have an exact compact source form. This
+/// fallback is independently verified by the caller under the same work payer.
+pub(in crate::structure) fn compact_fallback(
+    ir: &Ir,
+    facts: &Facts,
+    owner: &mut Builder<impl FnMut(Progress)>,
+) -> Option<Plan> {
+    let mut planner = Planner::new(ir, facts, owner, MAX_PLAN_SLOTS)?;
+    let entry = ir.entry?;
+    let root = planner.dispatch(entry, None, None)?;
+    let preference = planner
+        .preferences
+        .get(&RegionKey {
+            entry,
+            continuation: None,
+            loop_header: None,
+        })
+        .copied()
+        .unwrap_or_default();
+    let mut metrics = planner.metrics[root.0];
+    metrics.entry_values = count(planner.block(entry)?.parameters.len());
+    if !planner.owner.pay(64) {
+        return None;
+    }
+    planner.regions.push(Region {
+        entry,
+        continuation: None,
+        loop_header: None,
+        body: root,
+        decision: Some(RegionDecision {
+            region: RegionAnchor {
+                source: planner.source,
+                entry,
+                continuation: None,
+                loop_header: None,
+            },
+            preference,
+            selected: StructureForm::Dispatcher,
+            reason: if preference == StructurePreference::Natural {
+                ReadabilityReason::PreferenceFallback
+            } else {
+                ReadabilityReason::PlanningFallback
+            },
+            natural: None,
+            dispatcher: Some(metrics),
+        }),
+    });
+    Some(Plan {
+        nodes: planner.nodes,
+        root,
+        regions: planner.regions,
+    })
+}
+
 fn build_with_slot_limit(
     ir: &Ir,
     facts: &Facts,
     owner: &mut Builder<impl FnMut(Progress)>,
     slot_limit: usize,
 ) -> Option<Plan> {
-    let mut p = Planner::new(ir, facts, owner, slot_limit);
+    let mut p = Planner::new(ir, facts, owner, slot_limit)?;
     let root = if let Some(entry) = ir.entry {
         match p.build(entry, None, None, 0, &BTreeSet::new()) {
             Some(root) => root,
@@ -101,14 +171,58 @@ fn build_with_slot_limit(
     })
 }
 impl<'a, P: FnMut(Progress)> Planner<'a, P> {
-    fn new(ir: &'a Ir, facts: &'a Facts, owner: &'a mut Builder<P>, slot_limit: usize) -> Self {
+    fn new(
+        ir: &'a Ir,
+        facts: &'a Facts,
+        owner: &'a mut Builder<P>,
+        slot_limit: usize,
+    ) -> Option<Self> {
+        if !owner.pay(
+            owner
+                .artifact
+                .input
+                .runtime_bytecode
+                .len()
+                .saturating_mul(4)
+                .saturating_add(
+                    owner
+                        .artifact
+                        .config
+                        .readability
+                        .regions
+                        .len()
+                        .saturating_mul(128),
+                )
+                .saturating_add(1024),
+        ) {
+            return None;
+        }
+        let source = crate::readability_source(&owner.artifact.input, &owner.artifact.config);
+        let mut preferences = BTreeMap::new();
+        for preference in &owner.artifact.config.readability.regions {
+            if preference.region.source == source {
+                let key = RegionKey {
+                    entry: preference.region.entry,
+                    continuation: preference.region.continuation,
+                    loop_header: preference.region.loop_header,
+                };
+                preferences
+                    .entry(key)
+                    .and_modify(|current| {
+                        if *current != preference.structure {
+                            *current = StructurePreference::Auto;
+                        }
+                    })
+                    .or_insert(preference.structure);
+            }
+        }
         let natural_limit = ir
             .blocks
             .len()
             .saturating_add(ir.edges.len())
             .saturating_mul(PLAN_ARENA_RATIO)
             .max(NATURAL_OCCURRENCE_FLOOR);
-        Self {
+        Some(Self {
             owner,
             ir,
             facts,
@@ -126,9 +240,15 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
             cycle_cache: BTreeMap::new(),
             memo_limit: natural_limit.saturating_mul(2).min(MAX_PLAN_SLOTS / 8),
             compact_pressure: false,
+            expanded_sources: BTreeSet::new(),
             natural_attempts: 0,
             natural_limit,
-        }
+            metrics: Vec::new(),
+            failed_operations: Vec::new(),
+            preferred: Vec::new(),
+            source,
+            preferences,
+        })
     }
     fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
@@ -141,6 +261,9 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
     fn rollback(&mut self, checkpoint: Checkpoint) {
         self.nodes.truncate(checkpoint.nodes);
         self.quotes.truncate(checkpoint.nodes);
+        self.metrics.truncate(checkpoint.nodes);
+        self.failed_operations.truncate(checkpoint.nodes);
+        self.preferred.truncate(checkpoint.nodes);
         self.regions.truncate(checkpoint.regions);
         while self.cache_log.len() > checkpoint.cache {
             self.cache.remove(&self.cache_log.pop().unwrap());
@@ -187,6 +310,9 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                 .sources
                 .len()
                 .saturating_add(self.nodes[body.0].sources.len()),
+            StructuredKind::Indirect { arms, .. } => arms.iter().fold(0_usize, |size, arm| {
+                size.saturating_add(self.nodes[arm.body.0].sources.len())
+            }),
             _ => 0,
         };
         // Bound the temporary union before allocating it. A local refusal is
@@ -199,6 +325,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         ) {
             return None;
         }
+        let failure_direction = self.failure_direction(&kind, &sources);
         let children: Vec<_> = match &kind {
             StructuredKind::Sequence(v) => v.clone(),
             StructuredKind::If {
@@ -207,6 +334,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                 ..
             } => vec![**then_branch, **else_branch],
             StructuredKind::While { header, body, .. } => vec![**header, **body],
+            StructuredKind::Indirect { arms, .. } => arms.iter().map(|arm| arm.body).collect(),
             _ => Vec::new(),
         };
         let size = children.iter().fold(sources.len(), |n, id| {
@@ -218,6 +346,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         ) {
             return None;
         }
+        let preferred = children.iter().any(|id| self.preferred[id.0]);
         for id in children {
             sources.extend_from_slice(&self.nodes[id.0].sources);
         }
@@ -230,9 +359,13 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
             .saturating_add(child_slots);
         let node = PlanNode { kind, sources };
         let quote = quote_node(&node, &self.nodes, &self.quotes);
+        let (metrics, failed_operations) = self.node_metrics(&node, quote, failure_direction);
         let id = PlanId(self.nodes.len());
         self.nodes.push(node);
         self.quotes.push(quote);
+        self.metrics.push(metrics);
+        self.failed_operations.push(failed_operations);
+        self.preferred.push(preferred);
         Some(id)
     }
     fn sequence(&mut self, nodes: Vec<PlanId>) -> Option<PlanId> {
@@ -278,42 +411,110 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         stop: Option<EntityId>,
         lp: Option<&Loop>,
         body: PlanId,
+        preference: StructurePreference,
+        fallback: ReadabilityReason,
     ) -> Option<Admission> {
+        let mut natural = self.metrics[body.0];
+        natural.entry_values = count(self.block(start)?.parameters.len());
+        if matches!(self.nodes[body.0].kind, StructuredKind::Dispatcher { .. }) {
+            return Some(Admission::Keep(
+                body,
+                Assessment {
+                    natural: None,
+                    dispatcher: Some(natural),
+                    reason: if preference == StructurePreference::Natural {
+                        ReadabilityReason::PreferenceFallback
+                    } else {
+                        fallback
+                    },
+                },
+            ));
+        }
         let quote = self.quotes[body.0];
         let hard = quote.nodes > crate::MAX_STRUCTURED_WIRE_NODES
             || quote.depth > crate::MAX_STRUCTURED_WIRE_DEPTH
             || quote.references > MAX_SOURCE_REFERENCES;
-        if !hard && quote.nodes < NATURAL_OCCURRENCE_FLOOR {
-            return Some(Admission::Keep(body));
+        let mut assessment = Assessment {
+            natural: Some(natural),
+            dispatcher: None,
+            reason: if preference == StructurePreference::Natural {
+                ReadabilityReason::UserPreference
+            } else {
+                ReadabilityReason::NaturalControl
+            },
+        };
+        if self.owner.artifact.config.strategy != Strategy::Dispatcher {
+            if hard {
+                self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"structured occurrence/depth admission requires a dispatcher; selected strategy retains prior CFG");
+                return None;
+            }
+            if preference == StructurePreference::Dispatcher {
+                assessment.reason = ReadabilityReason::PreferenceFallback;
+            }
+            return Some(Admission::Keep(body, assessment));
         }
-        if matches!(self.nodes[body.0].kind, StructuredKind::Dispatcher { .. }) {
-            return Some(Admission::Keep(body));
+        let profile = self.owner.artifact.config.readability.profile;
+        if !self
+            .owner
+            .pay(self.nodes[body.0].sources.len().saturating_mul(8))
+        {
+            return None;
+        }
+        let reading = self.comparison_metrics(body, natural);
+        let compare = preference == StructurePreference::Dispatcher
+            || (preference != StructurePreference::Natural
+                && !self.preferred[body.0]
+                && readability::compare(profile, reading));
+        let check_expansion = quote.nodes >= NATURAL_OCCURRENCE_FLOOR
+            && preference != StructurePreference::Natural
+            && !self.preferred[body.0];
+        if !hard && !compare && !check_expansion {
+            return Some(Admission::Keep(body, assessment));
         }
         let mut region = self.reachable(start, stop)?;
         if let Some(lp) = lp {
             region.retain(|id| lp.nodes.contains(id) && *id != lp.header);
             region.insert(start);
         }
-        let edges = region
-            .iter()
-            .filter_map(|id| self.block(*id))
-            .map(|b| b.terminator.edges().len())
-            .sum::<usize>();
-        // Admit small natural regions unchanged. In a heavily repeated region,
-        // the compact source case/transition form bounds representation cost
-        // while keeping all primitive bodies and successor choices explicit.
-        let compact = region.len().saturating_add(edges).saturating_add(1);
-        if hard || quote.nodes > compact.saturating_mul(REGION_EXPANSION_RATIO) {
-            if self.owner.artifact.config.strategy == Strategy::Dispatcher {
-                self.compact_pressure = true;
-                return Some(Admission::Compact(region));
+        // This is an exact quote of the concrete compact candidate's source
+        // cases, not an estimate based on the plan arena's unique-node count.
+        let compact = self.dispatch_metrics(start, &region)?;
+        let compact_reading = self.dispatch_comparison_metrics(&region, compact);
+        let excessive_expansion = check_expansion
+            && count(quote.nodes)
+                > compact
+                    .dispatcher_blocks
+                    .saturating_add(compact.dispatcher_transitions)
+                    .saturating_add(1)
+                    .saturating_mul(REGION_EXPANSION_RATIO as u64);
+        assessment.dispatcher = Some(compact);
+        if hard
+            || excessive_expansion
+            || preference == StructurePreference::Dispatcher
+            || readability::prefers_compact(profile, reading, compact_reading)
+        {
+            assessment.reason = if hard || excessive_expansion {
+                if preference == StructurePreference::Natural {
+                    ReadabilityReason::PreferenceFallback
+                } else {
+                    ReadabilityReason::Expansion
+                }
+            } else if preference == StructurePreference::Dispatcher {
+                ReadabilityReason::UserPreference
+            } else {
+                ReadabilityReason::LowerReadingCost
+            };
+            // A local readability choice does not force unrelated regions into
+            // dispatch. Only cumulative search/storage pressure is sticky.
+            if excessive_expansion {
+                if !self.owner.pay(region.len().saturating_mul(32)) {
+                    return None;
+                }
+                self.expanded_sources.extend(region.iter().copied());
             }
-            if hard {
-                self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"structured occurrence/depth admission requires a dispatcher; selected strategy retains prior CFG");
-                return None;
-            }
+            return Some(Admission::Compact(region, assessment));
         }
-        Some(Admission::Keep(body))
+        Some(Admission::Keep(body, assessment))
     }
     fn build(
         &mut self,
@@ -337,16 +538,45 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         if let Some(id) = self.cache.get(&key) {
             return Some(*id);
         }
+        let preference = self.preferences.get(&key).copied().unwrap_or_default();
+        let fallback = if self.compact_pressure
+            || self.expanded_sources.contains(&start)
+            || self.natural_attempts >= self.natural_limit
+        {
+            ReadabilityReason::PlanningFallback
+        } else if count(depth) > self.owner.limits().max_structuring_depth {
+            ReadabilityReason::DepthFallback
+        } else {
+            ReadabilityReason::MultiEntryControl
+        };
         let checkpoint = self.checkpoint();
-        let proposed = self
-            .build_uncached(start, stop, lp, depth, path)
-            .and_then(|body| self.admit(start, stop, lp, body));
-        let body = match proposed {
-            Some(Admission::Keep(body)) => body,
-            Some(Admission::Compact(region)) => {
+        let proposed = if preference == StructurePreference::Dispatcher
+            && self.owner.artifact.config.strategy == Strategy::Dispatcher
+            && Some(start) != stop
+        {
+            self.dispatch(start, stop, lp).map(|body| {
+                let mut metrics = self.metrics[body.0];
+                metrics.entry_values =
+                    count(self.block(start).map_or(0, |block| block.parameters.len()));
+                Admission::Keep(
+                    body,
+                    Assessment {
+                        natural: None,
+                        dispatcher: Some(metrics),
+                        reason: ReadabilityReason::UserPreference,
+                    },
+                )
+            })
+        } else {
+            self.build_uncached(start, stop, lp, depth, path)
+                .and_then(|body| self.admit(start, stop, lp, body, preference, fallback))
+        };
+        let (body, assessment) = match proposed {
+            Some(Admission::Keep(body, assessment)) => (body, assessment),
+            Some(Admission::Compact(region, assessment)) => {
                 self.rollback(checkpoint);
                 self.capacity_refused = false;
-                self.dispatch_region(start, region)?
+                (self.dispatch_region(start, region)?, assessment)
             }
             None if self.capacity_refused && !self.owner.stopped => {
                 self.rollback(checkpoint);
@@ -355,15 +585,66 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                     self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"temporary region plan admission requires a dispatcher; selected strategy retains prior CFG");
                     return None;
                 }
-                self.dispatch(start, stop, lp)?
+                let body = self.dispatch(start, stop, lp)?;
+                let mut metrics = self.metrics[body.0];
+                metrics.entry_values = count(self.block(start)?.parameters.len());
+                (
+                    body,
+                    Assessment {
+                        natural: None,
+                        dispatcher: Some(metrics),
+                        reason: if preference == StructurePreference::Natural {
+                            ReadabilityReason::PreferenceFallback
+                        } else {
+                            ReadabilityReason::PlanningFallback
+                        },
+                    },
+                )
             }
             None => return None,
+        };
+        let selected = if matches!(self.nodes[body.0].kind, StructuredKind::Dispatcher { .. }) {
+            StructureForm::Dispatcher
+        } else {
+            StructureForm::Natural
+        };
+        // Automatic enclosing compaction must not erase an admitted local user
+        // choice. Explicit enclosing choices and hard resource fallback retain
+        // their own precedence and report any superseded boundary afterwards.
+        self.preferred[body.0] |= preference != StructurePreference::Auto;
+        let interesting = self.ir.entry == Some(start) && stop.is_none() && lp.is_none()
+            || preference != StructurePreference::Auto
+            || selected == StructureForm::Dispatcher
+            || assessment.dispatcher.is_some()
+            || assessment
+                .natural
+                .is_some_and(|metrics| metrics.conditions > 0 && metrics.max_nesting > 1);
+        let decision = if interesting {
+            if !self.owner.pay(64) {
+                return None;
+            }
+            Some(RegionDecision {
+                region: RegionAnchor {
+                    source: self.source.clone(),
+                    entry: start,
+                    continuation: stop,
+                    loop_header: lp.map(|l| l.header),
+                },
+                preference,
+                selected,
+                reason: assessment.reason,
+                natural: assessment.natural,
+                dispatcher: assessment.dispatcher,
+            })
+        } else {
+            None
         };
         self.regions.push(Region {
             entry: start,
             continuation: stop,
             loop_header: lp.map(|l| l.header),
             body,
+            decision,
         });
         if self.facts.finite.contains(&start)
             || matches!(self.nodes[body.0].kind, StructuredKind::Dispatcher { .. })
@@ -383,6 +664,16 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
     ) -> Option<PlanId> {
         if Some(start) == stop {
             return self.sequence(Vec::new());
+        }
+        if self.expanded_sources.contains(&start)
+            && self.owner.artifact.config.strategy == Strategy::Dispatcher
+            && self.preferences.get(&RegionKey {
+                entry: start,
+                continuation: stop,
+                loop_header: lp.map(|loop_| loop_.header),
+            }) != Some(&StructurePreference::Natural)
+        {
+            return self.dispatch(start, stop, lp);
         }
         if self.compact_pressure || self.natural_attempts >= self.natural_limit {
             if self.owner.artifact.config.strategy == Strategy::Dispatcher {
@@ -435,6 +726,19 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         // A residual cycle must be entered as a state machine before emitting
         // its first body; otherwise the first case's effects would execute twice.
         if self.residual_cycle(start, lp).ok()? {
+            // Keep a proved common continuation outside a residual cycle's
+            // dispatcher. Without such a cut the original enclosing boundary
+            // remains the safe fallback; this does not promise a minimum SCC.
+            if lp.is_none()
+                && stop.is_none()
+                && let Some(follow) =
+                    self.facts
+                        .residual_continuation(self.ir, start, &mut |work| self.owner.pay(work))?
+            {
+                let compact = self.build(start, Some(follow), None, depth + 1, path)?;
+                let suffix = self.build(follow, stop, None, depth + 1, path)?;
+                return self.sequence(vec![compact, suffix]);
+            }
             return self.dispatch(start, stop, lp);
         }
         let body = self.node(StructuredKind::Block { block: start }, vec![start])?;

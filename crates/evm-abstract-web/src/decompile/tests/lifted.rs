@@ -603,6 +603,7 @@ fn model_admission_accepts_legacy_raw_and_rejects_mislabeled_or_corrupt_lifted_e
             .is_none_or(|program| !program.has_guards())
     }));
     legacy_high.schema_version = 2;
+    legacy_high.readability.clear();
     model::check_artifact(&legacy_high).unwrap();
     deliver(&mut workspace, legacy_high, 11);
     let legacy_code = code(&frame(&ctx, &mut workspace, vec![]));
@@ -613,8 +614,10 @@ fn model_admission_accepts_legacy_raw_and_rejects_mislabeled_or_corrupt_lifted_e
     frame(&ctx, &mut workspace, vec![]);
     assert_eq!(workspace.views.route_label(), "Simplified structured code");
     for old_version in [1, 2] {
-        high.schema_version = old_version;
-        assert!(model::check_artifact(&high).is_err());
+        let mut old = high.clone();
+        old.schema_version = old_version;
+        old.readability.clear();
+        assert!(model::check_artifact(&old).is_err());
     }
     high.schema_version = evm_abstract_protocol::decompile_model::SCHEMA_VERSION;
     let current = high.current_stage.unwrap();

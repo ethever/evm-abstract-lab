@@ -8,7 +8,7 @@ use evm_abstract_protocol::decompile_model::{
     RenderSummary, Stage, StructuredKind, StructuredNode, Terminator, ValueKind,
     render_explicit_invalid,
 };
-use std::cell::Cell;
+use std::{cell::Cell, collections::BTreeSet};
 
 mod dispatch;
 
@@ -26,6 +26,8 @@ struct Scope<'a> {
     lifted: Option<&'a LiftedRenderIndex<'a>>,
     work: Option<&'a super::lifted::work::Work>,
     shared: bool,
+    expanded: Option<&'a BTreeSet<EntityId>>,
+    prepared: Option<&'a super::lifted::shared::Prepared>,
     boundary: Option<EntityId>,
     aborted: Option<&'a Cell<bool>>,
     display: HighDisplayOptions,
@@ -81,15 +83,27 @@ pub(super) fn lines(stage: &Stage) -> Vec<Line> {
 }
 
 pub(super) fn lines_indexed(stage: &Stage, index: &StageIndex) -> Vec<Line> {
-    render_lines(stage, index, false, HighDisplayOptions::default())
+    render_lines(stage, index, false, HighDisplayOptions::default(), None)
 }
 
+#[cfg(test)]
 pub(super) fn lifted_lines_indexed(
     stage: &Stage,
     index: &StageIndex,
     display: HighDisplayOptions,
 ) -> Vec<Line> {
-    render_lines(stage, index, true, display)
+    render_lines(stage, index, true, display, None)
+}
+
+/// Expansion only reveals the already retained, source-certified occurrence.
+/// It never substitutes canonical procedure parameters into another caller.
+pub(super) fn lifted_lines_expanded(
+    stage: &Stage,
+    index: &StageIndex,
+    display: HighDisplayOptions,
+    expanded: &BTreeSet<EntityId>,
+) -> Vec<Line> {
+    render_lines(stage, index, true, display, Some(expanded))
 }
 
 fn render_lines(
@@ -97,8 +111,22 @@ fn render_lines(
     index: &StageIndex,
     lifted: bool,
     display: HighDisplayOptions,
+    expanded: Option<&BTreeSet<EntityId>>,
 ) -> Vec<Line> {
     let work = index.render_work();
+    let expanded_sources: BTreeSet<_> = stage
+        .ir
+        .lifted
+        .as_ref()
+        .into_iter()
+        .flat_map(|program| &program.invocations)
+        .filter(|call| expanded.is_some_and(|expanded| expanded.contains(&call.id)))
+        .map(|call| call.source)
+        .collect();
+    let expanded_prepared = (!expanded_sources.is_empty()).then(|| {
+        super::lifted::shared::Prepared::with_expanded(&stage.ir, &work, &expanded_sources)
+    });
+    let prepared = expanded_prepared.as_ref().unwrap_or(&index.shared);
     // Shared proof and formatting are already cached on this immutable stage.
     // This lightweight index cannot authorize procedure omissions on its own.
     let renderer = lifted
@@ -113,8 +141,8 @@ fn render_lines(
     // source occurrence. A formatting failure retains the full source tree.
     let definitions = renderer
         .as_ref()
-        .filter(|_| index.shared.error().is_none())
-        .and_then(|_| shared_definitions(&index.shared, display, &work));
+        .filter(|_| prepared.error().is_none())
+        .and_then(|_| shared_definitions(prepared, display, &work));
     let shared = definitions.is_some();
     let mut output = definitions.unwrap_or_default();
     let aborted = Cell::new(false);
@@ -127,6 +155,8 @@ fn render_lines(
                 lifted: renderer.as_ref(),
                 work: Some(&work),
                 shared,
+                expanded,
+                prepared: Some(prepared),
                 boundary: Some(program.root.id),
                 aborted: Some(&aborted),
                 display,
@@ -137,6 +167,10 @@ fn render_lines(
         );
     }
     output
+}
+
+fn shared<'a>(index: &'a StageIndex, scope: Scope<'a>) -> &'a super::lifted::shared::Prepared {
+    scope.prepared.unwrap_or(&index.shared)
 }
 
 fn shared_definitions(
@@ -195,8 +229,15 @@ fn render(
             .invocation(node.id, scope.display.show_state_dependencies)
         && scope.work.is_some_and(|work| work.reserve(text.len()))
     {
-        emit(output, entity, indent, text.to_owned());
-        return RenderSummary::CONTENT;
+        if scope
+            .expanded
+            .is_some_and(|expanded| expanded.contains(&entity))
+        {
+            emit(output, entity, indent, format!("// Expanded: {text}"));
+        } else {
+            emit(output, entity, indent, text.to_owned());
+            return RenderSummary::CONTENT;
+        }
     }
     let mut summary = RenderSummary::CONTENT;
     match &node.kind {
@@ -263,8 +304,7 @@ fn render(
                 let owner = renderer
                     .control(node.id)
                     .map_or(node.id, |control| control.id);
-                match index
-                    .shared
+                match shared(index, scope)
                     .require_header(node.id)
                     .filter(|_| scope.shared)
                     .map_or_else(
@@ -299,8 +339,7 @@ fn render(
                     .map_or(node.id, |control| control.id);
                 // The suffix skip and this layout are one admitted decision.
                 // A formatting refusal must keep every planned source row.
-                let condition = match index
-                    .shared
+                let condition = match shared(index, scope)
                     .failure_condition(node.id)
                     .filter(|_| scope.shared)
                     .map_or_else(
@@ -606,8 +645,7 @@ fn body(
                 output,
                 statement.id,
                 indent,
-                index
-                    .shared
+                shared(index, scope)
                     .statement(statement.id, scope.display.show_state_dependencies)
                     .filter(|_| scope.shared)
                     .map(str::to_owned)
@@ -663,8 +701,7 @@ fn transfer(
     let owner = semantic.map_or(node, |transfer| transfer.id);
     if let Some(renderer) = scope.lifted {
         if let Some(transfer) = semantic {
-            if let Some(text) = index
-                .shared
+            if let Some(text) = shared(index, scope)
                 .transfer(transfer.edge)
                 .filter(|_| scope.shared)
                 .map(|text| text.map(str::to_owned))
@@ -747,8 +784,7 @@ fn projected_condition(
     index: &StageIndex,
     scope: Scope<'_>,
 ) -> Result<String, LiftedRenderError> {
-    if let Some(text) = index
-        .shared
+    if let Some(text) = shared(index, scope)
         .condition(expression, invert)
         .filter(|_| scope.shared)
     {
@@ -765,8 +801,7 @@ fn projected_target(block: EntityId, ir: &Ir, index: &StageIndex, scope: Scope<'
         scope.lifted,
         index.source_block(ir, block).and_then(|block| block.target),
     ) {
-        (Some(renderer), Some(target)) => index
-            .shared
+        (Some(renderer), Some(target)) => shared(index, scope)
             .expression(target)
             .filter(|_| scope.shared)
             .map(str::to_owned)
@@ -869,8 +904,7 @@ fn projected_terminator(
                 },
             )
         }
-        Terminator::Exit { kind, .. } => index
-            .shared
+        Terminator::Exit { kind, .. } => shared(index, scope)
             .exit(block)
             .filter(|_| scope.shared)
             .map_or_else(

@@ -79,7 +79,7 @@ fn cumulative_natural_attempt_limit_and_pressure_survive_an_arena_rollback() {
     let mut owner = Builder::new(&input, &Config::default(), &Cancellation::new(), |_| {});
     let dom = crate::transform::dominators(&ir, &mut owner).unwrap();
     let facts = Facts::new(&ir, &dom, &mut owner).unwrap();
-    let mut planner = Planner::new(&ir, &facts, &mut owner, MAX_PLAN_SLOTS);
+    let mut planner = Planner::new(&ir, &facts, &mut owner, MAX_PLAN_SLOTS).unwrap();
     planner.natural_limit = 1;
     let checkpoint = planner.checkpoint();
     planner
@@ -115,7 +115,7 @@ fn source_join_memo_including_negative_answers_survives_proposal_rollback() {
     let mut owner = Builder::new(&input, &Config::default(), &Cancellation::new(), |_| {});
     let dom = crate::transform::dominators(&ir, &mut owner).unwrap();
     let facts = Facts::new(&ir, &dom, &mut owner).unwrap();
-    let mut planner = Planner::new(&ir, &facts, &mut owner, MAX_PLAN_SLOTS);
+    let mut planner = Planner::new(&ir, &facts, &mut owner, MAX_PLAN_SLOTS).unwrap();
     let entry = ir.block(ir.entry.unwrap()).unwrap();
     let Terminator::Branch {
         then_edges,
@@ -161,4 +161,331 @@ fn source_join_memo_including_negative_answers_survives_proposal_rollback() {
     planner.rollback(checkpoint);
     assert_eq!(planner.join_cache.len(), 2);
     assert_eq!(planner.common_join(failed, tail, None), Ok(None));
+}
+
+#[test]
+fn failed_guard_chain_has_shallow_reading_cost_under_every_profile() {
+    let mut bytes = Vec::new();
+    for offset in 0_u16..16 {
+        bytes.push(0x61);
+        bytes.extend_from_slice(&(offset * 32).to_be_bytes());
+        bytes.push(0x35);
+        bytes.push(0x61);
+        let target = bytes.len();
+        bytes.extend([0, 0, 0x57, 0x5f, 0x5f, 0xfd]);
+        let next = u16::try_from(bytes.len()).unwrap();
+        bytes[target..target + 2].copy_from_slice(&next.to_be_bytes());
+        bytes.push(0x5b);
+    }
+    bytes.push(0x00);
+    let input = Input::new(bytes, Fork::Osaka);
+    let cancel = Cancellation::new();
+    let artifact = decompile_with_progress(&input, &Config::default(), &cancel, |progress| {
+        if progress.phase == Phase::Structure {
+            cancel.cancel();
+        }
+    });
+    let ir = &artifact.current().unwrap().ir;
+    for profile in [
+        crate::ReadabilityProfile::Balanced,
+        crate::ReadabilityProfile::Linear,
+        crate::ReadabilityProfile::Compact,
+    ] {
+        let config = Config {
+            readability: crate::ReadabilityConfig {
+                profile,
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let mut owner = Builder::new(&input, &config, &Cancellation::new(), |_| {});
+        let dom = crate::transform::dominators(ir, &mut owner).unwrap();
+        let facts = Facts::new(ir, &dom, &mut owner).unwrap();
+        let plan = build(ir, &facts, &mut owner).unwrap();
+        super::super::super::verify::verify(ir, &plan, &mut |work| owner.pay(work)).unwrap();
+        let decisions = plan.decisions(&mut |work| owner.pay(work)).unwrap();
+        let root = decisions
+            .iter()
+            .find(|decision| {
+                decision.region.entry == ir.entry.unwrap() && decision.region.continuation.is_none()
+            })
+            .unwrap();
+        let metrics = root.natural.unwrap();
+        assert_eq!(root.selected, StructureForm::Natural);
+        assert!(metrics.conditions >= 16);
+        assert!(metrics.max_nesting <= 2, "{profile:?}: {metrics:?}");
+        assert!(!plan.has_dispatch(&mut |work| owner.pay(work)).unwrap());
+    }
+}
+
+fn residual_with_suffix(open: bool) -> Ir {
+    use crate::{Block, Edge, EdgeKind, ExitKind, SourceSpan, Value, ValueFact, ValueKind};
+    let id = EntityId;
+    let block = |n, terminator| Block {
+        id: id(n),
+        source: Some(SourceSpan {
+            pc: n as usize,
+            end_pc: n as usize + 1,
+        }),
+        parameters: vec![],
+        memory_parameter: id(100 + n),
+        effect_parameter: id(200 + n),
+        operations: vec![],
+        terminator,
+    };
+    let branch = |yes, no| Terminator::Branch {
+        condition: id(10),
+        target: id(11),
+        then_edges: vec![id(yes)],
+        else_edge: Some(id(no)),
+        unresolved: false,
+        invalid_targets: vec![],
+    };
+    let mut ir = Ir {
+        entry: Some(id(1)),
+        blocks: vec![
+            block(
+                1,
+                Terminator::Jump {
+                    target: id(11),
+                    edges: vec![id(20), id(21)],
+                    unresolved: false,
+                    invalid_targets: vec![],
+                },
+            ),
+            block(2, branch(22, 23)),
+            block(3, branch(24, 25)),
+            block(4, Terminator::Fallthrough { edge: id(26) }),
+            block(
+                5,
+                Terminator::Exit {
+                    kind: ExitKind::Stop,
+                    values: vec![],
+                },
+            ),
+        ],
+        values: [10, 11]
+            .into_iter()
+            .map(|n| Value {
+                id: id(n),
+                kind: ValueKind::Constant(crate::U256::ZERO),
+                fact: ValueFact::Unknown,
+            })
+            .collect(),
+        edges: [
+            (20, 1, 2, EdgeKind::Jump),
+            (21, 1, 3, EdgeKind::Jump),
+            (22, 2, 3, EdgeKind::True),
+            (23, 2, 4, EdgeKind::False),
+            (24, 3, 2, EdgeKind::True),
+            (25, 3, 4, EdgeKind::False),
+            (26, 4, 5, EdgeKind::Fallthrough),
+        ]
+        .into_iter()
+        .map(|(n, from, to, kind)| Edge {
+            id: id(n),
+            from: id(from),
+            to: id(to),
+            kind,
+            arguments: vec![],
+            memory: id(100 + from),
+            effect: id(200 + from),
+        })
+        .collect(),
+        ..Ir::default()
+    };
+    if open && let Terminator::Branch { unresolved, .. } = &mut ir.blocks[1].terminator {
+        *unresolved = true;
+    }
+    ir
+}
+
+#[test]
+fn residual_cycle_keeps_a_proved_shared_suffix_outside_each_dispatcher() {
+    let ir = residual_with_suffix(false);
+    let mut owner = Builder::new(
+        &Input::new(vec![], Fork::Osaka),
+        &Config::default(),
+        &Cancellation::new(),
+        |_| {},
+    );
+    let dom = crate::transform::dominators(&ir, &mut owner).unwrap();
+    let facts = Facts::new(&ir, &dom, &mut owner).unwrap();
+    assert_eq!(
+        facts.residual_continuation(&ir, EntityId(2), &mut |work| owner.pay(work)),
+        Some(Some(EntityId(4)))
+    );
+    let plan = build(&ir, &facts, &mut owner).unwrap();
+    super::super::super::verify::verify(&ir, &plan, &mut |work| owner.pay(work)).unwrap();
+    let mut dispatched = 0;
+    for node in &plan.nodes {
+        if let StructuredKind::Dispatcher { cases, .. } = &node.kind {
+            dispatched += 1;
+            assert!(
+                cases
+                    .iter()
+                    .all(|case| [EntityId(2), EntityId(3)].contains(&case.block))
+            );
+        }
+    }
+    assert!(dispatched > 0);
+    let decisions = plan.decisions(&mut |work| owner.pay(work)).unwrap();
+    assert!(
+        decisions
+            .iter()
+            .any(|decision| decision.selected == StructureForm::Dispatcher
+                && decision.region.continuation == Some(EntityId(4)))
+    );
+}
+
+#[test]
+fn unknown_exit_does_not_get_a_false_local_dispatch_continuation() {
+    let ir = residual_with_suffix(true);
+    let mut owner = Builder::new(
+        &Input::new(vec![], Fork::Osaka),
+        &Config::default(),
+        &Cancellation::new(),
+        |_| {},
+    );
+    let dom = crate::transform::dominators(&ir, &mut owner).unwrap();
+    let facts = Facts::new(&ir, &dom, &mut owner).unwrap();
+    assert_eq!(
+        facts.residual_continuation(&ir, EntityId(2), &mut |work| owner.pay(work)),
+        Some(None)
+    );
+    let plan = build(&ir, &facts, &mut owner).unwrap();
+    super::super::super::verify::verify(&ir, &plan, &mut |work| owner.pay(work)).unwrap();
+}
+
+#[test]
+fn automatic_profiles_choose_different_verified_forms_for_a_repeated_source_suffix() {
+    use crate::{
+        Block, Edge, EdgeKind, Effects, ExitKind, Operation, ReadabilityProfile, SourceSpan, Value,
+        ValueFact, ValueKind,
+    };
+    let id = EntityId;
+    let mut ir = Ir {
+        entry: Some(id(1)),
+        values: vec![Value {
+            id: id(5000),
+            kind: ValueKind::Parameter {
+                block: id(1),
+                index: 0,
+            },
+            fact: ValueFact::Unknown,
+        }],
+        ..Ir::default()
+    };
+    for n in 1..=80 {
+        let terminator = match n {
+            1 => Terminator::Jump {
+                target: id(5000),
+                edges: vec![id(10000), id(10001)],
+                unresolved: false,
+                invalid_targets: vec![],
+            },
+            80 => Terminator::Exit {
+                kind: ExitKind::Stop,
+                values: vec![],
+            },
+            _ => Terminator::Fallthrough {
+                edge: id(10000 + n),
+            },
+        };
+        ir.blocks.push(Block {
+            id: id(n),
+            source: Some(SourceSpan {
+                pc: n as usize,
+                end_pc: n as usize + 1,
+            }),
+            parameters: if n == 1 { vec![id(5000)] } else { vec![] },
+            memory_parameter: id(1000 + n),
+            effect_parameter: id(2000 + n),
+            operations: vec![Operation {
+                id: id(3000 + n),
+                source: None,
+                opcode: 0x5b,
+                name: "JUMPDEST".into(),
+                inputs: vec![],
+                outputs: vec![],
+                effects: Effects::default(),
+                memory_input: None,
+                memory_output: None,
+                replacement: None,
+                effect_input: None,
+                effect_output: None,
+            }],
+            terminator,
+        });
+    }
+    let edge = |n, from, to, kind| Edge {
+        id: id(n),
+        from: id(from),
+        to: id(to),
+        kind,
+        arguments: vec![],
+        memory: id(1000 + from),
+        effect: id(2000 + from),
+    };
+    ir.edges.extend([
+        edge(10000, 1, 2, EdgeKind::Jump),
+        edge(10001, 1, 3, EdgeKind::Jump),
+    ]);
+    for from in 2..80 {
+        ir.edges.push(edge(
+            10000 + from,
+            from,
+            if from < 4 { 4 } else { from + 1 },
+            EdgeKind::Fallthrough,
+        ));
+    }
+    for (profile, expected) in [
+        (ReadabilityProfile::Balanced, StructureForm::Natural),
+        (ReadabilityProfile::Linear, StructureForm::Natural),
+        (ReadabilityProfile::Compact, StructureForm::Dispatcher),
+    ] {
+        let config = Config {
+            readability: crate::ReadabilityConfig {
+                profile,
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let mut owner = Builder::new(
+            &Input::new(vec![], Fork::Osaka),
+            &config,
+            &Cancellation::new(),
+            |_| {},
+        );
+        let dom = crate::transform::dominators(&ir, &mut owner).unwrap();
+        let facts = Facts::new(&ir, &dom, &mut owner).unwrap();
+        let plan = build(&ir, &facts, &mut owner).unwrap();
+        // This checks all represented source choices and their exact transfers;
+        // it does not assume that a favorable cost makes the candidate valid.
+        super::super::super::verify::verify(&ir, &plan, &mut |work| owner.pay(work)).unwrap();
+        let decisions = plan.decisions(&mut |work| owner.pay(work)).unwrap();
+        let root = decisions
+            .iter()
+            .find(|decision| {
+                decision.region.entry == id(1) && decision.region.continuation.is_none()
+            })
+            .unwrap();
+        assert_eq!(root.selected, expected, "{profile:?}: {root:?}");
+        assert!(
+            root.natural
+                .is_some_and(|metrics| metrics.duplicated_operations > 0)
+        );
+        if profile == ReadabilityProfile::Compact {
+            assert!(
+                root.dispatcher
+                    .is_some_and(|metrics| metrics.dispatcher_blocks == 80)
+            );
+            assert_eq!(root.reason, ReadabilityReason::LowerReadingCost);
+        } else {
+            assert!(
+                root.dispatcher.is_none(),
+                "an excluded representation family need not be measured"
+            );
+        }
+    }
 }

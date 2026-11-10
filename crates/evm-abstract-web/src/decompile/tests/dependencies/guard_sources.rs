@@ -116,6 +116,7 @@ fn valid_inherited_and_immediate_continuations_and_legacy_projection_stay_admitt
     }
     let mut old = artifact("00");
     old.schema_version = 2;
+    old.readability.clear();
     assert!(
         old.stages
             .iter()
