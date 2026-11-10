@@ -83,6 +83,9 @@ pub(super) struct Planner<'a, P: FnMut(Progress)> {
     natural_attempts: usize,
     natural_limit: usize,
     metrics: Vec<ReadabilityMetrics>,
+    // The exact trigger travels with its dispatcher through cache reuse. Like
+    // the node arena, this metadata is truncated when a proposal rolls back.
+    dispatch_reasons: Vec<Option<ReadabilityReason>>,
     failed_operations: Vec<u64>,
     preferred: Vec<bool>,
     source: ArtifactId,
@@ -104,7 +107,7 @@ pub(in crate::structure) fn compact_fallback(
 ) -> Option<Plan> {
     let mut planner = Planner::new(ir, facts, owner, MAX_PLAN_SLOTS)?;
     let entry = ir.entry?;
-    let root = planner.dispatch(entry, None, None)?;
+    let root = planner.dispatch(entry, None, None, ReadabilityReason::ValidationFallback)?;
     let preference = planner
         .preferences
         .get(&RegionKey {
@@ -133,11 +136,7 @@ pub(in crate::structure) fn compact_fallback(
             },
             preference,
             selected: StructureForm::Dispatcher,
-            reason: if preference == StructurePreference::Natural {
-                ReadabilityReason::PreferenceFallback
-            } else {
-                ReadabilityReason::PlanningFallback
-            },
+            reason: ReadabilityReason::ValidationFallback,
             natural: None,
             dispatcher: Some(metrics),
         }),
@@ -250,6 +249,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
             natural_attempts: 0,
             natural_limit,
             metrics: Vec::new(),
+            dispatch_reasons: Vec::new(),
             failed_operations: Vec::new(),
             preferred: Vec::new(),
             source,
@@ -268,6 +268,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         self.nodes.truncate(checkpoint.nodes);
         self.quotes.truncate(checkpoint.nodes);
         self.metrics.truncate(checkpoint.nodes);
+        self.dispatch_reasons.truncate(checkpoint.nodes);
         self.failed_operations.truncate(checkpoint.nodes);
         self.preferred.truncate(checkpoint.nodes);
         self.regions.truncate(checkpoint.regions);
@@ -370,6 +371,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         self.nodes.push(node);
         self.quotes.push(quote);
         self.metrics.push(metrics);
+        self.dispatch_reasons.push(None);
         self.failed_operations.push(failed_operations);
         self.preferred.push(preferred);
         Some(id)
@@ -418,7 +420,6 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         lp: Option<&Loop>,
         body: PlanId,
         preference: StructurePreference,
-        fallback: ReadabilityReason,
     ) -> Option<Admission> {
         let mut natural = self.metrics[body.0];
         natural.entry_values = count(self.block(start)?.parameters.len());
@@ -428,17 +429,14 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                 Assessment {
                     natural: None,
                     dispatcher: Some(natural),
-                    reason: if preference == StructurePreference::Natural {
-                        ReadabilityReason::PreferenceFallback
-                    } else {
-                        fallback
-                    },
+                    reason: self.dispatch_reasons[body.0]?,
                 },
             ));
         }
         let quote = self.quotes[body.0];
-        let hard = quote.nodes > crate::MAX_STRUCTURED_WIRE_NODES
-            || quote.depth > crate::MAX_STRUCTURED_WIRE_DEPTH
+        let excessive_depth = quote.depth > crate::MAX_STRUCTURED_WIRE_DEPTH;
+        let hard = excessive_depth
+            || quote.nodes > crate::MAX_STRUCTURED_WIRE_NODES
             || quote.references > MAX_SOURCE_REFERENCES;
         let mut assessment = Assessment {
             natural: Some(natural),
@@ -499,12 +497,10 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
             || preference == StructurePreference::Dispatcher
             || readability::prefers_compact(profile, reading, compact_reading)
         {
-            assessment.reason = if hard || excessive_expansion {
-                if preference == StructurePreference::Natural {
-                    ReadabilityReason::PreferenceFallback
-                } else {
-                    ReadabilityReason::Expansion
-                }
+            assessment.reason = if excessive_depth {
+                ReadabilityReason::DepthFallback
+            } else if hard || excessive_expansion {
+                ReadabilityReason::Expansion
             } else if preference == StructurePreference::Dispatcher {
                 ReadabilityReason::UserPreference
             } else {
@@ -545,44 +541,38 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
             return Some(*id);
         }
         let preference = self.preferences.get(&key).copied().unwrap_or_default();
-        let fallback = if self.compact_pressure
-            || self.expanded_sources.contains(&start)
-            || self.natural_attempts >= self.natural_limit
-        {
-            ReadabilityReason::PlanningFallback
-        } else if count(depth) > self.owner.limits().max_structuring_depth {
-            ReadabilityReason::DepthFallback
-        } else {
-            ReadabilityReason::MultiEntryControl
-        };
         let checkpoint = self.checkpoint();
         let proposed = if preference == StructurePreference::Dispatcher
             && self.owner.artifact.config.strategy == Strategy::Dispatcher
             && Some(start) != stop
         {
-            self.dispatch(start, stop, lp).map(|body| {
-                let mut metrics = self.metrics[body.0];
-                metrics.entry_values =
-                    count(self.block(start).map_or(0, |block| block.parameters.len()));
-                Admission::Keep(
-                    body,
-                    Assessment {
-                        natural: None,
-                        dispatcher: Some(metrics),
-                        reason: ReadabilityReason::UserPreference,
-                    },
-                )
-            })
+            self.dispatch(start, stop, lp, ReadabilityReason::UserPreference)
+                .map(|body| {
+                    let mut metrics = self.metrics[body.0];
+                    metrics.entry_values =
+                        count(self.block(start).map_or(0, |block| block.parameters.len()));
+                    Admission::Keep(
+                        body,
+                        Assessment {
+                            natural: None,
+                            dispatcher: Some(metrics),
+                            reason: ReadabilityReason::UserPreference,
+                        },
+                    )
+                })
         } else {
             self.build_uncached(start, stop, lp, depth, path)
-                .and_then(|body| self.admit(start, stop, lp, body, preference, fallback))
+                .and_then(|body| self.admit(start, stop, lp, body, preference))
         };
         let (body, assessment) = match proposed {
             Some(Admission::Keep(body, assessment)) => (body, assessment),
             Some(Admission::Compact(region, assessment)) => {
                 self.rollback(checkpoint);
                 self.capacity_refused = false;
-                (self.dispatch_region(start, region)?, assessment)
+                (
+                    self.dispatch_region(start, region, assessment.reason)?,
+                    assessment,
+                )
             }
             None if self.capacity_refused && !self.owner.stopped => {
                 self.rollback(checkpoint);
@@ -591,7 +581,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                     self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"temporary region plan admission requires a dispatcher; selected strategy retains prior CFG");
                     return None;
                 }
-                let body = self.dispatch(start, stop, lp)?;
+                let body = self.dispatch(start, stop, lp, ReadabilityReason::PlanningFallback)?;
                 let mut metrics = self.metrics[body.0];
                 metrics.entry_values = count(self.block(start)?.parameters.len());
                 (
@@ -599,11 +589,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                     Assessment {
                         natural: None,
                         dispatcher: Some(metrics),
-                        reason: if preference == StructurePreference::Natural {
-                            ReadabilityReason::PreferenceFallback
-                        } else {
-                            ReadabilityReason::PlanningFallback
-                        },
+                        reason: ReadabilityReason::PlanningFallback,
                     },
                 )
             }
@@ -679,12 +665,12 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                 loop_header: lp.map(|loop_| loop_.header),
             }) != Some(&StructurePreference::Natural)
         {
-            return self.dispatch(start, stop, lp);
+            return self.dispatch(start, stop, lp, ReadabilityReason::Expansion);
         }
         if self.compact_pressure || self.natural_attempts >= self.natural_limit {
             if self.owner.artifact.config.strategy == Strategy::Dispatcher {
                 self.compact_pressure = true;
-                return self.dispatch(start, stop, lp);
+                return self.dispatch(start, stop, lp, ReadabilityReason::PlanningFallback);
             }
             self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"cumulative natural region attempt admission requires a dispatcher; selected strategy retains prior CFG");
             return None;
@@ -692,13 +678,13 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         self.natural_attempts += 1;
         if count(depth) > self.owner.limits().max_structuring_depth {
             if self.owner.artifact.config.strategy == Strategy::Dispatcher {
-                return self.dispatch(start, stop, lp);
+                return self.dispatch(start, stop, lp, ReadabilityReason::DepthFallback);
             }
             self.owner.stop(Completion::Limited,DiagnosticCode::Limit,"structuring depth admission requires a dispatcher; selected strategy retains prior CFG");
             return None;
         }
         if path.contains(&start) {
-            return self.dispatch(start, stop, lp);
+            return self.dispatch(start, stop, lp, ReadabilityReason::ControlReentry);
         }
         if let Some(info) = self
             .loops
@@ -745,7 +731,7 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                 let suffix = self.build(follow, stop, None, depth + 1, path)?;
                 return self.sequence(vec![compact, suffix]);
             }
-            return self.dispatch(start, stop, lp);
+            return self.dispatch(start, stop, lp, ReadabilityReason::ResidualCycle);
         }
         let body = self.node(StructuredKind::Block { block: start }, vec![start])?;
         let tail = match block.terminator {
@@ -1010,15 +996,21 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
         start: EntityId,
         stop: Option<EntityId>,
         lp: Option<&Loop>,
+        reason: ReadabilityReason,
     ) -> Option<PlanId> {
         let mut region = self.reachable(start, stop)?;
         if let Some(lp) = lp {
             region.retain(|id| lp.nodes.contains(id) && *id != lp.header);
             region.insert(start);
         }
-        self.dispatch_region(start, region)
+        self.dispatch_region(start, region, reason)
     }
-    fn dispatch_region(&mut self, start: EntityId, region: BTreeSet<EntityId>) -> Option<PlanId> {
+    fn dispatch_region(
+        &mut self,
+        start: EntityId,
+        region: BTreeSet<EntityId>,
+        reason: ReadabilityReason,
+    ) -> Option<PlanId> {
         let transitions = region
             .iter()
             .filter_map(|id| self.block(*id))
@@ -1049,13 +1041,15 @@ impl<'a, P: FnMut(Progress)> Planner<'a, P> {
                 transitions,
             });
         }
-        self.node(
+        let body = self.node(
             StructuredKind::Dispatcher {
                 entry: start,
                 cases,
             },
             region.into_iter().collect(),
-        )
+        )?;
+        self.dispatch_reasons[body.0] = Some(reason);
+        Some(body)
     }
     fn cache_room(&mut self) -> bool {
         if self.join_cache.len().saturating_add(self.cycle_cache.len()) < self.memo_limit {

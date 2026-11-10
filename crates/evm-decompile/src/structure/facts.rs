@@ -33,7 +33,6 @@ impl Facts {
         owner: &mut Builder<impl FnMut(Progress)>,
     ) -> Option<Self> {
         let postdom = postdominators(ir, owner)?;
-        let loops = natural_loops(ir, dom, &postdom, owner)?;
         if !owner.pay(
             ir.blocks
                 .len()
@@ -181,9 +180,9 @@ impl Facts {
             post.insert(id);
             normal_postdom.insert(id, post);
         }
-        Some(Self {
+        let mut facts = Self {
             postdom,
-            loops,
+            loops: BTreeMap::new(),
             finite,
             failed,
             normal_postdom,
@@ -192,7 +191,9 @@ impl Facts {
             successors,
             predecessors,
             known,
-        })
+        };
+        facts.loops = natural_loops(ir, dom, &facts, owner)?;
+        Some(facts)
     }
 
     /// A source continuation outside the cyclic component. This is a safe
@@ -323,7 +324,7 @@ impl Facts {
 pub(super) fn natural_loops(
     ir: &Ir,
     dom: &BTreeMap<EntityId, BTreeSet<EntityId>>,
-    postdom: &BTreeMap<EntityId, BTreeSet<EntityId>>,
+    facts: &Facts,
     owner: &mut Builder<impl FnMut(Progress)>,
 ) -> Option<BTreeMap<EntityId, Loop>> {
     let graph_work = ir
@@ -364,9 +365,40 @@ pub(super) fn natural_loops(
         if !owner.pay(graph_work) {
             return false;
         }
-        // Terminal tails are part of the loop body: returns/reverts/STOP must
-        // remain executable exits rather than forcing a dispatcher around a
-        // reducible loop. Acyclic exit bridges can share a single follow.
+        // Keep executable terminal exits and complete finite failure DAGs in
+        // the body. The least failure closure excludes pending/unknown paths
+        // and cycles; ordinary finite suffixes stay available as shared follows.
+        if !owner.pay(
+            ir.blocks
+                .len()
+                .saturating_add(ir.edges.len())
+                .saturating_mul(16),
+        ) {
+            return false;
+        }
+        let mut seen = vec![false; ir.blocks.len()];
+        let mut exits = BTreeSet::new();
+        for id in &lp.nodes {
+            let index = facts.blocks[id];
+            seen[index] = true;
+            exits.extend(
+                facts.successors[index]
+                    .iter()
+                    .copied()
+                    .filter(|to| !lp.nodes.contains(&ir.blocks[*to].id)),
+            );
+        }
+        let mut todo = Vec::new();
+        for index in exits {
+            let block = &ir.blocks[index];
+            if facts.successors[index].is_empty() && !block.terminator.is_partial() {
+                lp.nodes.insert(block.id);
+                seen[index] = true;
+            } else {
+                todo.push(index);
+            }
+        }
+        let mut failed_tails = Some(todo);
         loop {
             let exits: BTreeSet<_> = ir
                 .edges
@@ -374,39 +406,75 @@ pub(super) fn natural_loops(
                 .filter(|e| lp.nodes.contains(&e.from) && !lp.nodes.contains(&e.to))
                 .map(|e| e.to)
                 .collect();
-            let terminal: Vec<_> = exits
-                .iter()
-                .filter(|id| {
-                    ir.block(**id).is_some_and(|b| {
-                        b.terminator.edges().is_empty() && !b.terminator.is_partial()
-                    })
-                })
-                .copied()
-                .collect();
-            if terminal.is_empty() {
-                break;
+            if exits.len() <= 1 {
+                lp.exit = exits.first().copied();
+                return true;
             }
-            lp.nodes.extend(terminal);
+            let Some(follow) = common_loop_follow(ir, lp, &exits, facts, graph_work, owner) else {
+                return false;
+            };
+            if let Some(follow) = follow {
+                for exit in exits {
+                    let bridge = reachable(ir, Some(exit), Some(follow));
+                    if bridge.contains(&lp.header) {
+                        return false;
+                    }
+                    lp.nodes.extend(bridge);
+                }
+                lp.exit = Some(follow);
+                return true;
+            }
+            // Preserve an already valid single/common follow, even when its
+            // suffix eventually fails. Expand failure tails only to recover an
+            // otherwise rejected loop, then retry the same follow criteria.
+            let Some(mut todo) = failed_tails.take() else {
+                return false;
+            };
+            let original_nodes = lp.nodes.len();
+            while let Some(index) = todo.pop() {
+                if !owner.pay(1) {
+                    return false;
+                }
+                if seen[index] {
+                    continue;
+                }
+                seen[index] = true;
+                let block = &ir.blocks[index];
+                if !facts.failed.contains(&block.id) {
+                    continue;
+                }
+                if !owner.pay(facts.successors[index].len().saturating_add(1)) {
+                    return false;
+                }
+                lp.nodes.insert(block.id);
+                todo.extend_from_slice(&facts.successors[index]);
+            }
+            if lp.nodes.len() == original_nodes {
+                return false;
+            }
         }
-        let exits: BTreeSet<_> = ir
-            .edges
-            .iter()
-            .filter(|e| lp.nodes.contains(&e.from) && !lp.nodes.contains(&e.to))
-            .map(|e| e.to)
-            .collect();
-        if exits.len() <= 1 {
-            lp.exit = exits.first().copied();
-            return true;
-        }
-        let mut common = postdom[exits.first().expect("nonempty exits")].clone();
-        for id in exits.iter().skip(1) {
-            common = common.intersection(&postdom[id]).copied().collect();
-        }
-        if !owner.pay(graph_work.saturating_mul(exits.len())) {
-            return false;
-        }
-        let exit_distances: Vec<_> = exits.iter().map(|exit| distances(ir, *exit)).collect();
-        let follow = common
+    });
+    (!owner.stopped).then_some(loops)
+}
+
+fn common_loop_follow(
+    ir: &Ir,
+    lp: &Loop,
+    exits: &BTreeSet<EntityId>,
+    facts: &Facts,
+    graph_work: usize,
+    owner: &mut Builder<impl FnMut(Progress)>,
+) -> Option<Option<EntityId>> {
+    if !owner.pay(graph_work.saturating_mul(exits.len())) {
+        return None;
+    }
+    let mut common = facts.postdom[exits.first().expect("nonempty exits")].clone();
+    for id in exits.iter().skip(1) {
+        common = common.intersection(&facts.postdom[id]).copied().collect();
+    }
+    let exit_distances: Vec<_> = exits.iter().map(|exit| distances(ir, *exit)).collect();
+    Some(
+        common
             .into_iter()
             .filter(|id| id.0 != 0 && !lp.nodes.contains(id))
             .filter_map(|id| {
@@ -417,21 +485,8 @@ pub(super) fn natural_loops(
                 Some((distance.into_iter().max().unwrap_or(0), id))
             })
             .min()
-            .map(|(_, id)| id);
-        let Some(follow) = follow else {
-            return false;
-        };
-        for exit in exits {
-            let bridge = reachable(ir, Some(exit), Some(follow));
-            if bridge.contains(&lp.header) {
-                return false;
-            }
-            lp.nodes.extend(bridge);
-        }
-        lp.exit = Some(follow);
-        true
-    });
-    (!owner.stopped).then_some(loops)
+            .map(|(_, id)| id),
+    )
 }
 pub(super) fn postdominators(
     ir: &Ir,

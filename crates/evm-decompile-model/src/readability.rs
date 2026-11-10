@@ -130,16 +130,34 @@ pub enum ReadabilityReason {
     NaturalControl,
     /// Reading proxies favored this candidate.
     LowerReadingCost,
-    /// Residual cyclic control requires explicit dispatch in this plan.
+    /// Legacy fallback label; older planners did not prove multiple entries.
+    /// Retained for stored decisions; current planners never emit this variant.
     MultiEntryControl,
-    /// Natural representation would repeat substantial source content.
+    /// Cycle search returned to this block outside admitted natural-loop headers.
+    /// This does not establish that the source cycle has multiple entries.
+    ResidualCycle,
+    /// Recursive structuring reached a block already on its active path.
+    ControlReentry,
+    /// Source expansion exceeds the retained representation's admission.
     Expansion,
     /// Bounded planning retained a compact source representation.
     PlanningFallback,
     /// A compact representation avoids excessive recursive structuring.
     DepthFallback,
+    /// The proposed structure failed validation; a source dispatcher was retried.
+    ValidationFallback,
     /// The requested choice was unavailable; a valid alternative was retained.
     PreferenceFallback,
+}
+
+impl ReadabilityReason {
+    pub(crate) fn admits_schema(self, schema: u32) -> bool {
+        schema >= 9
+            || !matches!(
+                self,
+                Self::ResidualCycle | Self::ControlReentry | Self::ValidationFallback
+            )
+    }
 }
 
 strict_record! {
@@ -168,7 +186,7 @@ pub fn readability_source(input: &Input, config: &Config) -> ArtifactId {
 }
 
 impl crate::Artifact {
-    /// Source namespace of this stored publication. Existing schema-7 reading
+    /// Source namespace of this stored publication. Existing reading
     /// decisions retain their original hash; new attempts use the current free
     /// function and must not transplant older region identities by relabeling.
     pub fn readability_source(&self) -> ArtifactId {

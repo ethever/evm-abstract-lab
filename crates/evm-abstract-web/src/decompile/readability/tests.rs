@@ -10,6 +10,7 @@ use std::{
 
 const BRANCH: &str =
     "5f356100115760403561001d57610021565b60203561001d57610021565b5f5ffd5b60775f5500";
+const RESIDUAL_CYCLE: &str = "5f3561001b575b5f54600101805f556004901061001b57610030565b5f54600101805f556004901061000657610030565b00";
 
 fn analyze(request: DecompileRequest) -> Artifact {
     let pool = Pool::new(Config {
@@ -313,4 +314,102 @@ fn legacy_seven_region_decisions_remain_readable_and_are_not_retargeted_on_resub
             .iter()
             .all(|decision| decision.region.source != source)
     );
+}
+
+#[test]
+fn residual_dispatcher_reports_the_backend_trigger_in_the_rendered_choice() {
+    let artifact = analyze(DecompileRequest {
+        bytecode: RESIDUAL_CYCLE.into(),
+        ..Default::default()
+    });
+    assert!(
+        artifact
+            .readability
+            .iter()
+            .all(|decision| decision.reason != ReadabilityReason::MultiEntryControl)
+    );
+    let region = artifact
+        .readability
+        .iter()
+        .find(|decision| {
+            decision.selected == StructureForm::Dispatcher
+                && decision.reason == ReadabilityReason::ResidualCycle
+        })
+        .expect("a source residual cycle retained an actual dispatcher")
+        .region
+        .clone();
+    let mut editor = Editor::new(artifact);
+    editor.preferences.region = Some(region);
+    editor.frame(vec![]);
+    assert!(editor.controls.iter().any(|control| {
+        control["role"] == "decompile-reading-choice"
+            && control["label"]
+                == "Selected: Dispatcher. A cycle remained outside admitted natural loops."
+    }));
+}
+
+#[test]
+fn rendered_fallbacks_keep_the_cause_when_a_natural_preference_is_unavailable() {
+    let ctx = Context::default();
+    for (reason, detail) in [
+        (
+            ReadabilityReason::ResidualCycle,
+            "A cycle remained outside admitted natural loops",
+        ),
+        (
+            ReadabilityReason::ControlReentry,
+            "Structuring revisited a block on the active path",
+        ),
+        (
+            ReadabilityReason::Expansion,
+            "Retained compact control after source expansion",
+        ),
+        (
+            ReadabilityReason::PlanningFallback,
+            "Planning admission retained compact control",
+        ),
+        (
+            ReadabilityReason::DepthFallback,
+            "Structure depth required a compact representation",
+        ),
+        (
+            ReadabilityReason::ValidationFallback,
+            "Proposed structure failed validation; used a verified dispatcher",
+        ),
+        (
+            ReadabilityReason::MultiEntryControl,
+            "Legacy dispatcher fallback; detailed cause unavailable",
+        ),
+    ] {
+        let decision = RegionDecision {
+            region: RegionAnchor {
+                source: ArtifactId("source".into()),
+                entry: EntityId(1),
+                continuation: None,
+                loop_header: None,
+            },
+            preference: StructurePreference::Natural,
+            selected: StructureForm::Dispatcher,
+            reason,
+            natural: None,
+            dispatcher: None,
+        };
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            controls::begin_observation(ui.ctx(), true);
+            decision_details(ui, &decision);
+        });
+        let controls: Vec<serde_json::Value> =
+            serde_json::from_str(&controls::observed(&ctx).unwrap()).unwrap();
+        let rendered = controls
+            .iter()
+            .find(|control| control["role"] == "decompile-reading-choice")
+            .unwrap()["label"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            rendered,
+            format!("Selected: Dispatcher. {detail}. Requested Natural form unavailable.")
+        );
+        assert!(!rendered.contains("Multiple-entry") && !rendered.contains("irreducible"));
+    }
 }

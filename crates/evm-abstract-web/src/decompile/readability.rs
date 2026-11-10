@@ -285,15 +285,31 @@ fn decision_details(ui: &mut egui::Ui, decision: &RegionDecision) {
         ReadabilityReason::UserPreference => "Selected by the requested preference",
         ReadabilityReason::NaturalControl => "Natural control structure retained",
         ReadabilityReason::LowerReadingCost => "Lower measured presentation cost",
-        ReadabilityReason::MultiEntryControl => "Multiple-entry control requires explicit dispatch",
-        ReadabilityReason::Expansion => "Avoided repeated expansion of shared control",
-        ReadabilityReason::PlanningFallback => "Retained the available verified plan",
-        ReadabilityReason::DepthFallback => "Avoided excessive structure depth",
+        ReadabilityReason::MultiEntryControl => {
+            "Legacy dispatcher fallback; detailed cause unavailable"
+        }
+        ReadabilityReason::ResidualCycle => "A cycle remained outside admitted natural loops",
+        ReadabilityReason::ControlReentry => "Structuring revisited a block on the active path",
+        ReadabilityReason::Expansion => "Retained compact control after source expansion",
+        ReadabilityReason::PlanningFallback => "Planning admission retained compact control",
+        ReadabilityReason::DepthFallback => "Structure depth required a compact representation",
+        ReadabilityReason::ValidationFallback => {
+            "Proposed structure failed validation; used a verified dispatcher"
+        }
         ReadabilityReason::PreferenceFallback => {
             "Requested form unavailable; retained a verified alternative"
         }
     };
-    let text = format!("Selected: {selected}. {reason}.");
+    let unavailable = match (decision.preference, decision.selected) {
+        (StructurePreference::Natural, StructureForm::Dispatcher) => {
+            " Requested Natural form unavailable."
+        }
+        (StructurePreference::Dispatcher, StructureForm::Natural) => {
+            " Requested Dispatcher form unavailable."
+        }
+        _ => "",
+    };
+    let text = format!("Selected: {selected}. {reason}.{unavailable}");
     let response = ui.label(&text);
     controls::observe(ui, &response, &text, "decompile-reading-choice", None);
     metrics(ui, "Natural", decision.natural);

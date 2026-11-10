@@ -1,6 +1,7 @@
 //! Temporary metadata refusal rolls back proposals before compact retry.
 use super::*;
 use crate::{Cancellation, Config, Fork, Input, Phase, StageKind, decompile_with_progress};
+mod reasons;
 
 fn source() -> (Input, Ir) {
     let bytes = evm_bytecode::parse_hex(
@@ -38,6 +39,12 @@ fn temporary_sources_and_children_refusal_retries_an_admitted_source_dispatcher(
     );
     super::super::super::verify::verify(&ir, &plan, &mut |n| owner.pay(n)).unwrap();
     assert!(owner.artifact.stages.is_empty());
+    let decisions = plan.decisions(&mut |work| owner.pay(work)).unwrap();
+    let root = decisions
+        .iter()
+        .find(|decision| decision.region.entry == ir.entry.unwrap())
+        .unwrap();
+    assert_eq!(root.reason, ReadabilityReason::PlanningFallback);
 }
 
 #[test]
@@ -101,6 +108,19 @@ fn cumulative_natural_attempt_limit_and_pressure_survive_an_arena_rollback() {
         "the same region does not naturally replan"
     );
     assert_eq!(planner.nodes.len(), 1);
+    assert_eq!(
+        planner.dispatch_reasons[root.0],
+        Some(ReadabilityReason::PlanningFallback)
+    );
+    let cached = planner
+        .build(ir.entry.unwrap(), None, None, usize::MAX, &BTreeSet::new())
+        .unwrap();
+    assert_eq!(cached, root);
+    assert_eq!(
+        planner.dispatch_reasons[cached.0],
+        Some(ReadabilityReason::PlanningFallback),
+        "cache reuse keeps its originating trigger even at another recursive depth"
+    );
     let plan = Plan {
         nodes: planner.nodes,
         root,

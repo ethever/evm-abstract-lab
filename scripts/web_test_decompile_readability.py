@@ -1,6 +1,7 @@
 """Reading choices cross actual HTTP plans, Wasm controls and copied code."""
 
 import json
+from collections import Counter
 
 from playwright.sync_api import expect
 from web_test_decompile_alignment import code_label, copy_code
@@ -16,6 +17,8 @@ BRANCH = "5f356100115760403561001d57610021565b60203561001d57610021565b5f5ffd5b60
 SHARED = ("60075f35601e565b6001556002556016602035601e565b60035560045500"
           "5b80604052805f5560206040a0600554600101600555600654600755603d565b806001019156")
 ARITHMETIC = "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex"
+MULTICALL = "crates/evm-decompile/tests/fixtures/structure/ethereum-multicall3.hex"
+RESIDUAL = "5f3561001b575b5f54600101805f556004901061001b57610030565b5f54600101805f556004901061000657610030565b00"
 
 
 def choices(page, canvas):
@@ -46,6 +49,51 @@ def painted_copy(page, canvas):
     rows = [code_label(row["label"])[1] for row in observed(page, "decompile-code")]
     assert text.splitlines() == rows, "small fixture must fit and clipboard must equal actual painted rows"
     return text
+
+
+def check_loop_causes(context, page, canvas):
+    residual, _ = submit(context, page, canvas, RESIDUAL, "reading-residual",
+                         procedures="Inline", profile="Balanced")
+    decisions = [d for d in residual["readability"] if d["selected"] == "dispatcher"]
+    assert decisions and all(d["reason"] == "residual_cycle" for d in decisions)
+    assert all(d["reason"] != "multi_entry_control" for d in residual["readability"])
+    choices(page, canvas)
+    region = decisions[0]["region"]
+    blocks = {b["id"]: b for b in stage(residual, "structured")["ir"]["blocks"]}
+
+    def label(block):
+        return f"0x{blocks[block]['source']['pc']:04x} · b{block}"
+
+    name = label(region["entry"])
+    if region["continuation"] is not None:
+        name += " → " + label(region["continuation"])
+    if region["loop_header"] is not None:
+        name += " · loop " + label(region["loop_header"])
+    inspector_control(page, canvas, "Source region", "combobox")
+    click_control(page, canvas, name, role="tab")
+    inspector_control(page, canvas,
+                      "Selected: Dispatcher. A cycle remained outside admitted natural loops.",
+                      "decompile-reading-choice")
+    canvas.screenshot(path=str(context.output / "reading-residual-cause.png"))
+
+    multicall, _ = submit(context, page, canvas, (SOURCE_ROOT / MULTICALL).read_text().strip(),
+                         "reading-multicall", procedures="Auto procedures", profile="Balanced")
+    assert multicall["completion"] == "complete" and not multicall["diagnostics"]
+    ir = stage(multicall, "structured")["ir"]
+    nodes = {node["id"]: node["kind"] for node in ir["structured"]["nodes"]}
+    blocks = {block["id"]: block for block in ir["blocks"]}
+    assert not any("dispatcher" in kind for kind in nodes.values())
+    headers = Counter()
+    for kind in nodes.values():
+        if "while" in kind:
+            header = nodes[kind["while"]["header"]]
+            if "block" in header:
+                headers[blocks[header["block"]["block"]]["source"]["pc"]] += 1
+    assert {pc: headers[pc] for pc in [0x325, 0x546, 0x714, 0x8c3]} == {
+        0x325: 1, 0x546: 1, 0x714: 1, 0x8c3: 3}
+    assert all(d["reason"] != "multi_entry_control" for d in multicall["readability"])
+    return {"residual": residual["id"], "multicall": multicall["id"],
+            "call_loop_headers": dict(headers)}
 
 
 def expand(context, page, canvas, artifact, arithmetic):
@@ -107,8 +155,10 @@ def run(context):
     arithmetic, _ = submit(context, page, canvas, (SOURCE_ROOT / ARITHMETIC).read_text().strip(),
                            "reading-arithmetic", procedures="Shared", profile="Balanced")
     expression_expansion = expand(context, page, canvas, arithmetic, True)
+    loop_causes = check_loop_causes(context, page, canvas)
     result = {"region": anchor, "dispatcher": dispatched["id"], "natural": natural["id"],
               "control_expansion": control_expansion, "expression_expansion": expression_expansion,
+              "loop_causes": loop_causes,
               "renderer": webgpu_evidence(page)}
     canvas.screenshot(path=str(context.output / "reading-final.png"))
     page.close()

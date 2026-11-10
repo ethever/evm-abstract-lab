@@ -1,0 +1,10 @@
+{
+  "name": "ethereum-multicall3",
+  "contract": "Ethereum Multicall3",
+  "address": "0xca11bde05977b3631167028862be2a173976ca11",
+  "chain_id": 1,
+  "block_number": 26162721,
+  "block_hash": "0x249b266a4b3e71abf93278a2e96938a49099ac2afafa6f8193e28c21872d57dc",
+  "code_hash": "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891",
+  "byte_length": 3808
+}

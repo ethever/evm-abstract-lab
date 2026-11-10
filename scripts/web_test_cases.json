@@ -1100,6 +1100,7 @@
       "parameters": {},
       "dependencies": [
         "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex",
+        "crates/evm-decompile/tests/fixtures/structure/ethereum-multicall3.hex",
         "scripts/test-web-browser.py",
         "scripts/web_test_decompile_alignment.py",
         "scripts/web_test_decompile_helpers.py",
