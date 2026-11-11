@@ -312,8 +312,16 @@ impl Artifact {
         {
             return false;
         }
+        if self
+            .readability
+            .iter()
+            .any(|decision| !decision.reason.admits_schema(self.schema_version))
+        {
+            return false;
+        }
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
+            8 => true,
             7 => true,
             6 => true,
             5 => self.stages.iter().all(|s| {

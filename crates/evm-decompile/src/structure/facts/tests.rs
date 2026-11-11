@@ -1,6 +1,7 @@
 //! Normal continuation proposals require a finite, closed source proof.
 use super::*;
 use crate::{Block, Cancellation, Config, Edge, EdgeKind, Fork, Input};
+mod loops;
 fn id(n: u64) -> EntityId {
     EntityId(n)
 }

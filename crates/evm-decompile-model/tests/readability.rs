@@ -97,3 +97,76 @@ fn older_schema_cannot_advertise_new_preference_or_decision_contracts() {
     artifact.schema_version = SCHEMA_VERSION;
     assert!(artifact.admits_schema());
 }
+
+#[test]
+fn precise_dispatcher_reasons_roundtrip_and_require_schema_nine() {
+    for (reason, wire) in [
+        (ReadabilityReason::ResidualCycle, "residual_cycle"),
+        (ReadabilityReason::ControlReentry, "control_reentry"),
+        (ReadabilityReason::ValidationFallback, "validation_fallback"),
+    ] {
+        let mut artifact = empty_artifact(Config::default());
+        artifact.readability.push(RegionDecision {
+            region: RegionAnchor {
+                source: artifact.readability_source(),
+                entry: EntityId(1),
+                continuation: None,
+                loop_header: None,
+            },
+            preference: StructurePreference::Natural,
+            selected: StructureForm::Dispatcher,
+            reason,
+            natural: None,
+            dispatcher: Some(ReadabilityMetrics::default()),
+        });
+        assert!(artifact.admits_schema());
+        let encoded = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(encoded["readability"][0]["reason"], wire);
+        assert_eq!(
+            serde_json::from_value::<Artifact>(encoded).unwrap(),
+            artifact
+        );
+        for schema in [7, 8] {
+            artifact.schema_version = schema;
+            let decoded: Artifact =
+                serde_json::from_slice(&serde_json::to_vec(&artifact).unwrap()).unwrap();
+            assert!(
+                !decoded.admits_schema(),
+                "{reason:?} cannot be advertised under schema {schema}"
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_dispatcher_label_retains_its_wire_value_and_source_namespace() {
+    for schema in [7, 8] {
+        let mut artifact = empty_artifact(Config::default());
+        artifact.schema_version = schema;
+        let source = artifact.readability_source();
+        assert_ne!(
+            source,
+            readability_source(&artifact.input, &artifact.config)
+        );
+        artifact.readability.push(RegionDecision {
+            region: RegionAnchor {
+                source,
+                entry: EntityId(1),
+                continuation: None,
+                loop_header: None,
+            },
+            preference: StructurePreference::Auto,
+            selected: StructureForm::Dispatcher,
+            reason: ReadabilityReason::MultiEntryControl,
+            natural: None,
+            dispatcher: Some(ReadabilityMetrics::default()),
+        });
+        assert!(artifact.admits_schema());
+        let encoded = serde_json::to_string(&artifact).unwrap();
+        assert!(encoded.contains("\"reason\":\"multi_entry_control\""));
+        let decoded: Artifact = serde_json::from_str(&encoded).unwrap();
+        assert!(decoded.admits_schema());
+        assert_eq!(decoded, artifact);
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+    }
+}

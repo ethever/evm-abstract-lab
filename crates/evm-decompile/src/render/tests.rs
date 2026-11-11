@@ -418,7 +418,7 @@ fn export_requires_consistent_execution_premises_before_publishing_semantic_code
                 stage.ir.execution_fork = None;
             }
             "fork" => changed.input.fork = Fork::Cancun,
-            "schema" => changed.schema_version = crate::SCHEMA_VERSION - 1,
+            "schema" => changed.schema_version = crate::SCHEMA_VERSION + 1,
             _ => unreachable!(),
         }
         let result = export_text(&changed, &Cancellation::default());
