@@ -355,9 +355,16 @@ def run(context):
             set_control(page, canvas, DEPENDENCIES, dependencies)
             set_control(page, canvas, ANNOTATIONS, annotations)
             text = painted_copy(page, canvas)
-            terminal = "evm.revert(offset =" if name == "alias" else "evm.revert(Revert(data = concat("
-            assert "if (" in text and "evm.mstore(" in text and terminal in text, text
+            assert "if (" in text and "evm.mstore(" in text and "evm.revert(offset =" in text, text
             assert 'evm.revert("' not in text and "require(" not in text, text
+        if name == "padding":
+            source_descendant(page, canvas, artifact, current["id"], data["id"])
+            inspector_control(page, canvas, "Decoded format: Unrecognized format",
+                              "decompile-entity-detail")
+            inspector_control(page, canvas, "Rendered data: Revert(data = concat(",
+                              "decompile-entity-detail")
+            high(page, canvas)
+            assert painted_copy(page, canvas) == text
         results.append({"rejected": name, "artifact": artifact["id"]})
     gpu = webgpu_evidence(page)
     page.close()

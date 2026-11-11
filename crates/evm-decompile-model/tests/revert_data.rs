@@ -413,3 +413,36 @@ fn source_word_identity_requires_the_actual_writer_and_its_scoped_high_operand()
         );
     }
 }
+
+#[test]
+fn recovered_unrecognized_data_stays_inspectable_but_uses_the_original_terminal() {
+    let ir = source();
+    let before = serde_json::to_vec(&ir).unwrap();
+    let program = ir.lifted.as_ref().unwrap();
+    let data = &program.revert_data[0];
+    assert!(matches!(data.content, LiftedRevertDataKind::Segments(_)));
+    assert_eq!(
+        data.decode_format(|_| true).unwrap(),
+        LiftedRevertFormat::Raw
+    );
+    let renderer = program.render_index(&ir);
+    assert!(
+        renderer
+            .render_revert_data(data.id, |_| true)
+            .unwrap()
+            .contains("concat(word_bytes(v600, 0, 32))"),
+        "format recognition must not discard the recovered source word"
+    );
+    assert_eq!(
+        renderer.render_data_revert(data.block, |_| true).unwrap(),
+        None
+    );
+    let terminal = &program.blocks[0].statements[1];
+    assert_eq!(
+        renderer
+            .render_statement_with_dependencies(terminal, false, |_| true)
+            .unwrap(),
+        "evm.revert(offset = 0x0, size = 0x20);"
+    );
+    assert_eq!(serde_json::to_vec(&ir).unwrap(), before);
+}

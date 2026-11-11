@@ -269,6 +269,23 @@ fn legacy_seven_region_decisions_remain_readable_and_are_not_retargeted_on_resub
     let actual = analyze(original.click("Apply reading choices").unwrap());
     assert!(!actual.readability.is_empty() && !actual.config.readability.regions.is_empty());
     let mut legacy = actual;
+    // The source and its empty-REVERT guards predate occurrence-local data.
+    // Drop only that optional modern metadata to represent a schema-7 producer.
+    for stage in &mut legacy.stages {
+        if let Some(program) = &mut stage.ir.lifted {
+            assert!(
+                program
+                    .controls
+                    .iter()
+                    .filter_map(|control| control.guard.as_ref())
+                    .all(|guard| !matches!(
+                        guard.payload,
+                        evm_abstract_protocol::decompile_model::LiftedGuardPayload::Data(_)
+                    ))
+            );
+            program.revert_data.clear();
+        }
+    }
     legacy.schema_version = 7;
     let source = legacy.readability_source();
     assert_ne!(source, readability_source(&legacy.input, &legacy.config));

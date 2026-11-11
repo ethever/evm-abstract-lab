@@ -375,6 +375,8 @@ impl<'a> LiftedRenderIndex<'a> {
     }
     /// New occurrence data only. Existing string certificates keep their
     /// standalone primitive spelling; only their selected require absorbs it.
+    /// Unrecognized formats also retain the original terminal; their recovered
+    /// segments remain available through the separate data/Inspector formatter.
     pub fn render_data_revert(
         &self,
         block: EntityId,
@@ -391,13 +393,17 @@ impl<'a> LiftedRenderIndex<'a> {
         {
             return Ok(None);
         }
+        let format = data.decode_format(&mut pay)?;
+        if matches!(format, F::Raw) {
+            return Ok(None);
+        }
         let payload = match self.render_revert_data(data.id, &mut pay) {
             Ok(payload) => payload,
             Err(E::MissingWitness(_)) => return Ok(None),
             Err(error) => return Err(error),
         };
         let mut text = format!("evm.revert({payload});");
-        if let Some(note) = data.decode_format(&mut pay)?.panic_explanation() {
+        if let Some(note) = format.panic_explanation() {
             append(&mut text, " // ", &mut pay)?;
             append(&mut text, note, &mut pay)?;
         }

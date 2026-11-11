@@ -559,11 +559,7 @@ fn missing_capsule_and_alias_padding_or_observing_failure_keep_primitive_behavio
             assert!(
                 text.contains("if (")
                     && text.contains("evm.mstore(")
-                    && text.contains(if padding {
-                        "evm.revert(Revert(data = concat("
-                    } else {
-                        "evm.revert(offset ="
-                    }),
+                    && text.contains("evm.revert(offset ="),
                 "{text}"
             );
             assert!(

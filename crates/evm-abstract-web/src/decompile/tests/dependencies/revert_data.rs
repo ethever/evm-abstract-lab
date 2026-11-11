@@ -133,10 +133,8 @@ fn panic_and_symbolic_data_survive_publication_copy_source_links_and_display_opt
         assert_eq!(index.revert_data(&stage.ir, data.id), Some(data));
         let (ctx, mut workspace) = setup(artifact.clone());
         assert_painted(&frame(&ctx, &mut workspace, vec![]), &normal);
-        assert_eq!(
-            click(&ctx, &mut workspace, "Copy structured text").copied,
-            [text.clone()]
-        );
+        let copied = click(&ctx, &mut workspace, "Copy structured text").copied;
+        assert_eq!(copied.as_slice(), std::slice::from_ref(&text));
         let at = EntityRef {
             stage: stage.id,
             entity: data.id,

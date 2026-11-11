@@ -249,9 +249,9 @@ Router02 的这个具体构造返回 132 字节：4 字节选择器、32 字节�
 
 `LiftedProgram.revert_data` 保存与原始 REVERT 出现位置绑定的数据证书。它先回答“该 memory 版本的这个区间包含什么”：完整数据由常量字节、符号 word 的大端字节片段及有来源的切片组成；`Raw` 则只保留原始 memory、offset 和 size，表示尚未证明内容。每个符号引用指向原始 SSA 值，不能因为 selector 或参数形状相同就合并不同的调用路径。schema 11 增加此表示；旧 `payloads` / `reverts` 错误字符串证书仍可读取，旧版本缺失的数据不会被猜补。
 
-整段复制另有一个无需枚举动态长度的精确规则：最近的内存写入必须就是原始 COPY，COPY 的目标地址和长度必须与 REVERT 的窗口相同。两次 RETURNDATASIZE 只有在闭合 effect 链证明它们属于同一个非循环 CALL／CREATE 出现位置时才可视为同一长度；途中出现其他写入、不同返回数据版本或开放前驱时不应用此规则。数据记录保留具体调用的返回数据来源，而不会笼统写成当前的 returndata。原 COPY 及其边界检查、原 REVERT 仍是执行见证。固定区间查询则继续要求相对地址及不回绕证明，不能用模算术差值替代内存区间关系。
+整段复制另有一个无需枚举动态长度的精确规则：最近的内存写入必须就是原始 COPY，COPY 的目标地址和长度必须与 REVERT 的窗口相同。两次 RETURNDATASIZE 只有在闭合 effect 链证明它们属于同一个非循环 CALL／CREATE 出现位置时才可视为同一长度；途中出现其他写入、不同返回数据版本或开放前驱时不应用此规则。数据记录保留具体调用的返回数据来源，而不会笼统写成当前的 returndata。 epoch 查询以显式工作栈遍历并计费，长 effect 链不会因为之前某个查询是否预热缓存而改变证书的可验证性；循环依赖仍保守拒绝。原 COPY 及其边界检查、原 REVERT 仍是执行见证。固定区间查询则继续要求相对地址及不回绕证明，不能用模算术差值替代内存区间关系。
 
-格式解码单独消费这些数据。完整规范字符串可解释为 `Error(string)`；`0x4e487b71` 加一个完整 word 可解释为 `Panic(code)`；其他固定 selector 加完整 word 序列只显示 `Revert(selector = ..., words = [...])`，不猜测函数名或 word 的 ABI 类型。已知 Panic 码的中文说明依据 [Solidity 的错误码表](https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require)，只是注释，不参与语义。无法识别格式时仍可在 Inspector 查看已恢复片段和原始来源。恢复成功不等于格式识别成功，也不等于可以收起构造。
+格式解码单独消费这些数据。完整规范字符串可解释为 `Error(string)`；`0x4e487b71` 加一个完整 word 可解释为 `Panic(code)`；其他固定 selector 加完整 word 序列只显示 `Revert(selector = ..., words = [...])`，不猜测函数名或 word 的 ABI 类型。已知 Panic 码的中文说明依据 [Solidity 的错误码表](https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require)，只是注释，不参与语义。无法识别格式时，高级代码继续显示原始 `evm.revert(offset = ..., size = ...)`；Inspector 仍可查看已恢复片段和原始来源。恢复成功不等于格式识别成功，也不等于可以收起构造。
 
 构造与控制流认证分别决定显示计划。`constructions` 指向原始块内的确切构造区间；`require` 还要核对失败路径、参数绑定及正常续接。compact 形式以失败时执行原始构造为语义，不提前计算错误参数，不跳过原有内存扩张或首次异常。失败分支中独立的 CALLDATALOAD、SLOAD、CALL 等观察不会因错误格式被识别就被前移或吸收；不能安全绑定参数时仍显示完整失败路径。轻量模型验证引用、作用域和原始构造对应关系；核心独立遍历内存写入链，再正向按最后一次写入生效重放字节身份。验证器不调用数据发现器或依靠格式名称认可字节。
 

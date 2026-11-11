@@ -32,10 +32,12 @@ def run(context):
             data, = program["revert_data"]
             assert "segments" in data["content"], data
             assert all(plan["revert"] == data["id"] for plan in program.get("constructions", []))
-            assert text.count("evm.codecopy(") == 1 and "evm.revert(Revert(data = concat(" in text
+            assert text.count("evm.codecopy(") == 1 and "evm.revert(offset =" in text
             assert "require(" not in text and MESSAGE not in text
             source_descendant(page, canvas, artifact, current["id"], data["id"])
             inspector_control(page, canvas, "Decoded format: Unrecognized format",
+                              "decompile-entity-detail")
+            inspector_control(page, canvas, "Rendered data: Revert(data = concat(",
                               "decompile-entity-detail")
             high(page, canvas)
             assert painted_copy(page, canvas) == text

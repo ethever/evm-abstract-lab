@@ -9,7 +9,11 @@ pub(in super::super) struct Epochs<'a> {
     blocks: BTreeMap<EntityId, &'a crate::Block>,
     incoming: BTreeMap<EntityId, Vec<&'a crate::Edge>>,
     cache: BTreeMap<EntityId, Option<EntityId>>,
-    active: BTreeSet<EntityId>,
+}
+
+enum Equation {
+    Known(Option<EntityId>),
+    Parents(Vec<EntityId>),
 }
 
 impl<'a> Epochs<'a> {
@@ -37,7 +41,6 @@ impl<'a> Epochs<'a> {
             blocks: ir.blocks.iter().map(|block| (block.id, block)).collect(),
             incoming,
             cache: BTreeMap::new(),
-            active: BTreeSet::new(),
         })
     }
 
@@ -49,23 +52,60 @@ impl<'a> Epochs<'a> {
         if !memory.charge(1) {
             return None;
         }
-        if let Some(result) = self.cache.get(&effect) {
-            return *result;
+        // Explicit postorder avoids both host recursion and query-order-dependent
+        // depth refusals. Only actual work limits may stop a long acyclic chain.
+        let mut pending = vec![(effect, false)];
+        let mut active = BTreeSet::new();
+        while let Some((value, finish)) = pending.pop() {
+            if !memory.charge(1) {
+                return None;
+            }
+            if finish {
+                active.remove(&value);
+            }
+            if self.cache.contains_key(&value) {
+                continue;
+            }
+            if !finish && active.contains(&value) {
+                self.cache.insert(value, None);
+                continue;
+            }
+            let equation = self.equation(value, memory);
+            if memory.refused {
+                return None;
+            }
+            match equation.unwrap_or(Equation::Known(None)) {
+                Equation::Known(epoch) => {
+                    self.cache.insert(value, epoch);
+                }
+                Equation::Parents(parents) if finish => {
+                    let epoch = parents
+                        .first()
+                        .and_then(|id| self.cache.get(id))
+                        .copied()
+                        .flatten();
+                    let same = epoch.is_some()
+                        && parents.iter().all(|id| self.cache.get(id) == Some(&epoch));
+                    self.cache.insert(value, if same { epoch } else { None });
+                }
+                Equation::Parents(parents) => {
+                    if !memory.charge(parents.len().saturating_add(2)) {
+                        return None;
+                    }
+                    active.insert(value);
+                    pending.push((value, true));
+                    pending.extend(parents.into_iter().rev().map(|id| (id, false)));
+                }
+            }
         }
-        if self.active.len() > 256 || !self.active.insert(effect) {
-            return None;
-        }
-        let result = self.follow(effect, memory);
-        self.active.remove(&effect);
-        self.cache.insert(effect, result);
-        result
+        self.cache.get(&effect).copied().flatten()
     }
 
-    fn follow<P: FnMut(usize) -> bool>(
-        &mut self,
+    fn equation<P: FnMut(usize) -> bool>(
+        &self,
         effect: EntityId,
         memory: &mut Memory<'_, P>,
-    ) -> Option<EntityId> {
+    ) -> Option<Equation> {
         match self.values.get(&effect)? {
             ValueKind::Effect {
                 operation: Some(id),
@@ -75,12 +115,14 @@ impl<'a> Epochs<'a> {
                     return None;
                 }
                 if matches!(operation.opcode, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) {
-                    return memory.acyclic_operation(operation).then_some(operation.id);
+                    return Some(Equation::Known(
+                        memory.acyclic_operation(operation).then_some(operation.id),
+                    ));
                 }
-                if operation.effects.return_data_write {
+                if operation.effects.return_data_write || !memory.charge(1) {
                     return None;
                 }
-                self.call(operation.effect_input?, memory)
+                Some(Equation::Parents(vec![operation.effect_input?]))
             }
             ValueKind::EffectParameter { block } => {
                 if self.ir.fact_scope != FactScope::CompleteLocalCfg
@@ -93,16 +135,9 @@ impl<'a> Epochs<'a> {
                 if edges.is_empty() || !memory.charge(edges.len()) {
                     return None;
                 }
-                let edges = edges.clone();
-                let mut epoch = None;
-                for edge in edges {
-                    let current = self.call(edge.effect, memory)?;
-                    if epoch.is_some_and(|old| old != current) {
-                        return None;
-                    }
-                    epoch = Some(current);
-                }
-                epoch
+                Some(Equation::Parents(
+                    edges.iter().map(|edge| edge.effect).collect(),
+                ))
             }
             _ => None,
         }

@@ -860,6 +860,9 @@ fn diagnostic_predicate_failure_aborts_before_any_relocated_suffix_resumes() {
     // compatibility certificates keeps this test on the independent source
     // planner; malformed expression references still fail publication checks.
     program.failures.clear();
+    // Modern data validates the typed DAG before source planning. This fixture
+    // targets the legacy planner's later formatting refusal, not that admission.
+    program.revert_data.clear();
     for control in &mut program.controls {
         control.guard = None;
     }
@@ -909,6 +912,17 @@ fn require_formatting_refusal_aborts_before_its_absorbed_suffix_or_success_resum
         .find(|stage| stage.id == current)
         .unwrap();
     let program = stage.ir.lifted.as_mut().unwrap();
+    // Keep the legacy empty guard while exercising its later formatter error;
+    // modern occurrence data would reject this malformed DAG at admission.
+    assert!(
+        program
+            .controls
+            .iter()
+            .filter_map(|control| control.guard.as_ref())
+            .all(|guard| guard.payload
+                == evm_abstract_protocol::decompile_model::LiftedGuardPayload::EmptyRevert)
+    );
+    program.revert_data.clear();
     let condition = program.controls[0].condition;
     program
         .expressions
