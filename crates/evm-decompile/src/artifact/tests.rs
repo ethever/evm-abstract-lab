@@ -102,6 +102,25 @@ fn a_candidate_cannot_strengthen_the_frozen_execution_domain() {
 }
 
 #[test]
+fn a_candidate_cannot_replace_or_add_the_frozen_runtime_source() {
+    for code in [vec![0x01], vec![0x00]] {
+        let (mut owner, mut ir, parents) = source();
+        let before = owner.artifact.clone();
+        let matches_input = code == owner.artifact.input.runtime_bytecode;
+        ir.runtime_bytecode = Some(code);
+        let transaction = prepare(&mut owner, ir, parents);
+        assert!(!transaction.passed());
+        assert!(transaction.stage.validation.checks.iter().any(|check| {
+            check.name == "frozen_runtime_source" && check.passed == matches_input
+        }));
+        assert!(transaction.stage.validation.checks.iter().any(|check| {
+            check.name == "preserved_operation_effect_order_and_copy_remap" && !check.passed
+        }));
+        assert_eq!(owner.artifact, before);
+    }
+}
+
+#[test]
 fn local_optional_refusal_keeps_real_spend_and_the_paid_base_publishable() {
     let (mut owner, ir, parents) = source();
     let base = prepare(&mut owner, ir, parents);

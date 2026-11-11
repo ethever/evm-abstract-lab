@@ -197,14 +197,19 @@ fn larger_captured_usdc_code_obeys_declared_bounds_without_world_setup() {
     let capture = include_str!(
         "../../../examples/known-recursion/captured/usdc-26180958-observed-world.json"
     );
-    for (index, label) in [(0, "usdc-implementation"), (1, "usdc-proxy")] {
+    // The implementation's retained 23,464-byte runtime witness makes Decoded
+    // publication cost over 3.2 million work; allow that stage before refusal.
+    for (index, label, max_work) in [
+        (0, "usdc-implementation", 4_000_000),
+        (1, "usdc-proxy", 2_000_000),
+    ] {
         let input = code(capture, index);
         for strategy in [Strategy::Dispatcher, Strategy::CodeDuplication] {
             let mut config = Config {
                 strategy,
                 ..Config::default()
             };
-            config.limits.max_work = 2_000_000;
+            config.limits.max_work = max_work;
             config.limits.max_iterations = 256;
             let started = Instant::now();
             let a = decompile(&input, &config);

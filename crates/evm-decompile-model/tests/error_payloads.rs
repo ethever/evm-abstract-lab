@@ -68,6 +68,7 @@ fn program() -> LiftedProgram {
         reverts: vec![LiftedRevert {
             execution_domain: evm_decompile_model::ExecutionDomain::Generic,
             execution_fork: None,
+            code_hash: None,
             id: EntityId(1001),
             block: EntityId(100),
             operation: EntityId(200),
@@ -184,8 +185,8 @@ fn canonical_content_admission_checks_every_header_message_and_padding_byte() {
 #[test]
 fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     assert_eq!(
-        SCHEMA_VERSION, 9,
-        "precise dispatcher reasons change the current wire contract"
+        SCHEMA_VERSION, 10,
+        "runtime byte witnesses change the current wire contract"
     );
     let mut artifact: Artifact =
         serde_json::from_str(include_str!("fixtures/partial-artifact.json")).unwrap();

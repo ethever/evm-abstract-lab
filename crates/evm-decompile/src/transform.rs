@@ -115,7 +115,8 @@ pub(crate) fn ir_size(ir: &Ir) -> usize {
         .blocks
         .len()
         .saturating_add(ir.values.len())
-        .saturating_add(ir.edges.len());
+        .saturating_add(ir.edges.len())
+        .saturating_add(ir.runtime_bytecode.as_ref().map_or(0, Vec::len));
     for b in &ir.blocks {
         units = units.saturating_add(b.parameters.len());
         for o in &b.operations {

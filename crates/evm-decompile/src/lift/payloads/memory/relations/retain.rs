@@ -17,6 +17,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
             .saturating_add(state.real.len())
             .saturating_add(state.bounds.len())
             .saturating_add(state.atoms.len());
+        let records = records.saturating_add(usize::from(state.extent.is_some()));
         if !self.charge(records.saturating_mul(4).saturating_add(1)) {
             return false;
         }
@@ -24,7 +25,8 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
             .values
             .values()
             .chain(state.cells.keys())
-            .chain(state.cells.values());
+            .chain(state.cells.values())
+            .chain(state.extent.as_deref());
         let root_slots = roots
             .clone()
             .fold(0_usize, |n, expr| n.saturating_add(expr.terms.len()));

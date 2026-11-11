@@ -119,3 +119,261 @@ fn predecessor_loop_certificate_is_replayed_from_fresh_source() {
         .opcode = 0x02;
     assert!(!accepted(&changed, &second, &candidate));
 }
+
+#[derive(Clone, Copy, Debug)]
+struct ExtentLoop {
+    pointer_cell: u64,
+    step: u64,
+    output_window: Option<u64>,
+    query_offset: u64,
+    query_length: u64,
+}
+
+impl Default for ExtentLoop {
+    fn default() -> Self {
+        Self {
+            pointer_cell: 64,
+            step: 189,
+            output_window: Some(96),
+            query_offset: 108,
+            query_length: 24,
+        }
+    }
+}
+
+fn extent_loop(output: Option<u64>, ancestor_dirty: bool, later_dirty: bool) -> crate::Ir {
+    extent_loop_case(
+        ExtentLoop {
+            output_window: output,
+            ..ExtentLoop::default()
+        },
+        ancestor_dirty,
+        later_dirty,
+    )
+}
+
+fn extent_loop_case(case: ExtentLoop, ancestor_dirty: bool, later_dirty: bool) -> crate::Ir {
+    let mut code = Asm::default();
+    code.number(0)
+        .op(0x35)
+        .op(0x80)
+        .number(7)
+        .op(0x90)
+        .op(0x11)
+        .target("reject")
+        .op(0x57)
+        .op(0x80)
+        .number(128)
+        .op(0x52)
+        .number(13)
+        .op(0x02)
+        .number(512)
+        .op(0x01)
+        .number(case.pointer_cell)
+        .op(0x52);
+    if ancestor_dirty {
+        code.number(0xa5)
+            .number(case.pointer_cell)
+            .op(0x51)
+            .number(case.query_offset)
+            .op(0x01)
+            .op(0x52);
+    }
+    code.number(0)
+        .dest("head")
+        .op(0x80)
+        .number(128)
+        .op(0x51)
+        .op(0x90)
+        .op(0x10)
+        .target("body")
+        .op(0x57)
+        .op(0x50);
+    if later_dirty {
+        code.number(0xa5)
+            .number(case.pointer_cell)
+            .op(0x51)
+            .number(case.query_offset)
+            .op(0x01)
+            .op(0x52);
+    }
+    code.number(case.query_length)
+        .number(case.pointer_cell)
+        .op(0x51)
+        .number(case.query_offset)
+        .op(0x01)
+        .op(0xfd)
+        .dest("body")
+        .number(case.pointer_cell)
+        .op(0x51)
+        .number(case.step)
+        .op(0x01)
+        .number(case.pointer_cell)
+        .op(0x52);
+    if let Some(output) = case.output_window {
+        code.number(output);
+    } else {
+        code.number(32).op(0x35);
+    }
+    code.number(case.pointer_cell)
+        .op(0x51)
+        .number(0)
+        .number(0)
+        .number(1)
+        .number(255)
+        .op(0xfa)
+        .op(0x50)
+        // A zero-sized copy at an unknown destination preserves the bound.
+        .number(0)
+        .number(0)
+        .number(32)
+        .op(0x35)
+        .op(0x39)
+        .number(1)
+        .op(0x01)
+        .target("head")
+        .op(0x56)
+        .dest("reject")
+        .op(0x00);
+    decompile(&code.finish(), &Config::default())
+        .stages
+        .into_iter()
+        .find(|s| s.kind == StageKind::Structured)
+        .unwrap()
+        .ir
+}
+
+fn extent_candidate(ir: &crate::Ir) -> (Vec<EntityId>, Candidate) {
+    let mut source = Source::new(ir, |_| true).unwrap();
+    let mut flows = BTreeMap::new();
+    for group in super::super::super::cycles::components(ir, &mut |_| true).unwrap() {
+        if group.len() > 1 {
+            let shape = source.shape(&group).unwrap();
+            let initial = source.entry_state(&shape, &flows).unwrap();
+            return (group, source.propose(&shape, &initial).unwrap());
+        }
+        let block = source.blocks[&group[0]];
+        let flow = if Some(block.id) == ir.entry {
+            Flow::Known(State {
+                extent: source.empty_extent(block),
+                memory: Some(block.memory_parameter),
+                effect: Some(block.effect_parameter),
+                ..State::default()
+            })
+        } else {
+            source.join(block, &flows, None)
+        };
+        source.process(block, flow, None, false, &mut flows, false);
+    }
+    panic!("one actual source loop");
+}
+
+fn tail_zero(ir: &crate::Ir) -> Option<usize> {
+    let terminal = ir
+        .blocks
+        .iter()
+        .flat_map(|b| &b.operations)
+        .find(|o| o.opcode == 0xfd)
+        .unwrap();
+    let mut memory = super::super::super::Memory::new(ir, |_| true).unwrap();
+    let base = memory.word(terminal.inputs[0])?;
+    let size = usize::try_from(memory.word(terminal.inputs[1])?.exact()?).ok()?;
+    memory.zero_suffix(terminal.memory_input.unwrap(), base, size)
+}
+
+#[test]
+fn zero_suffix_induction_uses_source_relations_across_pointer_cells_and_layouts() {
+    for case in [
+        ExtentLoop {
+            pointer_cell: 160,
+            step: 17,
+            output_window: Some(9),
+            query_offset: 21,
+            query_length: 7,
+        },
+        ExtentLoop {
+            pointer_cell: 96,
+            step: 103,
+            output_window: Some(64),
+            query_offset: 96,
+            query_length: 17,
+        },
+        ExtentLoop {
+            pointer_cell: 192,
+            step: 257,
+            output_window: Some(160),
+            query_offset: 192,
+            query_length: 33,
+        },
+        ExtentLoop {
+            pointer_cell: 160,
+            step: 17,
+            output_window: Some(160),
+            query_offset: 180,
+            query_length: 7,
+        },
+    ] {
+        let ir = extent_loop_case(case, false, false);
+        assert_eq!(tail_zero(&ir), Some(0), "{case:?}");
+    }
+}
+
+#[test]
+fn zero_suffix_induction_covers_calls_and_rejects_actual_history_clobbers() {
+    let clean = extent_loop(Some(96), false, false);
+    assert_eq!(tail_zero(&clean), Some(0));
+    for dirty in [
+        extent_loop(Some(160), false, false),
+        extent_loop(None, false, false),
+        extent_loop(Some(96), true, false),
+        extent_loop(Some(96), false, true),
+    ] {
+        assert_eq!(tail_zero(&dirty), None);
+    }
+    let mut unknown_copy = clean;
+    let copy = unknown_copy
+        .blocks
+        .iter_mut()
+        .flat_map(|b| &mut b.operations)
+        .find(|o| o.opcode == 0x39)
+        .unwrap();
+    copy.inputs[2] = copy.inputs[0];
+    assert_eq!(tail_zero(&unknown_copy), None);
+}
+
+#[test]
+fn fresh_extent_verifier_rejects_forged_steps_and_changed_call_output_widths() {
+    let ir = extent_loop(Some(96), false, false);
+    let (component, candidate) = extent_candidate(&ir);
+    assert_eq!(candidate.extent.as_ref().unwrap().step, U256::from(189));
+    assert!(accepted(&ir, &component, &candidate));
+    let mut forged = candidate.clone();
+    forged.extent.as_mut().unwrap().step = U256::ZERO;
+    let mut verifier = Source::new(&ir, |_| true).unwrap();
+    assert!(
+        verifier
+            .verify_candidate(&component, &forged, &BTreeMap::new())
+            .is_none()
+    );
+    assert!(
+        verifier.admitted_extents.is_empty(),
+        "failed hypotheses must not publish token bounds"
+    );
+    assert!(verifier.admitted.is_empty());
+
+    let mut changed = ir.clone();
+    let width = changed
+        .blocks
+        .iter()
+        .flat_map(|b| &b.operations)
+        .find(|o| o.opcode == 0xfa)
+        .unwrap()
+        .inputs[5];
+    changed
+        .values
+        .iter_mut()
+        .find(|v| v.id == width)
+        .unwrap()
+        .kind = crate::ValueKind::Constant(U256::from(160));
+    assert!(!accepted(&changed, &component, &candidate));
+}

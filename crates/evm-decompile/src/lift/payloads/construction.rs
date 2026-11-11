@@ -17,6 +17,7 @@ pub(in crate::lift) fn capsule_operation(op: &crate::Operation) -> bool {
     }
     let e = &op.effects;
     let arity = match op.opcode {
+        0x39 => 3,
         0x51 => 1,
         0x52 | 0x53 | 0xfd => 2,
         _ => return false,
@@ -24,9 +25,9 @@ pub(in crate::lift) fn capsule_operation(op: &crate::Operation) -> bool {
     op.inputs.len() == arity
         && op.outputs.len() == usize::from(op.opcode == 0x51)
         && op.memory_input.is_some()
-        && op.memory_output.is_some() == matches!(op.opcode, 0x52 | 0x53)
+        && op.memory_output.is_some() == matches!(op.opcode, 0x39 | 0x52 | 0x53)
         && e.memory_read == matches!(op.opcode, 0x51 | 0xfd)
-        && e.memory_write == matches!(op.opcode, 0x52 | 0x53)
+        && e.memory_write == matches!(op.opcode, 0x39 | 0x52 | 0x53)
         && e.terminate == (op.opcode == 0xfd)
         && !e.storage_read
         && !e.storage_write

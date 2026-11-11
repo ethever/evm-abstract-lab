@@ -31,6 +31,10 @@ pub struct LiftedRevert {
     /// generic certificates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_fork: Option<crate::Fork>,
+    /// Hash of the captured runtime if CODECOPY contributes any payload bytes.
+    /// Store-only proofs omit it and preserve their legacy wire representation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_hash: Option<alloy_primitives::B256>,
     /// Semantic certificate identity.
     pub id: EntityId,
     /// Source terminal block.

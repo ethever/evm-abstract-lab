@@ -1,4 +1,4 @@
-//! Constant MSTORE terminal certificates and occurrence-local lazy construction.
+//! Exact memory/code byte certificates and occurrence-local lazy construction.
 //! Discovery searches reaching writes backwards. Certificate admission replays
 //! the supplied writes forwards and separately checks their memory chain; it
 //! never calls discovery or semantic projection.
@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod memory;
 use memory::{Memory, Word};
 mod bytes;
-use bytes::{decode, overlap, search, store_bytes, terminal_range};
+use bytes::{decode, overlap, search, terminal_range, writer_bytes};
 mod construction;
 pub(super) use construction::capsule_operation;
 use construction::construction_dependencies;
@@ -24,6 +24,14 @@ pub(super) fn discover(
     pay: &mut impl FnMut(usize) -> bool,
 ) -> Option<()> {
     let mut memory = Memory::new(ir, pay)?;
+    let code_hash = if let Some(code) = &ir.runtime_bytecode {
+        if code.len() != ir.bytecode_len || !memory.charge(code.len()) {
+            return None;
+        }
+        Some(alloy_primitives::keccak256(code))
+    } else {
+        None
+    };
     let mut occurrences = BTreeMap::<_, usize>::new();
     let mut exits = BTreeMap::<_, usize>::new();
     let mut nodes: Vec<_> = ir
@@ -123,6 +131,11 @@ pub(super) fn discover(
             id,
             execution_domain: ir.execution_domain,
             execution_fork: ir.execution_fork,
+            code_hash: if writes.iter().any(|id| memory.operations[id].opcode == 0x39) {
+                Some(code_hash?)
+            } else {
+                None
+            },
             block: block.id,
             operation: op.id,
             memory: op.memory_input?,
@@ -152,7 +165,7 @@ pub(super) fn discover(
                 .iter()
                 .rposition(|s| {
                     !capsule_operation(operations[&s.operation])
-                        || (matches!(operations[&s.operation].opcode, 0x51..=0x53)
+                        || (matches!(operations[&s.operation].opcode, 0x39 | 0x51..=0x53)
                             && !dependencies.contains(&s.operation))
                 })
                 .map_or(0, |p| p + 1);
@@ -166,7 +179,7 @@ pub(super) fn discover(
                 && body.statements.last().is_some_and(|s| s.operation == op.id)
                 && body.statements[start..]
                     .iter()
-                    .any(|s| matches!(operations[&s.operation].opcode, 0x52 | 0x53))
+                    .any(|s| matches!(operations[&s.operation].opcode, 0x39 | 0x52 | 0x53))
                 && reverts.last()?.writes.iter().all(|w| members.contains(w))
             {
                 if !memory.charge(body.statements.len().saturating_add(1)) {

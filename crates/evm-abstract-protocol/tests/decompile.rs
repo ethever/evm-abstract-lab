@@ -269,6 +269,7 @@ fn error_reply() -> evm_abstract_protocol::DecompileJobResultReply {
     program.reverts.push(LiftedRevert {
         execution_domain: Default::default(),
         execution_fork: None,
+        code_hash: None,
         id: proof,
         block,
         operation: EntityId(900_005),

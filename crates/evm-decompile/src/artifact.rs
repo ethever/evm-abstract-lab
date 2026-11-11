@@ -330,6 +330,23 @@ impl<P: FnMut(Progress)> Builder<P> {
                 "snapshot changes the frozen execution domain or its fork".to_owned()
             },
         });
+        let source_matches = stage
+            .ir
+            .runtime_bytecode
+            .as_ref()
+            .is_none_or(|code| *code == self.artifact.input.runtime_bytecode);
+        if !source_matches {
+            stage.validation.status = ValidationStatus::Failed;
+        }
+        stage.validation.checks.push(ValidationCheck {
+            name: "frozen_runtime_source".to_owned(),
+            passed: source_matches,
+            message: if source_matches {
+                "snapshot retains the captured runtime source".to_owned()
+            } else {
+                "snapshot runtime source differs from the frozen input".to_owned()
+            },
+        });
         if !self.pay(0) {
             return None;
         }

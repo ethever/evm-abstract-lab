@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod affine;
 use affine::{Atom, Expr, Range};
 mod execute;
+mod extent;
 mod induction;
 mod join;
 mod retain;
@@ -29,6 +30,7 @@ struct State {
     real: BTreeMap<Expr, Range>,
     predicates: BTreeMap<Atom, Predicate>,
     cells: BTreeMap<Expr, Expr>,
+    extent: Option<Box<Expr>>,
     memory: Option<EntityId>,
     effect: Option<EntityId>,
 }
@@ -92,6 +94,7 @@ struct Source<'a, P> {
     expressions: BTreeMap<Vec<(Atom, U256)>, usize>,
     interned: Vec<Vec<(Atom, U256)>>,
     admitted: BTreeMap<EntityId, Word>,
+    admitted_extents: BTreeMap<EntityId, Word>,
     arities: BTreeMap<u8, (usize, usize)>,
     edge_truth: BTreeMap<EntityId, Option<bool>>,
     valid_cfg: bool,
@@ -100,16 +103,19 @@ struct Source<'a, P> {
     certificates: BTreeMap<EntityId, induction::Proof>,
 }
 
-pub(super) fn analyze(
-    ir: &Ir,
-    pay: &mut impl FnMut(usize) -> bool,
-) -> Option<BTreeMap<EntityId, Word>> {
+#[derive(Default)]
+pub(super) struct Analysis {
+    pub words: BTreeMap<EntityId, Word>,
+    pub extents: BTreeMap<EntityId, Word>,
+}
+
+pub(super) fn analyze(ir: &Ir, pay: &mut impl FnMut(usize) -> bool) -> Option<Analysis> {
     if ir.fact_scope != FactScope::CompleteLocalCfg {
-        return Some(BTreeMap::new());
+        return Some(Analysis::default());
     }
     let mut source = Source::new(ir, pay)?;
     if !source.valid_cfg {
-        return Some(BTreeMap::new());
+        return Some(Analysis::default());
     }
     let components = super::cycles::components(ir, &mut source.pay)?;
     let mut flows = BTreeMap::new();
@@ -133,6 +139,7 @@ pub(super) fn analyze(
             let block = source.blocks[&component[0]];
             let flow = if Some(block.id) == ir.entry {
                 Flow::Known(State {
+                    extent: source.empty_extent(block),
                     memory: Some(block.memory_parameter),
                     effect: Some(block.effect_parameter),
                     ..State::default()
@@ -145,7 +152,10 @@ pub(super) fn analyze(
             source.loop_region(&component, &mut flows);
         }
     }
-    (!source.refused).then_some(source.admitted)
+    (!source.refused).then_some(Analysis {
+        words: source.admitted,
+        extents: source.admitted_extents,
+    })
 }
 impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
     fn new(ir: &'a Ir, mut pay: P) -> Option<Self> {
@@ -279,6 +289,7 @@ impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
             expressions: BTreeMap::new(),
             interned: Vec::new(),
             admitted: BTreeMap::new(),
+            admitted_extents: BTreeMap::new(),
             arities,
             edge_truth,
             valid_cfg,
@@ -316,7 +327,8 @@ impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
                 .saturating_add(state.bounds.len())
                 .saturating_add(state.real.len())
                 .saturating_add(state.predicates.len())
-                .saturating_add(state.cells.len().saturating_mul(2))
+                .saturating_add(state.cells.len().saturating_mul(8))
+                .saturating_add(usize::from(state.extent.is_some()))
                 .saturating_mul(MAX_TERMS * MAX_TERMS)
                 .saturating_add(extra),
         )
@@ -330,29 +342,30 @@ impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
             if range == Range::FULL && expr.exact().is_none() {
                 continue;
             }
-            let base = if expr.terms.is_empty() {
-                None
+            let word = self.export_word(expr, range);
+            self.admitted.insert(id, word);
+        }
+    }
+    fn export_word(&mut self, expr: &Expr, range: Range) -> Word {
+        let base = if expr.terms.is_empty() {
+            None
+        } else {
+            let key = expr.terms.iter().map(|(&a, &c)| (a, c)).collect::<Vec<_>>();
+            let next = self.expressions.len();
+            let index = if let Some(&index) = self.expressions.get(&key) {
+                index
             } else {
-                let key = expr.terms.iter().map(|(&a, &c)| (a, c)).collect::<Vec<_>>();
-                let next = self.expressions.len();
-                let index = if let Some(&index) = self.expressions.get(&key) {
-                    index
-                } else {
-                    self.interned.push(key.clone());
-                    self.expressions.insert(key, next);
-                    next
-                };
-                Some(Identity::Affine(index))
+                self.interned.push(key.clone());
+                self.expressions.insert(key, next);
+                next
             };
-            self.admitted.insert(
-                id,
-                Word {
-                    base,
-                    offset: expr.constant,
-                    low: range.low,
-                    high: range.high,
-                },
-            );
+            Some(Identity::Affine(index))
+        };
+        Word {
+            base,
+            offset: expr.constant,
+            low: range.low,
+            high: range.high,
         }
     }
     fn process(
@@ -366,7 +379,7 @@ impl<'a, P: FnMut(usize) -> bool> Source<'a, P> {
     ) {
         let mut flow = flow;
         if let Flow::Known(ref mut state) = flow
-            && !self.execute(block, state, scope, optimistic)
+            && !self.execute(block, state, scope, optimistic, publish)
         {
             flow = Flow::Unknown;
         }

@@ -37,6 +37,11 @@ pub(in crate::lifted) fn check(
         })
         .collect();
     let reverts: BTreeMap<_, _> = program.reverts.iter().map(|r| (r.id, r)).collect();
+    let code_hash = ir
+        .runtime_bytecode
+        .as_ref()
+        .filter(|code| code.len() == ir.bytecode_len)
+        .map(alloy_primitives::keccak256);
     let terminal_blocks: BTreeSet<_> = program.reverts.iter().map(|r| r.block).collect();
     let mut occurrences = BTreeMap::<EntityId, usize>::new();
     let mut exits = BTreeMap::<EntityId, usize>::new();
@@ -76,11 +81,12 @@ pub(in crate::lifted) fn check(
         }
         let mut seen = BTreeSet::new();
         let mut positions = BTreeMap::new();
+        let mut copies_code = false;
         for id in &proof.writes {
             let (owner, position, writer) = operations.get(id).ok_or_else(fail)?;
             if !seen.insert(id)
-                || !matches!(writer.opcode, 0x52 | 0x53)
-                || writer.inputs.len() != 2
+                || !matches!(writer.opcode, 0x39 | 0x52 | 0x53)
+                || writer.inputs.len() != if writer.opcode == 0x39 { 3 } else { 2 }
                 || writer.memory_input.is_none()
                 || writer.memory_output.is_none()
                 || positions
@@ -89,6 +95,24 @@ pub(in crate::lifted) fn check(
             {
                 return Err(fail());
             }
+            if writer.opcode == 0x39 {
+                let source = writer.source.ok_or_else(fail)?;
+                let code = ir.runtime_bytecode.as_ref().ok_or_else(fail)?;
+                if source.pc.checked_add(1) != Some(source.end_pc)
+                    || code.get(source.pc) != Some(&0x39)
+                {
+                    return Err(fail());
+                }
+            }
+            copies_code |= writer.opcode == 0x39;
+        }
+        let expected_code_hash = if copies_code {
+            Some(code_hash.ok_or_else(fail)?)
+        } else {
+            None
+        };
+        if proof.code_hash != expected_code_hash {
+            return Err(fail());
         }
     }
     for plan in &program.constructions {
@@ -120,7 +144,7 @@ pub(in crate::lifted) fn check(
             previous = Some(*position);
             retained.insert(statement.operation);
             if !capsule_operation(op)
-                || (matches!(op.opcode, 0x51..=0x53) && !dependencies.contains(&op.id))
+                || (matches!(op.opcode, 0x39 | 0x51..=0x53) && !dependencies.contains(&op.id))
             {
                 expected_start = index + 1;
             }
@@ -135,7 +159,7 @@ pub(in crate::lifted) fn check(
             || !body.statements[plan.start..].iter().any(|s| {
                 operations
                     .get(&s.operation)
-                    .is_some_and(|(_, _, o)| matches!(o.opcode, 0x52 | 0x53))
+                    .is_some_and(|(_, _, o)| matches!(o.opcode, 0x39 | 0x52 | 0x53))
             })
         {
             return Err(fail());

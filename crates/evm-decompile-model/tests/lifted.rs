@@ -121,7 +121,7 @@ fn semantic_named_payloads_and_records_are_strict_objects() {
 }
 #[test]
 fn legacy_missing_lifted_defaults_only_that_field_and_keeps_serialization() {
-    assert_eq!(SCHEMA_VERSION, 9);
+    assert_eq!(SCHEMA_VERSION, 10);
     let ir = Ir::default();
     let mut wire = serde_json::to_value(&ir).unwrap();
     assert!(wire.get("lifted").is_none());

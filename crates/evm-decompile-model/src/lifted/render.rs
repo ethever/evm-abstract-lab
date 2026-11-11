@@ -80,6 +80,7 @@ impl<'a> LiftedRenderIndex<'a> {
             basic = basic
                 .saturating_add(ir.values.len())
                 .saturating_add(ir.edges.len())
+                .saturating_add(ir.runtime_bytecode.as_ref().map_or(0, Vec::len))
                 // Raw-presence admission is indexed independently of high
                 // blocks; pay its retained identities before allocating it.
                 .saturating_add(ir.blocks.len());

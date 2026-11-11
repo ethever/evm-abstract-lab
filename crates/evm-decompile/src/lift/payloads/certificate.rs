@@ -1,5 +1,5 @@
 //! Local certificate replay, independent of backwards payload discovery.
-use super::{Memory, overlap, store_bytes, terminal_range};
+use super::{Memory, overlap, terminal_range, writer_bytes};
 use crate::{Ir, LiftedProgram};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,15 +8,37 @@ pub(in crate::lift) fn verify(
     program: &LiftedProgram,
     pay: &mut impl FnMut(usize) -> bool,
 ) -> Option<bool> {
+    if !pay(ir.runtime_bytecode.as_ref().map_or(0, Vec::len)) {
+        return None;
+    }
     if program.validate().is_err() || program.validate_guard_sources(ir).is_err() {
         return Some(false);
     }
     let mut memory = Memory::new(ir, pay)?;
+    let code_hash = if let Some(code) = &ir.runtime_bytecode {
+        if code.len() != ir.bytecode_len || !memory.charge(code.len()) {
+            return None;
+        }
+        Some(alloy_primitives::keccak256(code))
+    } else {
+        None
+    };
     let raw: BTreeMap<_, _> = ir.blocks.iter().map(|b| (b.id, b)).collect();
     let payloads: BTreeMap<_, _> = program.payloads.iter().map(|p| (p.id, p)).collect();
     for proof in &program.reverts {
         if proof.execution_domain != ir.execution_domain
             || proof.execution_fork != ir.execution_fork
+        {
+            return Some(false);
+        }
+        let copies_code = proof.writes.iter().any(|id| {
+            memory
+                .operations
+                .get(id)
+                .is_some_and(|op| op.opcode == 0x39)
+        });
+        if proof.code_hash != if copies_code { code_hash } else { None }
+            || (copies_code && code_hash.is_none())
         {
             return Some(false);
         }
@@ -81,6 +103,12 @@ pub(in crate::lift) fn verify(
         // Forward last-write-wins replay is intentionally a different traversal
         // and byte construction from discovery's backwards first-write fill.
         let mut result = vec![None; size];
+        if let Some(start) = memory.zero_suffix(proof.memory, base, size) {
+            if start > size {
+                return Some(false);
+            }
+            result[start..].fill(Some(0));
+        }
         for write in &proof.writes {
             let Some(writer) = memory.operations.get(write).copied() else {
                 return Some(false);
@@ -91,14 +119,14 @@ pub(in crate::lift) fn verify(
             let Some((dst, src, len)) = overlap(base, size, address, count) else {
                 return Some(false);
             };
-            let Some(data) = store_bytes(&mut memory, writer) else {
+            let Some(data) = writer_bytes(&mut memory, writer, src, len) else {
                 return Some(false);
             };
             if !memory.charge(len) {
                 return None;
             }
             for i in 0..len {
-                result[dst + i] = Some(data[src + i]);
+                result[dst + i] = Some(data[i]);
             }
         }
         if result

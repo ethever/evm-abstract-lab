@@ -437,6 +437,10 @@ pub struct Ir {
     pub execution_fork: Option<Fork> = None,
     /// Original input length, including unreachable bytes and PUSH padding boundaries.
     pub bytecode_len: usize,
+    /// Captured original runtime when CODECOPY needs source bytes. Stages retain
+    /// this unchanged so standalone replay does not trust a claimed payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_bytecode: Option<Vec<u8>> = None,
     /// Explicit qualification of numeric facts in open recovery.
     pub fact_scope: FactScope,
     /// Runtime entry block, absent for empty bytecode.

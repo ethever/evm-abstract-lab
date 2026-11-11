@@ -20,8 +20,7 @@ pub(crate) fn certify(ir: &Ir, cancel: &Cancellation) -> ValidationCheck {
     }
     if super::payloads::verify(ir, program, &mut |_| !cancel.is_cancelled()) != Some(true) {
         return fail(
-            "constant-memory payload, byte replay or lazy construction certificate failed"
-                .to_owned(),
+            "code/memory payload, byte replay or lazy construction certificate failed".to_owned(),
         );
     }
     if super::guards::verify(ir, program, &mut |_| !cancel.is_cancelled()) != Some(true) {

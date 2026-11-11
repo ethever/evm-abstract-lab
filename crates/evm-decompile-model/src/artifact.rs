@@ -289,8 +289,23 @@ impl Artifact {
     /// Lightweight version admission. Full source/proof certification belongs
     /// to core; older advertised schemas cannot opt in to newer semantic fields.
     pub fn admits_schema(&self) -> bool {
+        let has_code_source = self.stages.iter().any(|s| {
+            s.ir.runtime_bytecode.is_some()
+                || s.ir
+                    .lifted
+                    .as_ref()
+                    .is_some_and(|p| p.reverts.iter().any(|r| r.code_hash.is_some()))
+        });
+        if self.schema_version < 10 && has_code_source {
+            return false;
+        }
+        let code_hash =
+            has_code_source.then(|| alloy_primitives::keccak256(&self.input.runtime_bytecode));
         if self.stages.iter().any(|s| {
             !s.ir.has_valid_execution_scope()
+                || s.ir.runtime_bytecode.as_ref().is_some_and(|code| {
+                    code.len() != s.ir.bytecode_len || *code != self.input.runtime_bytecode
+                })
                 || s.ir.execution_domain != self.config.execution_domain
                 || s.ir
                     .execution_fork
@@ -299,6 +314,9 @@ impl Artifact {
                     p.reverts.iter().any(|r| {
                         r.execution_domain != s.ir.execution_domain
                             || r.execution_fork != s.ir.execution_fork
+                            || r.code_hash.is_some_and(|hash| {
+                                s.ir.runtime_bytecode.is_none() || Some(hash) != code_hash
+                            })
                     })
                 })
         }) {
@@ -321,6 +339,7 @@ impl Artifact {
         }
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
+            9 => true,
             8 => true,
             7 => true,
             6 => true,

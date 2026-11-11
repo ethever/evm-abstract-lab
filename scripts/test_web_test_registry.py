@@ -123,6 +123,9 @@ class BrowserRegistryTests(unittest.TestCase):
             if case_id == "decompile-execution-domain":
                 expected.update({"crates/evm-decompile/tests/fixtures/error-payloads/pair-returndata-allocation-guard.hex",
                                  "crates/evm-decompile/tests/fixtures/structure/ethereum-uniswap-v2-usdc-weth-pair.hex"})
+            if case_id == "decompile-codecopy-payloads":
+                expected.update({"crates/evm-decompile/tests/fixtures/error-payloads/router-codecopy-liquidity-guard.hex",
+                                 "crates/evm-decompile/tests/fixtures/error-payloads/router-codecopy-liquidity-dirty.hex"})
             if case_id == "decompile-shared-procedures":
                 expected.update({"crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex",
                                  "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex",
