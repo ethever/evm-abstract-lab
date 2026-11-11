@@ -101,7 +101,7 @@ fn actual_pair_constructor_after_return_allocation_requires_the_declared_domain(
     assert!(
         validation.checks.iter().any(|check| !check.passed
             && check.name == "lifted_semantic_projection"
-            && check.message.contains("constant-memory payload")),
+            && check.message.contains("code/memory payload")),
         "scope-erased claims must fail independent numeric replay: {validation:?}"
     );
 }
