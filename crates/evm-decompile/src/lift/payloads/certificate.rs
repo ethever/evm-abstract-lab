@@ -3,6 +3,7 @@ use super::{Memory, overlap, terminal_range, writer_bytes};
 use crate::{Ir, LiftedProgram};
 use std::collections::{BTreeMap, BTreeSet};
 mod data;
+mod prepared;
 
 pub(in crate::lift) fn verify(
     ir: &Ir,
@@ -13,6 +14,17 @@ pub(in crate::lift) fn verify(
         return None;
     }
     if program.validate().is_err() || program.validate_guard_sources(ir).is_err() {
+        return Some(false);
+    }
+    if !pay(program.constructions.len()) {
+        return None;
+    }
+    if program.revert_data.is_empty()
+        && program
+            .constructions
+            .iter()
+            .any(|plan| plan.kind == crate::LiftedConstructionKind::PreparedConsumer)
+    {
         return Some(false);
     }
     let mut memory = Memory::new(ir, pay)?;
@@ -144,6 +156,9 @@ pub(in crate::lift) fn verify(
             if !data::verify(&mut memory, proof, code_hash, &mut epochs)? {
                 return Some(false);
             }
+        }
+        if !prepared::verify(&mut memory, program, &mut epochs)? {
+            return Some(false);
         }
     }
     Some(!memory.refused)

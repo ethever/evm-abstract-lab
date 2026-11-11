@@ -1,6 +1,6 @@
 //! Lightweight transport-safe immutable decompilation schemas.
 /// Current immutable artifact wire schema.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 // Declare each record once, retaining explicit null separately from absence.
 // Enum payload adapters use these same object-only field/duplicate checks.

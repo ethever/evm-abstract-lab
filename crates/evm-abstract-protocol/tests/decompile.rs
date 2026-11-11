@@ -280,6 +280,7 @@ fn error_reply() -> evm_abstract_protocol::DecompileJobResultReply {
         writes: vec![EntityId(900_009)],
     });
     program.constructions.push(LiftedConstruction {
+        kind: evm_abstract_protocol::decompile_model::LiftedConstructionKind::Constructor,
         id: EntityId(900_003),
         block,
         start: 0,

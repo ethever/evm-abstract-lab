@@ -60,6 +60,7 @@ fn new_arena_weights_match_the_global_record_units() {
     let payload = payload();
     let revert = revert();
     let construction = LiftedConstruction {
+        kind: crate::LiftedConstructionKind::Constructor,
         id: EntityId(9),
         block: EntityId(3),
         start: 0,

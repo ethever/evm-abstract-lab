@@ -73,33 +73,43 @@ impl<'a> Graph<'a> {
                     .is_some_and(|e| matches!(e.kind, crate::LiftedExpressionKind::Word(v) if v == crate::U256::ZERO))
                 && block.operations.last().is_some_and(|o| o.opcode == 0xfd
                     && matches!(&block.terminator, Terminator::Exit { values, .. } if *values == o.inputs));
-            let payload = plans
+            let plan = plans
                 .get(&block.id)
-                .filter(|p| p.start == 0 && p.end == lifted.statements.len())
-                .and_then(|p| {
-                    reverts
-                        .get(&p.revert)
-                        .filter(|r| r.block == block.id)
-                        .map(|r| crate::LiftedGuardPayload::ErrorString(r.payload))
-                        .or_else(|| {
-                            data.get(&p.revert)
-                                .filter(|r| {
-                                    r.block == block.id
-                                        && matches!(
-                                            &r.content,
-                                            crate::LiftedRevertDataKind::Segments(_)
-                                        )
-                                })
-                                .map(|r| crate::LiftedGuardPayload::Data(r.id))
-                        })
-                });
+                .filter(|p| p.start == 0 && p.end == lifted.statements.len());
+            let payload = plan.and_then(|p| {
+                reverts
+                    .get(&p.revert)
+                    .filter(|r| r.block == block.id)
+                    .map(|r| crate::LiftedGuardPayload::ErrorString(r.payload))
+                    .or_else(|| {
+                        data.get(&p.revert)
+                            .filter(|r| {
+                                r.block == block.id
+                                    && matches!(
+                                        &r.content,
+                                        crate::LiftedRevertDataKind::Segments(_)
+                                    )
+                            })
+                            .map(|r| crate::LiftedGuardPayload::Data(r.id))
+                    })
+            });
+            let prepared = plan.is_some_and(|p| {
+                p.kind == crate::LiftedConstructionKind::PreparedConsumer
+                    && matches!(payload, Some(crate::LiftedGuardPayload::Data(_)))
+            });
             // All reads remain primitive witnesses. Even a discarded SLOAD or
-            // CALLDATASIZE forbids erasing this failed-path observation.
+            // CALLDATASIZE forbids erasing this failed-path observation. Only a
+            // certified consumer may replay its required RDS lazily on failure.
             let transparent = block.operations.iter().enumerate().all(|(position, op)| {
                 if empty && position + 1 == block.operations.len() {
                     return true;
                 }
-                (payload.is_some() && crate::lift::payloads::capsule_operation(op))
+                (payload.is_some()
+                    && if prepared {
+                        crate::lift::payloads::consumer_operation(op)
+                    } else {
+                        crate::lift::payloads::capsule_operation(op)
+                    })
                     || op.effects.is_pure()
                         && (evm_bytecode::word::arity(op.opcode).is_some()
                             || matches!(op.opcode, 0x50 | 0x56 | 0x57 | 0x5b | 0x5f..=0x9f))

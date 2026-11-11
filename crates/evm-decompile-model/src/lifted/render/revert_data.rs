@@ -194,6 +194,45 @@ impl<'a> LiftedRenderIndex<'a> {
             F::Empty | F::ErrorString(_) => return Ok(true),
             F::Panic(word) => vec![word],
             F::SelectorWords { words, .. } => words,
+            F::Forwarded {
+                source: Source::ReturnData(call),
+                offset,
+                size,
+            } => {
+                let Some(guard) = control.guard.as_ref() else {
+                    return Ok(false);
+                };
+                if !self.constructions.get(&data.block).is_some_and(|p| {
+                    p.revert == data.id && p.kind == crate::LiftedConstructionKind::PreparedConsumer
+                }) || !self
+                    .call_results
+                    .as_ref()
+                    .is_some_and(|p| p.data_source(data, call))
+                    || self
+                        .returndata_name(call, guard.block, &mut *pay)?
+                        .is_none()
+                {
+                    return Ok(false);
+                }
+                let plan = self.constructions[&data.block];
+                let body = self
+                    .block(data.block)
+                    .ok_or(E::MissingWitness(data.block))?;
+                if !pay(plan.end.saturating_sub(plan.start).saturating_mul(8)) {
+                    return Err(E::Limit);
+                }
+                for statement in &body.statements[plan.start..plan.end] {
+                    if self
+                        .operations
+                        .get(&statement.operation)
+                        .is_some_and(|op| op.opcode == 0x3d)
+                        && self.returndata_source(statement.operation) != Some(call)
+                    {
+                        return Ok(false);
+                    }
+                }
+                vec![offset, size]
+            }
             _ => return Ok(false),
         };
         for word in words {
@@ -365,13 +404,67 @@ impl<'a> LiftedRenderIndex<'a> {
     ) -> Result<String, E> {
         let source = match source {
             Source::Calldata => "calldata".to_owned(),
-            Source::ReturnData(call) => format!("returndata(op{})", call.0),
+            Source::ReturnData(call) => {
+                if !self
+                    .call_results
+                    .as_ref()
+                    .is_some_and(|p| p.data_source(data, call))
+                {
+                    return Err(E::MissingWitness(call));
+                }
+                let block = guard
+                    .and_then(|c| c.guard.as_ref())
+                    .map_or(data.block, |g| g.block);
+                let name = self
+                    .returndata_name(call, block, &mut *pay)?
+                    .ok_or(E::MissingWitness(call))?;
+                let whole = if offset == W::Constant(crate::U256::ZERO) {
+                    match size {
+                        W::SourceValue(value) => self.whole_buffer_size(call, value, pay)?,
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
+                if whole {
+                    return Ok(name);
+                }
+                name
+            }
         };
         Ok(format!(
             "slice({source}, {}, {})",
             self.data_word(data, offset, guard, pay)?,
             self.data_word(data, size, guard, pay)?
         ))
+    }
+    fn whole_buffer_size(
+        &self,
+        call: EntityId,
+        value: EntityId,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<bool, E> {
+        let Some(plan) = &self.call_results else {
+            return Ok(false);
+        };
+        if plan.word_source(value) == Some(call) {
+            return Ok(true);
+        }
+        let Some(binding) = self.call_result(call) else {
+            return Ok(false);
+        };
+        if !pay(binding.readers.len().saturating_mul(8)) {
+            return Err(E::Limit);
+        }
+        for reader in &binding.readers {
+            if let Some(op) = self.operations.get(reader).filter(|o| o.opcode == 0x3d)
+                && let Some(raw) = op.outputs.first()
+                && self.word_sources.copy_identity(value, *raw, pay)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     /// New occurrence data only. Existing string certificates keep their
     /// standalone primitive spelling; only their selected require absorbs it.

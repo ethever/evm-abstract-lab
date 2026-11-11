@@ -121,6 +121,9 @@ pub(in crate::lifted) fn check(
         if data_ids.contains(&plan.revert) {
             continue;
         }
+        if !plan.kind.is_constructor() {
+            return Err(LiftedModelError::Payload(plan.id));
+        }
         let fail = || LiftedModelError::Payload(plan.id);
         let body = high.get(&plan.block).ok_or_else(fail)?;
         let proof = reverts.get(&plan.revert).ok_or_else(fail)?;

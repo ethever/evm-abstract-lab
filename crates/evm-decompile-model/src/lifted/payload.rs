@@ -53,6 +53,22 @@ pub struct LiftedRevert {
     /// Original contributing writes, ordered exactly as executed.
     pub writes: Vec<EntityId>,
 }
+/// Which original lazy source interval an error display represents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiftedConstructionKind {
+    /// Original memory construction followed by its REVERT.
+    #[default]
+    Constructor,
+    /// Only the failed consumer of an already prepared, versioned buffer.
+    PreparedConsumer,
+}
+impl LiftedConstructionKind {
+    /// Legacy constructors retain their byte-identical omitted wire field.
+    pub fn is_constructor(&self) -> bool {
+        matches!(self, Self::Constructor)
+    }
+}
 strict_record! {
 /// A reusable block-body capsule over unchanged statements and primitive faults.
 /// Every materialization executes its own original source range lazily; a shared
@@ -61,6 +77,9 @@ strict_record! {
 /// it never allocates an eager message on a successful guard route.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiftedConstruction {
+    /// Source-proof contract; a prepared consumer never owns its prefix COPY.
+    #[serde(skip_serializing_if="LiftedConstructionKind::is_constructor")]
+    pub kind: LiftedConstructionKind = LiftedConstructionKind::Constructor,
     /// Semantic plan identity.
     pub id: EntityId,
     /// Source block owning the statement interval.

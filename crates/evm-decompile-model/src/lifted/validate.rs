@@ -141,6 +141,13 @@ impl LiftedProgram {
         let high: BTreeMap<_, _> = self.blocks.iter().map(|b| (b.block, b)).collect();
         let mut construction_blocks = BTreeSet::new();
         for c in &self.constructions {
+            if c.kind == super::LiftedConstructionKind::PreparedConsumer
+                && !data.get(&c.revert).is_some_and(|d| {
+                    d.block == c.block && super::revert_data::prepared::data_shape(d)
+                })
+            {
+                return Err(LiftedModelError::Payload(c.id));
+            }
             if !construction_blocks.insert(c.block)
                 || c.start >= c.end
                 || !high

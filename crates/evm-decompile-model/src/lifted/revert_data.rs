@@ -5,6 +5,7 @@ use crate::{EntityId, U256};
 use serde::{Deserialize, Serialize};
 mod codec;
 mod format;
+pub(in crate::lifted) mod prepared;
 mod sources;
 pub use format::LiftedRevertFormat;
 pub(super) use sources::check as check_sources;

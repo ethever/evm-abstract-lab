@@ -251,6 +251,21 @@ Router02 的这个具体构造返回 132 字节：4 字节选择器、32 字节�
 
 整段复制另有一个无需枚举动态长度的精确规则：最近的内存写入必须就是原始 COPY，COPY 的目标地址和长度必须与 REVERT 的窗口相同。两次 RETURNDATASIZE 只有在闭合 effect 链证明它们属于同一个非循环 CALL／CREATE 出现位置时才可视为同一长度；途中出现其他写入、不同返回数据版本或开放前驱时不应用此规则。数据记录保留具体调用的返回数据来源，而不会笼统写成当前的 returndata。 epoch 查询以显式工作栈遍历并计费，长 effect 链不会因为之前某个查询是否预热缓存而改变证书的可验证性；循环依赖仍保守拒绝。原 COPY 及其边界检查、原 REVERT 仍是执行见证。固定区间查询则继续要求相对地址及不回绕证明，不能用模算术差值替代内存区间关系。
 
+调用与返回数据的名字由共享的 typed 显示计划绑定。有可证明的返回数据消费者时，CALL、CALLCODE、DELEGATECALL 和 STATICCALL 可以显示为 `(success1, returndata1) = evm.delegatecall(...)`；成功字仍是 EVM 的 256 位值，条件继续使用非零判断。未使用的成功结果可以显示为 `_`，没有返回数据消费者的调用不凭空增加无用缓冲区变量。CREATE 返回的地址不被命名为成功标志。第二项是给原始调用产生的返回数据版本命名，不增加实际调用、复制或内存分配。不同调用使用不同绑定；闭合控制流、原始执行顺序和显示作用域必须支持引用，否则保留原有操作和值名。
+
+已证明属于该调用版本的长度读取可以在高级代码中通过 `returndata1.size` 使用，不再留下只有声明而没有显示消费者的临时变量。共享行计划显式区分“发出一行”“该原始读取已由属性表示覆盖”和“格式化失败”；失败不能当成空行。原始 RDS 指令、效果顺序和异常见证仍保留在语义语句及 Structured code 中。共享过程不能隐式捕获调用者的返回数据名字；不具备安全绑定时继续显示原始读取。
+
+对于分支前已经复制数据的情况，schema 12 增加 `PreparedConsumer` 构造种类，与旧的 `Constructor` 分开。它仅拥有失败路径中的必要长度读取、纯计算和 REVERT，不拥有数据来源证明中的前驱 COPY。只有该后缀的来源、依赖和返回数据版本均得到验证，并且失败块中没有其他观察时，才能选择 `require`。例如下面的 COPY 始终位于判断之前，成功路径仍能使用这块内存：
+
+```text
+(success1, returndata1) = evm.delegatecall(...);
+evm.returndatacopy(memory_offset = 0x0, returndata_offset = 0x0, size = returndata1.size);
+require(success1 != 0, Revert(data = returndata1));
+evm.return(offset = 0x0, size = returndata1.size);
+```
+
+完整缓冲区的简写还需要零来源偏移及同版本完整长度的证明；已恢复的局部片段继续显示 `slice(returndata1, offset, size)`。相同长度不代表同一调用的数据。额外 CALL、SLOAD、GAS 或不相关读取仍是失败路径的观察边界，不能因为使用了 `PreparedConsumer` 就被吸收。旧产物没有 kind 时仍按原 `Constructor` 解释；它们不会获得新的消费证明。
+
 格式解码单独消费这些数据。完整规范字符串可解释为 `Error(string)`；`0x4e487b71` 加一个完整 word 可解释为 `Panic(code)`；其他固定 selector 加完整 word 序列只显示 `Revert(selector = ..., words = [...])`，不猜测函数名或 word 的 ABI 类型。已知 Panic 码的中文说明依据 [Solidity 的错误码表](https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require)，只是注释，不参与语义。无法识别格式时，高级代码继续显示原始 `evm.revert(offset = ..., size = ...)`；Inspector 仍可查看已恢复片段和原始来源。恢复成功不等于格式识别成功，也不等于可以收起构造。
 
 构造与控制流认证分别决定显示计划。`constructions` 指向原始块内的确切构造区间；`require` 还要核对失败路径、参数绑定及正常续接。compact 形式以失败时执行原始构造为语义，不提前计算错误参数，不跳过原有内存扩张或首次异常。失败分支中独立的 CALLDATALOAD、SLOAD、CALL 等观察不会因错误格式被识别就被前移或吸收；不能安全绑定参数时仍显示完整失败路径。轻量模型验证引用、作用域和原始构造对应关系；核心独立遍历内存写入链，再正向按最后一次写入生效重放字节身份。验证器不调用数据发现器或依靠格式名称认可字节。

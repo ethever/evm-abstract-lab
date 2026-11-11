@@ -75,6 +75,13 @@ fn name(p: &SharedProcedure) -> String {
 }
 
 impl<'a> LiftedRenderIndex<'a> {
+    fn binding_tuple(&self, ids: &[EntityId]) -> String {
+        ids.iter()
+            .map(|id| self.binding_name(*id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// Expand exact original occurrences in this presentation without weakening
     /// source admission or changing the artifact. Unknown identities are rejected.
     pub fn expand_shared_sources(
@@ -90,6 +97,15 @@ impl<'a> LiftedRenderIndex<'a> {
             }
         }
         self.expanded_shared_sources = sources.clone();
+        paid(&mut pay, self.program.invocations.len().saturating_mul(32))?;
+        let substituted: std::collections::BTreeSet<_> = self
+            .program
+            .invocations
+            .iter()
+            .filter(|i| self.shared_invocation(i.source).is_some())
+            .map(|i| i.source)
+            .collect();
+        self.set_call_result_projection(|id| substituted.contains(&id), &mut pay)?;
         Ok(())
     }
     /// Direct admission independent of stored snapshot validation status.
@@ -147,8 +163,8 @@ impl<'a> LiftedRenderIndex<'a> {
             format!(
                 "procedure {}({}) -> ({}) {{",
                 name(p),
-                tuple(&p.interface.inputs, "v"),
-                tuple(&p.interface.outputs, "v")
+                self.binding_tuple(&p.interface.inputs),
+                self.binding_tuple(&p.interface.outputs)
             )
         };
         if state {
@@ -219,10 +235,10 @@ impl<'a> LiftedRenderIndex<'a> {
                     _ if scope
                         .is_some_and(|scope| scope.interface.inputs.binary_search(&id).is_ok()) =>
                     {
-                        format!("v{}", id.0)
+                        self.binding_name(id)
                     }
                     Some(V::Constant(w)) => format!("0x{w:x}"),
-                    _ => format!("v{}", id.0),
+                    _ => self.binding_name(id),
                 })
             })
             .collect::<Result<Vec<_>, E>>()?
@@ -235,7 +251,7 @@ impl<'a> LiftedRenderIndex<'a> {
             .collect::<Result<Vec<_>, E>>()?;
         let mut text = String::new();
         if !outputs.is_empty() {
-            text.push_str(&format!("({}) = ", tuple(&outputs, "v")));
+            text.push_str(&format!("({}) = ", self.binding_tuple(&outputs)));
         }
         text.push_str(&format!("{}({args});", name(p)));
         if state {
@@ -436,10 +452,15 @@ impl<'a> LiftedRenderIndex<'a> {
                                 {
                                     continue;
                                 }
-                                let text = self.render_statement_with_dependencies(
-                                    statement, state, &mut pay,
-                                )?;
-                                output.emit(statement.id, text, depth, false, &mut pay)?;
+                                if self.scoped_statement_has_row(statement, Some(p)) {
+                                    let text = self.render_statement_scoped(
+                                        statement,
+                                        state,
+                                        Some(p),
+                                        &mut pay,
+                                    )?;
+                                    output.emit(statement.id, text, depth, false, &mut pay)?;
+                                }
                             }
                         }
                         K::Transfer { edge } => todo.push(Task::Transfer(*edge, depth)),
@@ -598,7 +619,7 @@ impl<'a> LiftedRenderIndex<'a> {
         if !p.interface.outputs.is_empty() {
             output.emit(
                 p.body,
-                format!("yield ({});", tuple(&p.interface.outputs, "v")),
+                format!("yield ({});", self.binding_tuple(&p.interface.outputs)),
                 0,
                 false,
                 &mut pay,

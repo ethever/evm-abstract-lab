@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) struct Prepared {
     expressions: BTreeMap<EntityId, String>,
     conditions: BTreeMap<EntityId, [String; 2]>,
-    statements: BTreeMap<EntityId, [String; 2]>,
+    statements: BTreeMap<EntityId, [Option<String>; 2]>,
     transfers: BTreeMap<EntityId, Option<String>>,
     exits: BTreeMap<EntityId, String>,
     require_headers: BTreeMap<EntityId, String>,
@@ -100,12 +100,12 @@ impl Prepared {
                         result.statements.insert(
                             statement.id,
                             [
-                                renderer.render_statement_with_dependencies(
+                                renderer.render_statement_row_with_dependencies(
                                     statement,
                                     false,
                                     |amount| work.reserve(amount),
                                 )?,
-                                renderer.render_statement_with_dependencies(
+                                renderer.render_statement_row_with_dependencies(
                                     statement,
                                     true,
                                     |amount| work.reserve(amount),
@@ -254,10 +254,10 @@ impl Prepared {
             .get(&id)
             .map(|text| text[usize::from(invert)].as_str())
     }
-    pub(super) fn statement(&self, id: EntityId, state: bool) -> Option<&str> {
+    pub(super) fn statement(&self, id: EntityId, state: bool) -> Option<Option<&str>> {
         self.statements
             .get(&id)
-            .map(|text| text[usize::from(state)].as_str())
+            .map(|text| text[usize::from(state)].as_deref())
     }
     pub(super) fn transfer(&self, edge: EntityId) -> Option<Option<&str>> {
         self.transfers.get(&edge).map(|text| text.as_deref())

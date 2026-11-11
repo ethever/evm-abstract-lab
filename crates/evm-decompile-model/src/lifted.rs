@@ -15,10 +15,13 @@ mod revert_data;
 pub(crate) mod sources;
 mod validate;
 mod word;
-pub use payload::{LiftedConstruction, LiftedErrorPayload, LiftedRevert, MAX_ERROR_PAYLOAD_BYTES};
+pub use payload::{
+    LiftedConstruction, LiftedConstructionKind, LiftedErrorPayload, LiftedRevert,
+    MAX_ERROR_PAYLOAD_BYTES,
+};
 pub use render::{
-    FailureFirstIf, LiftedBranchLayout, LiftedBranchLayouts, LiftedIfPlan, LiftedIfSuffix,
-    LiftedRenderError, LiftedRenderIndex, RequireIf,
+    FailureFirstIf, LiftedBranchLayout, LiftedBranchLayouts, LiftedCallResult, LiftedIfPlan,
+    LiftedIfSuffix, LiftedRenderError, LiftedRenderIndex, RequireIf,
 };
 pub use revert_data::{
     LiftedByteSegment, LiftedByteSource, LiftedDataWord, LiftedRevertData, LiftedRevertDataKind,
@@ -429,7 +432,7 @@ impl LiftedProgram {
                     .saturating_add(9)
                     .saturating_add(usize::from(r.code_hash.is_some()).saturating_mul(32))
             }))
-            .saturating_add(self.constructions.len().saturating_mul(5))
+            .saturating_add(self.constructions.len().saturating_mul(6))
             .saturating_add(self.revert_data.iter().fold(0_usize, |n, data| {
                 n.saturating_add(data.record_count().saturating_sub(1))
             }))

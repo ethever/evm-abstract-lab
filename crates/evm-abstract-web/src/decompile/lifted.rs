@@ -3,14 +3,16 @@
 
 use super::{details::Details, index::StageIndex, model::EntityKind, structured};
 use evm_abstract_protocol::decompile_model::{
-    EntityId, EntityRef, LiftedConstruction, LiftedExpressionKind, LiftedGuardPayload,
-    LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex, LiftedStatement,
-    LiftedTransfer, Stage, StructuredKind,
+    EntityId, EntityRef, LiftedConstruction, LiftedConstructionKind, LiftedExpressionKind,
+    LiftedGuardPayload, LiftedIfPlan, LiftedIfSuffix, LiftedProgram, LiftedRenderIndex,
+    LiftedStatement, LiftedTransfer, Stage, StructuredKind,
 };
 
+mod call_results;
 mod revert_data;
 pub(super) mod shared;
 pub(super) mod work;
+pub(super) use call_results::details as call_result_details;
 
 pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, EntityKind)) {
     for expression in &program.expressions {
@@ -66,6 +68,21 @@ pub(super) fn statement_with_dependencies(
     renderer
         .render_statement_with_dependencies(statement, show_state_dependencies, |_| true)
         .unwrap_or_else(|error| format!("unavailable_statement(h{}: {error});", statement.id.0))
+}
+
+pub(super) fn statement_row_with_dependencies(
+    renderer: &LiftedRenderIndex<'_>,
+    statement: &LiftedStatement,
+    show_state_dependencies: bool,
+) -> Option<String> {
+    renderer
+        .render_statement_row_with_dependencies(statement, show_state_dependencies, |_| true)
+        .unwrap_or_else(|error| {
+            Some(format!(
+                "unavailable_statement(h{}: {error});",
+                statement.id.0
+            ))
+        })
 }
 
 pub(super) fn transfer(
@@ -236,10 +253,20 @@ pub(super) fn details_prepared(
             "Statement h{} · o{}: {}",
             id.0,
             statement.operation.0,
-            self::statement(renderer, statement)
+            prepared
+                .source_statement(statement.id)
+                .map(str::to_owned)
+                .unwrap_or_else(|| self::statement(renderer, statement))
         ));
         references.push(statement.operation);
         references.extend(statement.inputs.iter().chain(&statement.outputs).copied());
+        call_result_details(
+            renderer,
+            statement.operation,
+            work,
+            &mut lines,
+            &mut references,
+        );
         if let Some(op) = index.operation(&stage.ir, statement.operation) {
             lines.push(format!(
                 "{}: {:?}",
@@ -504,15 +531,29 @@ fn construction_details(
     references: &mut Vec<EntityId>,
 ) {
     let admitted = renderer.construction(construction.block) == Some(construction);
+    let prepared = construction.kind == LiftedConstructionKind::PreparedConsumer;
     lines.push(format!(
-        "{} lazy failure construction h{} · b{} · statements {}..{}",
-        if admitted { "Certified" } else { "Unadmitted" },
+        "{} {} h{} · b{} · statements {}..{}",
+        if !admitted {
+            "Unadmitted"
+        } else if prepared {
+            "Recovered"
+        } else {
+            "Certified"
+        },
+        if prepared {
+            "prepared failure consumer"
+        } else {
+            "lazy failure construction"
+        },
         construction.id.0,
         construction.block.0,
         construction.start,
         construction.end,
     ));
-    if admitted {
+    if admitted && prepared {
+        lines.push("The prefix COPY remains on its original route before the guard. This view owns only the failed RDS/REVERT consumer.".into());
+    } else if admitted {
         lines.push("Original operations, memory expansion and exceptional faults remain explicit on the original failure route.".into());
     } else {
         lines.push(
@@ -520,6 +561,9 @@ fn construction_details(
         );
     }
     references.extend([construction.block, construction.revert]);
+    if prepared && let Some(data) = index.revert_data(&stage.ir, construction.revert) {
+        references.extend(data.source_references());
+    }
     if let Some(block) = index.source_block(&stage.ir, construction.block)
         && let Some(statements) = block.statements.get(construction.start..construction.end)
     {
