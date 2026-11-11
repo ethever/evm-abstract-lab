@@ -58,13 +58,20 @@ def original_construction(page, canvas, artifact, current, data, high_text):
 
 
 def data_navigation(page, canvas, artifact, current, program, data, expected):
-    source_descendant(page, canvas, artifact, current["id"], data["id"])
+    operations = {operation["id"]: operation for block in current["ir"]["blocks"]
+                  for operation in block["operations"]}
+    terminal = operations[data["operation"]]
+    assert terminal["opcode"] == 0xfd and terminal["source"], terminal
+    terminal_pc = terminal["source"]["pc"]
+    # The helper also checks that this precise REVERT PC belongs to the data's
+    # original source spans; a block/memory ancestor's first PC is too broad.
+    source_descendant(page, canvas, artifact, current["id"], data["id"], pc=terminal_pc)
     inspector_control(page, canvas, "Recovered REVERT data h" + data["id"],
                       "decompile-entity-detail")
     inspector_control(page, canvas, "Rendered data: " + expected,
                       "decompile-entity-detail")
     for source in [data["operation"], data["memory"], *source_words(data["content"])]:
-        source_descendant(page, canvas, artifact, current["id"], data["id"])
+        source_descendant(page, canvas, artifact, current["id"], data["id"], pc=terminal_pc)
         set_control(page, canvas, "Entity references", True, role="section")
         inspector_control(page, canvas, f"Reference s{current['id']}/e{source} ",
                           "decompile-entity-link")
@@ -91,6 +98,7 @@ def run(context):
     page.on("response", lambda response: publications.append(response.url)
             if "/api/decompile/" in response.url and response.url.endswith("/result") else None)
     for name in FIXTURES:
+        print(f"revert-data fixture start: {name}", flush=True)
         bytecode = (SOURCE_ROOT / (FIXTURE_ROOT + name + ".hex")).read_text().strip()
         artifact, _ = submit(context, page, canvas, bytecode, name)
         current, program = projection(artifact)
@@ -132,6 +140,7 @@ def run(context):
         assert len(posts) == admitted, posts
         reports.append({"case": name, "artifact": artifact["id"], "data": data,
                         "text": text, "raw": raw})
+        print(f"revert-data fixture complete: {name}", flush=True)
     result = {"fixtures": reports, "renderer": webgpu_evidence(page)}
     page.close()
     return result
