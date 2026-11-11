@@ -289,6 +289,15 @@ impl Artifact {
     /// Lightweight version admission. Full source/proof certification belongs
     /// to core; older advertised schemas cannot opt in to newer semantic fields.
     pub fn admits_schema(&self) -> bool {
+        if self.schema_version < 12
+            && self.stages.iter().any(|s| {
+                s.ir.lifted
+                    .as_ref()
+                    .is_some_and(|p| p.constructions.iter().any(|c| !c.kind.is_constructor()))
+            })
+        {
+            return false;
+        }
         if self.schema_version < 11
             && self.stages.iter().any(|stage| {
                 stage.ir.lifted.as_ref().is_some_and(|p| {
@@ -365,6 +374,7 @@ impl Artifact {
         }
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
+            11 => true,
             10 => true,
             9 => true,
             8 => true,

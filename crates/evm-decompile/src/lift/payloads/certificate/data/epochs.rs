@@ -44,7 +44,7 @@ impl<'a> Epochs<'a> {
         })
     }
 
-    pub(super) fn call<P: FnMut(usize) -> bool>(
+    pub(in super::super) fn call<P: FnMut(usize) -> bool>(
         &mut self,
         effect: EntityId,
         memory: &mut Memory<'_, P>,

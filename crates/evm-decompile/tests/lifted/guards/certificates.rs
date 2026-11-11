@@ -244,7 +244,7 @@ fn guard_identity_and_absorbed_failure_operations_remain_navigable_in_raw_histor
 #[test]
 fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
     let mut artifact = checked(&direct(false, Failure::Empty(U256::ZERO)));
-    assert_eq!(artifact.schema_version, 11);
+    assert_eq!(artifact.schema_version, 12);
     assert!(artifact.admits_schema());
     let mut disguised = artifact.clone();
     disguised.schema_version = 10;

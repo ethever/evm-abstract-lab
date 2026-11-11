@@ -43,6 +43,7 @@ pub(in crate::decompile) struct Prepared {
     definition_ids: BTreeMap<EntityId, usize>,
     control_plans: BTreeMap<EntityId, ControlPlan>,
     source_controls: BTreeMap<EntityId, EntityId>,
+    source_statements: BTreeMap<EntityId, String>,
     invocations: BTreeMap<EntityId, Invocation>,
     arithmetic: arithmetic::Prepared,
     error: Option<LiftedRenderError>,
@@ -96,6 +97,23 @@ impl Prepared {
             .iter()
             .flat_map(|control| [(control.id, control), (control.node, control)])
             .collect();
+        let statement_count = program
+            .blocks
+            .iter()
+            .fold(0_usize, |n, block| n.saturating_add(block.statements.len()));
+        if !work.reserve(statement_count) {
+            return Err(LiftedRenderError::Limit);
+        }
+        let source_statements: BTreeSet<_> = program
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter(|statement| {
+                renderer.call_result(statement.operation).is_some()
+                    || renderer.returndata_source(statement.operation).is_some()
+            })
+            .map(|statement| statement.id)
+            .collect();
         for procedure in renderer.procedures() {
             let branch_layouts = renderer
                 .node(procedure.body)
@@ -122,6 +140,14 @@ impl Prepared {
                 return Err(LiftedRenderError::Limit);
             }
             for row in &bodies[1] {
+                if source_statements.contains(&row.entity) {
+                    if !work.reserve(row.text.len().saturating_add(1)) {
+                        return Err(LiftedRenderError::Limit);
+                    }
+                    result
+                        .source_statements
+                        .insert(row.entity, row.text.clone());
+                }
                 let Some(control) = controls.get(&row.entity) else {
                     continue;
                 };
@@ -270,8 +296,11 @@ impl Prepared {
     pub fn condition(&self, id: EntityId, invert: bool) -> Option<&str> {
         self.arithmetic.condition(id, invert)
     }
-    pub fn statement(&self, id: EntityId, state: bool) -> Option<&str> {
+    pub fn statement(&self, id: EntityId, state: bool) -> Option<Option<&str>> {
         self.arithmetic.statement(id, state)
+    }
+    pub fn source_statement(&self, id: EntityId) -> Option<&str> {
+        self.source_statements.get(&id).map(String::as_str)
     }
     pub fn transfer(&self, edge: EntityId) -> Option<Option<&str>> {
         self.arithmetic.transfer(edge)

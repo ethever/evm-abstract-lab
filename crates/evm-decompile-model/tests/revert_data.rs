@@ -185,7 +185,7 @@ fn strict_weighted_wire_and_schema_gate_keep_legacy_artifacts_unchanged() {
     });
     assert!(!artifact.admits_schema());
     artifact.schema_version = SCHEMA_VERSION;
-    assert_eq!(SCHEMA_VERSION, 11);
+    assert_eq!(SCHEMA_VERSION, 12);
     assert!(artifact.admits_schema());
 }
 #[test]

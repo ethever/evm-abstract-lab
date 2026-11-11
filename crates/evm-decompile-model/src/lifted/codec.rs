@@ -103,7 +103,7 @@ impl WireWeight for LiftedRevert {
 }
 impl WireWeight for LiftedConstruction {
     fn wire_weight(&self) -> usize {
-        6
+        7
     }
 }
 impl<'de, T: Deserialize<'de> + WireWeight> Deserialize<'de> for Weighted<T> {

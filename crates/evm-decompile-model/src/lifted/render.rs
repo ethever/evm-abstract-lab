@@ -8,6 +8,8 @@ use crate::{EntityId, ExitKind, Ir, StructuredNode};
 use std::collections::BTreeMap;
 
 mod branch;
+mod call_results;
+pub use call_results::LiftedCallResult;
 mod condition;
 mod control;
 mod failure_first;
@@ -24,6 +26,8 @@ use primitive::{CallName, PrimitiveFormat, append};
 /// Reusable indexes for rendering many semantic rows without rescanning arenas.
 /// Owners reserve index construction from their own work ledger before creating it.
 pub struct LiftedRenderIndex<'a> {
+    ir: Option<&'a Ir>,
+    call_results: Option<call_results::CallResults<'a>>,
     pub(crate) program: &'a LiftedProgram,
     pub(crate) shared_source: Option<crate::SharedSourceIndex<'a>>,
     pub(crate) shared_error: Option<LiftedRenderError>,
@@ -170,6 +174,8 @@ impl<'a> LiftedRenderIndex<'a> {
             None => (None, None),
         };
         let mut result = Self {
+            ir,
+            call_results: None,
             program,
             shared_source,
             shared_error,
@@ -215,6 +221,37 @@ impl<'a> LiftedRenderIndex<'a> {
             failure_first: Ok(FailureFirstIndex::default()),
             control_plans: ControlPlanIndex::default(),
         };
+        if let Some(ir) = ir
+            && ir
+                .blocks
+                .iter()
+                .flat_map(|b| &b.operations)
+                .any(|o| matches!(o.opcode, 0xf1 | 0xf2 | 0xf4 | 0xfa))
+            && ir
+                .blocks
+                .iter()
+                .flat_map(|b| &b.operations)
+                .any(|o| matches!(o.opcode, 0x3d | 0x3e))
+        {
+            let Ok(plan) = call_results::CallResults::new(ir, program, &mut pay) else {
+                return Self::refused(program);
+            };
+            result.call_results = Some(plan);
+            let sources: std::collections::BTreeSet<_> = program
+                .invocations
+                .iter()
+                .filter(|i| result.shared_invocation(i.source).is_some())
+                .map(|i| i.source)
+                .collect();
+            if let Some(root) = ir.structured.as_ref().map(|s| &s.root)
+                && result.call_results.as_mut().is_some_and(|p| {
+                    p.project(root, |id| sources.contains(&id), &mut pay)
+                        .is_err()
+                })
+            {
+                return Self::refused(program);
+            }
+        }
         result.failure_first = if let Some(error) = guard_source_error {
             Err(error)
         } else if let Some(ir) = ir {
@@ -229,6 +266,8 @@ impl<'a> LiftedRenderIndex<'a> {
     }
     fn refused(program: &'a LiftedProgram) -> Self {
         Self {
+            ir: None,
+            call_results: None,
             program,
             shared_source: None,
             shared_error: Some(LiftedRenderError::Limit),
@@ -510,7 +549,11 @@ impl<'a> LiftedRenderIndex<'a> {
                             append(&mut out, if *v { "true" } else { "false" }, &mut reserve)?;
                         }
                         LiftedExpressionKind::Value(v) => {
-                            append(&mut out, &format!("v{}", v.0), &mut reserve)?;
+                            append(
+                                &mut out,
+                                &self.expression_name(*v, e.block, scope),
+                                &mut reserve,
+                            )?;
                         }
                         LiftedExpressionKind::WordFromPredicate(v) => {
                             invocation(PrimitiveFormat::POSITIONAL, CallName::High("word"), &[*v])?
@@ -666,6 +709,15 @@ impl<'a> LiftedRenderIndex<'a> {
         show_state_dependencies: bool,
         mut reserve: impl FnMut(usize) -> bool,
     ) -> Result<String, LiftedRenderError> {
+        self.render_statement_scoped(statement, show_state_dependencies, None, &mut reserve)
+    }
+    pub(crate) fn render_statement_scoped(
+        &self,
+        statement: &LiftedStatement,
+        show_state_dependencies: bool,
+        scope: Option<&crate::SharedProcedure>,
+        mut reserve: impl FnMut(usize) -> bool,
+    ) -> Result<String, LiftedRenderError> {
         let operation = self
             .operations
             .get(&statement.operation)
@@ -682,16 +734,45 @@ impl<'a> LiftedRenderIndex<'a> {
         }
         let name = operation.name.to_lowercase();
         let mut out = String::new();
-        for (position, output) in statement.outputs.iter().enumerate() {
-            if position > 0 {
-                append(&mut out, ", ", &mut reserve)?;
+        let context = self.call_results.as_ref().and_then(|p| p.scope(scope));
+        let block = self
+            .word_sources
+            .source_position(statement.operation)
+            .map(|(block, _)| block);
+        let paired = context.zip(block).and_then(|(context, block)| {
+            self.call_results
+                .as_ref()?
+                .buffer(statement.operation, block, context)
+        });
+        if let Some(call) = paired {
+            let first = call
+                .scalar
+                .map(|value| self.binding_name(value))
+                .unwrap_or_else(|| "_".to_owned());
+            append(
+                &mut out,
+                &format!("({first}, returndata{}) = ", call.ordinal),
+                &mut reserve,
+            )?;
+        } else {
+            for (position, output) in statement.outputs.iter().enumerate() {
+                if position > 0 {
+                    append(&mut out, ", ", &mut reserve)?;
+                }
+                append(&mut out, &self.binding_name(*output), &mut reserve)?;
             }
-            append(&mut out, &format!("v{}", output.0), &mut reserve)?;
+            if !statement.outputs.is_empty() {
+                append(&mut out, " = ", &mut reserve)?;
+            }
         }
-        if !statement.outputs.is_empty() {
-            append(&mut out, " = ", &mut reserve)?;
-        }
-        let invocation = if let Some(recipe) = self.statement_word_rhs(statement, &mut reserve)? {
+        let read = context.and_then(|context| {
+            self.call_results
+                .as_ref()?
+                .read_buffer(statement.operation, context)
+        });
+        let invocation = if let Some(call) = read {
+            format!("returndata{}.size", call.ordinal)
+        } else if let Some(recipe) = self.statement_word_rhs(statement, &mut reserve)? {
             self.render_word_rhs(recipe, &mut reserve)?
         } else {
             self.render_invocation(operation.opcode, &name, &statement.inputs, &mut reserve)?
@@ -742,7 +823,7 @@ impl<'a> LiftedRenderIndex<'a> {
             if position > 0 {
                 append(&mut out, ", ", &mut reserve)?;
             }
-            append(&mut out, &format!("v{}", id.0), &mut reserve)?;
+            append(&mut out, &self.binding_name(*id), &mut reserve)?;
         }
         append(&mut out, ") = (", &mut reserve)?;
         for (position, id) in transfer.arguments.iter().enumerate() {

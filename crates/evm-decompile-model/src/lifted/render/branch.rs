@@ -127,10 +127,16 @@ impl LiftedRenderIndex<'_> {
                         children.iter().any(|child| content[&child.id])
                     }
                     StructuredKind::Block { block } => {
-                        !self.raw_blocks.contains(block)
-                            || self
-                                .block(*block)
-                                .is_none_or(|block| !block.statements.is_empty())
+                        if let Some(high) = self.block(*block) {
+                            pay(high.statements.len().saturating_mul(8))?;
+                            !self.raw_blocks.contains(block)
+                                || high
+                                    .statements
+                                    .iter()
+                                    .any(|statement| self.statement_has_row(statement, boundary))
+                        } else {
+                            true
+                        }
                     }
                     StructuredKind::Transfer { edge } => {
                         // Missing metadata is a diagnostic, never empty evidence.

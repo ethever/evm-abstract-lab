@@ -230,6 +230,31 @@ pub(in crate::lifted) fn check(
             &legacy,
             &constants,
         );
+        let prepared = plan.kind == crate::LiftedConstructionKind::PreparedConsumer;
+        let needed = super::prepared::dependencies(blocks[&data.block], data);
+        if prepared {
+            if !super::prepared::data_shape(data) {
+                return Err(fail());
+            }
+            let (owner, _, copy) = operations.get(&data.writes[0]).ok_or_else(fail)?;
+            if *owner == data.block
+                || copy.opcode != 0x3e
+                || copy.inputs.len() != 3
+                || !copy.outputs.is_empty()
+                || copy.memory_input.is_none()
+                || copy.memory_output.is_none()
+                || copy.effect_input.is_none()
+                || copy.effect_output.is_none()
+                || copy.effects
+                    != (crate::Effects {
+                        memory_write: true,
+                        return_data_read: true,
+                        ..crate::Effects::default()
+                    })
+            {
+                return Err(fail());
+            }
+        }
         let mut members = BTreeSet::new();
         let mut retained = BTreeSet::new();
         let mut previous = None;
@@ -241,17 +266,23 @@ pub(in crate::lifted) fn check(
             }
             previous = Some(*pos);
             retained.insert(op.id);
-            if !crate::lifted::payload::capsule_operation(op)
-                || (matches!(op.opcode, 0x39 | 0x51..=0x53) && !deps.contains(&op.id))
-            {
+            if if prepared {
+                !super::prepared::operation(op, data, &needed)
+            } else {
+                !crate::lifted::payload::capsule_operation(op)
+                    || (matches!(op.opcode, 0x39 | 0x51..=0x53) && !deps.contains(&op.id))
+            } {
                 start = index + 1;
             }
             if index >= plan.start {
                 members.insert(op.id);
             }
         }
-        if start != plan.start
-            || data.writes.iter().any(|id| !members.contains(id))
+        if (if prepared {
+            start > plan.start
+        } else {
+            start != plan.start
+        }) || (!prepared && data.writes.iter().any(|id| !members.contains(id)))
             || blocks[&data.block].operations.iter().any(|op| {
                 (!op.effects.is_pure() || !crate::lifted::payload::capsule_operation(op))
                     && !retained.contains(&op.id)

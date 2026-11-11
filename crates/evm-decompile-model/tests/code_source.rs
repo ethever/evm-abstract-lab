@@ -214,6 +214,7 @@ fn source_capsule() -> (Ir, LiftedProgram) {
             bytes,
         }],
         constructions: vec![LiftedConstruction {
+            kind: evm_decompile_model::LiftedConstructionKind::Constructor,
             id: EntityId(203),
             block: proof.block,
             start: 0,

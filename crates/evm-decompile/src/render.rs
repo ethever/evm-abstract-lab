@@ -3,8 +3,8 @@ use crate::budget::{count, work_budget};
 use crate::{
     Artifact, Block, Cancellation, Edge, EntityId, ExitKind, LiftedBlock, LiftedBranchLayouts,
     LiftedControl, LiftedIfPlan, LiftedProgram, LiftedRenderError, LiftedRenderIndex,
-    LiftedStatement, LiftedTransfer, Operation, StageKind, StructuredKind, StructuredNode,
-    Terminator, Value, ValueKind,
+    LiftedTransfer, Operation, StageKind, StructuredKind, StructuredNode, Terminator, Value,
+    ValueKind,
 };
 use evm_resource::{ResourceError, WorkBudget};
 use std::collections::{BTreeMap, BTreeSet};
@@ -388,11 +388,6 @@ impl<'a, P: FnMut(u64)> RenderIndex<'a, P> {
         })
         .unwrap_or_else(|| format!("expression_limit(e{})", id.0))
     }
-    fn high_statement(&mut self, statement: &LiftedStatement) -> Option<String> {
-        self.semantic(|renderer, owner| {
-            renderer.render_statement(statement, |work| owner.pay(work))
-        })
-    }
     fn high_exit(&mut self, kind: ExitKind, arguments: &[EntityId]) -> Option<String> {
         self.semantic(|renderer, owner| {
             renderer.render_exit(kind, arguments, |work| owner.pay(work))
@@ -487,11 +482,16 @@ fn body(out: &mut String, block: &Block, ir: &mut RenderIndex<'_, impl FnMut(u64
             {
                 continue;
             }
-            let Some(text) = ir.high_statement(statement) else {
+            let Some(row) = ir.semantic(|renderer, owner| {
+                renderer
+                    .render_statement_row_with_dependencies(statement, true, |work| owner.pay(work))
+            }) else {
                 return;
             };
-            indent(out, depth);
-            let _ = writeln!(out, "{text} // op{}", statement.operation.0);
+            if let Some(text) = row {
+                indent(out, depth);
+                let _ = writeln!(out, "{text} // op{}", statement.operation.0);
+            }
         }
         return;
     }

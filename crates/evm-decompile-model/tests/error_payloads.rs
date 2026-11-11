@@ -79,6 +79,7 @@ fn program() -> LiftedProgram {
             writes: vec![EntityId(210)],
         }],
         constructions: vec![LiftedConstruction {
+            kind: evm_decompile_model::LiftedConstructionKind::Constructor,
             id: EntityId(1002),
             block: EntityId(100),
             start: 0,
@@ -185,7 +186,7 @@ fn canonical_content_admission_checks_every_header_message_and_padding_byte() {
 #[test]
 fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     assert_eq!(
-        SCHEMA_VERSION, 11,
+        SCHEMA_VERSION, 12,
         "runtime byte witnesses change the current wire contract"
     );
     let mut artifact: Artifact =
@@ -215,6 +216,81 @@ fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
             "null {field}"
         );
     }
+}
+
+#[test]
+fn prepared_consumers_have_an_explicit_strict_schema_twelve_contract() {
+    let mut high = program();
+    let constructor = &high.constructions[0];
+    let legacy = serde_json::to_value(constructor).unwrap();
+    assert!(legacy.get("kind").is_none());
+    assert_eq!(
+        serde_json::from_value::<LiftedConstruction>(legacy.clone()).unwrap(),
+        *constructor
+    );
+    high.constructions[0].kind = evm_decompile_model::LiftedConstructionKind::PreparedConsumer;
+    let wire = serde_json::to_value(&high.constructions[0]).unwrap();
+    assert_eq!(wire["kind"], "prepared_consumer");
+    assert_eq!(
+        serde_json::from_value::<LiftedConstruction>(wire.clone()).unwrap(),
+        high.constructions[0]
+    );
+    let text = serde_json::to_string(&wire).unwrap();
+    let duplicate = format!("{{\"kind\":\"prepared_consumer\",{}", &text[1..]);
+    assert!(serde_json::from_str::<LiftedConstruction>(&duplicate).is_err());
+    let mut extra = wire.clone();
+    extra["unknown_consumer_field"] = json!(false);
+    assert!(serde_json::from_value::<LiftedConstruction>(extra).is_err());
+    for kind in [json!(null), json!("unknown_consumer"), json!(0)] {
+        let mut wrong = wire.clone();
+        wrong["kind"] = kind;
+        assert!(serde_json::from_value::<LiftedConstruction>(wrong).is_err());
+    }
+    assert!(
+        high.validate().is_err(),
+        "prepared consumers cannot borrow a legacy Error(string) constructor"
+    );
+    high.reverts.clear();
+    high.payloads.clear();
+    high.revert_data
+        .push(evm_decompile_model::LiftedRevertData {
+            id: EntityId(1003),
+            execution_domain: evm_decompile_model::ExecutionDomain::Generic,
+            execution_fork: None,
+            code_hash: None,
+            block: EntityId(100),
+            operation: EntityId(200),
+            memory: EntityId(300),
+            offset: EntityId(400),
+            size: EntityId(401),
+            content: evm_decompile_model::LiftedRevertDataKind::Segments(vec![
+                evm_decompile_model::LiftedByteSegment::Slice {
+                    source: evm_decompile_model::LiftedByteSource::ReturnData(EntityId(500)),
+                    offset: evm_decompile_model::LiftedDataWord::Constant(U256::ZERO),
+                    size: evm_decompile_model::LiftedDataWord::Constant(U256::from(32)),
+                },
+            ]),
+            writes: vec![EntityId(210)],
+        });
+    high.constructions[0].revert = EntityId(1003);
+    high.validate().unwrap();
+    let mut artifact: Artifact =
+        serde_json::from_str(include_str!("fixtures/partial-artifact.json")).unwrap();
+    artifact.stages.last_mut().unwrap().ir.lifted = Some(high);
+    for version in [4, 10, 11] {
+        artifact.schema_version = version;
+        assert!(!artifact.admits_schema(), "downgrade to schema {version}");
+        let decoded: Artifact =
+            serde_json::from_slice(&serde_json::to_vec(&artifact).unwrap()).unwrap();
+        assert!(!decoded.admits_schema());
+    }
+    artifact.schema_version = 12;
+    assert!(artifact.admits_schema());
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<LiftedConstruction>(legacy.clone()).unwrap())
+            .unwrap(),
+        legacy
+    );
 }
 
 #[test]

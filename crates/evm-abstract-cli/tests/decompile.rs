@@ -574,6 +574,58 @@ fn installed_cli_terminals_keep_named_memory_ranges_and_positional_selfdestruct(
     }
 }
 
+#[test]
+fn installed_cli_names_call_buffers_without_losing_original_reads_or_prefix_copy() {
+    let bytecode =
+        include_str!("../../evm-decompile/tests/fixtures/call-results/delegate-precopy-return.hex")
+            .trim();
+    let output = run(&["--hex", bytecode]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("(success1, returndata1) = evm.delegatecall("),
+        "{text}"
+    );
+    assert!(
+        text.contains("Revert(data = returndata1)") && text.contains("size = returndata1.size"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("returndata(op") && !text.contains("evm.returndatasize("),
+        "{text}"
+    );
+    assert!(
+        text.find("evm.returndatacopy(").unwrap() < text.find("require(").unwrap(),
+        "{text}"
+    );
+    let output = run(&["--hex", bytecode, "--format", "json"]);
+    assert!(output.status.success());
+    let artifact: evm_decompile::Artifact = serde_json::from_slice(&output.stdout).unwrap();
+    let ir = &artifact.current().unwrap().ir;
+    let program = ir.lifted.as_ref().unwrap();
+    let reads = ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.operations)
+        .filter(|op| op.opcode == 0x3d)
+        .count();
+    assert_eq!(
+        reads, 2,
+        "the logical property must retain both original size observations"
+    );
+    assert!(
+        program
+            .constructions
+            .iter()
+            .any(|plan| plan.kind == evm_decompile::LiftedConstructionKind::PreparedConsumer)
+    );
+    assert_eq!(artifact.schema_version, evm_decompile::SCHEMA_VERSION);
+}
+
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn installed_cli_accepts_wide_work_limits_and_emits_exact_numeric_configuration() {

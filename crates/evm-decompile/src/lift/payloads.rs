@@ -2,8 +2,8 @@
 //! One reaching-memory query feeds data records. Error(string) is only a
 //! compatibility adapter over completely recovered constant bytes.
 use crate::{
-    EntityId, Ir, LiftedConstruction, LiftedErrorPayload, LiftedProgram, LiftedRevert,
-    LiftedRevertData, LiftedRevertDataKind,
+    EntityId, Ir, LiftedConstruction, LiftedConstructionKind, LiftedErrorPayload, LiftedProgram,
+    LiftedRevert, LiftedRevertData, LiftedRevertDataKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod memory;
@@ -12,8 +12,10 @@ mod bytes;
 use bytes::{overlap, terminal_range, writer_bytes};
 mod construction;
 mod data;
+mod prepared;
 pub(super) use construction::capsule_operation;
 use construction::data_construction_dependencies;
+pub(super) use prepared::consumer_operation;
 mod certificate;
 pub(super) use certificate::verify;
 
@@ -234,14 +236,21 @@ pub(super) fn discover(
                 .iter()
                 .map(|s| s.operation)
                 .collect();
-            if occurrences.get(&block.id).is_some_and(|count| *count > 0)
-                && occurrences.get(&block.id) == exits.get(&block.id)
-                && start < body.statements.len()
-                && body.statements.last().is_some_and(|s| s.operation == op.id)
+            let constructor = start < body.statements.len()
                 && body.statements[start..]
                     .iter()
                     .any(|s| matches!(operations[&s.operation].opcode, 0x39 | 0x52 | 0x53))
-                && proof.writes.iter().all(|id| members.contains(id))
+                && proof.writes.iter().all(|id| members.contains(id));
+            let suffix = if constructor {
+                Some((start, LiftedConstructionKind::Constructor))
+            } else {
+                prepared::start(&mut memory, block, body, &proof, &dependencies)
+                    .map(|start| (start, LiftedConstructionKind::PreparedConsumer))
+            };
+            if occurrences.get(&block.id).is_some_and(|count| *count > 0)
+                && occurrences.get(&block.id) == exits.get(&block.id)
+                && body.statements.last().is_some_and(|s| s.operation == op.id)
+                && let Some((start, kind)) = suffix
             {
                 if !memory.charge(body.statements.len().saturating_add(1)) {
                     return None;
@@ -257,6 +266,7 @@ pub(super) fn discover(
                     start,
                     end: body.statements.len(),
                     revert: construction_terminal,
+                    kind,
                 });
             }
         }

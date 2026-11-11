@@ -40,17 +40,40 @@ pub(super) fn build_expanded(
     let expanded_prepared = (!sources.is_empty())
         .then(|| super::lifted::shared::Prepared::with_expanded(&stage.ir, &work, &sources));
     let prepared = expanded_prepared.as_ref().unwrap_or(&index.shared);
-    if let Some(program) = &stage.ir.lifted
-        && let Some(details) = super::lifted::details_prepared(
-            stage,
-            index,
-            id,
-            &program.render_base_index_with_budget(&stage.ir, |amount| work.reserve(amount)),
-            &work,
-            prepared,
-        )
-    {
-        return details;
+    let mut call_details = Details::default();
+    if let Some(program) = &stage.ir.lifted {
+        let mut renderer =
+            program.render_base_index_with_budget(&stage.ir, |amount| work.reserve(amount));
+        if renderer
+            .set_call_result_projection(
+                |source| prepared.error().is_none() && prepared.invocation(source, false).is_some(),
+                |amount| work.reserve(amount),
+            )
+            .is_err()
+        {
+            renderer = program.render_base_index_with_budget(&stage.ir, |_| false);
+        }
+        if let Some(details) =
+            super::lifted::details_prepared(stage, index, id, &renderer, &work, prepared)
+        {
+            return details;
+        }
+        if index.operation(&stage.ir, id).is_some() {
+            let mut references = Vec::new();
+            super::lifted::call_result_details(
+                &renderer,
+                id,
+                &work,
+                &mut call_details.lines,
+                &mut references,
+            );
+            call_details
+                .references
+                .extend(references.into_iter().map(|entity| EntityRef {
+                    stage: stage.id,
+                    entity,
+                }));
+        }
     }
     let mut details = Details::default();
     if stage.kind == StageKind::Decoded {
@@ -249,5 +272,7 @@ pub(super) fn build_expanded(
             entity,
         })
         .collect();
+    details.lines.extend(call_details.lines);
+    details.references.extend(call_details.references);
     details
 }

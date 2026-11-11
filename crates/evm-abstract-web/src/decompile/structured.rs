@@ -144,6 +144,19 @@ fn render_lines(
         .as_ref()
         .filter(|_| prepared.error().is_none())
         .and_then(|_| shared_definitions(prepared, display, &work));
+    // A named buffer is usable only when this actual view emits its call's
+    // declaration. Cached definitions and expanded callers choose that policy.
+    if let Some(index) = renderer.as_mut()
+        && index
+            .set_call_result_projection(
+                |source| definitions.is_some() && prepared.invocation(source, false).is_some(),
+                |amount| work.reserve(amount),
+            )
+            .is_err()
+    {
+        renderer = None;
+        definitions = None;
+    }
     // Decide arm order and omitted metadata-only arms before emitting any row.
     // The predicate describes calls actually admitted by this display attempt,
     // including an expanded invocation's original source subtree.
@@ -682,22 +695,20 @@ fn body(
                     continue;
                 }
             }
-            emit(
-                output,
-                statement.id,
-                indent,
-                shared(index, scope)
-                    .statement(statement.id, scope.display.show_state_dependencies)
-                    .filter(|_| scope.shared)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| {
-                        super::lifted::statement_with_dependencies(
-                            renderer,
-                            statement,
-                            scope.display.show_state_dependencies,
-                        )
-                    }),
-            );
+            let row = shared(index, scope)
+                .statement(statement.id, scope.display.show_state_dependencies)
+                .filter(|_| scope.shared)
+                .map(|row| row.map(str::to_owned))
+                .unwrap_or_else(|| {
+                    super::lifted::statement_row_with_dependencies(
+                        renderer,
+                        statement,
+                        scope.display.show_state_dependencies,
+                    )
+                });
+            if let Some(text) = row {
+                emit(output, statement.id, indent, text);
+            }
         }
         return;
     }

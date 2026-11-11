@@ -24,13 +24,30 @@ pub(in crate::lifted) fn check_failure_payloads(
         if failure.rank == 0 {
             match failure.payload {
                 LiftedGuardPayload::Data(id) => {
+                    let prepared = plans
+                        .get(&block.id)
+                        .is_some_and(|p| p.kind == crate::LiftedConstructionKind::PreparedConsumer);
+                    let necessary = data
+                        .get(&id)
+                        .map(|d| crate::lifted::revert_data::prepared::dependencies(block, d))
+                        .unwrap_or_default();
                     if !data.get(&id).is_some_and(|data| {
                         data.block == block.id
                             && !matches!(data.content, crate::LiftedRevertDataKind::Raw)
                     }) || !plans
                         .get(&block.id)
                         .is_some_and(|p| p.start == 0 && p.revert == id)
-                        || block.operations.iter().any(|o| !capsule_operation(o))
+                        || block.operations.iter().any(|o| {
+                            if prepared {
+                                data.get(&id).is_none_or(|d| {
+                                    !crate::lifted::revert_data::prepared::operation(
+                                        o, d, &necessary,
+                                    )
+                                })
+                            } else {
+                                !capsule_operation(o)
+                            }
+                        })
                     {
                         return Err(fail());
                     }

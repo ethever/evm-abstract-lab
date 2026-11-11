@@ -846,6 +846,28 @@
       ]
     },
     {
+      "id": "decompile-call-results",
+      "group": "decompile",
+      "module": "web_test_decompile_call_results",
+      "parameters": {},
+      "dependencies": [
+        "crates/evm-decompile/tests/fixtures/call-results/delegate-nested-buffers.hex",
+        "crates/evm-decompile/tests/fixtures/call-results/delegate-precopy-return.hex",
+        "crates/evm-decompile/tests/fixtures/call-results/delegate-repeated-sizes.hex",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_alignment.py",
+        "scripts/web_test_decompile_call_results.py",
+        "scripts/web_test_decompile_guards.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http_errors.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
       "id": "decompile-codecopy-payloads",
       "group": "decompile",
       "module": "web_test_decompile_codecopy",
