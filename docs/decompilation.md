@@ -182,7 +182,7 @@ if (z != 0) { ... }
 
 保留名字与简化右侧表达式分别处理。例如，跨块使用的结果仍需定义 `v16`，但 `v16 = evm.and(left = M, right = (M & v7));` 可以显示为 `v16 = (M & v7);`；不同常量掩码则合并为一次按位与。内联表达式与保留语句的右侧复用轻量模型中的同一套 Word256 代数规则。显示层在类型、原始指令和输入来源可核对时生成有类型的简化结果，不移动定义或再次执行 `v7` 对应的 storage/memory 读取。未满足条件的语句保留原语表示，工作或文本预算耗尽则报告限制。CLI、网页和共享过程体使用同一个格式化入口；JSON 中的原始操作、语句输入、输出身份与来源映射继续保留，因此不需要更改 wire schema。
 
-高层默认同时使用经过认证的 `require` 和显式的失败优先 `if`。已有空 REVERT 或规范 `Error(string)` guard 证书通过来源与作用域检查时，显示 `require(condition);` 或 `require(condition, "message");`。未获得这种证书，但共享模型证明某一分支会在有限、闭合的路径上以 REVERT 或异常终结时，将完整失败路径放入 `then`，成功路径放在外层继续执行。例如：
+高层默认同时使用经过认证的 `require` 和显式的失败优先 `if`。已有空 REVERT、规范 `Error(string)` 或已恢复数据的 guard 证书通过来源与作用域检查时，可显示 `require(condition);`、`require(condition, "message");`、`require(condition, Panic(0x41));` 或保留 selector 与完整 word 的错误。未获得这种证书，但共享模型证明某一分支会在有限、闭合的路径上以 REVERT 或异常终结时，将完整失败路径放入 `then`，成功路径放在外层继续执行。例如：
 
 ```text
 require(okA);
@@ -241,13 +241,19 @@ Router02 的这个具体构造返回 132 字节：4 字节选择器、32 字节�
 
 独立的构造证书仍记录原始块内的准确语句范围，用于核对内存扩展、操作顺序、终结数据和原有 fault 行为。构造证书是一段原始语句的执行见证：起止位置必须包含所认证的写入与 REVERT，全部操作须属于允许的构造指令。CODECOPY 现在属于允许的原语，其三个操作数、内存输入输出、代码来源及原始位置仍逐项检查。显示成 `require` 时，仅在失败路径执行原始构造；不能用重新编码字符串替代原来的内存扩展或复制异常。相同消息可以共享字节记录，不同路径仍各自保留构造和原始操作。终结指令的字节相等不会授权删除前面的 MLOAD、MSTORE、SSTORE、CALL、LOG 或环境观察；无关操作打断构造时，已有的字节证书仍可单独供检查。
 
-非规范填充、未知覆盖、错误偏移或长度、无效 UTF-8，以及不能证明的地址关系都不获得错误字符串证书。`CODECOPY` 留下未证明的尾部填充时不能仅凭可读消息认定标准 ABI；Panic、custom error、转发的 returndata 和通用 memory 内容重建也不由这一规则猜测。失败优先的控制表示与这些字节证明相互独立，不增加通用载荷或循环推断。
+非规范填充、错误偏移或长度、无效 UTF-8 都不获得错误字符串解释，但不会丢掉已经证明的字节。未知覆盖、不能证明的不回绕地址关系则保留原始内存切片。`CODECOPY` 留下未证明的尾部填充时不能仅凭可读消息认定标准 ABI。失败优先的控制表示与数据恢复、格式识别相互独立。
 
 点击 `require` 或失败 `if` 可检查原条件、原始分支和相关来源。显式失败体中的构造语句及终结指令保留各自的高层选择行，并能从源指令链接返回。被 `require` 吸收的构造、载荷和终结字节证书仍可在 IR 与 Inspector 中检查；原始分支引用可导航到完整的 **Structured code**。该视图始终保留原始控制树，切换视图不会修改产物。
 
 开发者可通过 `LiftedRenderIndex::if_plan` 检查特定 AST 出现位置选择的 `Require`、`FailureFirst` 或 `Original` 计划。计划由共享模型按真实源树计算，并由显示范围限制；页面不会自行识别终结行为。后缀省略、后缀移动和构造吸收都服从同一次计划选择，表达式格式化失败会明确显示诊断并停止本次代码遍历。`LiftedProgram.failures`、`LiftedControl.guard` 和对应构造证书共同约束 `require` 的准入；不能将旧 guard 省略路径与失败优先移动路径同时应用。
 
-`LiftedProgram.payloads` 共享规范错误字节，`reverts` 保存终结指令的内存与写入见证，`constructions` 保存各原始块的构造范围。三个实体均有独立身份、来源和阶段差异记录。轻量读取器检查载荷规范性、引用类型、构造范围及原始操作对应关系；核心还核对实际字节与指针证明。未知返回数据不会通过消息相似性获得证书。
+`LiftedProgram.revert_data` 保存与原始 REVERT 出现位置绑定的数据证书。它先回答“该 memory 版本的这个区间包含什么”：完整数据由常量字节、符号 word 的大端字节片段及有来源的切片组成；`Raw` 则只保留原始 memory、offset 和 size，表示尚未证明内容。每个符号引用指向原始 SSA 值，不能因为 selector 或参数形状相同就合并不同的调用路径。schema 11 增加此表示；旧 `payloads` / `reverts` 错误字符串证书仍可读取，旧版本缺失的数据不会被猜补。
+
+整段复制另有一个无需枚举动态长度的精确规则：最近的内存写入必须就是原始 COPY，COPY 的目标地址和长度必须与 REVERT 的窗口相同。两次 RETURNDATASIZE 只有在闭合 effect 链证明它们属于同一个非循环 CALL／CREATE 出现位置时才可视为同一长度；途中出现其他写入、不同返回数据版本或开放前驱时不应用此规则。数据记录保留具体调用的返回数据来源，而不会笼统写成当前的 returndata。原 COPY 及其边界检查、原 REVERT 仍是执行见证。固定区间查询则继续要求相对地址及不回绕证明，不能用模算术差值替代内存区间关系。
+
+格式解码单独消费这些数据。完整规范字符串可解释为 `Error(string)`；`0x4e487b71` 加一个完整 word 可解释为 `Panic(code)`；其他固定 selector 加完整 word 序列只显示 `Revert(selector = ..., words = [...])`，不猜测函数名或 word 的 ABI 类型。已知 Panic 码的中文说明依据 [Solidity 的错误码表](https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require)，只是注释，不参与语义。无法识别格式时仍可在 Inspector 查看已恢复片段和原始来源。恢复成功不等于格式识别成功，也不等于可以收起构造。
+
+构造与控制流认证分别决定显示计划。`constructions` 指向原始块内的确切构造区间；`require` 还要核对失败路径、参数绑定及正常续接。compact 形式以失败时执行原始构造为语义，不提前计算错误参数，不跳过原有内存扩张或首次异常。失败分支中独立的 CALLDATALOAD、SLOAD、CALL 等观察不会因错误格式被识别就被前移或吸收；不能安全绑定参数时仍显示完整失败路径。轻量模型验证引用、作用域和原始构造对应关系；核心独立遍历内存写入链，再正向按最后一次写入生效重放字节身份。验证器不调用数据发现器或依靠格式名称认可字节。
 
 轻量读取器还会独立核对已有 guard 只能选择自身 `If` 的实际分支，以及尾部范围和成功路径的正常后继关系。记录中的 `Passed` 状态不能代替这项入口检查：自引用、指向祖先或错误范围的元数据不会进入显示计划。构造和共享过程来源校验失败时，显示端保留原始语句，入口校验拒绝安装损坏的产物。
 
@@ -326,7 +332,7 @@ CALL/CALLCODE 显示 `value` 参数，DELEGATECALL/STATICCALL 的六项参数中
 
 共享过程记录自 schema version 5 起提供。轻量模型与前端仍接受不含高层投影的旧 version 1、不含 guard 和共享失败证明的旧 version 2、只使用已有空 REVERT guard 的旧 version 3，以及带错误载荷和构造证书的旧 version 4；这些历史产物保留原有结构与证书，高层视图使用同一混合表示选择规则。错误字符串载荷、终结字节证书和构造计划要求至少 version 4，共享过程和调用记录要求 version 5。新增记录采用严格对象字段、字节／字符串边界和独立及合并数量上限，表达式及共享关系按平面引用编码；构造、历史保留和文本展开有资源限制。导出遇到展开上限或取消时报告准确状态，提升中止时保留最后验证的阶段。
 
-这一阶段提供表达式、逻辑活性、跨块复制简化、认证 `require` 与显式失败优先的混合控制表示，以及空 REVERT 和可证明的 `Error(string)` 字节与构造证书。被选中 `require` 吸收的失败构造之外，MLOAD、MSTORE、调用和其他 memory 原语均保留；更广的符号内存、字节缓冲区与消费端重建见 [#158](https://github.com/ethever/evm-abstract-lab/issues/158)，其他带数据 REVERT 提升见 [#164](https://github.com/ethever/evm-abstract-lab/issues/164)。
+这一阶段提供表达式、逻辑活性、跨块复制简化、认证 `require` 与显式失败优先的混合控制表示，以及与格式解码分离的 REVERT 数据与构造证书。被选中 `require` 吸收的失败构造之外，MLOAD、MSTORE、调用和其他 memory 原语均保留；更广的符号内存、字节缓冲区与消费端重建见 [#158](https://github.com/ethever/evm-abstract-lab/issues/158)，其他带数据 REVERT 提升见 [#164](https://github.com/ethever/evm-abstract-lab/issues/164)。
 
 ## 阅读转换记录
 

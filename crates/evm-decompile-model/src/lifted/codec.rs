@@ -2,7 +2,7 @@
 use super::{
     LiftedBlock, LiftedConstruction, LiftedControl, LiftedErrorPayload, LiftedExpression,
     LiftedExpressionKind, LiftedFailure, LiftedProgram, LiftedRelation, LiftedRevert,
-    LiftedTransfer, MAX_LIFTED_RECORDS,
+    LiftedRevertData, LiftedTransfer, MAX_LIFTED_RECORDS,
 };
 use crate::{EntityId, U256};
 use serde::de::{SeqAccess, Visitor};
@@ -45,7 +45,7 @@ impl<'de> Deserialize<'de> for LiftedExpressionKind {
     }
 }
 #[derive(Serialize)]
-pub struct Bounded<T>(Vec<T>);
+pub struct Bounded<T>(pub(crate) Vec<T>);
 impl<T> Default for Bounded<T> {
     fn default() -> Self {
         Self(Vec::new())
@@ -136,6 +136,7 @@ strict_record! { pub struct ProgramWire {
     pub failures: Bounded<LiftedFailure> = Bounded::default(),
     pub payloads: Weighted<LiftedErrorPayload> = Weighted::default(),
     pub reverts: Weighted<LiftedRevert> = Weighted::default(),
+    pub revert_data: Weighted<LiftedRevertData> = Weighted::default(),
     pub constructions: Weighted<LiftedConstruction> = Weighted::default(),
     pub procedures: Weighted<crate::SharedProcedure> = Weighted::default(),
     pub invocations: Weighted<crate::SharedInvocation> = Weighted::default(),
@@ -151,6 +152,7 @@ impl<'de> Deserialize<'de> for LiftedProgram {
             failures: wire.failures.0,
             payloads: wire.payloads.0,
             reverts: wire.reverts.0,
+            revert_data: wire.revert_data.0,
             constructions: wire.constructions.0,
             procedures: wire.procedures.0,
             invocations: wire.invocations.0,

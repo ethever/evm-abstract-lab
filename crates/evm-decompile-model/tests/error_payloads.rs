@@ -185,7 +185,7 @@ fn canonical_content_admission_checks_every_header_message_and_padding_byte() {
 #[test]
 fn payloads_and_capsules_cannot_claim_older_semantic_versions() {
     assert_eq!(
-        SCHEMA_VERSION, 10,
+        SCHEMA_VERSION, 11,
         "runtime byte witnesses change the current wire contract"
     );
     let mut artifact: Artifact =

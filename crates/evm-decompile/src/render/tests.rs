@@ -329,7 +329,7 @@ fn real_empty_then_layout_complements_word_truth_without_moving_its_read() {
 
 #[test]
 fn require_formatting_refusal_stops_before_any_absorbed_suffix_can_resume() {
-    let mut artifact = decompile(
+    let base = decompile(
         &Input::new(
             vec![
                 0x34, 0x60, 7, 0x57, 0x60, 9, 0x56, 0x5b, 0x00, 0x5b, 0x5f, 0x5f, 0xfd,
@@ -338,46 +338,58 @@ fn require_formatting_refusal_stops_before_any_absorbed_suffix_can_resume() {
         ),
         &Config::default(),
     );
-    let stage = artifact.stages.last_mut().unwrap();
-    let source = stage.ir.structured.clone();
-    let raw = stage.ir.blocks.clone();
-    let boundary = stage.ir.structured.as_ref().unwrap().root.id;
-    let program = stage.ir.lifted.as_mut().unwrap();
-    let control = program
-        .controls
-        .iter()
-        .find(|c| c.guard.is_some())
-        .unwrap()
-        .clone();
-    // Topology remains admitted, but expression expansion must refuse this
-    // malformed cyclic diagnostic artifact before publishing a require row.
-    program
-        .expressions
-        .iter_mut()
-        .find(|e| e.id == control.condition)
-        .unwrap()
-        .kind = crate::LiftedExpressionKind::Not(control.condition);
-    let index = stage.ir.lifted.as_ref().unwrap().render_index(&stage.ir);
-    let plan = index.if_plan(control.node, boundary);
-    assert!(matches!(plan, crate::LiftedIfPlan::Require(_)));
-    assert!(matches!(
-        plan.suffix(),
-        crate::LiftedIfSuffix::Absorb { .. }
-    ));
-    let result = export_text(&artifact, &Cancellation::default());
-    assert_eq!(result.status, TextExportStatus::Limited);
-    assert!(
-        !result.text.contains("require(") && !result.text.contains("if ("),
-        "{}",
-        result.text
-    );
-    assert!(
-        !result.text.contains("evm.revert(") && !result.text.contains("evm.stop("),
-        "{}",
-        result.text
-    );
-    assert_eq!(artifact.current().unwrap().ir.blocks, raw);
-    assert_eq!(artifact.current().unwrap().ir.structured, source);
+    for has_data in [false, true] {
+        let mut artifact = base.clone();
+        let stage = artifact.stages.last_mut().unwrap();
+        let source = stage.ir.structured.clone();
+        let raw = stage.ir.blocks.clone();
+        let boundary = stage.ir.structured.as_ref().unwrap().root.id;
+        let program = stage.ir.lifted.as_mut().unwrap();
+        if !has_data {
+            program.revert_data.clear();
+        }
+        let control = program
+            .controls
+            .iter()
+            .find(|c| c.guard.is_some())
+            .unwrap()
+            .clone();
+        // Legacy empty guards admit this topology and refuse at expression
+        // expansion. Data-bearing snapshots reject the malformed DAG earlier in
+        // source admission. Neither path may resume an absorbed failure suffix.
+        program
+            .expressions
+            .iter_mut()
+            .find(|e| e.id == control.condition)
+            .unwrap()
+            .kind = crate::LiftedExpressionKind::Not(control.condition);
+        let index = stage.ir.lifted.as_ref().unwrap().render_index(&stage.ir);
+        let plan = index.if_plan(control.node, boundary);
+        if has_data {
+            assert!(index.validate_guard_sources().is_err());
+            assert!(!matches!(plan, crate::LiftedIfPlan::Require(_)));
+        } else {
+            assert!(matches!(plan, crate::LiftedIfPlan::Require(_)));
+            assert!(matches!(
+                plan.suffix(),
+                crate::LiftedIfSuffix::Absorb { .. }
+            ));
+        }
+        let result = export_text(&artifact, &Cancellation::default());
+        assert_eq!(result.status, TextExportStatus::Limited);
+        assert!(
+            !result.text.contains("require(") && !result.text.contains("if ("),
+            "{}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("evm.revert(") && !result.text.contains("evm.stop("),
+            "{}",
+            result.text
+        );
+        assert_eq!(artifact.current().unwrap().ir.blocks, raw);
+        assert_eq!(artifact.current().unwrap().ir.structured, source);
+    }
 }
 
 #[test]

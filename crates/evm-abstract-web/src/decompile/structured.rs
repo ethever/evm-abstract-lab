@@ -948,7 +948,14 @@ fn projected_terminator(
             .exit(block)
             .filter(|_| scope.shared)
             .map_or_else(
-                || renderer.render_exit(*kind, &semantic.exit_values, |_| true),
+                || {
+                    if *kind == ExitKind::Revert
+                        && let Some(text) = renderer.render_data_revert(block, |_| true)?
+                    {
+                        return Ok(text);
+                    }
+                    renderer.render_exit(*kind, &semantic.exit_values, |_| true)
+                },
                 |text| Ok(text.to_owned()),
             )
             .unwrap_or_else(|error| format!("unavailable_exit(b{}: {error});", block.0)),

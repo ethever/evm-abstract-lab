@@ -94,7 +94,7 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     assert result["id"] == job["id"]
     assert result["publication"].isdigit()
     artifact = result["artifact"]
-    assert artifact["schema_version"] == 10
+    assert artifact["schema_version"] == 11
     assert artifact["config"]["strategy"] == {"Dispatcher": "dispatcher", "Code duplication": "code_duplication"}[strategy]
     selected_fork = admission.request.post_data_json["fork"]
     assert artifact["input"]["fork"] == selected_fork.lower()

@@ -1,7 +1,6 @@
-//! Backwards first-write fill of an exact canonical Error(string) range.
+//! Legacy Error(string) range admission and local source byte primitives.
 use super::{Memory, Word};
-use crate::{EntityId, MAX_ERROR_PAYLOAD_BYTES, U256};
-use std::collections::BTreeSet;
+use crate::MAX_ERROR_PAYLOAD_BYTES;
 pub(super) fn terminal_range<P: FnMut(usize) -> bool>(
     memory: &mut Memory<'_, P>,
     op: &crate::Operation,
@@ -15,20 +14,6 @@ pub(super) fn terminal_range<P: FnMut(usize) -> bool>(
         return None;
     }
     Some((offset, size))
-}
-pub(super) fn decode(bytes: &[u8]) -> Option<String> {
-    if bytes.len() < 68
-        || bytes[..4] != [8, 0xc3, 0x79, 0xa0]
-        || U256::from_be_slice(&bytes[4..36]) != U256::from(32)
-    {
-        return None;
-    }
-    let len = usize::try_from(U256::from_be_slice(&bytes[36..68])).ok()?;
-    let padded = len.checked_add(31)? / 32 * 32;
-    if 68_usize.checked_add(padded)? != bytes.len() || bytes[68 + len..].iter().any(|b| *b != 0) {
-        return None;
-    }
-    String::from_utf8(bytes[68..68 + len].to_vec()).ok()
 }
 /// Relative interval intersection requires proved ordinary, nonwrapping memory
 /// ranges. Arithmetic equality here is exact symbolic identity, never bounds.
@@ -104,55 +89,4 @@ pub(super) fn writer_bytes<P: FnMut(usize) -> bool>(
         }
         _ => None,
     }
-}
-pub(super) fn search<P: FnMut(usize) -> bool>(
-    memory: &mut Memory<'_, P>,
-    mut version: EntityId,
-    base: Word,
-    size: usize,
-) -> Option<(Vec<u8>, Vec<EntityId>)> {
-    if !memory.charge(size.saturating_mul(2)) {
-        return None;
-    }
-    let mut bytes = vec![None; size];
-    let mut remaining = size;
-    if let Some(start) = memory.zero_suffix(version, base, size) {
-        if start > size {
-            return None;
-        }
-        bytes[start..].fill(Some(0));
-        remaining = start;
-    }
-    let mut writes = Vec::new();
-    let mut seen = BTreeSet::new();
-    while remaining > 0 {
-        if !memory.charge(1) || !seen.insert(version) {
-            return None;
-        }
-        if let Some(op) = memory.writer(version)
-            && !memory.writer_disjoint(op, base, size)
-        {
-            let (offset, count) = memory.write_range(op)?;
-            let (dst, src, len) = overlap(base, size, offset, count)?;
-            let data = writer_bytes(memory, op, src, len)?;
-            if !memory.charge(len) {
-                return None;
-            }
-            if writes.len() == MAX_ERROR_PAYLOAD_BYTES {
-                return None;
-            }
-            writes.push(op.id);
-            for i in 0..len {
-                if bytes[dst + i].is_none() {
-                    bytes[dst + i] = Some(data[i]);
-                    remaining -= 1;
-                }
-            }
-        }
-        if remaining > 0 {
-            version = memory.predecessor_memory(version)?;
-        }
-    }
-    writes.reverse();
-    Some((bytes.into_iter().collect::<Option<Vec<_>>>()?, writes))
 }

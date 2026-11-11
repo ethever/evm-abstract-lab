@@ -2,6 +2,7 @@
 use super::{Memory, overlap, terminal_range, writer_bytes};
 use crate::{Ir, LiftedProgram};
 use std::collections::{BTreeMap, BTreeSet};
+mod data;
 
 pub(in crate::lift) fn verify(
     ir: &Ir,
@@ -135,6 +136,14 @@ pub(in crate::lift) fn verify(
             .any(|(actual, expected)| *actual != Some(*expected))
         {
             return Some(false);
+        }
+    }
+    if !program.revert_data.is_empty() {
+        let mut epochs = data::Epochs::new(ir, &mut memory.pay)?;
+        for proof in &program.revert_data {
+            if !data::verify(&mut memory, proof, code_hash, &mut epochs)? {
+                return Some(false);
+            }
         }
     }
     Some(!memory.refused)

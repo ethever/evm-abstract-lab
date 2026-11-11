@@ -824,6 +824,28 @@
       ]
     },
     {
+      "id": "decompile-revert-data",
+      "group": "decompile",
+      "module": "web_test_decompile_revert_data",
+      "parameters": {},
+      "dependencies": [
+        "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-bound-guard.hex",
+        "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-failed-arm.hex",
+        "crates/evm-decompile/tests/fixtures/revert-data/panic-41-guard.hex",
+        "scripts/test-web-browser.py",
+        "scripts/web_test_decompile_alignment.py",
+        "scripts/web_test_decompile_guards.py",
+        "scripts/web_test_decompile_helpers.py",
+        "scripts/web_test_decompile_revert_data.py",
+        "scripts/web_test_decompile_review.py",
+        "scripts/web_test_harness.py",
+        "scripts/web_test_http_errors.py",
+        "scripts/web_test_hybrid.py",
+        "scripts/web_test_pixels.py",
+        "scripts/web_test_registry.py"
+      ]
+    },
+    {
       "id": "decompile-codecopy-payloads",
       "group": "decompile",
       "module": "web_test_decompile_codecopy",

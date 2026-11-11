@@ -288,6 +288,9 @@ fn independent_replay_rejects_changed_literal_bytes_even_with_an_updated_code_ha
     for proof in &mut stage.ir.lifted.as_mut().unwrap().reverts {
         proof.code_hash = Some(changed_hash);
     }
+    for data in &mut stage.ir.lifted.as_mut().unwrap().revert_data {
+        data.code_hash = Some(changed_hash);
+    }
     stage
         .ir
         .lifted
@@ -329,6 +332,30 @@ fn captured_router_constructor_browser_fixtures_distinguish_zero_and_dirty_tails
         let returned = payload_oracle::reverted(&outcome.unwrap(), &state).unwrap();
         assert_eq!(&returned[68..108], MESSAGE);
         assert_eq!(returned[108..].iter().all(|byte| *byte == 0), certified);
-        assert_eq!(capsules, usize::from(certified));
+        // Both windows are fully reconstructible. Only the zero-padded one
+        // admits the Error(string) format and its compact require plan.
+        assert_eq!(capsules, 1);
+        if !certified {
+            let data = artifact
+                .current()
+                .unwrap()
+                .ir
+                .lifted
+                .as_ref()
+                .unwrap()
+                .revert_data
+                .first()
+                .unwrap();
+            assert!(matches!(
+                data.content,
+                evm_decompile::LiftedRevertDataKind::Segments(_)
+            ));
+            assert_eq!(
+                data.decode_format(|_| true).unwrap(),
+                evm_decompile::LiftedRevertFormat::Raw
+            );
+            assert!(!render_text(&artifact).contains("require("));
+            assert!(render_text(&artifact).contains("evm.codecopy("));
+        }
     }
 }

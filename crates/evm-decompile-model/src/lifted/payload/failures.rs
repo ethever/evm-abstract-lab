@@ -17,11 +17,24 @@ pub(in crate::lifted) fn check_failure_payloads(
     let expressions: BTreeMap<_, _> = program.expressions.iter().map(|e| (e.id, e)).collect();
     let reverts: BTreeMap<_, _> = program.reverts.iter().map(|r| (r.block, r)).collect();
     let plans: BTreeMap<_, _> = program.constructions.iter().map(|c| (c.block, c)).collect();
+    let data: BTreeMap<_, _> = program.revert_data.iter().map(|d| (d.id, d)).collect();
     for failure in &program.failures {
         let fail = || LiftedModelError::Payload(failure.block);
         let block = raw.get(&failure.block).ok_or_else(fail)?;
         if failure.rank == 0 {
             match failure.payload {
+                LiftedGuardPayload::Data(id) => {
+                    if !data.get(&id).is_some_and(|data| {
+                        data.block == block.id
+                            && !matches!(data.content, crate::LiftedRevertDataKind::Raw)
+                    }) || !plans
+                        .get(&block.id)
+                        .is_some_and(|p| p.start == 0 && p.revert == id)
+                        || block.operations.iter().any(|o| !capsule_operation(o))
+                    {
+                        return Err(fail());
+                    }
+                }
                 LiftedGuardPayload::ErrorString(id) => {
                     if !reverts.get(&block.id).is_some_and(|r| r.payload == id)
                         || !plans.get(&block.id).is_some_and(|p| p.start == 0)

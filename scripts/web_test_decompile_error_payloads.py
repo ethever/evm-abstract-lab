@@ -340,14 +340,23 @@ def run(context):
     for name, options in [("alias", {"alias": True}), ("padding", {"padding": True})]:
         artifact, _ = submit(context, page, canvas, runtime(**options), "error-string-rejected-" + name)
         current, program = projection(artifact)
-        assert not program.get("payloads") and not program.get("constructions"), program
-        assert not any(control.get("guard") for control in program["controls"])
+        assert not program.get("payloads") and not program.get("reverts"), program
+        data, = program["revert_data"]
+        if name == "alias":
+            assert data["content"] == "raw" and not program.get("constructions"), program
+            assert not any(control.get("guard") for control in program["controls"])
+        else:
+            assert "segments" in data["content"], data
+            assert all(plan["revert"] == data["id"] for plan in program.get("constructions", []))
+            assert all(not control.get("guard") or control["guard"]["payload"] == {"data": data["id"]}
+                       for control in program["controls"])
         high(page, canvas)
         for dependencies, annotations in [(False, False), (True, True), (False, False)]:
             set_control(page, canvas, DEPENDENCIES, dependencies)
             set_control(page, canvas, ANNOTATIONS, annotations)
             text = painted_copy(page, canvas)
-            assert "if (" in text and "evm.mstore(" in text and "evm.revert(offset =" in text, text
+            terminal = "evm.revert(offset =" if name == "alias" else "evm.revert(Revert(data = concat("
+            assert "if (" in text and "evm.mstore(" in text and terminal in text, text
             assert 'evm.revert("' not in text and "require(" not in text, text
         results.append({"rejected": name, "artifact": artifact["id"]})
     gpu = webgpu_evidence(page)

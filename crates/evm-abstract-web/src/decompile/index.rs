@@ -3,8 +3,9 @@
 
 use evm_abstract_protocol::decompile_model::{
     Block, DispatchTransition, Edge, EntityId, Ir, LiftedBlock, LiftedConstruction, LiftedControl,
-    LiftedErrorPayload, LiftedExpression, LiftedRevert, LiftedStatement, LiftedTransfer, Operation,
-    SharedInvocation, SharedProcedure, StructuredKind, StructuredNode, Value,
+    LiftedErrorPayload, LiftedExpression, LiftedRevert, LiftedRevertData, LiftedStatement,
+    LiftedTransfer, Operation, SharedInvocation, SharedProcedure, StructuredKind, StructuredNode,
+    Value,
 };
 use std::collections::BTreeMap;
 
@@ -22,6 +23,7 @@ pub(super) struct StageIndex {
     lifted_transfers: BTreeMap<EntityId, usize>,
     controls: BTreeMap<EntityId, usize>,
     payloads: BTreeMap<EntityId, usize>,
+    revert_data: BTreeMap<EntityId, usize>,
     reverts: BTreeMap<EntityId, usize>,
     constructions: BTreeMap<EntityId, usize>,
     procedures: BTreeMap<EntityId, usize>,
@@ -129,6 +131,12 @@ impl StageIndex {
                 .enumerate()
                 .map(|(i, p)| (p.id, i))
                 .collect();
+            for (position, data) in program.revert_data.iter().enumerate() {
+                index.revert_data.insert(data.id, position);
+                if let Some(owner) = index.blocks.get(&data.block) {
+                    index.semantic_owners.insert(data.id, *owner);
+                }
+            }
             for (position, revert) in program.reverts.iter().enumerate() {
                 index.reverts.insert(revert.id, position);
                 if let Some(owner) = index.blocks.get(&revert.block) {
@@ -258,6 +266,12 @@ impl StageIndex {
     }
     pub fn payload<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedErrorPayload> {
         ir.lifted.as_ref()?.payloads.get(*self.payloads.get(&id)?)
+    }
+    pub fn revert_data<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedRevertData> {
+        ir.lifted
+            .as_ref()?
+            .revert_data
+            .get(*self.revert_data.get(&id)?)
     }
     pub fn revert<'a>(&self, ir: &'a Ir, id: EntityId) -> Option<&'a LiftedRevert> {
         ir.lifted.as_ref()?.reverts.get(*self.reverts.get(&id)?)

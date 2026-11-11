@@ -81,7 +81,7 @@ pub(crate) fn certify(ir: &Ir, cancel: &Cancellation) -> ValidationCheck {
     }
     let passed = !cancel.is_cancelled();
     ValidationCheck { name: "lifted_semantic_projection".to_owned(), passed,
-        message: if passed { "checked typed scoped normal forms, anchored identity-copy equations, strict raw entry availability, retained primitive bindings, simultaneous live transfers and independent constant-memory byte replay and exact-payload rank/source/fallthrough certificates against raw witness" } else { "semantic projection differs from the certified normal form of its primitive witness" }.to_owned() }
+        message: if passed { "checked typed scoped normal forms, anchored identity-copy equations, strict raw entry availability, retained primitive bindings, simultaneous live transfers, independent constant and symbolic byte replay, versioned source slices and exact-payload rank/source/fallthrough certificates against raw witness" } else { "semantic projection differs from the certified normal form of its primitive witness" }.to_owned() }
 }
 
 /// Publication has no independent wire proof record: validate these direct
@@ -122,6 +122,15 @@ pub(super) fn source_correspondences(
             {
                 return Some(false);
             }
+        }
+    }
+    for data in &projection.program.revert_data {
+        if !pay(data.source_references().count().saturating_add(1)) {
+            return None;
+        }
+        let parents = projection.parents.get(&data.id)?;
+        if !data.source_references().all(|id| parents.contains(&id)) {
+            return Some(false);
         }
     }
     for control in &projection.program.controls {

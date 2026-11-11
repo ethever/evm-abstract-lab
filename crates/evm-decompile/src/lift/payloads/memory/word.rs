@@ -80,7 +80,11 @@ impl<P: FnMut(usize) -> bool> Memory<'_, P> {
                     let address = self.eval(op.inputs[0], depth + 1)?.exact()?;
                     // Loads sharing the exact reaching content share identity;
                     // equal numeric ranges never establish that relationship.
-                    return self.load(op.memory_input?, address, depth + 1);
+                    // Unknown content still has this exact load's identity.
+                    // Its full numeric range proves no allocation/no-wrap fact.
+                    return self
+                        .load(op.memory_input?, address, depth + 1)
+                        .or_else(|| Some(Word::opaque(id)));
                 }
                 if evm_bytecode::word::arity(op.opcode) != Some(op.inputs.len()) {
                     let mut word = Word::opaque(id);
@@ -104,6 +108,9 @@ impl<P: FnMut(usize) -> bool> Memory<'_, P> {
                     return evm_bytecode::word::evaluate(op.opcode, &values)
                         .ok()
                         .map(Word::constant);
+                }
+                if op.opcode == 0x18 && args.len() == 2 && args[0].same(args[1]) {
+                    return Some(Word::constant(U256::ZERO));
                 }
                 let mut result = Word::opaque(id);
                 if matches!(op.opcode, 0x01 | 0x03) && args.len() == 2 {

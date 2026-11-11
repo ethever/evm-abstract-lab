@@ -35,17 +35,98 @@ pub(super) struct WordSources<'a> {
     statements: BTreeMap<EntityId, (EntityId, &'a LiftedStatement)>,
     expression_positions: BTreeMap<EntityId, usize>,
     bound: BTreeSet<EntityId>,
+    incoming: BTreeMap<EntityId, Vec<&'a crate::Edge>>,
+    decisions: BTreeMap<EntityId, usize>,
+    complete: bool,
     valid: bool,
 }
 impl<'a> WordSources<'a> {
+    /// A real retained source binding at this block's decision, rather than an
+    /// unused Value expression whose declared scope could be fabricated.
+    pub(super) fn bound_at(&self, value: EntityId, block: EntityId) -> bool {
+        self.valid
+            && self.bound.contains(&value)
+            && self
+                .decisions
+                .get(&block)
+                .is_some_and(|before| self.available(value, block, *before))
+    }
+    pub(super) fn decision_position(&self, block: EntityId) -> Option<usize> {
+        self.decisions.get(&block).copied()
+    }
+    pub(super) fn parameter_slot(&self, value: EntityId, block: EntityId) -> Option<usize> {
+        self.definitions
+            .get(&value)
+            .filter(|d| d.block == block)?
+            .parameter
+    }
+    /// Exact acyclic phi copies only. Numeric coincidence, recurrences and open
+    /// predecessor sets never establish source identity at this boundary.
+    pub(super) fn copy_identity(
+        &self,
+        value: EntityId,
+        root: EntityId,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<bool, Error> {
+        if value == root {
+            return Ok(true);
+        }
+        if !self.valid || !self.complete {
+            return Ok(false);
+        }
+        paid(pay, 16)?;
+        let mut todo = vec![value];
+        let mut seen = BTreeSet::new();
+        while let Some(value) = todo.pop() {
+            paid(pay, 16)?;
+            if value == root {
+                continue;
+            }
+            if !seen.insert(value) {
+                return Ok(false);
+            }
+            if seen.len() > MAX_LIFTED_EXPRESSION_TEXT {
+                return Err(Error::Limit);
+            }
+            let Some(ValueKind::Parameter { block, index }) =
+                self.values.get(&value).map(|v| &v.kind)
+            else {
+                return Ok(false);
+            };
+            if self.parameter_slot(value, *block) != Some(*index) {
+                return Ok(false);
+            }
+            let Some(incoming) = self.incoming.get(block).filter(|edges| !edges.is_empty()) else {
+                return Ok(false);
+            };
+            paid(pay, incoming.len().saturating_mul(8))?;
+            for edge in incoming {
+                let Some(value) = edge.arguments.get(*index) else {
+                    return Ok(false);
+                };
+                todo.push(*value);
+            }
+        }
+        Ok(true)
+    }
+    pub(super) fn source_position(&self, operation: EntityId) -> Option<(EntityId, usize)> {
+        self.operations
+            .get(&operation)
+            .map(|op| (op.block.id, op.position))
+    }
     pub(super) fn new(program: &'a LiftedProgram, ir: Option<&'a Ir>) -> Self {
         let Some(ir) = ir else {
             return Self::default();
         };
         let mut source = Self {
             valid: true,
+            complete: ir.fact_scope == crate::FactScope::CompleteLocalCfg
+                && ir.blocks.iter().all(|b| !b.terminator.is_partial()),
             ..Self::default()
         };
+        for edge in &ir.edges {
+            source.incoming.entry(edge.to).or_default().push(edge);
+        }
         for value in &ir.values {
             if source.values.insert(value.id, value).is_some() {
                 source.valid = false;
@@ -62,6 +143,18 @@ impl<'a> WordSources<'a> {
         }
         let mut blocks = BTreeSet::new();
         for block in &ir.blocks {
+            if let Terminator::Branch {
+                condition, target, ..
+            } = block.terminator
+                && block
+                    .operations
+                    .last()
+                    .is_some_and(|o| o.opcode == 0x57 && o.inputs.as_slice() == [target, condition])
+            {
+                source
+                    .decisions
+                    .insert(block.id, block.operations.len().saturating_sub(1));
+            }
             if !blocks.insert(block.id) {
                 source.valid = false;
             }
@@ -360,7 +453,7 @@ impl LiftedRenderIndex<'_> {
         }
         Ok(Some(recipe))
     }
-    fn corresponds(
+    pub(super) fn corresponds(
         &self,
         expression: EntityId,
         value: EntityId,

@@ -4,6 +4,7 @@ mod codec;
 mod construction;
 mod failures;
 mod sources;
+pub(in crate::lifted) use construction::{capsule_operation, construction_dependencies};
 pub(in crate::lifted) use failures::check_failure_payloads;
 pub(super) use sources::check as check_sources;
 

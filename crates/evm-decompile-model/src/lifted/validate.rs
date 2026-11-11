@@ -100,6 +100,14 @@ impl LiftedProgram {
         let blocks: BTreeSet<_> = self.blocks.iter().map(|b| b.block).collect();
         let edges: BTreeSet<_> = self.transfers.iter().map(|t| t.edge).collect();
         let payloads: BTreeSet<_> = self.payloads.iter().map(|p| p.id).collect();
+        let data: BTreeMap<_, _> = self.revert_data.iter().map(|p| (p.id, p)).collect();
+        let mut data_blocks = BTreeSet::new();
+        for item in &self.revert_data {
+            item.validate()?;
+            if !blocks.contains(&item.block) || !data_blocks.insert(item.block) {
+                return Err(LiftedModelError::Payload(item.id));
+            }
+        }
         for payload in &self.payloads {
             if !payload.is_canonical() {
                 return Err(LiftedModelError::Payload(payload.id));
@@ -108,6 +116,7 @@ impl LiftedProgram {
         let valid_payload = |p: super::LiftedGuardPayload| match p {
             super::LiftedGuardPayload::EmptyRevert => true,
             super::LiftedGuardPayload::ErrorString(id) => payloads.contains(&id),
+            super::LiftedGuardPayload::Data(id) => data.contains_key(&id),
         };
         let mut revert_blocks = BTreeSet::new();
         let mut reverts = BTreeMap::new();
@@ -137,7 +146,10 @@ impl LiftedProgram {
                 || !high
                     .get(&c.block)
                     .is_some_and(|b| c.end == b.statements.len())
-                || !reverts.get(&c.revert).is_some_and(|r| r.block == c.block)
+                || !(reverts.get(&c.revert).is_some_and(|r| r.block == c.block)
+                    || data.get(&c.revert).is_some_and(|r| {
+                        r.block == c.block && !matches!(r.content, super::LiftedRevertDataKind::Raw)
+                    }))
             {
                 return Err(LiftedModelError::Payload(c.id));
             }

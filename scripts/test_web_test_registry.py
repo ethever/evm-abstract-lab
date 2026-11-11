@@ -126,6 +126,10 @@ class BrowserRegistryTests(unittest.TestCase):
             if case_id == "decompile-codecopy-payloads":
                 expected.update({"crates/evm-decompile/tests/fixtures/error-payloads/router-codecopy-liquidity-guard.hex",
                                  "crates/evm-decompile/tests/fixtures/error-payloads/router-codecopy-liquidity-dirty.hex"})
+            if case_id == "decompile-revert-data":
+                expected.update({"crates/evm-decompile/tests/fixtures/revert-data/panic-41-guard.hex",
+                                 "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-failed-arm.hex",
+                                 "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-bound-guard.hex"})
             if case_id == "decompile-shared-procedures":
                 expected.update({"crates/evm-abstract-web/tests/fixtures/decompile/shared-loop.hex",
                                  "crates/evm-decompile/tests/fixtures/shared-procedures/arithmetic-template-inputs.hex",
@@ -166,6 +170,16 @@ class BrowserRegistryTests(unittest.TestCase):
         self.assertEqual({case["id"] for case in self.manifest["cases"]
                           if "scripts/web_test_decompile_loop_pointers.py" in case["dependencies"]},
                          {"decompile-loop-pointers"})
+
+    def test_revert_data_case_keeps_its_fixtures_and_independent_consumer_closure(self):
+        guards = set(self.cases["decompile-guards"]["dependencies"])
+        expected = guards | {"scripts/web_test_decompile_revert_data.py"} | {
+            "crates/evm-decompile/tests/fixtures/revert-data/" + name + ".hex"
+            for name in ["panic-41-guard", "custom-symbolic-failed-arm", "custom-symbolic-bound-guard"]}
+        self.assertEqual(set(self.cases["decompile-revert-data"]["dependencies"]), expected)
+        self.assertEqual({case["id"] for case in self.manifest["cases"]
+                          if "scripts/web_test_decompile_revert_data.py" in case["dependencies"]},
+                         {"decompile-revert-data"})
 
     def test_direct_execution_runs_every_selected_case_once_and_keeps_failure_evidence(self):
         # Exercise the actual CLI orchestration with inert acceptance functions.

@@ -12,6 +12,7 @@ mod condition;
 mod control;
 mod failure_first;
 pub(crate) mod primitive;
+mod revert_data;
 mod word;
 pub use branch::{LiftedBranchLayout, LiftedBranchLayouts};
 use control::ControlPlanIndex;
@@ -34,6 +35,7 @@ pub struct LiftedRenderIndex<'a> {
     word_sources: word::WordSources<'a>,
     edges: BTreeMap<EntityId, &'a crate::Edge>,
     raw_blocks: std::collections::BTreeSet<EntityId>,
+    source_statements: BTreeMap<EntityId, &'a LiftedStatement>,
     blocks: BTreeMap<EntityId, &'a LiftedBlock>,
     transfers: BTreeMap<EntityId, &'a LiftedTransfer>,
     controls: BTreeMap<EntityId, &'a LiftedControl>,
@@ -42,6 +44,9 @@ pub struct LiftedRenderIndex<'a> {
     omissions: BTreeMap<(EntityId, usize), usize>,
     payloads: BTreeMap<EntityId, &'a super::LiftedErrorPayload>,
     reverts: BTreeMap<EntityId, &'a super::LiftedRevert>,
+    revert_data: BTreeMap<EntityId, &'a super::LiftedRevertData>,
+    data_reverts: BTreeMap<EntityId, &'a super::LiftedRevertData>,
+    data_operations: BTreeMap<EntityId, &'a super::LiftedRevertData>,
     constructions: BTreeMap<EntityId, &'a super::LiftedConstruction>,
     guard_source_error: Option<LiftedRenderError>,
     failure_first: Result<FailureFirstIndex, LiftedRenderError>,
@@ -76,6 +81,15 @@ impl<'a> LiftedRenderIndex<'a> {
         include_shared: bool,
     ) -> Self {
         let mut basic = program.record_count();
+        basic = basic
+            .saturating_add(program.expressions.len())
+            .saturating_add(
+                program
+                    .blocks
+                    .iter()
+                    .map(|b| b.statements.len())
+                    .sum::<usize>(),
+            );
         if let Some(ir) = ir {
             basic = basic
                 .saturating_add(ir.values.len())
@@ -170,6 +184,11 @@ impl<'a> LiftedRenderIndex<'a> {
                 .map(|o| (o.id, o))
                 .collect(),
             word_sources: word::WordSources::new(program, ir),
+            source_statements: program
+                .blocks
+                .iter()
+                .flat_map(|b| b.statements.iter().map(|s| (s.operation, s)))
+                .collect(),
             edges,
             raw_blocks: ir
                 .into_iter()
@@ -184,6 +203,13 @@ impl<'a> LiftedRenderIndex<'a> {
             omissions,
             payloads: program.payloads.iter().map(|p| (p.id, p)).collect(),
             reverts: program.reverts.iter().map(|r| (r.block, r)).collect(),
+            revert_data: program.revert_data.iter().map(|r| (r.id, r)).collect(),
+            data_reverts: program.revert_data.iter().map(|r| (r.block, r)).collect(),
+            data_operations: program
+                .revert_data
+                .iter()
+                .map(|r| (r.operation, r))
+                .collect(),
             constructions: program.constructions.iter().map(|c| (c.block, c)).collect(),
             guard_source_error,
             failure_first: Ok(FailureFirstIndex::default()),
@@ -214,6 +240,7 @@ impl<'a> LiftedRenderIndex<'a> {
             word_sources: word::WordSources::default(),
             edges: BTreeMap::new(),
             raw_blocks: Default::default(),
+            source_statements: BTreeMap::new(),
             blocks: BTreeMap::new(),
             transfers: BTreeMap::new(),
             controls: BTreeMap::new(),
@@ -222,6 +249,9 @@ impl<'a> LiftedRenderIndex<'a> {
             omissions: BTreeMap::new(),
             payloads: BTreeMap::new(),
             reverts: BTreeMap::new(),
+            revert_data: BTreeMap::new(),
+            data_reverts: BTreeMap::new(),
+            data_operations: BTreeMap::new(),
             constructions: BTreeMap::new(),
             guard_source_error: Some(LiftedRenderError::Limit),
             failure_first: Err(LiftedRenderError::Limit),
@@ -338,7 +368,22 @@ impl<'a> LiftedRenderIndex<'a> {
             append(&mut out, ", ", &mut reserve)?;
             quoted(&mut out, &payload.message, &mut reserve)?;
         }
+        if let super::LiftedGuardPayload::Data(id) = guard.payload {
+            append(&mut out, ", ", &mut reserve)?;
+            let text = self.render_guard_data(id, control, &mut reserve)?;
+            append(&mut out, &text, &mut reserve)?;
+        }
         append(&mut out, ");", &mut reserve)?;
+        if let super::LiftedGuardPayload::Data(id) = guard.payload
+            && let Some(note) = self
+                .revert_data(id)
+                .ok_or(LiftedRenderError::MissingWitness(id))?
+                .decode_format(&mut reserve)?
+                .panic_explanation()
+        {
+            append(&mut out, " // ", &mut reserve)?;
+            append(&mut out, note, &mut reserve)?;
+        }
         Ok(Some(out))
     }
 
@@ -626,6 +671,12 @@ impl<'a> LiftedRenderIndex<'a> {
             .get(&statement.operation)
             .copied()
             .ok_or(LiftedRenderError::MissingWitness(statement.operation))?;
+        if operation.opcode == 0xfd
+            && let Some(data) = self.data_operations.get(&statement.operation)
+            && let Some(text) = self.render_data_revert(data.block, &mut reserve)?
+        {
+            return Ok(text);
+        }
         if operation.name.len() > MAX_LIFTED_EXPRESSION_TEXT || !reserve(operation.name.len()) {
             return Err(LiftedRenderError::Limit);
         }

@@ -92,6 +92,8 @@ struct Machine<'a> {
     index: LiftedRenderIndex<'a>,
     host: RecordingHost,
     values: BTreeMap<EntityId, U256>,
+    source_values: BTreeMap<EntityId, U256>,
+    return_buffers: BTreeMap<EntityId, Vec<u8>>,
     current: EntityId,
     observations: Vec<Observation>,
     writes: Vec<(EntityId, U256, Vec<u8>)>,
@@ -136,9 +138,19 @@ impl Machine<'_> {
                 high.statements.len(),
                 "capsule must own its exact terminal suffix"
             );
-            let terminal = self.index.revert(id).unwrap();
-            assert_eq!(plan.revert, terminal.id);
-            assert_eq!(terminal.operation, high.statements[plan.end - 1].operation);
+            let (terminal, operation) = if let Some(terminal) = self.index.revert(id) {
+                (terminal.id, terminal.operation)
+            } else {
+                let terminal = self
+                    .program
+                    .revert_data
+                    .iter()
+                    .find(|data| data.block == id)
+                    .unwrap();
+                (terminal.id, terminal.operation)
+            };
+            assert_eq!(plan.revert, terminal);
+            assert_eq!(operation, high.statements[plan.end - 1].operation);
         }
         for (position, statement) in high.statements.iter().enumerate() {
             if construction.is_some_and(|plan| plan.start == position) {
@@ -153,6 +165,8 @@ impl Machine<'_> {
                 .find(|op| op.id == statement.operation)
                 .unwrap();
             let inputs: Vec<_> = statement.inputs.iter().map(|id| self.word(*id)).collect();
+            self.source_values
+                .extend(operation.inputs.iter().copied().zip(inputs.iter().copied()));
             let outputs = if evm_bytecode::word::arity(operation.opcode).is_some() {
                 vec![evm_bytecode::word::evaluate(operation.opcode, &inputs).unwrap()]
             } else {
@@ -164,6 +178,17 @@ impl Machine<'_> {
                 })?
             };
             assert_eq!(outputs.len(), operation.outputs.len());
+            self.source_values.extend(
+                operation
+                    .outputs
+                    .iter()
+                    .copied()
+                    .zip(outputs.iter().copied()),
+            );
+            if matches!(operation.opcode, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) {
+                self.return_buffers
+                    .insert(operation.id, self.host.state.return_data.clone());
+            }
             if operation.effects.memory_write {
                 let (address, size) = match operation.opcode {
                     0x52 => (inputs[0], U256::from(32)),
@@ -227,6 +252,7 @@ impl Machine<'_> {
                     .iter()
                     .map(|id| self.word(*id))
                     .collect();
+                self.check_recovered_data(id, *kind, &values);
                 if let Some(proof) = self.index.revert(id) {
                     assert_eq!(*kind, ExitKind::Revert);
                     let operation = self.stage.ir.block(id).unwrap().operations.last().unwrap();
@@ -302,6 +328,82 @@ impl Machine<'_> {
             },
             Terminator::Pending => ExecutionOutcome::PartialJump { target: None },
             other => panic!("fixture has a nonterminal exit {other:?}"),
+        }
+    }
+
+    fn check_recovered_data(&self, block: EntityId, kind: ExitKind, values: &[U256]) {
+        use evm_decompile::{
+            LiftedByteSegment, LiftedByteSource, LiftedDataWord, LiftedRevertDataKind,
+        };
+        let data_word = |word: &LiftedDataWord| match word {
+            LiftedDataWord::Constant(value) => *value,
+            LiftedDataWord::SourceValue(value) => self.source_values[value],
+        };
+        for data in self
+            .program
+            .revert_data
+            .iter()
+            .filter(|data| data.block == block)
+        {
+            assert_eq!(kind, ExitKind::Revert);
+            let LiftedRevertDataKind::Segments(segments) = &data.content else {
+                continue;
+            };
+            let mut expected = Vec::new();
+            for segment in segments {
+                match segment {
+                    LiftedByteSegment::Bytes(bytes) => expected.extend_from_slice(bytes),
+                    LiftedByteSegment::Word {
+                        value,
+                        offset,
+                        size,
+                    } => {
+                        let value = data_word(value).to_be_bytes::<32>();
+                        expected.extend_from_slice(
+                            &value[usize::from(*offset)..usize::from(*offset) + usize::from(*size)],
+                        );
+                    }
+                    LiftedByteSegment::Slice {
+                        source,
+                        offset,
+                        size,
+                    } => {
+                        let source_bytes = match source {
+                            LiftedByteSource::Calldata => &self.host.state.calldata,
+                            LiftedByteSource::ReturnData(call) => &self.return_buffers[call],
+                        };
+                        let start = data_word(offset);
+                        let size = usize::try_from(data_word(size)).unwrap();
+                        for index in 0..size {
+                            let byte = start
+                                .checked_add(U256::from(index))
+                                .and_then(|index| usize::try_from(index).ok())
+                                .and_then(|index| source_bytes.get(index))
+                                .copied();
+                            if matches!(source, LiftedByteSource::ReturnData(_)) {
+                                assert!(
+                                    byte.is_some(),
+                                    "reached a forwarded slice with an out-of-bounds returndata read"
+                                );
+                            }
+                            expected.push(byte.unwrap_or(0));
+                        }
+                    }
+                }
+            }
+            assert_eq!(expected.len(), usize::try_from(values[1]).unwrap());
+            let actual = reverted(
+                &ExecutionOutcome::Exit {
+                    kind,
+                    values: values.to_vec(),
+                },
+                &self.host.state,
+            )
+            .unwrap();
+            assert_eq!(
+                expected, actual,
+                "recovered byte identities disagree with independent concrete memory"
+            );
         }
     }
 
@@ -540,6 +642,8 @@ pub(super) fn certify(
         index,
         host: RecordingHost::new(host),
         values: BTreeMap::new(),
+        source_values: BTreeMap::new(),
+        return_buffers: BTreeMap::new(),
         current: stage.ir.entry.unwrap(),
         observations: Vec::new(),
         writes: Vec::new(),

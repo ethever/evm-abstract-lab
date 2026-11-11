@@ -346,7 +346,7 @@ fn canonical_empty_error_string_is_distinct_from_empty_revert() {
 }
 
 #[test]
-fn nonempty_error_panic_forwarded_data_and_failure_observations_stay_conditional() {
+fn panic_promotes_while_unknown_formats_and_failure_observations_stay_conditional() {
     for failure in [
         Failure::Payload,
         Failure::Panic,
@@ -360,11 +360,17 @@ fn nonempty_error_panic_forwarded_data_and_failure_observations_stay_conditional
         let artifact = checked(&input);
         assert_eq!(
             guards(&artifact),
-            0,
+            usize::from(matches!(failure, Failure::Payload | Failure::Panic)),
             "failure {failure:?}: {}",
             render_text(&artifact)
         );
-        assert!(!render_text(&artifact).contains("require("));
+        assert_eq!(
+            render_text(&artifact).contains("require("),
+            matches!(failure, Failure::Panic)
+        );
+        if matches!(failure, Failure::Panic) {
+            assert!(render_text(&artifact).contains("Panic(0x11)"));
+        }
         for value in [0_u64, 1] {
             let mut host = MemoryHost::new(&input, calldata(&[U256::from(value)]));
             host.return_data = vec![0xde, 0xad, 0xbe, 0xef];

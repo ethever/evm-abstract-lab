@@ -181,7 +181,32 @@ fn wrap_alias_entry_call_and_counter_negatives_cannot_reuse_a_safe_loop_summary(
             lifted(&artifact).1.reverts.is_empty(),
             "admitted unsafe source variant {change:?}"
         );
-        assert!(lifted(&artifact).1.constructions.is_empty(), "{change:?}");
+        let program = lifted(&artifact).1;
+        for data in &program.revert_data {
+            assert!(
+                !matches!(
+                    data.decode_format(|_| true).unwrap(),
+                    evm_decompile::LiftedRevertFormat::ErrorString(_)
+                ),
+                "{change:?}"
+            );
+        }
+        // Some changed reads expose complete, different raw data. Certifying
+        // that actual data does not validate the former ABI/loop summary.
+        for construction in &program.constructions {
+            let data = program
+                .revert_data
+                .iter()
+                .find(|data| data.id == construction.revert)
+                .expect("a raw-data constructor must retain its actual byte proof");
+            assert!(
+                matches!(
+                    &data.content,
+                    evm_decompile::LiftedRevertDataKind::Segments(_)
+                ),
+                "{change:?}"
+            );
+        }
         let mut execution_host = host(
             &input,
             &[U256::from(1), U256::from(spec.slot), U256::ZERO],
