@@ -666,13 +666,19 @@ fn remap_program(program: &mut LiftedProgram, ids: &BTreeMap<EntityId, EntityId>
         id(&mut revert.id);
         id(&mut revert.payload);
     }
+    for data in &mut program.revert_data {
+        // Every reference inside the record names the immutable raw witness.
+        id(&mut data.id);
+    }
     for construction in &mut program.constructions {
         id(&mut construction.id);
         id(&mut construction.revert);
     }
     for failure in &mut program.failures {
-        if let crate::LiftedGuardPayload::ErrorString(payload) = &mut failure.payload {
-            id(payload);
+        match &mut failure.payload {
+            crate::LiftedGuardPayload::ErrorString(payload)
+            | crate::LiftedGuardPayload::Data(payload) => id(payload),
+            crate::LiftedGuardPayload::EmptyRevert => {}
         }
     }
     for p in &mut program.procedures {
@@ -685,10 +691,12 @@ fn remap_program(program: &mut LiftedProgram, ids: &BTreeMap<EntityId, EntityId>
     for c in &mut program.controls {
         id(&mut c.id);
         id(&mut c.condition);
-        if let Some(guard) = &mut c.guard
-            && let crate::LiftedGuardPayload::ErrorString(payload) = &mut guard.payload
-        {
-            id(payload);
+        if let Some(guard) = &mut c.guard {
+            match &mut guard.payload {
+                crate::LiftedGuardPayload::ErrorString(payload)
+                | crate::LiftedGuardPayload::Data(payload) => id(payload),
+                crate::LiftedGuardPayload::EmptyRevert => {}
+            }
         }
     }
 }

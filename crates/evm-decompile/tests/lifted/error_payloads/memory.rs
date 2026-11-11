@@ -34,7 +34,42 @@ fn noncanonical_unknown_aliasing_and_invalid_utf8_payloads_stay_raw() {
             "accepted {mutation:?}: {}",
             render_text(&artifact)
         );
-        assert!(lifted(&artifact).1.constructions.is_empty());
+        let program = lifted(&artifact).1;
+        for data in &program.revert_data {
+            assert!(
+                !matches!(
+                    data.decode_format(|_| true).unwrap(),
+                    evm_decompile::LiftedRevertFormat::ErrorString(_)
+                ),
+                "a noncanonical or unproved Error(string) became canonical: {mutation:?}"
+            );
+        }
+        // Complete non-ABI bytes or symbolic words may still have a lazy
+        // constructor. Opaque aliasing/unknown-width cases must not get one.
+        for construction in &program.constructions {
+            let data = program
+                .revert_data
+                .iter()
+                .find(|data| data.id == construction.revert)
+                .expect("non-Error constructors need their own terminal data proof");
+            assert!(matches!(
+                &data.content,
+                evm_decompile::LiftedRevertDataKind::Segments(_)
+            ));
+        }
+        if matches!(
+            mutation,
+            Mutation::UnknownStore | Mutation::UnknownCopy(_) | Mutation::UnknownCallOutput
+        ) {
+            assert!(
+                program
+                    .revert_data
+                    .iter()
+                    .all(|data| matches!(data.content, evm_decompile::LiftedRevertDataKind::Raw)),
+                "{mutation:?}"
+            );
+            assert!(program.constructions.is_empty(), "{mutation:?}");
+        }
         let mut host = MemoryHost::new(&input, calldata(&[U256::ZERO, U256::from(196)]));
         host.responses.push_back(ExternalResponse {
             return_data: vec![0xee; 32],

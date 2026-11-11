@@ -58,9 +58,9 @@ fn explicit_legacy_configuration_changes_identity_only_with_declared_schema() {
         format!("{:x}", alloy_primitives::keccak256(schema_three)),
         "1cbc4f5e0e58c2624819ab4a8a6bd995420398b147f8bbade434acfb4b5e5dfd"
     );
-    assert_eq!(artifact.schema_version, 10);
+    assert_eq!(artifact.schema_version, 11);
     let mut schema_current = b"osaka\0\0".to_vec();
-    schema_current.extend_from_slice(format!("schema=10;config={config:?}").as_bytes());
+    schema_current.extend_from_slice(format!("schema=11;config={config:?}").as_bytes());
     assert_eq!(
         artifact.id.0,
         format!("{:x}", alloy_primitives::keccak256(schema_current))

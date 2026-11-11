@@ -1,5 +1,7 @@
-//! Independent certificate and normalized-source executor. Recognition is never
-//! delegated back to the production projector or its certificate checker.
+//! Independent empty-revert certificate and normalized-source executor.
+//! Byte-data certificates have their own memory/execution oracle. The closure
+//! checked here is the EmptyRevert subset, not every newly recoverable payload.
+//! Recognition is never delegated back to the production projector/checker.
 use super::*;
 use crate::oracle::evaluate;
 use evm_decompile::{
@@ -165,14 +167,29 @@ pub(super) fn certificate(stage: &Stage) {
     let root = &stage.ir.structured.as_ref().unwrap().root;
     let mut source = BTreeMap::new();
     nodes(root, &mut source);
-    let table: BTreeMap<_, _> = program
+    let all_table: BTreeMap<_, _> = program
         .failures
         .iter()
         .map(|fact| (fact.block, fact.rank))
         .collect();
     assert_eq!(
-        table.len(),
+        all_table.len(),
         program.failures.len(),
+        "duplicate failure fact"
+    );
+    let table: BTreeMap<_, _> = program
+        .failures
+        .iter()
+        .filter(|fact| fact.payload == LiftedGuardPayload::EmptyRevert)
+        .map(|fact| (fact.block, fact.rank))
+        .collect();
+    assert_eq!(
+        table.len(),
+        program
+            .failures
+            .iter()
+            .filter(|fact| fact.payload == LiftedGuardPayload::EmptyRevert)
+            .count(),
         "duplicate shared failure fact"
     );
     assert_eq!(
@@ -208,17 +225,23 @@ pub(super) fn certificate(stage: &Stage) {
         let Some(guard) = &control.guard else {
             continue;
         };
+        let guard_table = if guard.payload == LiftedGuardPayload::EmptyRevert {
+            &table
+        } else {
+            &all_table
+        };
         assert_eq!(index.guard(control.node), Some(guard));
-        let predicate = index
-            .render_condition(control.condition, !guard.pass_nonzero, |_| true)
-            .unwrap();
-        let expected = format!("require({predicate});");
-        assert_eq!(
-            index.render_guard(control, |_| true).unwrap(),
-            Some(expected),
-            "shared formatter must use this exact condition and polarity"
-        );
-        assert_eq!(guard.payload, LiftedGuardPayload::EmptyRevert);
+        if guard.payload == LiftedGuardPayload::EmptyRevert {
+            let predicate = index
+                .render_condition(control.condition, !guard.pass_nonzero, |_| true)
+                .unwrap();
+            let expected = format!("require({predicate});");
+            assert_eq!(
+                index.render_guard(control, |_| true).unwrap(),
+                Some(expected),
+                "shared formatter must use this exact condition and polarity"
+            );
+        }
         let StructuredKind::If {
             then_branch,
             else_branch,
@@ -264,7 +287,7 @@ pub(super) fn certificate(stage: &Stage) {
         );
         assert_eq!(first_transfer(pass), Some(guard.pass_edge));
         assert_eq!(first_transfer(fail), Some(guard.failure_edge));
-        assert!(table.contains_key(&stage.ir.edge(guard.failure_edge).unwrap().to));
+        assert!(guard_table.contains_key(&stage.ir.edge(guard.failure_edge).unwrap().to));
         assert_eq!(index.node(pass.id), Some(pass));
         assert_eq!(index.node(fail.id), Some(fail));
         if let Some(tail) = &guard.continuation {
@@ -291,7 +314,7 @@ pub(super) fn certificate(stage: &Stage) {
                 if let StructuredKind::Block { block } | StructuredKind::Exit { block } = node.kind
                 {
                     assert!(
-                        table.contains_key(&block),
+                        guard_table.contains_key(&block),
                         "omitted suffix contains nonfailure block"
                     );
                 }
@@ -306,7 +329,7 @@ pub(super) fn certificate(stage: &Stage) {
         } else if falls_through(stage, fail) {
             // An inner last-child If may fail into an enclosing join. Its
             // global CFG proof authorizes require, but no omission is implied.
-            assert!(table.contains_key(&stage.ir.edge(guard.failure_edge).unwrap().to));
+            assert!(guard_table.contains_key(&stage.ir.edge(guard.failure_edge).unwrap().to));
         }
     }
     for node in source.values() {

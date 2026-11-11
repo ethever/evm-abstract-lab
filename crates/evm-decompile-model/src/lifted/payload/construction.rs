@@ -1,7 +1,7 @@
 //! Independent source slice admission excludes unrelated memory observations.
 use crate::EntityId;
 use std::collections::{BTreeMap, BTreeSet};
-pub(super) fn capsule_operation(op: &crate::Operation) -> bool {
+pub(in crate::lifted) fn capsule_operation(op: &crate::Operation) -> bool {
     if op.effects.is_pure() {
         let arity = evm_bytecode::word::arity(op.opcode);
         return (arity == Some(op.inputs.len()) && op.outputs.len() == 1)
@@ -42,7 +42,7 @@ pub(super) fn capsule_operation(op: &crate::Operation) -> bool {
         && !e.log
 }
 
-pub(super) fn construction_dependencies(
+pub(in crate::lifted) fn construction_dependencies(
     block: &crate::Block,
     proof: &crate::LiftedRevert,
     constants: &BTreeMap<EntityId, crate::U256>,

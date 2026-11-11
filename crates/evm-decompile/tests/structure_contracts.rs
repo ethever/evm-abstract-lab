@@ -110,6 +110,104 @@ fn pool_manager_high_projection_omits_empty_then_else_pairs() {
     assert!(export.text.contains("evm.revert("));
 }
 
+#[test]
+fn pool_manager_recovers_custom_words_and_panic_without_requiring_string_abi() {
+    use evm_decompile::{LiftedByteSegment, LiftedGuardPayload, LiftedRevertDataKind};
+    let artifact = &pool_manager().artifact;
+    let ir = &artifact.current().unwrap().ir;
+    let program = ir.lifted.as_ref().unwrap();
+    for pc in [7714, 7758, 7857] {
+        let proofs: Vec<_> = program
+            .revert_data
+            .iter()
+            .filter(|data| {
+                ir.block(data.block)
+                    .unwrap()
+                    .source
+                    .is_some_and(|source| source.pc == pc)
+            })
+            .collect();
+        assert!(!proofs.is_empty(), "missing recovered terminal site {pc}");
+        assert!(
+            proofs
+                .iter()
+                .all(|data| matches!(data.content, LiftedRevertDataKind::Segments(_))),
+            "constant-address selector/word constructor remained opaque at {pc}"
+        );
+        if pc != 7857 {
+            assert!(
+                proofs.iter().any(|data| data
+                    .content
+                    .segments()
+                    .iter()
+                    .any(|segment| matches!(segment, LiftedByteSegment::Word { size: 32, .. }))),
+                "lost full symbolic argument at {pc}"
+            );
+        }
+    }
+    // Failure to establish a pointer's nonwrapping range must not invalidate
+    // the whole projection or pretend that its original memory slice is empty.
+    let pointer = program
+        .revert_data
+        .iter()
+        .find(|data| {
+            ir.block(data.block)
+                .unwrap()
+                .source
+                .is_some_and(|source| source.pc == 7802)
+        })
+        .expect("unknown pointer still has an occurrence-local raw data record");
+    if matches!(pointer.content, LiftedRevertDataKind::Raw) {
+        assert!(
+            !program
+                .constructions
+                .iter()
+                .any(|construction| construction.revert == pointer.id)
+        );
+    }
+    let recovered = program
+        .revert_data
+        .iter()
+        .filter(|data| matches!(data.content, LiftedRevertDataKind::Segments(_)))
+        .count();
+    let guards = program
+        .controls
+        .iter()
+        .filter(|control| {
+            control
+                .guard
+                .as_ref()
+                .is_some_and(|guard| matches!(guard.payload, LiftedGuardPayload::Data(_)))
+        })
+        .count();
+    let index = program.render_index(ir);
+    let boundary = ir.structured.as_ref().unwrap().root.id;
+    let selected = program
+        .controls
+        .iter()
+        .filter(|control| {
+            control
+                .guard
+                .as_ref()
+                .is_some_and(|guard| matches!(guard.payload, LiftedGuardPayload::Data(_)))
+                && matches!(
+                    index.if_plan(control.node, boundary),
+                    evm_decompile::LiftedIfPlan::Require(_)
+                )
+        })
+        .count();
+    println!(
+        "PoolManager revert data: total={}, recovered={recovered}, data_guards={guards}, selected_data_requires={selected}, dynamic_site={:?}",
+        program.revert_data.len(),
+        pointer.content
+    );
+    let export = export_text(artifact, &Cancellation::default());
+    assert_eq!(export.status, TextExportStatus::Complete);
+    assert!(export.text.contains("Panic(0x41)"));
+    assert!(export.text.contains("selector = 0xd5e2f7ab"));
+    assert!(export.text.contains("selector = 0x1ad777f8"));
+}
+
 // A dispatcher case/transition remains real retained structure, even though it
 // is not a separate owned AST node. Count it so fallback cannot hide growth.
 fn structure_weight(root: &StructuredNode) -> usize {

@@ -1,5 +1,5 @@
 //! Source dependencies bound the exact lazy constructor statement suffix.
-use crate::{EntityId, LiftedRevert, U256};
+use crate::{EntityId, U256};
 use std::collections::{BTreeMap, BTreeSet};
 pub(in crate::lift) fn capsule_operation(op: &crate::Operation) -> bool {
     if op.effects.is_pure() {
@@ -44,9 +44,19 @@ pub(in crate::lift) fn capsule_operation(op: &crate::Operation) -> bool {
 
 /// Word dependencies plus exact source slot initializers; unrelated memory
 /// observations/writes are barriers even though lazy replay could preserve them.
-pub(super) fn construction_dependencies(
+pub(super) fn data_construction_dependencies(
     block: &crate::Block,
-    proof: &LiftedRevert,
+    proof: &crate::LiftedRevertData,
+    constants: &BTreeMap<EntityId, U256>,
+) -> BTreeSet<EntityId> {
+    dependencies(block, &proof.writes, proof.offset, proof.size, constants)
+}
+
+fn dependencies(
+    block: &crate::Block,
+    writes: &[EntityId],
+    offset: EntityId,
+    size: EntityId,
     constants: &BTreeMap<EntityId, U256>,
 ) -> BTreeSet<EntityId> {
     let definitions: BTreeMap<_, _> = block
@@ -70,9 +80,9 @@ pub(super) fn construction_dependencies(
             }
         }
     }
-    let mut needed: BTreeSet<_> = proof.writes.iter().copied().collect();
-    let mut pending = vec![proof.offset, proof.size];
-    for write in &proof.writes {
+    let mut needed: BTreeSet<_> = writes.iter().copied().collect();
+    let mut pending = vec![offset, size];
+    for write in writes {
         if let Some(op) = operations.get(write) {
             pending.extend(&op.inputs);
         }

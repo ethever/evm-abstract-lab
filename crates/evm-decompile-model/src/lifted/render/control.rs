@@ -146,6 +146,12 @@ impl ControlPlanIndex {
             let Some(guard) = index.guard(control.node) else {
                 continue;
             };
+            match index.guard_data_bindable(control, pay) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(Error::Limit) => return Self::default(),
+                Err(_) => continue,
+            }
             let Some(&scope) = source.require_scopes.get(&control.node) else {
                 continue;
             };

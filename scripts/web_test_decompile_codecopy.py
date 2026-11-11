@@ -29,8 +29,18 @@ def run(context):
         text = painted_copy(page, canvas)
         if dirty:
             assert not program.get("reverts") and not program.get("payloads")
-            assert "evm.codecopy(" in text and "evm.revert(offset =" in text
+            data, = program["revert_data"]
+            assert "segments" in data["content"], data
+            assert all(plan["revert"] == data["id"] for plan in program.get("constructions", []))
+            assert text.count("evm.codecopy(") == 1 and "evm.revert(offset =" in text
             assert "require(" not in text and MESSAGE not in text
+            source_descendant(page, canvas, artifact, current["id"], data["id"])
+            inspector_control(page, canvas, "Decoded format: Unrecognized format",
+                              "decompile-entity-detail")
+            inspector_control(page, canvas, "Rendered data: Revert(data = concat(",
+                              "decompile-entity-detail")
+            high(page, canvas)
+            assert painted_copy(page, canvas) == text
         else:
             payload, = program["payloads"]
             proof, = program["reverts"]
@@ -50,13 +60,14 @@ def run(context):
             source_descendant(page, canvas, artifact, current["id"], proof["id"])
             inspector_control(page, canvas, "Captured runtime code hash: " + proof["code_hash"],
                               "decompile-entity-detail")
-            choose_stage(page, canvas, artifact, "structured")
-            click_control(page, canvas, "Structured code", role="tab")
-            raw = copy_code(page, canvas)
-            assert "evm.codecopy(" in raw and "evm.revert(" in raw
-            choose_stage(page, canvas, artifact, "lifted")
-            high(page, canvas)
-            assert painted_copy(page, canvas) == text
+        choose_stage(page, canvas, artifact, "structured")
+        click_control(page, canvas, "Structured code", role="tab")
+        raw = copy_code(page, canvas)
+        assert raw.count("evm.codecopy(") == 1 and "evm.revert(" in raw
+        assert "Revert(data =" not in raw and 'evm.revert("' not in raw
+        choose_stage(page, canvas, artifact, "lifted")
+        high(page, canvas)
+        assert painted_copy(page, canvas) == text
         expect(page.locator("#analysis-status")).to_contain_text("Artifact: " + artifact["id"])
         canvas.screenshot(path=str(context.output / (name + "-review.png")))
         results.append({"dirty": dirty, "artifact": artifact["id"], "text": text})

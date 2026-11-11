@@ -22,6 +22,7 @@ mod execution_domain;
 mod guard_sources;
 mod guards;
 mod named_operands;
+mod revert_data;
 mod shared_procedures;
 
 // A calldata branch joins a live word after MSTORE/MLOAD/SSTORE/SLOAD. The

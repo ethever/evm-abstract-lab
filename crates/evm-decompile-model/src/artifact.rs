@@ -289,12 +289,32 @@ impl Artifact {
     /// Lightweight version admission. Full source/proof certification belongs
     /// to core; older advertised schemas cannot opt in to newer semantic fields.
     pub fn admits_schema(&self) -> bool {
+        if self.schema_version < 11
+            && self.stages.iter().any(|stage| {
+                stage.ir.lifted.as_ref().is_some_and(|p| {
+                    !p.revert_data.is_empty()
+                        || p.failures
+                            .iter()
+                            .any(|f| matches!(f.payload, crate::LiftedGuardPayload::Data(_)))
+                        || p.controls
+                            .iter()
+                            .filter_map(|c| c.guard.as_ref())
+                            .any(|g| matches!(g.payload, crate::LiftedGuardPayload::Data(_)))
+                })
+            })
+        {
+            return false;
+        }
         let has_code_source = self.stages.iter().any(|s| {
             s.ir.runtime_bytecode.is_some()
                 || s.ir
                     .lifted
                     .as_ref()
                     .is_some_and(|p| p.reverts.iter().any(|r| r.code_hash.is_some()))
+                || s.ir
+                    .lifted
+                    .as_ref()
+                    .is_some_and(|p| p.revert_data.iter().any(|r| r.code_hash.is_some()))
         });
         if self.schema_version < 10 && has_code_source {
             return false;
@@ -312,6 +332,12 @@ impl Artifact {
                     .is_some_and(|fork| fork != self.input.fork)
                 || s.ir.lifted.as_ref().is_some_and(|p| {
                     p.reverts.iter().any(|r| {
+                        r.execution_domain != s.ir.execution_domain
+                            || r.execution_fork != s.ir.execution_fork
+                            || r.code_hash.is_some_and(|hash| {
+                                s.ir.runtime_bytecode.is_none() || Some(hash) != code_hash
+                            })
+                    }) || p.revert_data.iter().any(|r| {
                         r.execution_domain != s.ir.execution_domain
                             || r.execution_fork != s.ir.execution_fork
                             || r.code_hash.is_some_and(|hash| {
@@ -339,6 +365,7 @@ impl Artifact {
         }
         match self.schema_version {
             crate::SCHEMA_VERSION => true,
+            10 => true,
             9 => true,
             8 => true,
             7 => true,
@@ -427,6 +454,7 @@ pub enum Record<'a> {
     LiftedControl(&'a crate::LiftedControl),
     LiftedPayload(&'a crate::LiftedErrorPayload),
     LiftedRevert(&'a crate::LiftedRevert),
+    LiftedRevertData(&'a crate::LiftedRevertData),
     LiftedConstruction(&'a crate::LiftedConstruction),
     SharedProcedure(&'a crate::SharedProcedure),
     SharedInvocation(&'a crate::SharedInvocation),
@@ -467,6 +495,9 @@ pub fn records(ir: &Ir) -> BTreeMap<EntityId, Record<'_>> {
         }
         for revert in &lifted.reverts {
             map.insert(revert.id, Record::LiftedRevert(revert));
+        }
+        for data in &lifted.revert_data {
+            map.insert(data.id, Record::LiftedRevertData(data));
         }
         for construction in &lifted.constructions {
             map.insert(construction.id, Record::LiftedConstruction(construction));

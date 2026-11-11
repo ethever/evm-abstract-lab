@@ -13,6 +13,7 @@ pub(in crate::lifted) fn check(
         return Ok(());
     }
     program.validate()?;
+    crate::lifted::revert_data::check_sources(program, ir, nodes)?;
     let raw: BTreeMap<_, _> = ir.blocks.iter().map(|b| (b.id, b)).collect();
     let operations: BTreeMap<_, _> = ir
         .blocks
@@ -37,6 +38,7 @@ pub(in crate::lifted) fn check(
         })
         .collect();
     let reverts: BTreeMap<_, _> = program.reverts.iter().map(|r| (r.id, r)).collect();
+    let data_ids: BTreeSet<_> = program.revert_data.iter().map(|r| r.id).collect();
     let code_hash = ir
         .runtime_bytecode
         .as_ref()
@@ -116,6 +118,9 @@ pub(in crate::lifted) fn check(
         }
     }
     for plan in &program.constructions {
+        if data_ids.contains(&plan.revert) {
+            continue;
+        }
         let fail = || LiftedModelError::Payload(plan.id);
         let body = high.get(&plan.block).ok_or_else(fail)?;
         let proof = reverts.get(&plan.revert).ok_or_else(fail)?;

@@ -538,7 +538,22 @@ fn missing_capsule_and_alias_padding_or_observing_failure_keep_primitive_behavio
         let artifact = artifact(&runtime(Shape::Nonzero, MESSAGE, after, padding));
         let stage = artifact.current().unwrap();
         let program = stage.ir.lifted.as_ref().unwrap();
-        assert!(program.controls.iter().all(|c| c.guard.is_none()));
+        assert!(
+            program
+                .controls
+                .iter()
+                .all(|c| c.guard.as_ref().is_none_or(|guard| {
+                    padding && matches!(guard.payload, LiftedGuardPayload::Data(_))
+                }))
+        );
+        if padding {
+            assert!(program.payloads.is_empty() && program.reverts.is_empty());
+            let data = &program.revert_data[0];
+            assert!(matches!(
+                data.decode_format(|_| true).unwrap(),
+                evm_abstract_protocol::decompile_model::LiftedRevertFormat::Raw
+            ));
+        }
         for dependencies in [false, true] {
             let text = copied_text(&high(stage, dependencies));
             assert!(
@@ -700,6 +715,26 @@ fn forged_construction_sources_quarantine_the_entire_overlay_even_on_failed_snap
 #[test]
 fn schema_three_empty_guards_remain_readable_and_cannot_advertise_error_payloads() {
     let mut legacy = artifact("5f356008575f5ffd5b602a5f5500");
+    // A schema-3 producer has the same empty guard and raw witness, but cannot
+    // advertise the occurrence-local metadata added by a modern producer.
+    for stage in &mut legacy.stages {
+        if let Some(program) = &mut stage.ir.lifted {
+            assert!(
+                program
+                    .controls
+                    .iter()
+                    .filter_map(|control| control.guard.as_ref())
+                    .all(|guard| guard.payload == LiftedGuardPayload::EmptyRevert)
+            );
+            assert!(
+                program
+                    .failures
+                    .iter()
+                    .all(|failure| failure.payload == LiftedGuardPayload::EmptyRevert)
+            );
+            program.revert_data.clear();
+        }
+    }
     legacy.schema_version = 3;
     legacy.readability.clear();
     model::check_artifact(&legacy).unwrap();
@@ -709,6 +744,7 @@ fn schema_three_empty_guards_remain_readable_and_cannot_advertise_error_payloads
             assert!(program.get("payloads").is_none());
             assert!(program.get("reverts").is_none());
             assert!(program.get("constructions").is_none());
+            assert!(program.get("revert_data").is_none());
         }
     }
     let read: DecompileArtifact = serde_json::from_value(wire).unwrap();

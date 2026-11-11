@@ -129,7 +129,7 @@ fn artifact_records_reject_arrays_and_missing_nullable_fields() {
 
 #[test]
 fn request_records_are_strict_objects_with_no_defaulted_missing_limits() {
-    assert_eq!(SCHEMA_VERSION, 10);
+    assert_eq!(SCHEMA_VERSION, 11);
     let config = Config::default();
     let wire = serde_json::to_value(&config).unwrap();
     assert_eq!(

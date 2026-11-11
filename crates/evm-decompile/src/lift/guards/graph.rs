@@ -32,6 +32,9 @@ impl<'a> Graph<'a> {
             .saturating_add(program.transfers.len())
             .saturating_add(program.controls.len())
             .saturating_add(program.failures.len())
+            .saturating_add(program.constructions.len())
+            .saturating_add(program.reverts.len())
+            .saturating_add(program.revert_data.len())
             .saturating_add(1);
         if !pay(units.saturating_mul(6)) {
             return None;
@@ -47,6 +50,7 @@ impl<'a> Graph<'a> {
         let expressions: BTreeMap<_, _> = program.expressions.iter().map(|e| (e.id, e)).collect();
         let plans: BTreeMap<_, _> = program.constructions.iter().map(|c| (c.block, c)).collect();
         let reverts: BTreeMap<_, _> = program.reverts.iter().map(|r| (r.id, r)).collect();
+        let data: BTreeMap<_, _> = program.revert_data.iter().map(|r| (r.id, r)).collect();
         let mut rules = vec![Rule::Refused; ir.blocks.len()];
         let mut successors = vec![Vec::new(); ir.blocks.len()];
         let mut predecessors = vec![Vec::new(); ir.blocks.len()];
@@ -72,9 +76,23 @@ impl<'a> Graph<'a> {
             let payload = plans
                 .get(&block.id)
                 .filter(|p| p.start == 0 && p.end == lifted.statements.len())
-                .and_then(|p| reverts.get(&p.revert))
-                .filter(|r| r.block == block.id)
-                .map(|r| crate::LiftedGuardPayload::ErrorString(r.payload));
+                .and_then(|p| {
+                    reverts
+                        .get(&p.revert)
+                        .filter(|r| r.block == block.id)
+                        .map(|r| crate::LiftedGuardPayload::ErrorString(r.payload))
+                        .or_else(|| {
+                            data.get(&p.revert)
+                                .filter(|r| {
+                                    r.block == block.id
+                                        && matches!(
+                                            &r.content,
+                                            crate::LiftedRevertDataKind::Segments(_)
+                                        )
+                                })
+                                .map(|r| crate::LiftedGuardPayload::Data(r.id))
+                        })
+                });
             // All reads remain primitive witnesses. Even a discarded SLOAD or
             // CALLDATASIZE forbids erasing this failed-path observation.
             let transparent = block.operations.iter().enumerate().all(|(position, op)| {

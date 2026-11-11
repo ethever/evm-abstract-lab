@@ -291,6 +291,9 @@ fn pair_constructor_keeps_its_scope_sources_and_complete_copied_text() {
             for proof in &mut program.reverts {
                 proof.execution_fork = Some(relabelled.input.fork);
             }
+            for data in &mut program.revert_data {
+                data.execution_fork = Some(relabelled.input.fork);
+            }
         }
     }
     assert!(relabelled.admits_schema());

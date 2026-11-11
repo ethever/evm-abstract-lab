@@ -116,10 +116,9 @@ impl SharedSourceIndex<'_> {
                         exprs.extend(statement.inputs.iter().copied());
                     }
                     if let Some(c) = self.constructions.get(block) {
-                        let r = self
-                            .reverts
-                            .get(&c.revert)
-                            .ok_or(Error::Missing(c.revert))?;
+                        // Occurrence-local symbolic data has no invocation
+                        // binding contract yet. Retain that source inline.
+                        let r = self.reverts.get(&c.revert).ok_or(Error::Region(root))?;
                         if entities
                             .len()
                             .saturating_add(r.writes.len())

@@ -782,7 +782,25 @@ fn installed_cli_retains_the_actual_constructor_and_bad_padding_stays_raw() {
     assert!(json.status.success());
     let artifact: evm_decompile::Artifact = serde_json::from_slice(&json.stdout).unwrap();
     let program = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
-    assert!(program.payloads.is_empty() && program.constructions.is_empty());
+    assert!(program.payloads.is_empty() && program.reverts.is_empty());
+    let data = program
+        .revert_data
+        .first()
+        .expect("dirty bytes remain recoverable");
+    assert!(matches!(
+        data.content,
+        evm_decompile::LiftedRevertDataKind::Segments(_)
+    ));
+    assert_eq!(
+        data.decode_format(|_| true).unwrap(),
+        evm_decompile::LiftedRevertFormat::Raw
+    );
+    assert!(
+        program
+            .constructions
+            .iter()
+            .all(|plan| plan.revert == data.id)
+    );
     let text = run(&["--hex", &corrupt]);
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();

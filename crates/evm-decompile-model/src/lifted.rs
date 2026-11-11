@@ -11,6 +11,7 @@ pub(crate) mod codec;
 mod evaluate;
 mod payload;
 pub(crate) mod render;
+mod revert_data;
 pub(crate) mod sources;
 mod validate;
 mod word;
@@ -18,6 +19,10 @@ pub use payload::{LiftedConstruction, LiftedErrorPayload, LiftedRevert, MAX_ERRO
 pub use render::{
     FailureFirstIf, LiftedBranchLayout, LiftedBranchLayouts, LiftedIfPlan, LiftedIfSuffix,
     LiftedRenderError, LiftedRenderIndex, RequireIf,
+};
+pub use revert_data::{
+    LiftedByteSegment, LiftedByteSource, LiftedDataWord, LiftedRevertData, LiftedRevertDataKind,
+    LiftedRevertFormat, MAX_REVERT_DATA_BYTES,
 };
 pub use word::{WordExpr, WordRewrite, WordSimplifyError, simplify_word};
 
@@ -233,6 +238,8 @@ pub enum LiftedGuardPayload {
     EmptyRevert,
     /// Canonical Error(string) byte payload in the shared payload arena.
     ErrorString(EntityId),
+    /// Occurrence-local schema-11 byte data; symbolic words retain raw scope.
+    Data(EntityId),
 }
 impl LiftedGuardPayload {
     /// Whether this is the legacy zero-length payload.
@@ -329,6 +336,9 @@ pub struct LiftedProgram {
     /// Terminal byte certificates over exact primitive memory versions.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reverts: Vec<LiftedRevert>,
+    /// Schema-11 occurrence-local, format-independent byte data.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub revert_data: Vec<LiftedRevertData>,
     /// Exact source statement ranges retaining lazy original fault semantics.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub constructions: Vec<LiftedConstruction>,
@@ -384,6 +394,7 @@ impl LiftedProgram {
     pub fn has_payloads(&self) -> bool {
         !self.payloads.is_empty()
             || !self.reverts.is_empty()
+            || !self.revert_data.is_empty()
             || !self.constructions.is_empty()
             || self.failures.iter().any(|f| !f.payload.is_empty())
             || self
@@ -419,6 +430,9 @@ impl LiftedProgram {
                     .saturating_add(usize::from(r.code_hash.is_some()).saturating_mul(32))
             }))
             .saturating_add(self.constructions.len().saturating_mul(5))
+            .saturating_add(self.revert_data.iter().fold(0_usize, |n, data| {
+                n.saturating_add(data.record_count().saturating_sub(1))
+            }))
             .saturating_add(
                 self.controls
                     .iter()
@@ -457,6 +471,7 @@ impl LiftedProgram {
             .chain(self.controls.iter().map(|c| c.id))
             .chain(self.payloads.iter().map(|p| p.id))
             .chain(self.reverts.iter().map(|r| r.id))
+            .chain(self.revert_data.iter().map(|r| r.id))
             .chain(self.constructions.iter().map(|c| c.id))
             .chain(self.procedures.iter().map(|p| p.id))
             .chain(self.invocations.iter().map(|i| i.id))

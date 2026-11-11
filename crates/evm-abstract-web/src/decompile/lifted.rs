@@ -8,6 +8,7 @@ use evm_abstract_protocol::decompile_model::{
     LiftedTransfer, Stage, StructuredKind,
 };
 
+mod revert_data;
 pub(super) mod shared;
 pub(super) mod work;
 
@@ -29,6 +30,9 @@ pub(super) fn visit(program: &LiftedProgram, visitor: &mut impl FnMut(EntityId, 
     }
     for payload in &program.payloads {
         visitor(payload.id, EntityKind::LiftedPayload);
+    }
+    for data in &program.revert_data {
+        visitor(data.id, EntityKind::LiftedRevertData);
     }
     for revert in &program.reverts {
         visitor(revert.id, EntityKind::LiftedRevert);
@@ -144,6 +148,8 @@ pub(super) fn details_prepared(
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         ));
+    } else if let Some(data) = index.revert_data(&stage.ir, id) {
+        revert_data::details(data, renderer, work, &mut lines, &mut references);
     } else if let Some(revert) = index.revert(&stage.ir, id) {
         lines.push(format!(
             "{} Error(string) REVERT h{} · b{} · o{}",
@@ -359,10 +365,20 @@ pub(super) fn details_prepared(
                     references.push(payload);
                     "Error(string)"
                 }
+                LiftedGuardPayload::Data(data) => {
+                    references.push(data);
+                    "REVERT data"
+                }
             };
             lines.push(format!(
                 "{} {kind} guard h{} · ast{}: {}",
-                if admitted { "Certified" } else { "Unadmitted" },
+                if !admitted {
+                    "Unadmitted"
+                } else if matches!(guard.payload, LiftedGuardPayload::Data(_)) {
+                    "Recovered"
+                } else {
+                    "Certified"
+                },
                 id.0,
                 control.node.0,
                 selected_header.unwrap_or_else(|| "original source If retained".into())
@@ -417,6 +433,10 @@ pub(super) fn details_prepared(
                 if let Some(payload) = renderer.payload(payload) {
                     lines.push(format!("Exact UTF-8 message: {:?}", payload.message));
                 }
+                lines.push("Lazy failure construction retains original memory expansion, operation order and exceptional faults; evaluated only on the original failure route.".into());
+            }
+            if let LiftedGuardPayload::Data(data) = guard.payload {
+                lines.push(format!("Occurrence-local failure data: h{}", data.0));
                 lines.push("Lazy failure construction retains original memory expansion, operation order and exceptional faults; evaluated only on the original failure route.".into());
             }
             if let Some(continuation) = &guard.continuation {

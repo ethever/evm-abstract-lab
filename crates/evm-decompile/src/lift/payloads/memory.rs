@@ -11,6 +11,7 @@ mod cycles;
 mod edge;
 mod invariant;
 mod relations;
+mod returndata;
 #[cfg(test)]
 mod tests;
 mod word;
@@ -78,6 +79,7 @@ pub(super) struct Memory<'a, P> {
     active_words: BTreeSet<EntityId>,
     active_loads: BTreeSet<(EntityId, U256)>,
     cyclic_loads: BTreeSet<(EntityId, U256)>,
+    return_data_epochs: BTreeMap<EntityId, Option<EntityId>>,
     pub pay: P,
     pub refused: bool,
     recursion: usize,
@@ -126,6 +128,7 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
             active_words: BTreeSet::new(),
             active_loads: BTreeSet::new(),
             cyclic_loads: BTreeSet::new(),
+            return_data_epochs: BTreeMap::new(),
             pay,
             refused: false,
             recursion: 0,
@@ -139,6 +142,13 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
     }
     pub fn word(&mut self, id: EntityId) -> Option<Word> {
         self.eval(id, 0)
+    }
+    /// Source identities used as data must not name repeated executions of a
+    /// writer. Constants retain their ordinary iteration-independent meaning.
+    pub fn acyclic_operation(&self, op: &Operation) -> bool {
+        self.operation_blocks
+            .get(&op.id)
+            .is_some_and(|block| !self.cyclic_blocks.contains(block))
     }
     /// Every byte at or above a freshly replayed write extent is still zero.
     /// Return the first proved zero byte of this nonwrapping query range.

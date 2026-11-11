@@ -89,6 +89,10 @@ fn actual_pair_constructor_after_return_allocation_requires_the_declared_domain(
         proof.execution_domain = ExecutionDomain::Generic;
         proof.execution_fork = None;
     }
+    for proof in &mut wrong.ir.lifted.as_mut().unwrap().revert_data {
+        proof.execution_domain = ExecutionDomain::Generic;
+        proof.execution_fork = None;
+    }
     wrong
         .ir
         .lifted

@@ -243,9 +243,23 @@ fn guard_identity_and_absorbed_failure_operations_remain_navigable_in_raw_histor
 
 #[test]
 fn schema_three_guards_cannot_be_disguised_as_legacy_artifacts() {
-    let artifact = checked(&direct(false, Failure::Empty(U256::ZERO)));
-    assert_eq!(artifact.schema_version, 10);
+    let mut artifact = checked(&direct(false, Failure::Empty(U256::ZERO)));
+    assert_eq!(artifact.schema_version, 11);
     assert!(artifact.admits_schema());
+    let mut disguised = artifact.clone();
+    disguised.schema_version = 10;
+    assert!(
+        !disguised.admits_schema(),
+        "new byte data cannot be hidden by a version downgrade"
+    );
+    // Isolate the historical empty-guard representation. Its old wire format
+    // has no occurrence-data arena; the independently tested primitive witness
+    // and EmptyRevert guard do not depend on that optional annotation.
+    for stage in &mut artifact.stages {
+        if let Some(program) = &mut stage.ir.lifted {
+            program.revert_data.clear();
+        }
+    }
     for version in [3, 4, 5] {
         let mut legacy = artifact.clone();
         legacy.schema_version = version;

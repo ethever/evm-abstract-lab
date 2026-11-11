@@ -2,8 +2,8 @@
 //! retain the lightweight base renderer and exact source selection identities.
 use super::super::super::work::Work;
 use evm_abstract_protocol::decompile_model::{
-    EntityId, Ir, LiftedIfPlan, LiftedProgram, LiftedRenderError, LiftedRenderIndex, LiftedType,
-    Terminator,
+    EntityId, ExitKind, Ir, LiftedIfPlan, LiftedProgram, LiftedRenderError, LiftedRenderIndex,
+    LiftedType, Terminator,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -143,12 +143,18 @@ impl Prepared {
                     {
                         consumers.entry(*input).or_default().insert(owner);
                     }
-                    result.exits.insert(
-                        block.block,
-                        renderer.render_exit(*kind, &block.exit_values, |amount| {
+                    let data = if *kind == ExitKind::Revert {
+                        renderer.render_data_revert(block.block, |amount| work.reserve(amount))?
+                    } else {
+                        None
+                    };
+                    let text = match data {
+                        Some(text) => text,
+                        None => renderer.render_exit(*kind, &block.exit_values, |amount| {
                             work.reserve(amount)
                         })?,
-                    );
+                    };
+                    result.exits.insert(block.block, text);
                 }
             }
             for transfer in &program.transfers {
