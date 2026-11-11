@@ -120,7 +120,39 @@ fn predecessor_loop_certificate_is_replayed_from_fresh_source() {
     assert!(!accepted(&changed, &second, &candidate));
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ExtentLoop {
+    pointer_cell: u64,
+    step: u64,
+    output_window: Option<u64>,
+    query_offset: u64,
+    query_length: u64,
+}
+
+impl Default for ExtentLoop {
+    fn default() -> Self {
+        Self {
+            pointer_cell: 64,
+            step: 189,
+            output_window: Some(96),
+            query_offset: 108,
+            query_length: 24,
+        }
+    }
+}
+
 fn extent_loop(output: Option<u64>, ancestor_dirty: bool, later_dirty: bool) -> crate::Ir {
+    extent_loop_case(
+        ExtentLoop {
+            output_window: output,
+            ..ExtentLoop::default()
+        },
+        ancestor_dirty,
+        later_dirty,
+    )
+}
+
+fn extent_loop_case(case: ExtentLoop, ancestor_dirty: bool, later_dirty: bool) -> crate::Ir {
     let mut code = Asm::default();
     code.number(0)
         .op(0x35)
@@ -137,13 +169,13 @@ fn extent_loop(output: Option<u64>, ancestor_dirty: bool, later_dirty: bool) -> 
         .op(0x02)
         .number(512)
         .op(0x01)
-        .number(64)
+        .number(case.pointer_cell)
         .op(0x52);
     if ancestor_dirty {
         code.number(0xa5)
-            .number(64)
+            .number(case.pointer_cell)
             .op(0x51)
-            .number(108)
+            .number(case.query_offset)
             .op(0x01)
             .op(0x52);
     }
@@ -159,31 +191,31 @@ fn extent_loop(output: Option<u64>, ancestor_dirty: bool, later_dirty: bool) -> 
         .op(0x50);
     if later_dirty {
         code.number(0xa5)
-            .number(64)
+            .number(case.pointer_cell)
             .op(0x51)
-            .number(108)
+            .number(case.query_offset)
             .op(0x01)
             .op(0x52);
     }
-    code.number(24)
-        .number(64)
+    code.number(case.query_length)
+        .number(case.pointer_cell)
         .op(0x51)
-        .number(108)
+        .number(case.query_offset)
         .op(0x01)
         .op(0xfd)
         .dest("body")
-        .number(64)
+        .number(case.pointer_cell)
         .op(0x51)
-        .number(189)
+        .number(case.step)
         .op(0x01)
-        .number(64)
+        .number(case.pointer_cell)
         .op(0x52);
-    if let Some(output) = output {
+    if let Some(output) = case.output_window {
         code.number(output);
     } else {
         code.number(32).op(0x35);
     }
-    code.number(64)
+    code.number(case.pointer_cell)
         .op(0x51)
         .number(0)
         .number(0)
@@ -245,7 +277,45 @@ fn tail_zero(ir: &crate::Ir) -> Option<usize> {
         .unwrap();
     let mut memory = super::super::super::Memory::new(ir, |_| true).unwrap();
     let base = memory.word(terminal.inputs[0])?;
-    memory.zero_suffix(terminal.memory_input.unwrap(), base, 24)
+    let size = usize::try_from(memory.word(terminal.inputs[1])?.exact()?).ok()?;
+    memory.zero_suffix(terminal.memory_input.unwrap(), base, size)
+}
+
+#[test]
+fn zero_suffix_induction_uses_source_relations_across_pointer_cells_and_layouts() {
+    for case in [
+        ExtentLoop {
+            pointer_cell: 160,
+            step: 17,
+            output_window: Some(9),
+            query_offset: 21,
+            query_length: 7,
+        },
+        ExtentLoop {
+            pointer_cell: 96,
+            step: 103,
+            output_window: Some(64),
+            query_offset: 96,
+            query_length: 17,
+        },
+        ExtentLoop {
+            pointer_cell: 192,
+            step: 257,
+            output_window: Some(160),
+            query_offset: 192,
+            query_length: 33,
+        },
+        ExtentLoop {
+            pointer_cell: 160,
+            step: 17,
+            output_window: Some(160),
+            query_offset: 180,
+            query_length: 7,
+        },
+    ] {
+        let ir = extent_loop_case(case, false, false);
+        assert_eq!(tail_zero(&ir), Some(0), "{case:?}");
+    }
 }
 
 #[test]

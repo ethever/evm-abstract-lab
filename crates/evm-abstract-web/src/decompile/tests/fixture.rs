@@ -82,6 +82,7 @@ pub(in crate::decompile) fn artifact(strategy: Strategy) -> Artifact {
         kind: StageKind::Baseline,
         validation: passed(),
         ir: Ir {
+            runtime_bytecode: None,
             execution_domain: Default::default(),
             execution_fork: None,
             bytecode_len: 4,
