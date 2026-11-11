@@ -1,5 +1,6 @@
 //! Propose recurrences from one iteration, then independently admit them by
 //! simultaneous entry/backedge induction over a freshly replayed source region.
+use super::extent::Extent;
 use super::{Atom, EntityId, Expr, Flow, MAX_TERMS, Range, Source, State, U256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub(super) struct Proof {
     header: EntityId,
     scalars: BTreeMap<EntityId, Recurrence>,
     cells: BTreeMap<Expr, Recurrence>,
+    extent: Option<Extent>,
     bound: U256,
 }
 #[derive(Clone, Debug)]
@@ -177,6 +179,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 p.scalars
                     .len()
                     .saturating_add(p.cells.len())
+                    .saturating_add(usize::from(p.extent.is_some()))
                     .saturating_mul(MAX_TERMS * 2),
             )
         });
@@ -188,6 +191,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 header: shape.header,
                 scalars: BTreeMap::new(),
                 cells: BTreeMap::new(),
+                extent: None,
                 bound: U256::ZERO,
             },
             dependencies: self.certificates.clone(),
@@ -220,6 +224,17 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 );
             }
         }
+        let extent = self.propose_extent(
+            initial,
+            candidate
+                .cells
+                .values()
+                .chain(candidate.scalars.values())
+                .map(|r| (&r.initial, r.step)),
+            &shape.backedges,
+            &first,
+        );
+        candidate.extent = extent;
         let seeded = self.seed(initial, &candidate, U256::MAX)?;
         let probe = self.run_region(shape, seeded, true, false);
         let mut bound = U256::ZERO;
@@ -266,6 +281,21 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 }
             };
         }
+        if let Some(extent) = &mut candidate.extent {
+            let range = initial.ordinary(&extent.initial)?;
+            if let Some(high) = extent
+                .step
+                .checked_mul(bound)
+                .and_then(|growth| range.high.checked_add(growth))
+            {
+                extent.range = Range {
+                    low: range.low,
+                    high,
+                };
+            } else {
+                candidate.extent = None;
+            }
+        }
         Some(candidate)
     }
     fn common_step<'b>(
@@ -301,6 +331,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 .scalars
                 .len()
                 .saturating_add(candidate.cells.len())
+                .saturating_add(usize::from(candidate.extent.is_some()))
                 .saturating_mul(MAX_TERMS * 2),
         ) {
             return None;
@@ -324,6 +355,10 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
             .iter()
             .map(|(address, r)| (address.clone(), r.initial.add(&iteration.scale(r.step))))
             .collect();
+        result.extent = candidate
+            .extent
+            .as_ref()
+            .map(|r| Box::new(r.initial.add(&iteration.scale(r.step))));
         for recurrence in candidate.scalars.values().chain(candidate.cells.values()) {
             // This is a simultaneous induction hypothesis, never a source fact
             // until entry and every backedge below have independently passed.
@@ -343,6 +378,14 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                     recurrence.range,
                 );
             }
+        }
+        if let Some(extent) = &candidate.extent
+            && (bound != U256::MAX || extent.step == U256::ZERO)
+        {
+            result.real.insert(
+                extent.initial.add(&iteration.scale(extent.step)),
+                extent.range,
+            );
         }
         Some(result)
     }
@@ -390,6 +433,19 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 return None;
             }
         }
+        if let Some(extent) = &candidate.extent
+            && (extent.step > (U256::MAX >> 1)
+                || !initial
+                    .extent
+                    .as_ref()
+                    .is_some_and(|e| initial.le(e, &extent.initial))
+                || !Self::contains(extent.range, initial.ordinary(&extent.initial))
+                || !extent.initial.integral_add(
+                    &Expr::atom(Atom::Iteration(candidate.header)).scale(extent.step),
+                ))
+        {
+            return None;
+        }
         for recurrence in candidate.scalars.values().chain(candidate.cells.values()) {
             if recurrence.step != U256::ZERO
                 && (recurrence
@@ -409,6 +465,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
             .values()
             .chain(seed.cells.values())
             .chain(seed.cells.keys())
+            .chain(seed.extent.as_deref())
         {
             if !self.charge(MAX_TERMS) || seed.ordinary(expr).is_none() {
                 return None;
@@ -416,10 +473,18 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
         }
         let checkpoint = self.interned.len();
         let previous = std::mem::take(&mut self.admitted);
+        let previous_extents = std::mem::take(&mut self.admitted_extents);
         let result = self.run_region(shape, seed, false, publish);
         let checked = self.check_backedges(shape, candidate, &result);
         let tentative = std::mem::replace(&mut self.admitted, previous);
-        let checked = checked && self.charge(tentative.len().saturating_add(1));
+        let tentative_extents = std::mem::replace(&mut self.admitted_extents, previous_extents);
+        let checked = checked
+            && self.charge(
+                tentative
+                    .len()
+                    .saturating_add(tentative_extents.len())
+                    .saturating_add(1),
+            );
         if !checked || self.refused {
             let _ = self.charge(
                 self.interned
@@ -436,6 +501,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
             return None;
         }
         self.admitted.extend(tentative);
+        self.admitted_extents.extend(tentative_extents);
         Some(result)
     }
     /// Reconstruct the base from raw source and independently supplied earlier
@@ -515,6 +581,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 let block = *self.blocks.get(&id)?;
                 let flow = if Some(id) == self.ir.entry {
                     Flow::Known(State {
+                        extent: self.empty_extent(block),
                         memory: Some(block.memory_parameter),
                         effect: Some(block.effect_parameter),
                         ..State::default()
@@ -544,6 +611,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                     .scalars
                     .len()
                     .saturating_add(candidate.cells.len())
+                    .saturating_add(usize::from(candidate.extent.is_some()))
                     .saturating_mul(MAX_TERMS * 2)
                     .saturating_add(1),
             ) {
@@ -568,6 +636,17 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 .is_none_or(|v| v > candidate.bound)
             {
                 return false;
+            }
+            if let Some(extent) = &candidate.extent {
+                let expected = extent.initial.add(&next.scale(extent.step));
+                if !state
+                    .extent
+                    .as_ref()
+                    .is_some_and(|e| state.le(e, &expected))
+                    || !Self::contains(extent.range, state.ordinary(&expected))
+                {
+                    return false;
+                }
             }
             for (&id, recurrence) in &candidate.scalars {
                 let expected = recurrence.initial.add(&next.scale(recurrence.step));
@@ -595,12 +674,22 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
     ) {
         let result = self.shape(component).and_then(|shape| {
             let initial = self.entry_state(&shape, flows)?;
-            let candidate = self.propose(&shape, &initial)?;
-            let result = self.verify_candidate(component, &candidate, flows)?;
+            let mut candidate = self.propose(&shape, &initial)?;
+            let result = match self.verify_candidate(component, &candidate, flows) {
+                Some(result) => result,
+                None if candidate.extent.is_some() && !self.refused => {
+                    // A failed optional memory bound must not discard an
+                    // otherwise valid scalar/cell induction certificate.
+                    candidate.extent = None;
+                    self.verify_candidate(component, &candidate, flows)?
+                }
+                None => return None,
+            };
             let cost = candidate
                 .scalars
                 .len()
                 .saturating_add(candidate.cells.len())
+                .saturating_add(usize::from(candidate.extent.is_some()))
                 .saturating_mul(MAX_TERMS * 2)
                 .saturating_add(1);
             if !self.charge(cost) {

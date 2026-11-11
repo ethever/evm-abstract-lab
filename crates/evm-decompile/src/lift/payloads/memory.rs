@@ -2,7 +2,8 @@
 //! Only source constants and total word operators establish numeric facts. Open
 //! predecessor sets are refused. Cyclic cell equations use either the existing
 //! constant-anchor fast path or independently replayed bounded recurrences.
-//! Unknown allocation arithmetic never becomes a pointer convention.
+//! A separately admitted write extent proves untouched zero suffixes. Unknown
+//! allocation arithmetic never becomes a pointer convention.
 use crate::{EntityId, FactScope, Ir, Operation, U256, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,6 +72,7 @@ pub(super) struct Memory<'a, P> {
     incoming: BTreeMap<EntityId, Vec<&'a crate::Edge>>,
     words: BTreeMap<EntityId, Word>,
     certified: BTreeMap<EntityId, Word>,
+    certified_extents: BTreeMap<EntityId, Word>,
     return_data_size_bound: Option<U256>,
     loads: BTreeMap<(EntityId, U256), Option<Word>>,
     active_words: BTreeSet<EntityId>,
@@ -102,7 +104,8 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
         Some(Self {
             ir,
             cyclic_blocks,
-            certified,
+            certified: certified.words,
+            certified_extents: certified.extents,
             return_data_size_bound,
             blocks: ir.blocks.iter().map(|b| (b.id, b)).collect(),
             operation_blocks: ir
@@ -136,6 +139,26 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
     }
     pub fn word(&mut self, id: EntityId) -> Option<Word> {
         self.eval(id, 0)
+    }
+    /// Every byte at or above a freshly replayed write extent is still zero.
+    /// Return the first proved zero byte of this nonwrapping query range.
+    pub fn zero_suffix(&mut self, memory: EntityId, base: Word, size: usize) -> Option<usize> {
+        if !self.charge(1) {
+            return None;
+        }
+        base.end(size)?;
+        let extent = *self.certified_extents.get(&memory)?;
+        if extent.high <= base.low {
+            return Some(0);
+        }
+        if base
+            .relative(extent)
+            .is_some_and(|delta| extent.high.checked_add(U256::from(delta)).is_some())
+        {
+            return Some(0);
+        }
+        let start = extent.relative(base)?;
+        (start <= size && base.high.checked_add(U256::from(start)).is_some()).then_some(start)
     }
     fn load(&mut self, memory: EntityId, address: U256, depth: usize) -> Option<Word> {
         if !self.charge(1) || depth > MAX_DEPTH || self.recursion >= MAX_DEPTH {
@@ -319,7 +342,15 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
         if an == 0 || bn == 0 {
             return true;
         }
-        a.end(an).is_some_and(|end| end <= b.low) || b.end(bn).is_some_and(|end| end <= a.low)
+        if a.end(an).is_some_and(|end| end <= b.low) || b.end(bn).is_some_and(|end| end <= a.low) {
+            return true;
+        }
+        // Exact modular identity separates two ordinary, nonwrapping ranges
+        // only when neither circular distance lies inside the other range.
+        a.base == b.base && a.end(an).is_some() && b.end(bn).is_some() && {
+            let delta = b.offset.wrapping_sub(a.offset);
+            U256::from(an) <= delta && delta <= U256::ZERO.wrapping_sub(U256::from(bn))
+        }
     }
 }
 

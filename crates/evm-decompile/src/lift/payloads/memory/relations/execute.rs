@@ -10,6 +10,7 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
         state: &mut State,
         scope: Option<EntityId>,
         optimistic: bool,
+        publish: bool,
     ) -> bool {
         if !self.charge(block.parameters.len().saturating_add(1)) {
             return false;
@@ -51,6 +52,10 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 return false;
             }
             _ => {}
+        }
+        let mut extents = Vec::new();
+        if publish && !self.remember_extent(state, &mut extents) {
+            return false;
         }
         for op in &block.operations {
             if !self.charge(
@@ -140,6 +145,10 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
             }
             if effects.memory_write {
                 let range = self.write_range(op, &args);
+                if !self.charge(MAX_TERMS * MAX_TERMS * 8) {
+                    return false;
+                }
+                state.written(range.as_ref());
                 if !self.charge(
                     state
                         .cells
@@ -171,6 +180,9 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                     state.cells.clear();
                 }
                 state.memory = op.memory_output;
+                if publish && !self.remember_extent(state, &mut extents) {
+                    return false;
+                }
             }
         }
         // Simplification may retain a JUMPI source operation while lowering
@@ -195,6 +207,10 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 }
                 _ => {}
             }
+        }
+        for (memory, expr, range) in extents {
+            let word = self.export_word(&expr, range);
+            self.admitted_extents.insert(memory, word);
         }
         true
     }

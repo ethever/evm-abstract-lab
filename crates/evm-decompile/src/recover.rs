@@ -108,7 +108,9 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
     if !owner.pay(count.saturating_mul(8).saturating_add(value_count)) {
         return false;
     }
-    let source = source_ir(owner, &program);
+    let Some(source) = source_ir(owner, &program) else {
+        return false;
+    };
     if !owner.commit(
         StageKind::Decoded,
         source.clone(),
@@ -289,12 +291,26 @@ pub(crate) fn run(owner: &mut Builder<impl FnMut(Progress)>) -> bool {
     adopted && !recovery.owner.stopped
 }
 
-fn source_ir(owner: &mut Builder<impl FnMut(Progress)>, program: &Program) -> Ir {
+fn source_ir(owner: &mut Builder<impl FnMut(Progress)>, program: &Program) -> Option<Ir> {
+    let runtime_bytecode = if program
+        .blocks()
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|instruction| instruction.opcode == 0x39)
+    {
+        if !owner.pay(owner.artifact.input.runtime_bytecode.len()) {
+            return None;
+        }
+        Some(owner.artifact.input.runtime_bytecode.clone())
+    } else {
+        None
+    };
     let mut ir = Ir {
         execution_domain: owner.artifact.config.execution_domain,
         execution_fork: (!owner.artifact.config.execution_domain.is_generic())
             .then_some(owner.artifact.input.fork),
         bytecode_len: program.byte_len(),
+        runtime_bytecode,
         ..Ir::default()
     };
     for basic in program.blocks() {
@@ -391,7 +407,7 @@ fn source_ir(owner: &mut Builder<impl FnMut(Progress)>, program: &Program) -> Ir
         });
     }
     ir.entry = ir.blocks.first().map(|b| b.id);
-    ir
+    Some(ir)
 }
 
 struct Recovery<'a, P: FnMut(Progress)> {

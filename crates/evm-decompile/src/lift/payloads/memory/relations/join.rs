@@ -50,6 +50,13 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
         joined.map_or(Flow::Dead, Flow::Known)
     }
     pub(super) fn merge(&self, mut a: State, b: &State, iteration: Option<EntityId>) -> State {
+        let extent_anchors = if a.extent != b.extent {
+            let anchors = super::extent::join_anchors(&a, b);
+            a.extent = None;
+            anchors
+        } else {
+            Vec::new()
+        };
         // These are fresh contents of one reaching memory phi. An iteration's
         // internal join cannot create an invariant identity: retain the prior
         // conservative drop there and let source induction prove recurrences.
@@ -106,6 +113,12 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 Expr::atom(atom)
             };
             a.cells.insert(address, value);
+        }
+        if a.extent.is_none() {
+            a.extent = extent_anchors
+                .iter()
+                .find_map(|address| a.cells.get(address).cloned())
+                .map(Box::new);
         }
         a
     }

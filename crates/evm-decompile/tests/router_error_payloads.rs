@@ -450,6 +450,89 @@ fn array_host(input: &Input, signature: &str, amount: U256, n: usize, reserve: u
 }
 
 #[test]
+fn actual_liquidity_errors_keep_codecopy_and_prove_padding_after_loop_allocations() {
+    let (input, artifact) = router();
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    let index = program.render_index(&stage.ir);
+    let message = b"UniswapV2Library: INSUFFICIENT_LIQUIDITY";
+    let expected = payload_oracle::abi(message);
+    assert_eq!(expected.len(), 132);
+    assert!(expected[108..].iter().all(|byte| *byte == 0));
+    for signature in [
+        "getAmountsIn(uint256,address[])",
+        "getAmountsOut(uint256,address[])",
+    ] {
+        for length in [2, 3, 5] {
+            for failed_call in [0, length - 2] {
+                for response_size in [96, 320] {
+                    let mut host = array_host(input, signature, U256::from(100), length, 1_000_000);
+                    for response in &mut host.responses {
+                        response.return_data.resize(response_size, 0xa5);
+                    }
+                    host.responses[failed_call].return_data[..32].fill(0);
+                    let limits = ExecutionLimits {
+                        max_steps: 25_000,
+                        max_memory_bytes: 1_048_576,
+                    };
+                    let mut graph_host = host.clone();
+                    let graph = execute_ir(stage, &mut graph_host, &limits).unwrap();
+                    let terminal = graph
+                        .trace
+                        .iter()
+                        .rev()
+                        .find(|step| step.opcode == 0xfd)
+                        .unwrap();
+                    let proof = program
+                        .reverts
+                        .iter()
+                        .find(|r| Some(r.operation) == terminal.operation)
+                        .expect(
+                            "the executed CODECOPY liquidity error needs a complete byte proof",
+                        );
+                    assert_eq!(
+                        proof.code_hash,
+                        Some(alloy_primitives::keccak256(&input.runtime_bytecode))
+                    );
+                    assert_eq!(
+                        program
+                            .payloads
+                            .iter()
+                            .find(|p| p.id == proof.payload)
+                            .unwrap()
+                            .bytes,
+                        expected
+                    );
+                    let plan = index.construction(proof.block).unwrap();
+                    let body = program.block(proof.block).unwrap();
+                    assert!(
+                        body.statements[plan.start..plan.end]
+                            .iter()
+                            .any(|statement| {
+                                stage
+                                    .ir
+                                    .block(proof.block)
+                                    .unwrap()
+                                    .operations
+                                    .iter()
+                                    .any(|op| op.id == statement.operation && op.opcode == 0x39)
+                            })
+                    );
+                    let (outcome, state, capsules) =
+                        payload_oracle::certify(input, artifact, host, limits.max_memory_bytes);
+                    assert_eq!(
+                        payload_oracle::reverted(&outcome.unwrap(), &state),
+                        Some(expected.clone())
+                    );
+                    assert_eq!(capsules, 1);
+                    assert_eq!(state.responses.len(), length - 2 - failed_call);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn actual_path3_success_executes_two_pointer_epochs_and_returns_100_90_82() {
     let (input, artifact) = router();
     array_success(

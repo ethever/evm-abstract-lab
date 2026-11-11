@@ -164,13 +164,24 @@ impl Machine<'_> {
                 })?
             };
             assert_eq!(outputs.len(), operation.outputs.len());
-            if matches!(operation.opcode, 0x52 | 0x53) {
-                let bytes = if operation.opcode == 0x52 {
-                    inputs[1].to_be_bytes::<32>().to_vec()
-                } else {
-                    vec![inputs[1].to_be_bytes::<32>()[31]]
+            if operation.effects.memory_write {
+                let (address, size) = match operation.opcode {
+                    0x52 => (inputs[0], U256::from(32)),
+                    0x53 => (inputs[0], U256::from(1)),
+                    0x37 | 0x39 | 0x3e | 0x5e => (inputs[0], inputs[2]),
+                    0x3c => (inputs[1], inputs[3]),
+                    0xf1 | 0xf2 => (inputs[5], inputs[6]),
+                    0xf4 | 0xfa => (inputs[4], inputs[5]),
+                    _ => panic!("unmodeled concrete memory writer"),
                 };
-                self.writes.push((operation.id, inputs[0], bytes));
+                let size = usize::try_from(size).unwrap();
+                if size > 0 {
+                    let offset = usize::try_from(address).unwrap();
+                    // Read independently executed memory, including CODECOPY
+                    // and call outputs; never use producer byte reconstruction.
+                    let bytes = self.host.state.memory[offset..offset + size].to_vec();
+                    self.writes.push((operation.id, address, bytes));
+                }
             }
             if !operation.effects.is_pure() {
                 self.observations.push((
@@ -230,6 +241,18 @@ impl Machine<'_> {
                     let size = usize::try_from(values[1]).unwrap();
                     let end = offset.checked_add(size).unwrap();
                     let mut certified = vec![None; size];
+                    // This concrete oracle records every destination window.
+                    // It accepts an unwritten zero only after checking the
+                    // complete executed history, independently of the static
+                    // frontier/loop induction used by production certification.
+                    for (index, byte) in certified.iter_mut().enumerate() {
+                        let address = U256::from(offset + index);
+                        if !self.writes.iter().any(|(_, start, bytes)| {
+                            *start <= address && address < *start + U256::from(bytes.len())
+                        }) {
+                            *byte = Some(0);
+                        }
+                    }
                     let mut previous = None;
                     for write in &proof.writes {
                         let (position, (_, address, bytes)) = self

@@ -414,7 +414,9 @@ impl LiftedProgram {
                     .saturating_add(p.bytes.len())
             }))
             .saturating_add(self.reverts.iter().fold(0_usize, |n, r| {
-                n.saturating_add(r.writes.len()).saturating_add(9)
+                n.saturating_add(r.writes.len())
+                    .saturating_add(9)
+                    .saturating_add(usize::from(r.code_hash.is_some()).saturating_mul(32))
             }))
             .saturating_add(self.constructions.len().saturating_mul(5))
             .saturating_add(

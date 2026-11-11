@@ -53,6 +53,7 @@ strict_record! { pub struct PayloadWire { pub id:EntityId,pub message:Text,pub b
 strict_record! { pub struct RevertWire {
     pub execution_domain:crate::ExecutionDomain = crate::ExecutionDomain::Generic,
     pub execution_fork:Option<crate::Fork> = None,
+    pub code_hash:Option<alloy_primitives::B256> = None,
     pub id:EntityId,pub block:EntityId,pub operation:EntityId,pub memory:EntityId,
     pub offset:EntityId,pub size:EntityId,pub payload:EntityId,pub writes:Items<EntityId>,
 } }
@@ -81,6 +82,7 @@ impl<'de> Deserialize<'de> for LiftedRevert {
         Ok(Self {
             execution_domain: w.execution_domain,
             execution_fork: w.execution_fork,
+            code_hash: w.code_hash,
             id: w.id,
             block: w.block,
             operation: w.operation,

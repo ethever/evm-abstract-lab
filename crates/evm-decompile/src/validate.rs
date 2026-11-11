@@ -6,6 +6,8 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Validate identity, SSA scope, memory order, edge assignments and AST coverage.
+/// CODECOPY proofs use the snapshot's captured runtime; artifact admission also
+/// binds that witness to the owning artifact's original input.
 pub fn validate_stage(stage: &Stage) -> Validation {
     validate_with_cancel(stage, &Cancellation::default())
 }
@@ -33,6 +35,18 @@ pub(crate) fn validate_with_cancel(stage: &Stage, cancel: &Cancellation) -> Vali
             Vec::new()
         } else {
             vec!["execution domain has a missing or incompatible fork qualification".to_owned()]
+        },
+    );
+    add(
+        "runtime_source",
+        if ir
+            .runtime_bytecode
+            .as_ref()
+            .is_none_or(|code| code.len() == ir.bytecode_len)
+        {
+            Vec::new()
+        } else {
+            vec!["captured runtime source length differs from the original input".to_owned()]
         },
     );
     let mut all = Vec::new();
@@ -506,6 +520,9 @@ pub(crate) fn validate_transition(
         || before.ir.execution_fork != after.ir.execution_fork
     {
         errors.push("execution domain or fork qualification changed".to_owned());
+    }
+    if before.ir.runtime_bytecode != after.ir.runtime_bytecode {
+        errors.push("captured runtime bytecode source changed".to_owned());
     }
     if after.kind == StageKind::Lifted
         && (before.kind != StageKind::Structured

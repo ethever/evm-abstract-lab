@@ -160,6 +160,9 @@ pub(super) fn details_prepared(
             "Terminal memory m{} · offset v{} · size v{} · payload h{}",
             revert.memory.0, revert.offset.0, revert.size.0, revert.payload.0,
         ));
+        if let Some(hash) = revert.code_hash {
+            lines.push(format!("Captured runtime code hash: {hash:#x}"));
+        }
         lines.push(format!(
             "Ordered byte-write witnesses: {}",
             revert

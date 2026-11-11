@@ -448,7 +448,7 @@ fn stale_folded_constant_cannot_hide_a_changed_source_opcode() {
         effect: Some(block.effect_parameter),
         ..State::default()
     };
-    assert!(source.execute(&block, &mut state, None, false));
+    assert!(source.execute(&block, &mut state, None, false, false));
     assert_eq!(
         source.value(&state, EntityId(9)).unwrap().exact(),
         Some(U256::from(12))
