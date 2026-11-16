@@ -10,8 +10,13 @@ fn only_the_explicit_transaction_domain_supplies_a_length_bound() {
     assert!(!ExecutionDomain::EthereumTransactions.is_generic());
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         assert_eq!(ExecutionDomain::Generic.return_data_size_bound(fork), None);
+        assert_eq!(ExecutionDomain::Generic.memory_end_bound(fork), None);
         assert_eq!(
             ExecutionDomain::EthereumTransactions.return_data_size_bound(fork),
+            Some((U256::from(1) << 41) - U256::from(1)),
+        );
+        assert_eq!(
+            ExecutionDomain::EthereumTransactions.memory_end_bound(fork),
             Some((U256::from(1) << 41) - U256::from(1)),
         );
     }

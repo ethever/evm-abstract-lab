@@ -13,6 +13,7 @@ pub use call_results::LiftedCallResult;
 mod condition;
 mod control;
 mod failure_first;
+mod flow;
 pub(crate) mod primitive;
 mod revert_data;
 mod word;
@@ -173,6 +174,9 @@ impl<'a> LiftedRenderIndex<'a> {
             ),
             None => (None, None),
         };
+        let Ok(word_sources) = word::WordSources::new(program, ir, &mut pay) else {
+            return Self::refused(program);
+        };
         let mut result = Self {
             ir,
             call_results: None,
@@ -189,7 +193,7 @@ impl<'a> LiftedRenderIndex<'a> {
                 .flat_map(|b| &b.operations)
                 .map(|o| (o.id, o))
                 .collect(),
-            word_sources: word::WordSources::new(program, ir),
+            word_sources,
             source_statements: program
                 .blocks
                 .iter()

@@ -42,12 +42,37 @@ const fn memory_byte_ceiling() -> u64 {
     words * 32
 }
 
-const ETHEREUM_RETURN_DATA_CEILING: u64 = memory_byte_ceiling();
+const ETHEREUM_MEMORY_BYTE_CEILING: u64 = memory_byte_ceiling();
+const ETHEREUM_RETURN_DATA_CEILING: u64 = ETHEREUM_MEMORY_BYTE_CEILING;
 
 impl ExecutionDomain {
     /// Whether no transaction-specific resource premise has been declared.
     pub const fn is_generic(&self) -> bool {
         matches!(self, Self::Generic)
+    }
+
+    /// Inclusive upper bound on a successfully accessed memory range's end.
+    ///
+    /// A positive memory request must fit in the frame's charged memory, whose
+    /// quadratic gas cost rules out `2^41` bytes in this declared transaction
+    /// domain. This is conditional on the original primitive succeeding; it
+    /// cannot remove its expansion, ordering, or exceptional behavior. Generic
+    /// primitive hosts have no such resource premise.
+    pub const fn memory_end_bound(self, fork: Fork) -> Option<U256> {
+        match self {
+            Self::Generic => None,
+            Self::EthereumTransactions => {
+                match fork {
+                    Fork::Cancun | Fork::Prague | Fork::Osaka => {}
+                }
+                Some(U256::from_limbs([
+                    ETHEREUM_MEMORY_BYTE_CEILING - 1,
+                    0,
+                    0,
+                    0,
+                ]))
+            }
+        }
     }
 
     /// Conservative inclusive RETURNDATASIZE bound under this declared domain.

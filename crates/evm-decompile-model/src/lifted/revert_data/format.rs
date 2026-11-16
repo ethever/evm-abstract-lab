@@ -246,16 +246,16 @@ impl LiftedRevertFormat {
             return None;
         };
         match u64::try_from(*code).ok()? {
-            0x00 => Some("编译器插入的通用 panic"),
-            0x01 => Some("断言失败"),
-            0x11 => Some("算术溢出或下溢"),
-            0x12 => Some("除法或取模的除数为零"),
-            0x21 => Some("无效枚举值"),
-            0x22 => Some("存储字节数组编码无效"),
-            0x31 => Some("空数组 pop"),
-            0x32 => Some("数组越界"),
-            0x41 => Some("内存分配过大"),
-            0x51 => Some("未初始化内部函数"),
+            0x00 => Some("Compiler-generated panic"),
+            0x01 => Some("Assertion failed"),
+            0x11 => Some("Arithmetic overflow or underflow"),
+            0x12 => Some("Division or modulo by zero"),
+            0x21 => Some("Invalid enum value"),
+            0x22 => Some("Invalid storage byte array encoding"),
+            0x31 => Some("Pop on an empty array"),
+            0x32 => Some("Array index out of bounds"),
+            0x41 => Some("Excessive memory allocation"),
+            0x51 => Some("Uninitialized internal function"),
             _ => None,
         }
     }

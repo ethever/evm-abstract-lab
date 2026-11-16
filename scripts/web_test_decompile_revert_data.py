@@ -11,7 +11,9 @@ from web_test_registry import SOURCE_ROOT
 
 
 FIXTURE_ROOT = "crates/evm-decompile/tests/fixtures/revert-data/"
-FIXTURES = ["panic-41-guard", "custom-symbolic-failed-arm", "custom-symbolic-bound-guard"]
+FIXTURES = ["panic-41-guard", "custom-symbolic-failed-arm", "custom-symbolic-bound-guard",
+            "custom-symbolic-ancestor-bound-guard"]
+REQUEST_RANGE_FIXTURE = "custom-symbolic-request-range-guard"
 
 
 def semantic_lines(text):
@@ -88,6 +90,35 @@ def data_navigation(page, canvas, artifact, current, program, data, expected):
                           "decompile-entity-detail")
 
 
+def request_ranges(context, page, canvas):
+    code = (SOURCE_ROOT / (FIXTURE_ROOT + REQUEST_RANGE_FIXTURE + ".hex")).read_text().strip()
+    reports = []
+    for scope, compact in [("Generic EVM", False), ("Ethereum valid transactions", True)]:
+        artifact, request = submit(context, page, canvas, code, REQUEST_RANGE_FIXTURE + scope,
+                                   fork="Osaka", execution_scope=scope)
+        current, program = projection(artifact)
+        data, = program["revert_data"]
+        high(page, canvas)
+        text = painted_copy(page, canvas)
+        assert text.count("evm.calldataload(") == 4, text
+        assert ("require(" in text) == compact, text
+        if compact:
+            assert request["execution_domain"] == "ethereum_transactions", request
+            expected = "Revert(selector = 0xd4d8f3e6, words = ["
+            assert expected in text and len(source_words(data["content"])) == 2, text
+            assert text.count("evm.mstore(") == 1, text
+            assert text.index("evm.mstore(") < text.index("require("), text
+            assert text.startswith("// Execution scope: valid included Ethereum transactions"), text
+            data_navigation(page, canvas, artifact, current, program, data, expected)
+            original_construction(page, canvas, artifact, current, data, text)
+        else:
+            assert request.get("execution_domain", "generic") == "generic", request
+            assert data["content"] == "raw" and data["writes"] == [], data
+            assert "evm.revert(offset =" in text and text.count("evm.mstore(") == 4, text
+        reports.append({"scope": scope, "text": text, "data": data})
+    return reports
+
+
 def run(context):
     page, canvas, _, _ = open_decompiler(context)
     resize_view(page, 1920, 3000)
@@ -109,13 +140,13 @@ def run(context):
         text = painted_copy(page, canvas)
         if name == "panic-41-guard":
             expected = "Panic(0x41)"
-            assert "require(" in text and expected in text and "// 内存分配过大" in text, text
+            assert "require(" in text and expected in text and "// Excessive memory allocation" in text, text
             assert not source_words(data["content"]), data
         else:
             expected = "Revert(selector = 0xdeadbeef, words = ["
             assert expected in text, text
             assert len(source_words(data["content"])) == 3, data
-            if name == "custom-symbolic-bound-guard":
+            if name in ("custom-symbolic-bound-guard", "custom-symbolic-ancestor-bound-guard"):
                 assert "require(" in text and text.count("evm.calldataload(") == 4, text
                 assert text.rindex("evm.calldataload(") < text.index("require("), text
             else:
@@ -141,6 +172,7 @@ def run(context):
         reports.append({"case": name, "artifact": artifact["id"], "data": data,
                         "text": text, "raw": raw})
         print(f"revert-data fixture complete: {name}", flush=True)
-    result = {"fixtures": reports, "renderer": webgpu_evidence(page)}
+    result = {"fixtures": reports, "request_ranges": request_ranges(context, page, canvas),
+              "renderer": webgpu_evidence(page)}
     page.close()
     return result

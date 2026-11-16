@@ -3,6 +3,7 @@
 //! A backward walk checks that the supplied writer list omits no interfering
 //! write. A forward replay then applies last-write-wins to byte identities.
 //! Unknown format does not weaken either proof obligation.
+use super::super::memory::AccessRange;
 use super::super::{Memory, Word, overlap, writer_bytes};
 use crate::{
     EntityId, LiftedByteSegment, LiftedByteSource, LiftedDataWord, LiftedRevertData,
@@ -89,16 +90,14 @@ pub(super) fn verify<P: FnMut(usize) -> bool>(
     if size == 0 {
         return Some(segments.is_empty() && proof.writes.is_empty());
     }
-    let Some(base) = memory
-        .word(proof.offset)
-        .filter(|base| base.end(size).is_some())
-    else {
+    let Some(range) = memory.terminal_access(op.id) else {
         return Some(false);
     };
+    let base = range.base;
     let Some(expected) = expected(memory, segments, size) else {
         return Some(false);
     };
-    if !complete_chain(memory, proof, base, size)? {
+    if !complete_chain(memory, proof, range)? {
         return Some(false);
     }
     let mut actual = vec![None; size];
@@ -112,7 +111,13 @@ pub(super) fn verify<P: FnMut(usize) -> bool>(
         let Some(writer) = memory.operations.get(id).copied() else {
             return Some(false);
         };
-        let Some((address, count)) = memory.write_range(writer) else {
+        let Some(AccessRange {
+            base: address,
+            size: count,
+        }) = writer
+            .memory_output
+            .and_then(|version| memory.write_access(version))
+        else {
             return Some(false);
         };
         let Some((destination, source, length)) = overlap(base, size, address, count) else {
@@ -328,9 +333,9 @@ fn whole_copy<P: FnMut(usize) -> bool>(
 fn complete_chain<P: FnMut(usize) -> bool>(
     memory: &mut Memory<'_, P>,
     proof: &LiftedRevertData,
-    base: Word,
-    size: usize,
+    range: AccessRange,
 ) -> Option<bool> {
+    let AccessRange { base, size } = range;
     let mut current = proof.memory;
     let mut pending = proof.writes.len();
     let mut seen = BTreeSet::new();
@@ -342,9 +347,13 @@ fn complete_chain<P: FnMut(usize) -> bool>(
             return Some(false);
         }
         if let Some(writer) = memory.writer(current)
-            && !memory.writer_disjoint(writer, base, size)
+            && !memory.access_disjoint(current, range)
         {
-            let Some((address, count)) = memory.write_range(writer) else {
+            let Some(AccessRange {
+                base: address,
+                size: count,
+            }) = memory.write_access(current)
+            else {
                 return Some(false);
             };
             if proof.writes[pending - 1] != writer.id

@@ -109,7 +109,7 @@ pub(super) fn discover(
         else {
             continue;
         };
-        let recovered = data::query(&mut memory, op.memory_input?, op.inputs[0], op.inputs[1])?;
+        let recovered = data::query(&mut memory, op.id)?;
         let copies_code = recovered
             .writes
             .iter()

@@ -1,19 +1,17 @@
 //! Legacy Error(string) range admission and local source byte primitives.
+use super::memory::AccessRange;
 use super::{Memory, Word};
 use crate::MAX_ERROR_PAYLOAD_BYTES;
 pub(super) fn terminal_range<P: FnMut(usize) -> bool>(
     memory: &mut Memory<'_, P>,
     op: &crate::Operation,
-) -> Option<(Word, usize)> {
-    let offset = memory.word(*op.inputs.first()?)?;
-    let size = usize::try_from(memory.word(*op.inputs.get(1)?)?.exact()?).ok()?;
-    if !(68..=MAX_ERROR_PAYLOAD_BYTES).contains(&size)
-        || (size - 68) % 32 != 0
-        || offset.end(size).is_none()
-    {
+) -> Option<AccessRange> {
+    let range = memory.terminal_access(op.id)?;
+    let size = range.size;
+    if !(68..=MAX_ERROR_PAYLOAD_BYTES).contains(&size) || (size - 68) % 32 != 0 {
         return None;
     }
-    Some((offset, size))
+    Some(range)
 }
 /// Relative interval intersection requires proved ordinary, nonwrapping memory
 /// ranges. Arithmetic equality here is exact symbolic identity, never bounds.

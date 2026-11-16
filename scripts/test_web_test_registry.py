@@ -129,6 +129,8 @@ class BrowserRegistryTests(unittest.TestCase):
             if case_id == "decompile-revert-data":
                 expected.update({"crates/evm-decompile/tests/fixtures/revert-data/panic-41-guard.hex",
                                  "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-failed-arm.hex",
+                                 "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-ancestor-bound-guard.hex",
+                                 "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-request-range-guard.hex",
                                  "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-bound-guard.hex"})
             if case_id == "decompile-call-results":
                 expected.update({"crates/evm-decompile/tests/fixtures/call-results/" + name + ".hex"
@@ -179,7 +181,8 @@ class BrowserRegistryTests(unittest.TestCase):
         guards = set(self.cases["decompile-guards"]["dependencies"])
         expected = guards | {"scripts/web_test_decompile_revert_data.py"} | {
             "crates/evm-decompile/tests/fixtures/revert-data/" + name + ".hex"
-            for name in ["panic-41-guard", "custom-symbolic-failed-arm", "custom-symbolic-bound-guard"]}
+            for name in ["panic-41-guard", "custom-symbolic-failed-arm", "custom-symbolic-bound-guard",
+                         "custom-symbolic-ancestor-bound-guard", "custom-symbolic-request-range-guard"]}
         self.assertEqual(set(self.cases["decompile-revert-data"]["dependencies"]), expected)
         self.assertEqual({case["id"] for case in self.manifest["cases"]
                           if "scripts/web_test_decompile_revert_data.py" in case["dependencies"]},

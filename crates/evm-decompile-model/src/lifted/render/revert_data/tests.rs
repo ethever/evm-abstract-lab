@@ -4,6 +4,7 @@ use crate::{
     Block, Effects, Ir, LiftedBlock, LiftedExpression, LiftedGuard, LiftedGuardPayload,
     LiftedProgram, LiftedStatement, LiftedType, Operation, Terminator, Value, ValueFact, ValueKind,
 };
+mod cross_block;
 fn id(n: u64) -> EntityId {
     EntityId(n)
 }

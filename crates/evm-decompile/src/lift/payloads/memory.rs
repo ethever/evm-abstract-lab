@@ -7,6 +7,7 @@
 use crate::{EntityId, FactScope, Ir, Operation, U256, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod access;
 mod cycles;
 mod edge;
 mod invariant;
@@ -15,6 +16,7 @@ mod returndata;
 #[cfg(test)]
 mod tests;
 mod word;
+pub(super) use access::AccessRange;
 const MAX_DEPTH: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Identity {
@@ -75,6 +77,7 @@ pub(super) struct Memory<'a, P> {
     certified: BTreeMap<EntityId, Word>,
     certified_extents: BTreeMap<EntityId, Word>,
     return_data_size_bound: Option<U256>,
+    memory_end_bound: Option<U256>,
     loads: BTreeMap<(EntityId, U256), Option<Word>>,
     active_words: BTreeSet<EntityId>,
     active_loads: BTreeSet<(EntityId, U256)>,
@@ -97,6 +100,9 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
             return None;
         }
         let return_data_size_bound = execution_bound(ir)?;
+        let memory_end_bound = ir
+            .execution_fork
+            .and_then(|fork| ir.execution_domain.memory_end_bound(fork));
         let mut incoming = BTreeMap::<_, Vec<_>>::new();
         for edge in &ir.edges {
             incoming.entry(edge.to).or_default().push(edge);
@@ -109,6 +115,7 @@ impl<'a, P: FnMut(usize) -> bool> Memory<'a, P> {
             certified: certified.words,
             certified_extents: certified.extents,
             return_data_size_bound,
+            memory_end_bound,
             blocks: ir.blocks.iter().map(|b| (b.id, b)).collect(),
             operation_blocks: ir
                 .blocks

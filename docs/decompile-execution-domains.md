@@ -28,6 +28,14 @@ Cmem(w) = 3w + floor(w² / 512)
 
 普通字节码通过 RETURN 或 REVERT 产生的非空输出是其已付费内存的切片，其长度也严格小于 `2^41`。空输出直接满足该界。异常退出产生空返回数据；CREATE 成功时的 caller return-data buffer 也为空，CREATE 失败时的 REVERT 数据适用相同的内存论证。[RETURN 实现](https://ethereum.github.io/execution-specs/src/ethereum/forks/osaka/vm/instructions/system.py.html#return_)、[EIP-211](https://eips.ethereum.org/EIPS/eip-211)
 
+### 原始内存请求的局部范围
+
+同一内存费用论证还单独给出 `memory_end_bound`：在声明的交易域中，成功的非空内存请求满足 `offset + size ≤ 2^41−1`。该界约束的是原始请求正常完成时的普通整数区间，不是 `MLOAD(0x40)` 或任意 SSA 值的全局分配器公理。空请求不约束其被忽略的 offset。
+
+终止数据恢复将该界与真实 REVERT 请求、以及其 reaching-memory 链上的真实写请求分别绑定，再使用精确的模算术地址身份检查区间交集。producer 与 source checker 独立从同一执行域及 fork 重建这些局部范围，不将其写回数值或加载缓存。失败构造仍惰性执行全部原始原语直至原始 REVERT；扩展、复制或 REVERT 自身报错时，保留相同的首次失败和完整原语前缀，不读取解码后的 payload。
+
+`Generic` 仍要求从源码独立证明普通非回绕范围。例如未知指针 `P` 上的右对齐 selector 写入与 `REVERT(P+28,68)`，不能仅凭编译器惯例恢复：不受交易资源约束的 host 可以接受极大的普通内存请求，而 EVM ADD 的地址仍可能回绕。选择交易域后才可借用上述请求界；删除或修改执行域及 fork 会使依赖它的旧证书失效。
+
 ## Precompile 输出审计
 
 precompile 的结果不一定经过 callee 的 EVM 内存扩展，因此需要单独覆盖。三个 fork 的完整激活集合可在固定版本的 [geth precompile 表与实现](https://github.com/ethereum/go-ethereum/blob/v1.16.7/core/vm/contracts.go) 中核对。
