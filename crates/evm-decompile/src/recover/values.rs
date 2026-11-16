@@ -291,7 +291,9 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 }
                 let address = Address::of(&args[0].abstract_value);
                 match code {
-                    0x51 => state.memory.read(address.as_ref()),
+                    0x51 => {
+                        self.memory_value(&args[0].abstract_value, state, address, factories)?
+                    }
                     0x54 => state.storage.read(address.as_ref()),
                     _ => state.transient.read(address.as_ref()),
                 }
@@ -360,5 +362,60 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             }
         };
         Some(value)
+    }
+
+    /// Observe every address in a complete finite cover without conflating
+    /// independent observations. Exact/trusted address hits retain their
+    /// stronger value identity; missing or overlapping candidates still join.
+    fn memory_value(
+        &mut self,
+        offset: &AbstractValue,
+        state: &State,
+        address: Option<Address>,
+        factories: usize,
+    ) -> Option<AbstractValue> {
+        let forwarding = match address.as_ref() {
+            Some(Address::Exact(_)) => true,
+            Some(address @ Address::Expression(_)) => {
+                // This probe is additional to the read already reserved by
+                // instruction_work, including comparison of its symbolic key.
+                if !self.owner.pay(analysis_kernel::cost::key_lookup_work(
+                    state.memory.words.len(),
+                    offset.work_size(),
+                )) {
+                    return None;
+                }
+                state.memory.words.contains_key(address)
+            }
+            None => false,
+        };
+        if forwarding {
+            return Some(state.memory.read(address.as_ref()));
+        }
+        let Some(candidates) = offset.constants().filter(|set| !set.is_empty()) else {
+            return Some(state.memory.read(address.as_ref()));
+        };
+        // The instruction and its factory reservation cover one read only.
+        // Reserve all additional reads/factories and enumeration before the
+        // first lookup or clone. Joins keep their existing individual quotes.
+        let additional = candidates.len().saturating_sub(1);
+        if !self.owner.pay(candidates.len().saturating_add(
+            additional.saturating_mul(state.memory.read_work().saturating_add(factories)),
+        )) {
+            return None;
+        }
+        let mut result = None;
+        for candidate in candidates {
+            if !self.owner.pay(0) {
+                return None;
+            }
+            let observed = state.memory.read(Some(&Address::Exact(*candidate)));
+            result = Some(match result {
+                Some(previous) => self.join_value(&previous, &observed, false)?,
+                None => observed,
+            });
+        }
+        // A refused traversal never publishes a finite prefix as complete.
+        self.owner.pay(0).then_some(result).flatten()
     }
 }
