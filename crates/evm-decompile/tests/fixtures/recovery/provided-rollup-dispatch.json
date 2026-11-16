@@ -1,0 +1,17 @@
+{
+  "name": "provided-rollup-dispatch",
+  "acquisition": "Runtime bytecode supplied by the user; no network fetch or chain assumptions.",
+  "byte_length": 23599,
+  "sha256": "f96650ddaae6d72d22ebcbe9f4645df1aa8da6326c87727947a9129e9ac602ff",
+  "table_start": 128,
+  "table_end": 384,
+  "load_pc": 14981,
+  "jump_pc": 14997,
+  "table_targets": [
+    "0x3ebf",
+    "0x3ec6",
+    "0x3ef1",
+    "0x3f06"
+  ],
+  "code_hash": "0x5ee6af94fefbaeef36025b7d06ef186edb226b6285894e907d937191119def1b"
+}

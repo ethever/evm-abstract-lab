@@ -91,6 +91,14 @@ impl Memory {
             }
         })
     }
+    /// One additional concrete read, including its lookup, written-range scan
+    /// and any stored value clone. Compute this envelope once before a finite
+    /// address traversal; the ordinary instruction reservation funds that scan.
+    pub fn read_work(&self) -> usize {
+        self.work_size()
+            .saturating_mul(cost::tree_work(self.words.len()).saturating_add(1))
+            .saturating_mul(8)
+    }
     fn mark_written(&mut self, start: u64, end: u64) {
         if !self.zero {
             return;
