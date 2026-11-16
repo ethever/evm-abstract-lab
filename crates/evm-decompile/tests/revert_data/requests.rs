@@ -11,8 +11,10 @@ const REQUEST: &str =
 
 fn artifact(domain: ExecutionDomain) -> (Input, Artifact) {
     let input = input(REQUEST);
-    let mut config = Config::default();
-    config.execution_domain = domain;
+    let mut config = Config {
+        execution_domain: domain,
+        ..Config::default()
+    };
     config.readability.procedures = ProcedurePreference::Inline;
     let artifact = decompile(&input, &config);
     assert_eq!(
@@ -171,8 +173,10 @@ fn a_transaction_request_bound_does_not_establish_unknown_aliases_or_sibling_wri
     a.number(0xff).number(32).op(0x35).op(0x52);
     a.number(32).op(0x90).op(0xfd);
     let input = a.finish();
-    let mut config = Config::default();
-    config.execution_domain = ExecutionDomain::EthereumTransactions;
+    let config = Config {
+        execution_domain: ExecutionDomain::EthereumTransactions,
+        ..Config::default()
+    };
     let artifact = decompile(&input, &config);
     let program = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
     assert!(

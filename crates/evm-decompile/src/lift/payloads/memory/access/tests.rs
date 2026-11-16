@@ -67,8 +67,10 @@ fn scoped_request_evidence_never_refines_a_word_cache_or_bypasses_refusal() {
         ],
         Fork::Osaka,
     );
-    let mut config = Config::default();
-    config.execution_domain = ExecutionDomain::EthereumTransactions;
+    let config = Config {
+        execution_domain: ExecutionDomain::EthereumTransactions,
+        ..Config::default()
+    };
     let artifact = decompile(&input, &config);
     let ir = &artifact.current().unwrap().ir;
     let terminal = ir
