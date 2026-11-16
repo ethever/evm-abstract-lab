@@ -266,9 +266,13 @@ evm.return(offset = 0x0, size = returndata1.size);
 
 完整缓冲区的简写还需要零来源偏移及同版本完整长度的证明；已恢复的局部片段继续显示 `slice(returndata1, offset, size)`。相同长度不代表同一调用的数据。额外 CALL、SLOAD、GAS 或不相关读取仍是失败路径的观察边界，不能因为使用了 `PreparedConsumer` 就被吸收。旧产物没有 kind 时仍按原 `Constructor` 解释；它们不会获得新的消费证明。
 
-格式解码单独消费这些数据。完整规范字符串可解释为 `Error(string)`；`0x4e487b71` 加一个完整 word 可解释为 `Panic(code)`；其他固定 selector 加完整 word 序列只显示 `Revert(selector = ..., words = [...])`，不猜测函数名或 word 的 ABI 类型。已知 Panic 码的中文说明依据 [Solidity 的错误码表](https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require)，只是注释，不参与语义。无法识别格式时，高级代码继续显示原始 `evm.revert(offset = ..., size = ...)`；Inspector 仍可查看已恢复片段和原始来源。恢复成功不等于格式识别成功，也不等于可以收起构造。
+格式解码单独消费这些数据。完整规范字符串可解释为 `Error(string)`；`0x4e487b71` 加一个完整 word 可解释为 `Panic(code)`；其他固定 selector 加完整 word 序列只显示 `Revert(selector = ..., words = [...])`，不猜测函数名或 word 的 ABI 类型。已知 Panic 码默认附带英文说明，依据 [Solidity 的错误码表](https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require)，只是注释，不参与语义。无法识别格式时，高级代码继续显示原始 `evm.revert(offset = ..., size = ...)`；Inspector 仍可查看已恢复片段和原始来源。恢复成功不等于格式识别成功，也不等于可以收起构造。
 
 构造与控制流认证分别决定显示计划。`constructions` 指向原始块内的确切构造区间；`require` 还要核对失败路径、参数绑定及正常续接。compact 形式以失败时执行原始构造为语义，不提前计算错误参数，不跳过原有内存扩张或首次异常。失败分支中独立的 CALLDATALOAD、SLOAD、CALL 等观察不会因错误格式被识别就被前移或吸收；不能安全绑定参数时仍显示完整失败路径。轻量模型验证引用、作用域和原始构造对应关系；核心独立遍历内存写入链，再正向按最后一次写入生效重放字节身份。验证器不调用数据发现器或依靠格式名称认可字节。
+
+参数拷贝消除后，错误参数可以直接引用较早基本块中保留的 SSA 定义。显示端从实际入口和已闭合的源 CFG 重新计算支配关系，证明该定义在每条到达判断的路径上都已执行；同时核对原始定义和保留绑定的身份。兄弟分支、未来定义、不可达定义或开放的控制流不能建立这项证明。局部右侧表达式的改写规则不因此扩大，也不会重新执行祖先处的读取。
+
+对于动态地址，声明 `Ethereum valid transactions` 后，可使用所选 fork 的内存资源上界证明**原始访问正常完成时**的地址区间。例如 `MSTORE(P, selector)` 将四字节 selector 放在 word 的末尾时，`REVERT(P + 28, 68)` 可以恢复为该 selector 和后面的两个 word。这个区间事实只属于具体的 REVERT 及其到达写入，不会写回全局数值事实或假定 `MLOAD(0x40)` 是合法分配指针；原始访问先执行，内存扩张或异常仍按原顺序发生。默认 `Generic` 不借用交易资源前提，缺少源代码范围证明时保留原始内存切片。上界推导见[执行域说明](decompile-execution-domains.md)。
 
 轻量读取器还会独立核对已有 guard 只能选择自身 `If` 的实际分支，以及尾部范围和成功路径的正常后继关系。记录中的 `Passed` 状态不能代替这项入口检查：自引用、指向祖先或错误范围的元数据不会进入显示计划。构造和共享过程来源校验失败时，显示端保留原始语句，入口校验拒绝安装损坏的产物。
 

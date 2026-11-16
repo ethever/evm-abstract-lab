@@ -1,8 +1,9 @@
 //! Fixed real runtimes exercise planning size and independent execution paths.
 use evm_decompile::{
-    Artifact, Cancellation, Completion, Config, ExecutionLimits, ExecutionOutcome, ExitKind, Fork,
-    Input, Limits, MemoryHost, StageKind, StructuredKind, StructuredNode, TextExportStatus, U256,
-    ValidationStatus, decompile, execute_bytecode, execute_ir, execute_structured, export_text,
+    Artifact, Cancellation, Completion, Config, ExecutionDomain, ExecutionLimits, ExecutionOutcome,
+    ExitKind, Fork, Input, Limits, MemoryHost, StageKind, StructuredKind, StructuredNode,
+    TextExportStatus, U256, ValidationStatus, decompile, execute_bytecode, execute_ir,
+    execute_structured, export_text,
 };
 use std::sync::OnceLock;
 
@@ -12,6 +13,10 @@ struct Fixture {
 }
 
 fn fixture(hex: &str, metadata: &str) -> Fixture {
+    fixture_in_domain(hex, metadata, ExecutionDomain::Generic)
+}
+
+fn fixture_in_domain(hex: &str, metadata: &str, execution_domain: ExecutionDomain) -> Fixture {
     let metadata: serde_json::Value = serde_json::from_str(metadata).unwrap();
     let bytes = evm_bytecode::parse_hex(hex).unwrap();
     assert_eq!(
@@ -28,6 +33,7 @@ fn fixture(hex: &str, metadata: &str) -> Fixture {
     // must stop with evidence rather than consume the default u64::MAX budget.
     // Release CLI/browser acceptance also checks the ordinary default policy.
     let config = Config {
+        execution_domain,
         limits: Limits {
             max_work: 200_000_000_000,
             max_history_entities: 40_000_000,
@@ -112,11 +118,46 @@ fn pool_manager_high_projection_omits_empty_then_else_pairs() {
 
 #[test]
 fn pool_manager_recovers_custom_words_and_panic_without_requiring_string_abi() {
+    check_pool_manager_errors(&pool_manager().artifact);
+    let bounded = fixture_in_domain(
+        include_str!("fixtures/structure/ethereum-uniswap-v4-pool-manager.hex"),
+        include_str!("fixtures/structure/ethereum-uniswap-v4-pool-manager.json"),
+        ExecutionDomain::EthereumTransactions,
+    );
+    check_pool_manager_errors(&bounded.artifact);
+}
+
+fn check_pool_manager_errors(artifact: &Artifact) {
     use evm_decompile::{LiftedByteSegment, LiftedGuardPayload, LiftedRevertDataKind};
-    let artifact = &pool_manager().artifact;
+
     let ir = &artifact.current().unwrap().ir;
     let program = ir.lifted.as_ref().unwrap();
-    for pc in [7714, 7758, 7857] {
+    let bounded = artifact.config.execution_domain == ExecutionDomain::EthereumTransactions;
+    if !bounded {
+        let dynamic: Vec<_> = program
+            .revert_data
+            .iter()
+            .filter(|data| {
+                ir.block(data.block)
+                    .unwrap()
+                    .source
+                    .is_some_and(|source| source.pc == 16698)
+            })
+            .collect();
+        assert!(!dynamic.is_empty());
+        assert!(
+            dynamic
+                .iter()
+                .all(|data| matches!(data.content, LiftedRevertDataKind::Raw)),
+            "Generic must not inherit transaction memory bounds"
+        );
+    }
+    let sites = if bounded {
+        &[7714, 7758, 7857, 16698][..]
+    } else {
+        &[7714, 7758, 7857][..]
+    };
+    for &pc in sites {
         let proofs: Vec<_> = program
             .revert_data
             .iter()
@@ -132,7 +173,7 @@ fn pool_manager_recovers_custom_words_and_panic_without_requiring_string_abi() {
             proofs
                 .iter()
                 .all(|data| matches!(data.content, LiftedRevertDataKind::Segments(_))),
-            "constant-address selector/word constructor remained opaque at {pc}"
+            "selector/word constructor remained opaque at {pc}"
         );
         if pc != 7857 {
             assert!(
@@ -182,6 +223,38 @@ fn pool_manager_recovers_custom_words_and_panic_without_requiring_string_abi() {
         .count();
     let index = program.render_index(ir);
     let boundary = ir.structured.as_ref().unwrap().root.id;
+    // The two tick bounds use retained values defined in a dominating block.
+    // The spacing error needs the explicitly declared memory resource domain.
+    // Generic hosts can otherwise wrap allocation arithmetic after a hook call.
+    // Check every recovered occurrence, including cloned source blocks.
+    let guard_sites = if bounded {
+        &[7714, 7758, 16698][..]
+    } else {
+        &[7714, 7758][..]
+    };
+    for &pc in guard_sites {
+        for data in program.revert_data.iter().filter(|data| {
+            ir.block(data.block)
+                .unwrap()
+                .source
+                .is_some_and(|source| source.pc == pc)
+        }) {
+            assert!(
+                program.controls.iter().any(|control| {
+                    control
+                        .guard
+                        .as_ref()
+                        .is_some_and(|guard| guard.payload == LiftedGuardPayload::Data(data.id))
+                        && matches!(
+                            index.if_plan(control.node, boundary),
+                            evm_decompile::LiftedIfPlan::Require(_)
+                        )
+                }),
+                "recovered error at {pc} must select require: {:?}",
+                data.id
+            );
+        }
+    }
     let selected = program
         .controls
         .iter()
@@ -204,8 +277,20 @@ fn pool_manager_recovers_custom_words_and_panic_without_requiring_string_abi() {
     let export = export_text(artifact, &Cancellation::default());
     assert_eq!(export.status, TextExportStatus::Complete);
     assert!(export.text.contains("Panic(0x41)"));
-    assert!(export.text.contains("selector = 0xd5e2f7ab"));
-    assert!(export.text.contains("selector = 0x1ad777f8"));
+    let selectors = if bounded {
+        &["0xd5e2f7ab", "0x1ad777f8", "0xd4d8f3e6"][..]
+    } else {
+        &["0xd5e2f7ab", "0x1ad777f8"][..]
+    };
+    for selector in selectors {
+        assert!(
+            export.text.lines().any(|line| {
+                line.trim_start().starts_with("require(")
+                    && line.contains(&format!("selector = {selector}"))
+            }),
+            "custom error {selector} must be compact in the exported text"
+        );
+    }
 }
 
 // A dispatcher case/transition remains real retained structure, even though it

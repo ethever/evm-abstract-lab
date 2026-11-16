@@ -1,5 +1,6 @@
 //! Format-independent reaching-byte queries. No selector, ABI length or literal
 //! content decides whether a terminal memory range is queried.
+use super::memory::AccessRange;
 use super::{Memory, Word, overlap, writer_bytes};
 use crate::{
     EntityId, LiftedByteSegment, LiftedByteSource, LiftedDataWord, LiftedRevertDataKind,
@@ -40,13 +41,13 @@ enum Cell {
 
 pub(super) fn query<P: FnMut(usize) -> bool>(
     memory: &mut Memory<'_, P>,
-    version: EntityId,
-    offset: EntityId,
-    size: EntityId,
+    terminal: EntityId,
 ) -> Option<Recovered> {
     if !memory.charge(1) {
         return None;
     }
+    let op = memory.revert_operation(terminal)?;
+    let (version, offset, size) = (op.memory_input?, op.inputs[0], op.inputs[1]);
     let count = memory
         .word(size)
         .and_then(Word::exact)
@@ -64,13 +65,13 @@ pub(super) fn query<P: FnMut(usize) -> bool>(
     if let Some(result) = whole {
         return Some(result);
     }
-    let Some(count) = count.filter(|n| *n <= MAX_REVERT_DATA_BYTES) else {
+    if !count.is_some_and(|n| n <= MAX_REVERT_DATA_BYTES) {
+        return (!memory.refused).then(Recovered::raw);
+    }
+    let Some(range) = memory.terminal_access(terminal) else {
         return (!memory.refused).then(Recovered::raw);
     };
-    let Some(base) = memory.word(offset).filter(|base| base.end(count).is_some()) else {
-        return (!memory.refused).then(Recovered::raw);
-    };
-    let recovered = search(memory, version, base, count);
+    let recovered = search(memory, version, range);
     if memory.refused {
         None
     } else {
@@ -205,9 +206,9 @@ fn cells<P: FnMut(usize) -> bool>(
 fn search<P: FnMut(usize) -> bool>(
     memory: &mut Memory<'_, P>,
     mut version: EntityId,
-    base: Word,
-    size: usize,
+    range: AccessRange,
 ) -> Option<Recovered> {
+    let AccessRange { base, size } = range;
     if !memory.charge(size.saturating_mul(3)) {
         return None;
     }
@@ -227,9 +228,12 @@ fn search<P: FnMut(usize) -> bool>(
             return None;
         }
         if let Some(op) = memory.writer(version)
-            && !memory.writer_disjoint(op, base, size)
+            && !memory.access_disjoint(version, range)
         {
-            let (address, count) = memory.write_range(op)?;
+            let AccessRange {
+                base: address,
+                size: count,
+            } = memory.write_access(version)?;
             let (destination, source, len) = overlap(base, size, address, count)?;
             let bytes = cells(memory, op, source, len)?;
             if writes.len() == MAX_REVERT_DATA_BYTES || !memory.charge(len) {

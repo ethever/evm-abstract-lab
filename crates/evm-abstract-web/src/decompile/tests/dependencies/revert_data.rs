@@ -11,6 +11,9 @@ const FAILED_ARGUMENTS: &str = include_str!(
 const BOUND_ARGUMENTS: &str = include_str!(
     "../../../../../evm-decompile/tests/fixtures/revert-data/custom-symbolic-bound-guard.hex"
 );
+const ANCESTOR_ARGUMENTS: &str = include_str!(
+    "../../../../../evm-decompile/tests/fixtures/revert-data/custom-symbolic-ancestor-bound-guard.hex"
+);
 
 #[test]
 fn panic_and_symbolic_data_survive_publication_copy_source_links_and_display_options() {
@@ -18,6 +21,7 @@ fn panic_and_symbolic_data_survive_publication_copy_source_links_and_display_opt
         (PANIC, true, true),
         (FAILED_ARGUMENTS, false, false),
         (BOUND_ARGUMENTS, false, true),
+        (ANCESTOR_ARGUMENTS, false, true),
     ] {
         let artifact = artifact(bytecode.trim());
         let before = serde_json::to_vec(&artifact).unwrap();
@@ -54,7 +58,7 @@ fn panic_and_symbolic_data_survive_publication_copy_source_links_and_display_opt
         }
         if panic {
             assert!(
-                text.contains("Panic(0x41)") && text.contains("// 内存分配过大"),
+                text.contains("Panic(0x41)") && text.contains("// Excessive memory allocation"),
                 "{text}"
             );
         } else {

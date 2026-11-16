@@ -1,4 +1,5 @@
 //! Local certificate replay, independent of backwards payload discovery.
+use super::memory::AccessRange;
 use super::{Memory, overlap, terminal_range, writer_bytes};
 use crate::{Ir, LiftedProgram};
 use std::collections::{BTreeMap, BTreeSet};
@@ -74,9 +75,10 @@ pub(in crate::lift) fn verify(
         let Some(payload) = payloads.get(&proof.payload) else {
             return Some(false);
         };
-        let Some((base, size)) = terminal_range(&mut memory, op) else {
+        let Some(range) = terminal_range(&mut memory, op) else {
             return Some(false);
         };
+        let AccessRange { base, size } = range;
         if size != payload.bytes.len() || !memory.charge(size.saturating_mul(2)) {
             return Some(false);
         }
@@ -94,9 +96,13 @@ pub(in crate::lift) fn verify(
                 return Some(false);
             }
             if let Some(writer) = memory.writer(current)
-                && !memory.writer_disjoint(writer, base, size)
+                && !memory.access_disjoint(current, range)
             {
-                let Some((address, count)) = memory.write_range(writer) else {
+                let Some(AccessRange {
+                    base: address,
+                    size: count,
+                }) = memory.write_access(current)
+                else {
                     return Some(false);
                 };
                 if proof.writes[pending - 1] != writer.id
@@ -126,7 +132,13 @@ pub(in crate::lift) fn verify(
             let Some(writer) = memory.operations.get(write).copied() else {
                 return Some(false);
             };
-            let Some((address, count)) = memory.write_range(writer) else {
+            let Some(AccessRange {
+                base: address,
+                size: count,
+            }) = writer
+                .memory_output
+                .and_then(|version| memory.write_access(version))
+            else {
                 return Some(false);
             };
             let Some((dst, src, len)) = overlap(base, size, address, count) else {

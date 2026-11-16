@@ -829,8 +829,10 @@
       "module": "web_test_decompile_revert_data",
       "parameters": {},
       "dependencies": [
+        "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-ancestor-bound-guard.hex",
         "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-bound-guard.hex",
         "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-failed-arm.hex",
+        "crates/evm-decompile/tests/fixtures/revert-data/custom-symbolic-request-range-guard.hex",
         "crates/evm-decompile/tests/fixtures/revert-data/panic-41-guard.hex",
         "scripts/test-web-browser.py",
         "scripts/web_test_decompile_alignment.py",

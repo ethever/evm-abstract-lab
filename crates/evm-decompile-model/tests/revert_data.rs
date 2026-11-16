@@ -35,7 +35,9 @@ fn parts(selector: u32, word: LiftedDataWord) -> LiftedRevertDataKind {
 }
 #[test]
 fn derived_formats_keep_symbolic_words_and_do_not_claim_fragmented_arguments() {
-    for code in [0_u64, 0x41, 0xff] {
+    for code in [
+        0_u64, 0x01, 0x11, 0x12, 0x21, 0x22, 0x31, 0x32, 0x41, 0x51, 0xff,
+    ] {
         let proof = data(parts(
             0x4e487b71,
             LiftedDataWord::Constant(U256::from(code)),
@@ -43,6 +45,12 @@ fn derived_formats_keep_symbolic_words_and_do_not_claim_fragmented_arguments() {
         let f = proof.decode_format(|_| true).unwrap();
         assert!(matches!(f, LiftedRevertFormat::Panic(_)));
         assert_eq!(f.panic_explanation().is_some(), code != 0xff);
+        if let Some(note) = f.panic_explanation() {
+            assert!(
+                note.is_ascii(),
+                "default comments must use bundled font glyphs"
+            );
+        }
     }
     let mut proof = data(parts(0xdeadbeef, LiftedDataWord::SourceValue(id(600))));
     assert_eq!(

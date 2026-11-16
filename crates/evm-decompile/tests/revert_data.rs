@@ -14,9 +14,13 @@ mod oracle;
 #[path = "lifted/error_payloads/oracle.rs"]
 mod payload_oracle;
 use assembly::Asm;
+#[path = "revert_data/requests.rs"]
+mod requests;
 
 const PANIC: &str = include_str!("fixtures/revert-data/panic-41-guard.hex");
 const BOUND: &str = include_str!("fixtures/revert-data/custom-symbolic-bound-guard.hex");
+const ANCESTOR: &str =
+    include_str!("fixtures/revert-data/custom-symbolic-ancestor-bound-guard.hex");
 const LOCAL: &str = include_str!("fixtures/revert-data/custom-symbolic-failed-arm.hex");
 
 fn input(hex: &str) -> Input {
@@ -55,7 +59,7 @@ fn host(input: &Input, success: bool, words: &[U256]) -> MemoryHost {
 #[test]
 fn panic_and_symbolic_custom_data_preserve_lazy_source_requests_and_faults() {
     let words = [U256::from(17), U256::MAX, U256::from(0x80) << 248];
-    for source in [PANIC, BOUND, LOCAL] {
+    for source in [PANIC, BOUND, ANCESTOR, LOCAL] {
         let input = input(source);
         let artifact = checked(&input);
         let program = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
@@ -78,7 +82,7 @@ fn panic_and_symbolic_custom_data_preserve_lazy_source_requests_and_faults() {
         } else {
             assert!(text.contains("selector = 0xdeadbeef"), "{text}");
             assert!(text.contains("words = ["), "{text}");
-            if source == BOUND {
+            if matches!(source, BOUND | ANCESTOR) {
                 assert!(program.controls.iter().any(|control| {
                     control
                         .guard
@@ -96,6 +100,30 @@ fn panic_and_symbolic_custom_data_preserve_lazy_source_requests_and_faults() {
                     "already bound custom arguments must admit the compact plan"
                 );
                 assert!(text.contains("require("), "{text}");
+                if source == ANCESTOR {
+                    let guard = program
+                        .controls
+                        .iter()
+                        .find_map(|c| c.guard.as_ref())
+                        .unwrap();
+                    let entry = ir.entry.unwrap();
+                    assert_ne!(entry, guard.block);
+                    let loads: Vec<_> = ir
+                        .block(entry)
+                        .unwrap()
+                        .operations
+                        .iter()
+                        .filter(|op| op.opcode == 0x35)
+                        .collect();
+                    assert_eq!(loads.len(), 3);
+                    assert!(loads.iter().all(|load| program.blocks.iter().any(|block| {
+                        block.block == entry
+                            && block.statements.iter().any(|statement| {
+                                statement.operation == load.id && statement.outputs == load.outputs
+                            })
+                    })));
+                    assert!(!text.contains("evm.mstore("), "{text}");
+                }
             } else {
                 assert!(
                     program

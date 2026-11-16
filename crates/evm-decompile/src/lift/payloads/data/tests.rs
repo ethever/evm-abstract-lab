@@ -23,15 +23,7 @@ fn refused_query_returns_no_recovered_or_raw_completion() {
     let allow = Cell::new(true);
     let mut memory = Memory::new(ir, |_| allow.get()).unwrap();
     allow.set(false);
-    assert!(
-        query(
-            &mut memory,
-            terminal.memory_input.unwrap(),
-            terminal.inputs[0],
-            terminal.inputs[1]
-        )
-        .is_none()
-    );
+    assert!(query(&mut memory, terminal.id).is_none());
     assert!(memory.refused);
 }
 

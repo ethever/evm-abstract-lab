@@ -3,7 +3,8 @@
 //! Unsupported correspondence (including foreign aliases and predicate DAGs)
 //! retains all primitive operands instead of guessing a definition.
 use super::{
-    LiftedRenderError as Error, LiftedRenderIndex, MAX_LIFTED_EXPRESSION_TEXT, primitive::append,
+    LiftedRenderError as Error, LiftedRenderIndex, MAX_LIFTED_EXPRESSION_TEXT, flow::Flow,
+    primitive::append,
 };
 use crate::{
     Block, EntityId, Ir, LiftedExpressionKind as Kind, LiftedProgram, LiftedStatement, LiftedType,
@@ -37,6 +38,7 @@ pub(super) struct WordSources<'a> {
     bound: BTreeSet<EntityId>,
     incoming: BTreeMap<EntityId, Vec<&'a crate::Edge>>,
     decisions: BTreeMap<EntityId, usize>,
+    flow: Flow,
     complete: bool,
     valid: bool,
 }
@@ -44,12 +46,24 @@ impl<'a> WordSources<'a> {
     /// A real retained source binding at this block's decision, rather than an
     /// unused Value expression whose declared scope could be fabricated.
     pub(super) fn bound_at(&self, value: EntityId, block: EntityId) -> bool {
-        self.valid
-            && self.bound.contains(&value)
-            && self
-                .decisions
-                .get(&block)
-                .is_some_and(|before| self.available(value, block, *before))
+        if !self.valid || !self.bound.contains(&value) {
+            return false;
+        }
+        let Some(before) = self.decisions.get(&block) else {
+            return false;
+        };
+        if self.available(value, block, *before) {
+            return true;
+        }
+        let Some(definition) = self.definitions.get(&value) else {
+            return false;
+        };
+        // Copy projection may remove every intermediate phi parameter. Keep
+        // its retained ancestor binding, without expanding or moving its RHS.
+        // A forged expression scope cannot supply either this raw definition
+        // or a path from the real entry through its owner to this decision.
+        self.flow.strictly_dominates(definition.block, block)
+            && self.available(value, definition.block, usize::MAX)
     }
     pub(super) fn decision_position(&self, block: EntityId) -> Option<usize> {
         self.decisions.get(&block).copied()
@@ -114,14 +128,19 @@ impl<'a> WordSources<'a> {
             .get(&operation)
             .map(|op| (op.block.id, op.position))
     }
-    pub(super) fn new(program: &'a LiftedProgram, ir: Option<&'a Ir>) -> Self {
+    pub(super) fn new(
+        program: &'a LiftedProgram,
+        ir: Option<&'a Ir>,
+        pay: &mut impl FnMut(usize) -> bool,
+    ) -> Result<Self, Error> {
         let Some(ir) = ir else {
-            return Self::default();
+            return Ok(Self::default());
         };
+        let flow = Flow::new(ir, pay)?;
         let mut source = Self {
             valid: true,
-            complete: ir.fact_scope == crate::FactScope::CompleteLocalCfg
-                && ir.blocks.iter().all(|b| !b.terminator.is_partial()),
+            complete: flow.closed(),
+            flow,
             ..Self::default()
         };
         for edge in &ir.edges {
@@ -253,7 +272,7 @@ impl<'a> WordSources<'a> {
                 }
             }
         }
-        source
+        Ok(source)
     }
     fn available(&self, value: EntityId, block: EntityId, before: usize) -> bool {
         let Some(definition) = self.definitions.get(&value) else {
