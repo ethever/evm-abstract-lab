@@ -9,6 +9,8 @@ use analysis_kernel::cost;
 use evm_domain::{EvmValue, NumericValue, relational::RelationState, symbolic::ExprId};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod memory;
+
 pub(super) type AbstractValue = EvmValue<NumericValue>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -269,6 +271,7 @@ fn map_work(map: &BTreeMap<Address, AbstractValue>) -> usize {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct State {
+    pub bounds: super::bounds::Bounds,
     pub stack: Vec<Cell>,
     pub memory: Memory,
     pub storage: Storage,
@@ -278,6 +281,7 @@ pub(super) struct State {
 impl State {
     pub fn new() -> Self {
         Self {
+            bounds: super::bounds::Bounds::default(),
             stack: Vec::new(),
             memory: Memory::new(),
             // An arbitrary runtime invocation can be reentrant, including into
@@ -294,6 +298,7 @@ impl State {
                 work.saturating_add(cell.abstract_value.clone_work())
                     .saturating_add(cell.abstract_value.work_size())
             })
+            .saturating_add(self.bounds.work_size().saturating_mul(4))
             .saturating_add(self.memory.work_size())
             .saturating_add(self.storage.work_size())
             .saturating_add(self.transient.work_size())
@@ -330,6 +335,7 @@ impl State {
     }
     /// Runtime identities describe one block execution, never a stored entry.
     pub fn forget_runtime(&mut self) {
+        self.bounds.forget_predicates();
         for value in self
             .stack
             .iter_mut()

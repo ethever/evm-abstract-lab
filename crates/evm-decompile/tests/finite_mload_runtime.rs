@@ -1,12 +1,15 @@
-//! The supplied runtime's first table lookup must recover every known handler.
+//! The supplied runtime's loop must retain its dispatch table through recovery.
+#[path = "finite_mload_runtime/decoder_memory.rs"]
+mod decoder_memory;
+
 use evm_decompile::{
-    Cancellation, Completion, Config, Fork, Input, Limits, StageKind, Terminator, TextExportStatus,
-    U256, ValidationStatus, ValueFact, decompile, export_text,
+    Cancellation, Completion, Config, FactScope, Fork, Input, Limits, StageKind, Terminator,
+    TextExportStatus, U256, ValidationStatus, ValueFact, decompile, export_text,
 };
 use std::collections::BTreeSet;
 
 #[test]
-fn supplied_runtime_recovers_the_finite_table_without_claiming_every_loop_is_closed() {
+fn supplied_runtime_recovers_every_table_context_and_finishes_complete() {
     let bytes = evm_bytecode::parse_hex(include_str!(
         "fixtures/recovery/provided-rollup-dispatch.hex"
     ))
@@ -33,11 +36,9 @@ fn supplied_runtime_recovers_the_finite_table_without_claiming_every_loop_is_clo
         ..Config::default()
     };
     let artifact = decompile(&input, &config);
-    assert!(
-        matches!(
-            artifact.completion,
-            Completion::Complete | Completion::Partial
-        ),
+    assert_eq!(
+        artifact.completion,
+        Completion::Complete,
         "{:?}",
         artifact.diagnostics
     );
@@ -54,6 +55,8 @@ fn supplied_runtime_recovers_the_finite_table_without_claiming_every_loop_is_clo
         .find(|stage| stage.kind == StageKind::Baseline)
         .unwrap();
     let ir = &baseline.ir;
+    assert_eq!(ir.fact_scope, FactScope::CompleteLocalCfg);
+    assert!(ir.blocks.iter().all(|block| !block.terminator.is_partial()));
     let expected: BTreeSet<_> = [0x3ebf_usize, 0x3ec6, 0x3ef1, 0x3f06].into_iter().collect();
     let addresses: BTreeSet<_> = (0..8).map(|i| U256::from(0x80 + i * 32)).collect();
     let mut closed_tables = 0;
@@ -75,8 +78,7 @@ fn supplied_runtime_recovers_the_finite_table_without_claiming_every_loop_is_clo
         else {
             panic!("table dispatch lost its jump: {jump:?}");
         };
-        // Later loop contexts may lose table observations after unknown writes.
-        // A recovered first dispatch must not silently close those contexts.
+        // Check every context, including the loop body after numeric widening.
         if *unresolved {
             open_tables += 1;
             continue;
@@ -119,6 +121,8 @@ fn supplied_runtime_recovers_the_finite_table_without_claiming_every_loop_is_clo
         closed_tables > 0,
         "the supplied finite table was never recovered"
     );
+    assert_eq!(open_tables, 0, "a loop context lost its dispatch table");
+    decoder_memory::certify(&input, &artifact);
     let export = export_text(&artifact, &Cancellation::default());
     assert_eq!(export.status, TextExportStatus::Complete);
     println!(
