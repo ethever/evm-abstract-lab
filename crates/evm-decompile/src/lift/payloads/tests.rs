@@ -21,6 +21,81 @@ fn fixture() -> Vec<u8> {
     code.extend([0x60, 100, 0x60, 0x40, 0x51, 0xfd]);
     code
 }
+
+fn rechecked_input_fixture(other_input: bool) -> Vec<u8> {
+    let mut code = vec![0x5f, 0x35];
+    let mut stops = Vec::new();
+    let stop_if = |code: &mut Vec<u8>, stops: &mut Vec<usize>| {
+        code.push(0x61);
+        stops.push(code.len());
+        code.extend([0, 0, 0x57]);
+    };
+    // First source guard proves 1 <= calldata[0] < 32.
+    code.extend([0x80, 0x15]);
+    stop_if(&mut code, &mut stops);
+    code.extend([0x80, 0x60, 32, 0x90, 0x10, 0x15]);
+    stop_if(&mut code, &mut stops);
+    // The value leaves the stack before an independent source observation.
+    code.push(0x50);
+    code.extend([0x60, if other_input { 32 } else { 0 }, 0x35, 0x80, 0x15]);
+    stop_if(&mut code, &mut stops);
+    code.extend([0x60, 128, 0x01, 0x60, 64, 0x52]);
+    code.extend_from_slice(&fixture()[5..]);
+    let stop = u16::try_from(code.len()).unwrap().to_be_bytes();
+    for at in stops {
+        code[at..at + 2].copy_from_slice(&stop);
+    }
+    code.extend([0x5b, 0x00]);
+    code
+}
+
+#[test]
+fn source_ranges_and_repeated_inputs_reprove_a_lowered_branch_before_dynamic_revert() {
+    let artifact = decompile(
+        &Input::new(rechecked_input_fixture(false), Fork::Osaka),
+        &Config::default(),
+    );
+    let stage = artifact.current().unwrap();
+    let program = stage.ir.lifted.as_ref().unwrap();
+    assert_eq!(program.reverts.len(), 1);
+    assert_eq!(super::verify(&stage.ir, program, &mut |_| true), Some(true));
+    let mut changed = stage.ir.clone();
+    let offset = changed
+        .values
+        .iter()
+        .find(|v| matches!(v.kind, crate::ValueKind::Constant(n) if n == crate::U256::from(32)))
+        .unwrap()
+        .id;
+    let second = changed
+        .blocks
+        .iter_mut()
+        .flat_map(|b| &mut b.operations)
+        .filter(|op| op.opcode == 0x35)
+        .nth(1)
+        .unwrap();
+    second.inputs[0] = offset;
+    assert_eq!(
+        super::verify(&changed, program, &mut |_| true),
+        Some(false),
+        "a different source calldata word cannot inherit the original guard"
+    );
+}
+
+#[test]
+fn a_guard_on_one_input_does_not_certify_an_unbounded_other_pointer() {
+    let artifact = decompile(
+        &Input::new(rechecked_input_fixture(true), Fork::Osaka),
+        &Config::default(),
+    );
+    let program = artifact.current().unwrap().ir.lifted.as_ref().unwrap();
+    assert!(program.reverts.is_empty());
+    assert!(
+        program
+            .revert_data
+            .iter()
+            .all(|data| matches!(data.content, crate::LiftedRevertDataKind::Raw))
+    );
+}
 #[test]
 fn byte_and_source_corruptions_fail_local_replay() {
     let artifact = decompile(&Input::new(fixture(), Fork::Osaka), &Config::default());

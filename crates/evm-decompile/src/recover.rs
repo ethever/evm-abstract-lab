@@ -5,8 +5,10 @@
 //! Shared product values and common path guarantees remain private executable
 //! facts. Wire summaries only describe observations across all evaluations.
 
+mod bounds;
 mod context;
 mod feedback;
+mod memory;
 mod state;
 mod targets;
 mod values;
@@ -773,6 +775,15 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             return None;
         }
         let mut incoming = previous.clone();
+        if !self.owner.pay(incoming.bounds.work_size().saturating_add(
+            incoming.stack.iter().fold(0usize, |n, c| {
+                n.saturating_add(c.abstract_value.clone_work())
+            }),
+        )) {
+            return None;
+        }
+        let before_bounds = incoming.bounds.clone();
+        let before_stack = incoming.stack.clone();
         debug_assert_eq!(incoming.stack.len(), state.stack.len());
         let mut changed = false;
         let widen = feedback && self.updates[index] >= self.algebra.spec().widening_after_updates();
@@ -797,6 +808,14 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
             self.join_value(left, right, widen)
         })?;
         incoming.relations = incoming.relations.join(&state.relations);
+        self.join_bounds(
+            &before_bounds,
+            &before_stack,
+            state,
+            &mut incoming,
+            widen,
+            feedback,
+        )?;
         changed |= self.states[index].as_ref() != Some(&incoming);
         if changed {
             self.updates[index] = self.updates[index].saturating_add(1);
@@ -1049,6 +1068,9 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 break;
             }
             op.inputs.clear();
+            if (0x80..=0x9f).contains(&code) && self.bounds_stack(&mut state, code).is_none() {
+                return false;
+            }
             if (0x80..=0x8f).contains(&code) {
                 let cell = state.stack[state.stack.len() - required].clone();
                 op.inputs.push(cell.value);
@@ -1111,6 +1133,12 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                         control,
                     });
                 }
+                if self
+                    .bounds_step(&mut state, code, &args, op.outputs.len())
+                    .is_none()
+                {
+                    return false;
+                }
                 if op.effects.memory_write {
                     let query_operands: &[usize] = match code {
                         0x52 | 0x53 => &[0],
@@ -1126,48 +1154,52 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                     if !self.owner.pay(query_work) {
                         return false;
                     }
-                    match code {
-                        0x52 => state.memory.write(
-                            Address::of(&args[0].abstract_value),
-                            32,
-                            Some(args[1].abstract_value.clone()),
+                    let written = match code {
+                        0x52 => self.write_memory(
+                            &mut state.memory,
+                            &args[0].abstract_value,
+                            Some(32),
+                            Some(&args[1].abstract_value),
                         ),
-                        0x53 => state
-                            .memory
-                            .write(Address::of(&args[0].abstract_value), 1, None),
+                        0x53 => self.write_memory(
+                            &mut state.memory,
+                            &args[0].abstract_value,
+                            Some(1),
+                            None,
+                        ),
                         0xf1 | 0xf2 | 0xf4 | 0xfa => {
                             let base = if matches!(code, 0xf1 | 0xf2) { 3 } else { 2 };
-                            if let Some(width) = args[base + 3]
+                            let width = args[base + 3]
                                 .abstract_value
                                 .singleton()
-                                .and_then(|v| u64::try_from(v).ok())
-                            {
-                                state.memory.write(
-                                    Address::of(&args[base + 2].abstract_value),
-                                    width,
-                                    None,
-                                );
-                            } else {
-                                state.memory.clear();
-                            }
+                                .and_then(|v| u64::try_from(v).ok());
+                            self.write_memory(
+                                &mut state.memory,
+                                &args[base + 2].abstract_value,
+                                width,
+                                None,
+                            )
                         }
                         0x37 | 0x39 | 0x3e | 0x5e | 0x3c => {
                             let (offset, width) = if code == 0x3c { (1, 3) } else { (0, 2) };
-                            if let Some(width) = args[width]
+                            let width = args[width]
                                 .abstract_value
                                 .singleton()
-                                .and_then(|v| u64::try_from(v).ok())
-                            {
-                                state.memory.write(
-                                    Address::of(&args[offset].abstract_value),
-                                    width,
-                                    None,
-                                );
-                            } else {
-                                state.memory.clear();
-                            }
+                                .and_then(|v| u64::try_from(v).ok());
+                            self.write_memory(
+                                &mut state.memory,
+                                &args[offset].abstract_value,
+                                width,
+                                None,
+                            )
                         }
-                        _ => state.memory.clear(),
+                        _ => {
+                            state.memory.clear();
+                            Some(())
+                        }
+                    };
+                    if written.is_none() {
+                        return false;
                     }
                     memory = op.memory_output.expect("writers own a memory token");
                 }
@@ -1209,14 +1241,10 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                         });
                     }
                     0x57 => {
-                        let Some(then_state) =
-                            self.assume_state(&state, &args[1].abstract_value, true)
-                        else {
+                        let Some(then_state) = self.assume_state(&state, &args[1], true) else {
                             return false;
                         };
-                        let Some(else_state) =
-                            self.assume_state(&state, &args[1].abstract_value, false)
-                        else {
+                        let Some(else_state) = self.assume_state(&state, &args[1], false) else {
                             return false;
                         };
                         let then_possible = then_state.is_some();

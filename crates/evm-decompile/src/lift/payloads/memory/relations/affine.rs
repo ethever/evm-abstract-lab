@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Atom {
+    /// One immutable input of the fixed frame replayed by this Source instance.
+    Immutable(evm_domain::identity::Symbol),
     Source(EntityId),
     /// One fixed-address content at a checked acyclic/entry memory phi.
     Content(EntityId, U256),

@@ -7,8 +7,10 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 mod affine;
 use affine::{Atom, Expr, Range};
+mod comparison;
 mod execute;
 mod extent;
+mod immutable;
 mod induction;
 mod join;
 mod retain;

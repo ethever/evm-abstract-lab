@@ -46,7 +46,9 @@ fn captured_weth_dispatch_and_shared_returns_execute_offline() {
             strategy,
             ..Config::default()
         };
-        config.limits.max_work = 500_000_000;
+        // Finite may-writes retain and weakly merge more executable memory.
+        // Keep their actual clone/join costs inside a finite acceptance gate.
+        config.limits.max_work = 1_500_000_000;
         config.limits.max_structuring_depth = 512;
         config.limits.max_constant_set = 32;
         let started = Instant::now();

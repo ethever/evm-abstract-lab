@@ -207,9 +207,11 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
     pub(super) fn assume_state(
         &mut self,
         state: &State,
-        condition: &AbstractValue,
+        condition: &Cell,
         nonzero: bool,
     ) -> Option<Option<State>> {
+        let witness = condition.value;
+        let condition = &condition.abstract_value;
         if !self.owner.pay(
             state
                 .work_size()
@@ -246,6 +248,7 @@ impl<P: FnMut(Progress)> Recovery<'_, P> {
                 return None;
             }
         }
+        self.assume_bounds(&mut state, witness, nonzero)?;
         Some(Some(state))
     }
     pub(super) fn operation_value(

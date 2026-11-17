@@ -129,7 +129,9 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 } else if let Some(args) = args.iter().cloned().collect::<Option<Vec<_>>>() {
                     result = self.calculate(op, &args, state, atom);
                 }
-                let result = result.unwrap_or_else(|| Expr::atom(atom));
+                let result = result
+                    .or_else(|| super::immutable::input(op, &args))
+                    .unwrap_or_else(|| Expr::atom(atom));
                 if op.opcode == 0x3d
                     && let Some(high) = self.return_data_size_bound
                 {
@@ -232,6 +234,9 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 .ok()
                 .map(Expr::constant);
         }
+        if let Some(previous) = self.immutable_predicate(op.opcode, args, state) {
+            return Some(previous);
+        }
         let result = match (op.opcode, args) {
             (0x01, [a, b]) => Some(a.add(b)),
             (0x03, [a, b]) => Some(a.sub(b)),
@@ -300,6 +305,9 @@ impl<P: FnMut(usize) -> bool> Source<'_, P> {
                 state.real.insert(result.clone(), Range { low, high });
             }
             return Some(result);
+        }
+        if let Some(truth) = super::comparison::constant(state, op.opcode, args) {
+            return Some(Expr::constant(U256::from(u8::from(truth))));
         }
         let range = match (op.opcode, args) {
             (0x10..=0x15, _) => Some(Range {
