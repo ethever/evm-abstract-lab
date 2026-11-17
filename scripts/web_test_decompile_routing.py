@@ -19,6 +19,29 @@ FIRST = "600160020100"
 SECOND = "600360040100"
 
 
+def initial_pointer_path(page):
+    """Observe the idle canvas before this page has focused or edited a field."""
+    state = page.evaluate("""() => {
+        const canvas = document.querySelector('#evm-canvas');
+        const agent = canvas.nextElementSibling;
+        if (!(agent instanceof HTMLInputElement)) throw new Error('owned text agent is missing');
+        const rect = agent.getBoundingClientRect();
+        return {moment: 'before-first-edit-or-submit',
+                active: document.activeElement?.tagName,
+                agent_focused: document.activeElement === agent,
+                agent_rect: [rect.x, rect.y, rect.width, rect.height],
+                gpu_submissions: window.__webgpuEvidence.submissions,
+                status: document.querySelector('#analysis-status').textContent,
+                points: [[1, 1], [2, 1]].map(([x, y]) => {
+                    const target = document.elementFromPoint(x, y);
+                    return {x, y, tag: target?.tagName, canvas: target === canvas,
+                            agent: target === agent};
+                })};
+    }""")
+    assert all(point["canvas"] and not point["agent"] for point in state["points"]), state
+    return state
+
+
 def trailing_slash_entry(context, base):
     page = decompiler_page(context)
     resources = []
@@ -131,6 +154,7 @@ def run(context):
         with analysis_server(context.args, decompile_cache_dir=cache) as first_server:
             evidence["trailing_slash_assets"] = trailing_slash_entry(context, first_server)
             page, canvas, _, _ = open_decompiler(context, first_server)
+            evidence["initial_pointer_path"] = initial_pointer_path(page)
             first, _ = submit(context, page, canvas, FIRST, "routing-first")
             first_source = page.decompile_last_source
             assert first_source is not None and not first_source["cache_hit"], first_source
