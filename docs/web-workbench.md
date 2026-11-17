@@ -10,7 +10,7 @@
 nix run .#web
 ```
 
-Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生服务，并将静态资源与 `/api/tasks` 放在同一来源下。浏览器打开服务打印的地址即可使用。首次打开时先读取 RPC 提供者目录：有提供者则使用第一项自动分析下面的 Ethereum 主网 USDC 地址；目录为空则运行原有的分支字节码示例。目录加载失败时仍可使用字节码入口，并可在 RPC 表单点击 **Retry** 后手动提交分析。
+Nix 构建 WebAssembly、匹配版本的 wasm-bindgen JavaScript 绑定和原生服务，将静态资源及 API 放在同一来源下。`/` 是执行分析页面，`/decompiler` 是独立的反编译页面。首次打开执行分析页面时先读取 RPC 提供者目录：有提供者则使用第一项自动分析下面的 Ethereum 主网 USDC 地址；目录为空则运行原有的分支字节码示例。目录加载失败时仍可使用字节码入口，并可在 RPC 表单点击 **Retry** 后手动提交分析。直接打开 `/decompiler` 不触发这套分析器初始化。
 
 默认不配置 RPC 提供者，字节码分析可直接使用。需要分析链上账户时，直接传入 RPC HTTP(S) URL：
 
@@ -70,6 +70,20 @@ nix build .#web-assets
 ```
 
 `result/` 包含 HTML、JavaScript 和 Wasm。它仍需要连接同源原生分析服务；单独放到只提供静态文件的服务器上不能执行分析。
+
+## 独立反编译页面与缓存
+
+打开 `/decompiler` 可粘贴字节码，或选择后端配置的 RPC 提供者并输入合约地址。`/decompiler?address=<address>` 可以直接取码；`/decompiler?sha256=<code-sha256>&config=<settings-sha256>` 可以恢复缓存结果。地址解析先固定链及区块，再读取代码；结果链接使用实际字节码摘要和完整配置摘要，适合刷新、分享或在服务重启后重新打开。
+
+反编译与执行分析有独立的输入、任务和视图状态，站内导航与浏览器前后退保留相应结果。反编译页面不会通过启动分析器来获得代码；执行分析中的 **Decompile captured source** 只显式传递已经捕获的代码和 fork，供用户检查后提交。
+
+缓存保存在服务端用户缓存目录中，也可指定服务的持久数据目录：
+
+```bash
+nix run .#web -- --decompile-cache-dir /absolute/path/to/decompiler-cache
+```
+
+`--decompile-cache-entries` 和 `--decompile-cache-bytes` 分别控制保留组数与容量，默认 128 组、1 GiB。缓存独立于终止任务的保留数量；结果不会因为任务 ID 被淘汰而立即丢失。具体 URL 参数、配置和引擎版本隔离、缓存逐出及错误处理见[反编译工作区](decompilation.md#前端工作区)。
 
 ## 使用控件
 

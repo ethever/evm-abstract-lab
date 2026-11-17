@@ -697,6 +697,36 @@
         "web-browser-registry",
         "web-browser"
       ]
+    },
+    {
+      "name": "decompile-routing-case-isolation",
+      "description": "The standalone decompiler case changes only its own browser check, the registry validator and the browser aggregate.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_decompile_routing.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-decompile-routing",
+        "web-browser-registry",
+        "web-browser"
+      ]
+    },
+    {
+      "name": "decompile-address-cache-case-isolation",
+      "description": "The standalone decompiler case changes only its own browser check, the registry validator and the browser aggregate.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_decompile_address_cache.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-browser-decompile-address-cache",
+        "web-browser-registry",
+        "web-browser"
+      ]
     }
   ]
 }

@@ -67,6 +67,7 @@ fn full_request_progress_and_result_envelopes_roundtrip_all_wide_numeric_fields(
                 queue_ns: DecimalU64(count),
                 processing_ns: DecimalU64(count),
                 publication: None,
+                cache_warning: None,
             }),
         };
         let raw = serde_json::to_string(&snapshot).unwrap();

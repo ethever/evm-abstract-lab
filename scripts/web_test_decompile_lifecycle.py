@@ -3,7 +3,7 @@
 from copy import deepcopy
 import json
 from playwright.sync_api import expect
-from web_test_decompile_helpers import (BRANCH, contains_ast, open_decompiler,
+from web_test_decompile_helpers import (BRANCH, contains_ast, decompile_admission, is_decompile_admission, open_decompiler_with_analysis,
                                        prepare, stage, submit, wait_job)
 from web_test_harness import (analysis_server, click_control, ui_control, webgpu_evidence,
                               expect_http_error, consume_http_error)
@@ -15,7 +15,7 @@ def run(context):
         configuration = context.output / "providers.json"
         configuration.write_text(json.dumps({"providers": [{**RPC_PROVIDERS[0], "endpoint": rpc.endpoint}]}) + "\n")
         with analysis_server(context.args, configuration, workers=1) as url:
-            page, canvas, startup, _ = open_decompiler(context, url)
+            page, canvas, startup, _ = open_decompiler_with_analysis(context, url)
             baseline, _ = submit(context, page, canvas, BRANCH, "retained-baseline")
             status = page.locator("#analysis-status")
             rpc.block_method = "eth_getCode"
@@ -26,10 +26,9 @@ def run(context):
             active_id = active.json()["result"]["Ok"]["id"]
             assert rpc.started.wait(5), "the real shared worker was not occupied"
             prepare(page, canvas, "600160020100")
-            with page.expect_response(lambda response: response.request.method == "POST"
-                                      and response.url.endswith("/api/decompile/tasks")) as admitted:
+            with page.expect_response(is_decompile_admission) as admitted:
                 click_control(page, canvas, "Decompile", role="action")
-            queued = admitted.value.json()["result"]["Ok"]
+            _, queued, _ = decompile_admission(admitted.value)
             assert queued["state"] == "Queued", queued
             expect(status).to_contain_text("Decompile task: Queued")
             expect(status).to_contain_text("Artifact: " + baseline["id"])
@@ -59,17 +58,17 @@ def run(context):
 
             page.route("**/api/decompile/tasks/*", disappeared)
             prepare(page, canvas, "600560060100")
-            with page.expect_response(lambda response: response.request.method == "POST"
-                                      and response.url.endswith("/api/decompile/tasks")) as missing_admission:
+            with page.expect_response(is_decompile_admission) as missing_admission:
                 click_control(page, canvas, "Decompile", role="action")
-            missing_id = missing_admission.value.json()["result"]["Ok"]["id"]
+            _, missing_job, _ = decompile_admission(missing_admission.value)
+            missing_id = missing_job["id"]
             expect(status).to_contain_text("Decompile task: Task unavailable")
             expect(status).to_contain_text("TaskNotFound")
             assert len(expected_missing_errors) == 1
             expected_missing_error = consume_http_error(page, expected_missing_errors[0])
             expect(status).to_contain_text("Artifact: " + baseline["id"])
             expect(status).to_contain_text("Selected entity: " + retained_selection)
-            click_control(page, canvas, "Edit bytecode", role="action")
+            click_control(page, canvas, "Edit input", role="action")
             ui_control(page, "Decompile", role="action", enabled=True)
             canvas.screenshot(path=str(context.output / "missing-task-unlocks-retained-workspace.png"))
             page.unroute("**/api/decompile/tasks/*", disappeared)

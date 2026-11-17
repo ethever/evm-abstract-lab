@@ -190,6 +190,7 @@ impl Drop for Handle {
 pub struct Pool {
     handle: Arc<Handle>,
     providers: Arc<crate::rpc_providers::Registry>,
+    cache: Arc<crate::decompile::cache::Cache>,
 }
 
 impl Pool {
@@ -213,14 +214,30 @@ impl Pool {
         providers: crate::rpc_providers::Registry,
         postprocess_work: usize,
     ) -> Result<Self, PoolError> {
+        Self::with_cache(
+            config,
+            providers,
+            postprocess_work,
+            crate::decompile::cache::Cache::memory(),
+        )
+    }
+
+    /// Share an explicit persistent cache without making library callers write HOME.
+    pub fn with_cache(
+        config: Config,
+        providers: crate::rpc_providers::Registry,
+        postprocess_work: usize,
+        cache: Arc<crate::decompile::cache::Cache>,
+    ) -> Result<Self, PoolError> {
         let providers = Arc::new(providers);
-        Self::start(
+        Self::start_with_cache(
             config,
             Native {
                 providers: Arc::clone(&providers),
                 postprocess_work,
             },
             providers,
+            cache,
         )
     }
 
@@ -233,16 +250,45 @@ impl Pool {
         )
     }
 
+    /// Exercise a concrete executor with an explicitly scoped cache.
+    pub fn with_executor_and_cache<E: Executor>(
+        config: Config,
+        executor: E,
+        cache: Arc<crate::decompile::cache::Cache>,
+    ) -> Result<Self, PoolError> {
+        Self::start_with_cache(
+            config,
+            executor,
+            Arc::new(crate::rpc_providers::Registry::default()),
+            cache,
+        )
+    }
+
     fn start<E: Executor>(
         config: Config,
         executor: E,
         providers: Arc<crate::rpc_providers::Registry>,
     ) -> Result<Self, PoolError> {
+        Self::start_with_cache(
+            config,
+            executor,
+            providers,
+            crate::decompile::cache::Cache::memory(),
+        )
+    }
+
+    fn start_with_cache<E: Executor>(
+        config: Config,
+        executor: E,
+        providers: Arc<crate::rpc_providers::Registry>,
+        cache: Arc<crate::decompile::cache::Cache>,
+    ) -> Result<Self, PoolError> {
         if config.workers == 0 || config.retained_jobs == 0 {
             return Err(PoolError::Configuration);
         }
         let (sender, receiver) = mpsc::sync_channel(128);
-        let coordinator = actor::Coordinator::new(config, executor, sender.clone())?;
+        let coordinator =
+            actor::Coordinator::new(config, executor, sender.clone(), Arc::clone(&cache))?;
         thread::Builder::new()
             .name("analysis-coordinator".into())
             .spawn(move || coordinator.run(receiver))
@@ -250,12 +296,73 @@ impl Pool {
         Ok(Self {
             handle: Arc::new(Handle { sender }),
             providers,
+            cache,
         })
     }
 
     /// Configured provider names and URL values for the browser's selector.
     pub fn rpc_providers(&self) -> Vec<evm_abstract_protocol::RpcProvider> {
         self.providers.catalogue()
+    }
+
+    /// Source acquisition is independent of world analysis and worker execution.
+    pub async fn open_decompile(
+        &self,
+        open: evm_abstract_protocol::DecompileOpenRequest,
+    ) -> Result<evm_abstract_protocol::DecompileOpened, ApiError> {
+        let (bytes, settings, origin) =
+            crate::decompile::source::resolve(open, &self.providers, &self.cache).await?;
+        let request = settings
+            .clone()
+            .into_request(format!("0x{}", alloy_primitives::hex::encode(&bytes)));
+        crate::decompile::validate(&request)?;
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let key = this
+                .cache
+                .remember(&bytes, &settings)
+                .map_err(crate::decompile::source::cache_error)?;
+            let fork = match settings.fork {
+                evm_abstract_protocol::Fork::Cancun => evm_decompile::Fork::Cancun,
+                evm_abstract_protocol::Fork::Prague => evm_decompile::Fork::Prague,
+                evm_abstract_protocol::Fork::Osaka => evm_decompile::Fork::Osaka,
+            };
+            let cached = this.cache.result(&key).unwrap_or(None).filter(|artifact| {
+                artifact.input.runtime_bytecode == bytes
+                    && artifact.input.fork == fork
+                    && artifact.config == settings.config
+            });
+            let cache_hit = cached.is_some();
+            let snapshot = if let Some(artifact) = cached {
+                let (reply, result) = mpsc::sync_channel(1);
+                this.send(actor::Command::RestoreDecompile {
+                    artifact,
+                    key: key.clone(),
+                    reply,
+                })?;
+                result.recv().map_err(|_| channel_error())??
+            } else {
+                match this.submit_task(task::Request::CachedDecompile {
+                    request: Box::new(request.clone()),
+                    key: key.clone(),
+                })? {
+                    task::Snapshot::Decompile(snapshot) => snapshot,
+                    task::Snapshot::Analysis(_) => return Err(task_type_error()),
+                }
+            };
+            Ok(evm_abstract_protocol::DecompileOpened {
+                request,
+                source: evm_abstract_protocol::DecompileSource {
+                    sha256: key.code,
+                    config_sha256: key.settings,
+                    origin,
+                    cache_hit,
+                },
+                snapshot,
+            })
+        })
+        .await
+        .map_err(|_| worker_error(WorkerErrorKind::Protocol, "decompiler cache worker failed"))?
     }
 
     /// Admit a configured input or return a validation/queue-capacity failure.

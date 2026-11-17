@@ -5,21 +5,34 @@ use crate::{
     JobOperation, TransportError,
     decompile::{Command, Message},
 };
-use evm_abstract_protocol::{DECOMPILE_API_PATH, DecompileJobReply, DecompileJobResultReply};
+use evm_abstract_protocol::{
+    DECOMPILE_API_PATH, DECOMPILE_OPEN_PATH, DecompileJobReply, DecompileJobResultReply,
+    DecompileOpenReply, DecompileOpenRequest, DecompileSettings, DecompileSourceInput,
+};
 
 pub(super) async fn execute(command: Command) -> Message {
     match command {
+        Command::Open {
+            generation,
+            request,
+        } => Message::Opened {
+            generation,
+            result: Box::new(open(*request).await),
+        },
+        Command::Providers { generation } => Message::Providers {
+            generation,
+            result: super::rpc_providers().await,
+        },
         Command::Submit {
             generation,
             request,
-        } => Message::Status {
+        } => Message::Opened {
             generation,
-            operation: JobOperation::Submit,
             result: Box::new(
-                async {
-                    let body = serde_json::to_string(&request).map_err(TransportError::Encode)?;
-                    status("POST", DECOMPILE_API_PATH, Some(body)).await
-                }
+                open(DecompileOpenRequest {
+                    settings: Some(DecompileSettings::from_request(&request)),
+                    source: DecompileSourceInput::Bytecode(request.bytecode),
+                })
                 .await,
             ),
         },
@@ -39,6 +52,17 @@ pub(super) async fn execute(command: Command) -> Message {
             result: Box::new(result(&format!("{DECOMPILE_API_PATH}/{id}/result")).await),
         },
     }
+}
+
+async fn open(request: DecompileOpenRequest) -> Result<DecompileOpenReply, TransportError> {
+    let body = serde_json::to_string(&request).map_err(TransportError::Encode)?;
+    let (status, ok, body) = super::fetch("POST", DECOMPILE_OPEN_PATH, Some(body)).await?;
+    let reply: DecompileOpenReply =
+        serde_json::from_slice(&body).map_err(|cause| TransportError::Decode { status, cause })?;
+    if !ok && reply.result.is_ok() {
+        return Err(TransportError::Http { status });
+    }
+    Ok(reply)
 }
 
 async fn status(

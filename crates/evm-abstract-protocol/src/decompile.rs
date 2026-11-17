@@ -11,6 +11,11 @@ pub use evm_decompile_model::{
 
 /// Same-origin task endpoint for local bytecode decompilation.
 pub const DECOMPILE_API_PATH: &str = "/api/decompile/tasks";
+/// Resolve a standalone source and reuse a content-qualified cached result.
+pub const DECOMPILE_OPEN_PATH: &str = "/api/decompile/open";
+
+mod source;
+pub use source::*;
 
 record! {
     /// Local runtime bytecode and its explicit recovery/structuring policy.
@@ -60,6 +65,9 @@ record! {
         pub processing_ns: crate::DecimalU64,
         /// Installed artifact revision, unrelated to its transformation stages.
         pub publication: Option<crate::PublicationVersion>,
+        /// A result remains inspectable when its optional cache write fails.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub cache_warning: Option<DecompileCacheWarning> = None,
     }
 }
 

@@ -14,6 +14,8 @@ capture-replay = []
 evm-bytecode               = { path = "../evm-bytecode" }
 evm-decompile              = { path = "../evm-decompile" }
 alloy-primitives.workspace = true
+alloy.workspace            = true
+sha2.workspace             = true
 axum.workspace             = true
 hyper.workspace            = true
 hyper-util.workspace       = true

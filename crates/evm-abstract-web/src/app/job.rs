@@ -203,7 +203,7 @@ impl Task {
         self.cancel_command()
     }
 
-    fn cancel_command(&mut self) -> Option<Command> {
+    pub(super) fn cancel_command(&mut self) -> Option<Command> {
         if self.cancel_requested && !self.cancel_sent {
             let id = self.snapshot.as_ref()?.id;
             if !matches!(

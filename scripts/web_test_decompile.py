@@ -2,14 +2,14 @@
 
 from playwright.sync_api import expect
 from web_test_decompile_helpers import (BRANCH, LOOP, choose_stage, contains_ast,
-                                       inspector_control, observed, open_decompiler,
-                                       prepare, record_input, stage, submit)
+                                       inspector_control, observed, open_decompiler_with_analysis,
+                                       prepare, record_input, stage, submit, switch_workspace)
 from web_test_harness import click_control, resize_view, ui_control, webgpu_evidence
 from web_test_pixels import text_pixels
 
 
 def run(context):
-    page, canvas, _, analysis_status = open_decompiler(context)
+    page, canvas, _, analysis_status = open_decompiler_with_analysis(context)
     status = page.locator("#analysis-status")
     submissions = []
     page.on("request", lambda request: submissions.append(request.url)
@@ -72,7 +72,7 @@ def run(context):
     inspector_control(page, canvas, "Original ", "decompile-origin")
     expect(status).to_contain_text("Route: Original bytecode")
     canvas.screenshot(path=str(context.output / "original-descendant-navigation.png"))
-    click_control(page, canvas, "Analysis", role="tab")
+    switch_workspace(page, canvas, "Analysis")
     assert page.locator("#analysis-status").text_content().startswith(analysis_status.split("; Workspace:")[0])
     with page.expect_response(lambda response: response.request.method == "GET"
                               and response.url.endswith("/result") and "/api/decompile/" in response.url,

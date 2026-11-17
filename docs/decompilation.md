@@ -383,7 +383,24 @@ CALL/CALLCODE 显示 `value` 参数，DELEGATECALL/STATICCALL 的六项参数中
 
 ## 前端工作区
 
-执行分析和反编译共用一个应用入口。反编译工作区拥有独立输入、任务状态、阶段选择与实体选择，不把生成的节点放入 Native 执行状态命名空间。
+执行分析使用 `/`，反编译使用独立的 `/decompiler`。直接打开反编译页面只初始化反编译工作区；裸路径打开输入表单，不自动运行分析器示例。页面分别拥有输入、任务状态、阶段选择与实体选择，只轮询当前页面的任务；站内导航保留各自已有的结果和镜头。反编译节点不进入 Native 执行状态命名空间。
+
+支持以下入口：
+
+| URL | 行为 |
+| --- | --- |
+| `/decompiler` | 输入运行时字节码或合约地址 |
+| `/decompiler?address=<address>` | 使用后端默认 RPC 提供者，固定链和区块后获取代码 |
+| `/decompiler?sha256=<code-sha256>` | 从服务端保存的字节码恢复，使用默认反编译设置 |
+| `/decompiler?sha256=<code-sha256>&config=<settings-sha256>` | 恢复指定代码及完整设置 |
+
+`sha256` 是解码后的运行时字节码的 SHA-256，不是十六进制输入文本的摘要，也不是 EVM 的 Keccak code hash。`config` 标识 fork、执行域、结构化策略、预算及阅读偏好的完整组合。提交成功后，地址栏写入规范的 `sha256` 与 `config` 链接；刷新、新浏览器和服务重启都可以使用它。手动提交不同结果保留浏览器历史，前进或后退恢复对应输入及设置；迟到的旧请求不能改写新页面或 URL。
+
+地址入口可额外使用 `provider=<id>`、`chain=<decimal-chain-id>` 和 `block=<latest|number|hash>`。提供者 ID 来自后端配置，RPC URL 不写入结果链接。区块号或 `latest` 先解析为固定区块 hash，再在该快照读取代码；显式链 ID 必须与提供者一致。地址是取码入口，缓存身份由实际代码决定，页面显示本次取码的地址、链与区块来源。哈希入口找不到保存的代码或指定设置时，会保留在反编译页面并说明错误。
+
+结果持久化在服务端，与调度器的 `retained_jobs` 分开。缓存按代码和完整设置分组，并用当前引擎二进制及格式版本识别可复用结果；引擎更新后可用保存的代码和设置重新计算。只有 `Complete`、`Partial` 结果用于复用，取消、失败和预算中止不会充当成功缓存。缓存命中仍取得当前服务进程中的任务身份，再通过原有 publication 与产物验证路径安装结果。
+
+默认目录是 `$XDG_CACHE_HOME/evm-abstract-lab/decompiler`，未设置时使用 `$HOME/.cache/evm-abstract-lab/decompiler`。可通过 `--decompile-cache-dir` 选择持久目录；`--decompile-cache-entries` 默认 128 组，`--decompile-cache-bytes` 默认 1 GiB。容量限制用于缓存保留，按最近使用情况逐出旧组，不改变分析预算。代码及设置也被逐出后，哈希本身不能重建内容，需要重新提供字节码或地址。缓存写入失败会显示明确提示，原反编译产物仍可检查。
 
 结构化结果、原字节码、基线 CFG 和选定阶段可以相互定位。前后对照和转换检查器直接消费库生成的来源与变化记录。旧任务的迟到响应不能覆盖新任务；取消请求必须等工作线程清理完毕后才进入终止状态。
 
@@ -391,14 +408,14 @@ CALL/CALLCODE 显示 `value` 参数，DELEGATECALL/STATICCALL 的六项参数中
 
 例如，要检查代码复制修改了哪里：
 
-1. 打开 `Decompiler`，输入字节码并选择 fork，选中 `Code duplication` 后提交。也可以在执行分析中点击 `Decompile captured source`，带入当前已捕获的代码和 fork。
+1. 打开 `/decompiler`，输入字节码并选择 fork，选中 `Code duplication` 后提交。也可以在执行分析中点击 `Decompile captured source`，导航到反编译页面并带入当前已捕获的代码和 fork，检查草稿后再提交。
 2. 在 `Transformation history` 选择控制流转换，点击 `Compare transform stages`。`Before stage` 与 `Current stage` 分别指向该转换的输入和输出；`Graphs`、`IR` 与 `Changes` 展示对应差异。
 3. 展开 `Copied entities`，分别点击 `Copy original` 和 `Copy descendant`；展开 `Redirected edges` 查看旧目标、新目标与真实边身份。
 4. 点击实体的 `Original` 来源，查看原始指令及它的所有派生位置。`Parent occurrences` 和 `Entity descendants` 用于沿转换链前后定位，历史导航保留所选阶段和实体。
 
 选择 `Dispatcher` 时采用同样的检查流程，新增的分派控制出现在转换记录中。两种策略都保留基线；界面中的辅助控制、原指令及复制实例使用各自的身份。
 
-HTTP 入口为 `POST /api/decompile/tasks`，状态和取消分别使用 `GET`／`DELETE /api/decompile/tasks/{id}`，结果使用 `GET /api/decompile/tasks/{id}/result`。请求与结果类型定义在 `evm-abstract-protocol`；任务的 publication 版本与产物内部的 stage 身份分开。
+前端使用 `POST /api/decompile/open` 解析字节码、地址或哈希入口，响应包含有效请求、代码及设置摘要、取码来源、缓存命中情况和任务快照。`POST /api/decompile/tasks` 保留显式新建任务的语义；状态和取消分别使用 `GET`／`DELETE /api/decompile/tasks/{id}`，结果使用 `GET /api/decompile/tasks/{id}/result`。请求与结果类型定义在 `evm-abstract-protocol`；任务的 publication 版本与产物内部的 stage 身份分开。
 
 ## 实现边界
 

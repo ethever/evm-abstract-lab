@@ -3,20 +3,29 @@
 use evm_abstract_protocol as api;
 use std::{
     io::{BufRead, BufReader},
+    path::PathBuf,
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
-struct Server(Child);
+struct Server(Child, PathBuf);
 
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        let _ = std::fs::remove_dir_all(&self.1);
     }
 }
 
 fn start(limit: u64) -> (Server, String) {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let cache = std::env::temp_dir().join(format!(
+        "evm-cli-cache-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut child = Command::new(env!("CARGO_BIN_EXE_evm-abstract-server"))
         .args([
             "--bind",
@@ -26,6 +35,8 @@ fn start(limit: u64) -> (Server, String) {
             "--postprocess-work",
             &limit.to_string(),
         ])
+        .arg("--decompile-cache-dir")
+        .arg(&cache)
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -38,7 +49,7 @@ fn start(limit: u64) -> (Server, String) {
         .and_then(|line| line.split_whitespace().next())
         .expect("server must report its actual bound address")
         .to_owned();
-    (Server(child), base)
+    (Server(child, cache), base)
 }
 
 fn runtime() -> tokio::runtime::Runtime {

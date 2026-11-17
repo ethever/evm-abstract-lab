@@ -3,11 +3,21 @@
 
 use crate::{JobOperation, TransportError};
 use evm_abstract_protocol::{
-    ApiError, DecompileJobReply, DecompileJobResultReply, DecompileJobSnapshot, DecompileRequest,
-    Fork, JobId, JobState, PublicationVersion, decompile_model::ExecutionDomain,
+    ApiError, DecompileJobReply, DecompileJobResultReply, DecompileJobSnapshot, DecompileOpenReply,
+    DecompileOpenRequest, DecompileRequest, DecompileSettings, Fork, JobId, JobState,
+    PublicationVersion, RpcProvidersReply, decompile_model::ExecutionDomain,
 };
 
+mod open;
+
 pub(crate) enum Command {
+    Open {
+        generation: u64,
+        request: Box<DecompileOpenRequest>,
+    },
+    Providers {
+        generation: u64,
+    },
     Submit {
         generation: u64,
         request: Box<DecompileRequest>,
@@ -27,6 +37,14 @@ pub(crate) enum Command {
 }
 
 pub(crate) enum Message {
+    Opened {
+        generation: u64,
+        result: Box<Result<DecompileOpenReply, TransportError>>,
+    },
+    Providers {
+        generation: u64,
+        result: Result<RpcProvidersReply, TransportError>,
+    },
     Status {
         generation: u64,
         operation: JobOperation,
@@ -41,6 +59,14 @@ pub(crate) enum Message {
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Error {
+    #[error("Invalid decompiler link: {0}")]
+    Route(String),
+    #[error("Invalid source response: {0}")]
+    Source(String),
+    #[error("Result runtime bytecode differs from the opened source")]
+    InputMismatch,
+    #[error("Result settings differ from the opened configuration")]
+    ConfigMismatch,
     #[error("{0}")]
     Transport(TransportError),
     #[error("{code:?}: {message}", code = .0.code, message = .0.message)]
@@ -98,6 +124,9 @@ pub(super) struct Task {
     next_poll: f64,
     execution_domain: ExecutionDomain,
     fork: Option<Fork>,
+    pending_open: Option<DecompileOpenRequest>,
+    expected: Option<open::Expected>,
+    cancelled_openings: std::collections::BTreeMap<u64, DecompileOpenRequest>,
 }
 
 impl Task {
@@ -106,8 +135,27 @@ impl Task {
     }
 
     pub fn start(&mut self, request: DecompileRequest) -> Command {
-        self.execution_domain = request.execution_domain;
-        self.fork = Some(request.fork);
+        let settings = DecompileSettings::from_request(&request);
+        self.begin(Some(&settings));
+        self.pending_open = Some(DecompileOpenRequest {
+            source: evm_abstract_protocol::DecompileSourceInput::Bytecode(request.bytecode.clone()),
+            settings: Some(settings),
+        });
+        Command::Submit {
+            generation: self.generation,
+            request: Box::new(request),
+        }
+    }
+
+    fn begin(&mut self, settings: Option<&DecompileSettings>) {
+        if self.cancel_requested
+            && let Some(request) = self.pending_open.take()
+        {
+            self.cancelled_openings.insert(self.generation, request);
+        }
+        self.execution_domain =
+            settings.map_or(ExecutionDomain::Generic, |s| s.config.execution_domain);
+        self.fork = settings.map(|s| s.fork);
         self.generation = self
             .generation
             .checked_add(1)
@@ -122,10 +170,8 @@ impl Task {
         self.cancel_requested = false;
         self.cancel_pending = false;
         self.next_poll = 0.0;
-        Command::Submit {
-            generation: self.generation,
-            request: Box::new(request),
-        }
+        self.pending_open = None;
+        self.expected = None;
     }
 
     pub fn execution_domain(&self) -> ExecutionDomain {
@@ -142,21 +188,33 @@ impl Task {
         }
     }
 
-    pub fn next(&mut self, now: f64) -> Option<Command> {
-        if self.phase == Phase::Missing {
-            return None;
-        }
+    pub fn take_cancel(&mut self) -> Option<Command> {
         let snapshot = self.snapshot.as_ref()?;
-        let id = snapshot.id;
-        let generation = self.generation;
         if self.cancel_requested
             && !self.cancel_pending
             && !matches!(snapshot.state, JobState::Cancelling)
             && self.busy()
         {
             self.cancel_pending = true;
-            return Some(Command::Cancel { generation, id });
+            Some(Command::Cancel {
+                generation: self.generation,
+                id: snapshot.id,
+            })
+        } else {
+            None
         }
+    }
+
+    pub fn next(&mut self, now: f64) -> Option<Command> {
+        if self.phase == Phase::Missing {
+            return None;
+        }
+        if let Some(cancel) = self.take_cancel() {
+            return Some(cancel);
+        }
+        let snapshot = self.snapshot.as_ref()?;
+        let id = snapshot.id;
+        let generation = self.generation;
         if now < self.next_poll {
             return None;
         }
@@ -200,6 +258,9 @@ impl Task {
     ) {
         if generation != self.generation {
             return;
+        }
+        if operation == JobOperation::Submit {
+            self.pending_open = None;
         }
         if operation == JobOperation::Cancel {
             self.cancel_pending = false;

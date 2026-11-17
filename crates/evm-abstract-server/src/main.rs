@@ -33,6 +33,15 @@ struct Args {
     /// Per-job work shared by the minimum model and optional rich presentation.
     #[arg(long, default_value_t = evm_abstract_server::analyze::DEFAULT_POSTPROCESS_WORK)]
     postprocess_work: usize,
+    /// Persistent decompiler cache directory; defaults to XDG_CACHE_HOME or HOME/.cache.
+    #[arg(long)]
+    decompile_cache_dir: Option<PathBuf>,
+    /// Maximum cached bytecode/settings groups, independently of retained task IDs.
+    #[arg(long, default_value_t = 128)]
+    decompile_cache_entries: usize,
+    /// Maximum committed source, settings and result bytes in the decompiler cache.
+    #[arg(long,default_value_t=1024*1024*1024)]
+    decompile_cache_bytes: u64,
 }
 
 fn main() -> ExitCode {
@@ -69,18 +78,32 @@ async fn run_async(args: Args) -> Result<(), evm_abstract_server::http::ServerEr
         .transpose()
         .map_err(evm_abstract_server::http::ServerError::RpcConfig)?
         .unwrap_or_default();
+    let directory = args
+        .decompile_cache_dir
+        .map(Ok)
+        .unwrap_or_else(evm_abstract_server::decompile::cache::Config::default_directory)
+        .map_err(evm_abstract_server::http::ServerError::Cache)?;
+    let cache = evm_abstract_server::decompile::cache::Cache::persistent(
+        evm_abstract_server::decompile::cache::Config {
+            directory,
+            max_entries: args.decompile_cache_entries,
+            max_bytes: args.decompile_cache_bytes,
+        },
+    )
+    .map_err(evm_abstract_server::http::ServerError::Cache)?;
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     println!(
         "EVM workbench: http://{} ({} analysis workers)",
         listener.local_addr()?,
         config.workers
     );
-    evm_abstract_server::http::serve_with_postprocess_work(
+    evm_abstract_server::http::serve_with_cache(
         listener,
         &args.assets,
         config,
         providers,
         args.postprocess_work,
+        cache,
     )
     .await
 }

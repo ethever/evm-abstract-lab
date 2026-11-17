@@ -15,6 +15,30 @@ use evm_abstract_protocol::{
     ValidationFailure,
 };
 
+pub(super) async fn open(
+    State(state): State<Application>,
+    request: Result<Json<evm_abstract_protocol::DecompileOpenRequest>, JsonRejection>,
+) -> Response {
+    let request = match request {
+        Ok(Json(request)) => request,
+        Err(_) => {
+            return error_response(api_error(
+                ApiErrorCode::InvalidRequest,
+                "invalid decompiler source JSON or Content-Type",
+            ));
+        }
+    };
+    let result = state.jobs.open_decompile(request).await;
+    let status = result
+        .as_ref()
+        .err()
+        .map_or(202, |error| error_status(error.code));
+    json_response(
+        status,
+        &evm_abstract_protocol::DecompileOpenReply { result },
+    )
+}
+
 pub(super) async fn submit(
     State(state): State<Application>,
     request: Result<Json<DecompileRequest>, JsonRejection>,

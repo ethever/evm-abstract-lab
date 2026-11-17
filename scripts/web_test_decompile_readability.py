@@ -5,7 +5,7 @@ from collections import Counter
 
 from playwright.sync_api import expect
 from web_test_decompile_alignment import code_label, copy_code
-from web_test_decompile_helpers import (inspector_control, observed, open_decompiler,
+from web_test_decompile_helpers import (bytecode_bytes, decompile_admission, inspector_control, is_decompile_admission, observed, open_decompiler,
                                        stage, submit)
 from web_test_decompile_review import source_descendant
 from web_test_harness import (click_control, rendered_frame, resize_view, set_control,
@@ -33,10 +33,9 @@ def apply(context, page, canvas, name):
     with page.expect_response(lambda response: response.request.method == "GET"
                               and "/api/decompile/tasks/" in response.url
                               and response.url.endswith("/result"), timeout=60000) as published:
-        with page.expect_response(lambda response: response.request.method == "POST"
-                                  and response.url.endswith("/api/decompile/tasks")) as admitted:
+        with page.expect_response(is_decompile_admission) as admitted:
             inspector_control(page, canvas, "Apply reading choices", "action")
-    request = admitted.value.request.post_data_json
+    request, _, _ = decompile_admission(admitted.value)
     result = published.value.json()["result"]["Ok"]
     artifact = result["artifact"]
     expect(page.locator("#analysis-status")).to_contain_text("Artifact: " + artifact["id"])
@@ -132,7 +131,7 @@ def run(context):
     inspector_control(page, canvas, "Inline", "tab")
     inspector_control(page, canvas, "Dispatcher", "tab")
     dispatched, request = apply(context, page, canvas, "reading-dispatcher")
-    assert request["bytecode"] == BRANCH
+    assert bytecode_bytes(request["bytecode"]) == bytes.fromhex(BRANCH)
     reading = request["readability"]
     assert reading["profile"] == "compact" and reading["procedures"] == "inline"
     preference, = reading["regions"]

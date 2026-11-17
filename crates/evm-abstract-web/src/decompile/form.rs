@@ -5,9 +5,22 @@ use crate::{
     framework, palette,
 };
 use evm_abstract_protocol::{
-    DecompileLimits, DecompileRequest, DecompileStrategy, Fork,
+    DecompileAddressInput, DecompileLimits, DecompileOpenRequest, DecompileRequest,
+    DecompileSettings, DecompileSourceInput, DecompileStrategy, Fork,
     decompile_model::{ExecutionDomain, ReadabilityConfig},
 };
+
+pub(super) enum Submission {
+    Bytecode(DecompileRequest),
+    Address(DecompileOpenRequest),
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum InputMode {
+    #[default]
+    Bytecode,
+    Address,
+}
 
 pub(super) struct Form {
     pub open: bool,
@@ -22,6 +35,8 @@ pub(super) struct Form {
     limit_inputs: framework::NumberInputs,
     keyboard: framework::SubmitKeyboard,
     replace_editor: bool,
+    mode: InputMode,
+    address: super::address::Address,
 }
 
 impl Default for Form {
@@ -39,6 +54,8 @@ impl Default for Form {
             limit_inputs: framework::NumberInputs::default(),
             keyboard: framework::SubmitKeyboard::default(),
             replace_editor: false,
+            mode: InputMode::Bytecode,
+            address: super::address::Address::default(),
         }
     }
 }
@@ -63,14 +80,17 @@ impl Form {
             .strip_prefix("0x")
             .or_else(|| compact.strip_prefix("0X"))
             .unwrap_or(&compact);
-        let current = self.readability_scope.as_ref().is_some_and(|scope| {
-            let previous = scope.bytecode.strip_prefix("0x").unwrap_or(&scope.bytecode);
-            code.eq_ignore_ascii_case(previous)
-                && self.fork == scope.fork
-                && self.execution_domain == scope.execution_domain
-                && self.strategy == scope.strategy
-                && self.limits == scope.limits
-        });
+        // An address draft may resolve different bytes at its next pinned
+        // block; source-bound region choices are for the captured bytes only.
+        let current = self.mode == InputMode::Bytecode
+            && self.readability_scope.as_ref().is_some_and(|scope| {
+                let previous = scope.bytecode.strip_prefix("0x").unwrap_or(&scope.bytecode);
+                code.eq_ignore_ascii_case(previous)
+                    && self.fork == scope.fork
+                    && self.execution_domain == scope.execution_domain
+                    && self.strategy == scope.strategy
+                    && self.limits == scope.limits
+            });
         if !current {
             self.readability.regions.clear();
             self.readability_notice = true;
@@ -78,6 +98,7 @@ impl Form {
     }
 
     pub fn load(&mut self, bytecode: String, fork: Fork) {
+        self.mode = InputMode::Bytecode;
         self.bytecode = bytecode;
         self.fork = fork;
         self.open = true;
@@ -86,6 +107,9 @@ impl Form {
     }
 
     pub fn validation(&self) -> Option<&'static str> {
+        if self.mode == InputMode::Address {
+            return self.address.validation();
+        }
         let compact: String = self
             .bytecode
             .chars()
@@ -108,12 +132,12 @@ impl Form {
         !busy && self.limit_inputs.valid() && self.validation().is_none()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, busy: bool) -> Option<DecompileRequest> {
+    pub fn show(&mut self, ui: &mut egui::Ui, busy: bool) -> Option<Submission> {
         if !self.open {
             self.keyboard.reset();
             return None;
         }
-        if std::mem::take(&mut self.replace_editor) {
+        if self.mode == InputMode::Bytecode && std::mem::take(&mut self.replace_editor) {
             framework::BytecodeEditor::Decompiler.replace(ui.ctx());
             ui.memory_mut(|memory| {
                 memory.request_focus(framework::BytecodeEditor::Decompiler.id())
@@ -122,13 +146,34 @@ impl Form {
         let keyboard_submit = self.keyboard.submit(ui.ctx());
         let mut submit = false;
         let input_response = ui.push_id("decompile_input", |ui| {
-            ui.label("Runtime bytecode");
-            framework::bytecode_editor(
-                ui,
-                framework::BytecodeEditor::Decompiler,
-                &mut self.bytecode,
-                64.0,
-            );
+            ui.horizontal_wrapped(|ui| {
+                controls::tab_value(
+                    ui,
+                    &mut self.mode,
+                    InputMode::Bytecode,
+                    "Bytecode",
+                    Density::Regular,
+                );
+                controls::tab_value(
+                    ui,
+                    &mut self.mode,
+                    InputMode::Address,
+                    "Contract address",
+                    Density::Regular,
+                );
+            });
+            match self.mode {
+                InputMode::Bytecode => {
+                    ui.label("Runtime bytecode");
+                    framework::bytecode_editor(
+                        ui,
+                        framework::BytecodeEditor::Decompiler,
+                        &mut self.bytecode,
+                        64.0,
+                    );
+                }
+                InputMode::Address => self.address.show(ui),
+            }
             Density::Regular.scope(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("EVM fork");
@@ -270,13 +315,20 @@ impl Form {
             } else {
                 compact
             };
-            Some(DecompileRequest {
+            let request = DecompileRequest {
                 bytecode,
                 fork: self.fork,
                 execution_domain: self.execution_domain,
                 strategy: self.strategy,
                 limits: self.limits.clone(),
                 readability: self.readability.clone(),
+            };
+            Some(match self.mode {
+                InputMode::Bytecode => Submission::Bytecode(request),
+                InputMode::Address => Submission::Address(DecompileOpenRequest {
+                    source: DecompileSourceInput::Address(self.address.input()?),
+                    settings: Some(DecompileSettings::from_request(&request)),
+                }),
             })
         } else {
             None
@@ -301,5 +353,57 @@ impl Form {
         } else {
             String::new()
         }
+    }
+
+    pub fn load_address(&mut self, address: &DecompileAddressInput) {
+        self.mode = InputMode::Address;
+        self.address.load(address);
+        self.keyboard.reset();
+    }
+
+    pub fn show_bytecode(&mut self) {
+        self.mode = InputMode::Bytecode;
+        self.open = true;
+    }
+
+    pub fn restore(&mut self, request: &DecompileRequest) {
+        self.bytecode = request.bytecode.clone();
+        self.fork = request.fork;
+        self.execution_domain = request.execution_domain;
+        self.strategy = request.strategy;
+        self.limits = request.limits.clone();
+        self.readability = request.readability.clone();
+        self.readability_scope = Some(Box::new(request.clone()));
+        self.readability_notice = false;
+        self.limit_inputs = framework::NumberInputs::default();
+        self.keyboard.reset();
+        self.replace_editor = true;
+    }
+
+    pub fn resolved_origin(
+        &mut self,
+        origin: Option<&evm_abstract_protocol::DecompileAddressSource>,
+    ) {
+        if self.mode == InputMode::Address
+            && let Some(origin) = origin
+        {
+            self.address.resolved_provider(&origin.provider_id);
+        }
+    }
+
+    pub fn provider_command(&mut self) -> Option<super::Command> {
+        if self.open && self.mode == InputMode::Address {
+            self.address.next()
+        } else {
+            None
+        }
+    }
+
+    pub fn receive_providers(
+        &mut self,
+        generation: u64,
+        result: Result<evm_abstract_protocol::RpcProvidersReply, crate::TransportError>,
+    ) {
+        self.address.receive(generation, result);
     }
 }

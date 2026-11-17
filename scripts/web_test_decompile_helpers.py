@@ -1,8 +1,10 @@
 """Real decompiler HTTP publications and painted control interactions."""
 
 import json
+import hashlib
 import re
 import time
+from urllib.parse import urlsplit, urlunsplit
 from playwright.sync_api import expect
 from web_test_harness import (capture_console_errors, click_control, edit_control,
                               observe_webgpu, rendered_frame, ui_control, ui_controls,
@@ -16,30 +18,129 @@ LOOP = "5f5b5f35600d576001016001565b5000"
 IRREDUCIBLE = "5f356008576011565b60016000556011565b5f3560085700"
 
 
-def open_decompiler(context, url=None):
+def origin(url):
+    parsed = urlsplit(url)
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def decompiler_url(url):
+    parsed = urlsplit(url)
+    return urlunsplit((parsed.scheme, parsed.netloc, "/decompiler", parsed.query, ""))
+
+
+def decompiler_page(context):
     page = context.browser.new_page(viewport={"width": 1920, "height": 1080})
     page.decompile_output = context.output
+    page.decompile_analysis_requests = []
     observe_webgpu(page)
     capture_console_errors(page)
+
+    def observed_request(request):
+        if (urlsplit(page.url).path.rstrip("/") == "/decompiler"
+                and urlsplit(request.url).path.startswith("/api/tasks")):
+            page.decompile_analysis_requests.append({"method": request.method, "url": request.url})
+
+    page.on("request", observed_request)
+    return page
+
+
+def assert_decompiler_isolated(page):
+    assert not page.decompile_analysis_requests, page.decompile_analysis_requests
+
+
+def switch_workspace(page, canvas, label):
+    assert label in {"Analysis", "Decompiler"}, label
+    click_control(page, canvas, label, role="tab")
+    path = "/" if label == "Analysis" else "/decompiler"
+    page.wait_for_function("path => window.location.pathname === path", arg=path)
+    expect(page.locator("#analysis-status")).to_contain_text("Workspace: " + label)
+    assert_decompiler_isolated(page)
+
+
+def open_decompiler(context, url=None):
+    """A direct decompiler entry never starts or polls an analysis workspace."""
+    page = decompiler_page(context)
+    page.goto(decompiler_url(url or context.url), wait_until="networkidle")
+    expect(page.locator("#analysis-status")).to_contain_text("Workspace: Decompiler", timeout=60000)
+    canvas = page.locator("#evm-canvas")
+    rendered_frame(page)
+    assert_decompiler_isolated(page)
+    return page, canvas, None, None
+
+
+def open_decompiler_with_analysis(context, url=None):
+    """Explicit setup for tests of source transfer or retained analyzer state."""
+    base = origin(url or context.url)
+    page = decompiler_page(context)
     with page.expect_response(lambda response: response.request.method == "POST"
                               and response.url.endswith("/api/tasks")) as startup:
-        page.goto(url or context.url, wait_until="networkidle")
+        page.goto(base, wait_until="networkidle")
     expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
     analysis_status = page.locator("#analysis-status").text_content()
     job_id = startup.value.json()["result"]["Ok"]["id"]
-    retained = page.request.get((url or context.url).rstrip("/") + f"/api/tasks/{job_id}/result")
+    retained = page.request.get(base + f"/api/tasks/{job_id}/result")
     assert retained.ok, retained.text()
     page.decompile_analysis_report = retained.json()["result"]["Ok"]["report"]
-    click_control(page, canvas, "Decompiler", role="tab")
-    expect(page.locator("#analysis-status")).to_contain_text("Workspace: Decompiler")
+    switch_workspace(page, canvas, "Decompiler")
+    expect(page).to_have_url(re.compile(re.escape(base) + r"/decompiler(?:\?.*)?$"))
+    assert_decompiler_isolated(page)
     return page, canvas, startup.value.request.post_data_json, analysis_status
+
+
+def is_decompile_admission(response):
+    return (response.request.method == "POST"
+            and urlsplit(response.url).path in {"/api/decompile/open", "/api/decompile/tasks"})
+
+
+def decompile_post_request(request):
+    """Inspect exact posted JSON integers before any response normalization."""
+    posted = json.loads(request.post_data)
+    if urlsplit(request.url).path == "/api/decompile/tasks":
+        return posted
+    assert urlsplit(request.url).path == "/api/decompile/open", request.url
+    settings = posted["settings"]
+    return {**settings["config"], "fork": settings["fork"],
+            "bytecode": posted["source"]["bytecode"]}
+
+
+def bytecode_bytes(text):
+    compact = "".join(text.split())
+    if compact[:2].lower() == "0x":
+        compact = compact[2:]
+    return bytes.fromhex(compact)
+
+
+def decompile_admission(response):
+    """Normalize the two typed admission APIs, retaining the real sent config."""
+    assert response.status == 202, response.text()
+    posted = json.loads(response.request.post_data)
+    value = response.json()["result"]["Ok"]
+    if urlsplit(response.url).path == "/api/decompile/tasks":
+        return posted, value, None
+    assert urlsplit(response.url).path == "/api/decompile/open", response.url
+    request, source, snapshot = value["request"], value["source"], value["snapshot"]
+    actual_bytes = bytecode_bytes(request["bytecode"])
+    assert source["sha256"] == hashlib.sha256(actual_bytes).hexdigest(), source
+    assert re.fullmatch(r"[0-9a-f]{64}", source["config_sha256"]), source
+    assert isinstance(source["cache_hit"], bool), source
+    if "bytecode" in posted["source"]:
+        assert actual_bytes == bytecode_bytes(posted["source"]["bytecode"])
+    if posted.get("settings") is not None:
+        settings = posted["settings"]
+        assert request["fork"].lower() == settings["fork"].lower()
+        for key, configured in settings["config"].items():
+            assert request.get(key, {"execution_domain": "generic", "readability": {}}.get(key)) == configured, (key, request, settings)
+    return request, snapshot, source
 
 
 def prepare(page, canvas, bytecode, strategy="Dispatcher", fork=None):
     controls = ui_controls(page)
     if not any(control["label"] == "Runtime bytecode" and control["enabled"] for control in controls):
-        click_control(page, canvas, "Edit bytecode", role="action")
+        if any(control["label"] == "Edit input" and control["enabled"] for control in controls):
+            click_control(page, canvas, "Edit input", role="action")
+        panel = ui_control(page, "Decompiler input", role="decompile-input")
+        click_control(page, canvas, "Bytecode", role="tab", within=panel)
     if any(character in bytecode for character in "\n\r\t"):
         # Chromium's single-line text agent sanitizes insertText newlines.
         # A real paste reaches egui's multiline Paste event without that loss.
@@ -76,12 +177,10 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
                               and "/api/decompile/tasks/" in response.url
                               and response.url.endswith("/result") and response.status == 200,
                               timeout=60000) as publication:
-        with page.expect_response(lambda response: response.request.method == "POST"
-                                  and response.url.endswith("/api/decompile/tasks")) as admitted:
+        with page.expect_response(is_decompile_admission) as admitted:
             click_control(page, canvas, "Decompile", role="action")
     admission, response = admitted.value, publication.value
-    assert admission.status == 202, admission.text()
-    job = admission.json()["result"]["Ok"]
+    request, job, source = decompile_admission(admission)
     # Chromium may evict large bodies from its inspector cache after the page
     # has consumed them. Read the same immutable task when requested; the page
     # must still publish that exact artifact identity below.
@@ -96,9 +195,9 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     artifact = result["artifact"]
     assert artifact["schema_version"] == 12
     assert artifact["config"]["strategy"] == {"Dispatcher": "dispatcher", "Code duplication": "code_duplication"}[strategy]
-    selected_fork = admission.request.post_data_json["fork"]
+    selected_fork = request["fork"]
     assert artifact["input"]["fork"] == selected_fork.lower()
-    declared = admission.request.post_data_json.get("execution_domain", "generic")
+    declared = request.get("execution_domain", "generic")
     assert artifact["config"].get("execution_domain", "generic") == declared
     for current in artifact["stages"]:
         assert current["ir"].get("execution_domain", "generic") == declared
@@ -109,11 +208,16 @@ def submit(context, page, canvas, bytecode, name, strategy="Dispatcher", fork=No
     expect(page.locator("#analysis-status")).to_contain_text("Fork: " + selected_fork)
     expect(page.locator("#analysis-status")).to_contain_text("Artifact: " + artifact["id"])
     expect(page.locator("#analysis-status")).to_contain_text("Decompile task: Ready")
+    assert_decompiler_isolated(page)
     (context.output / (name + "-request.json")).write_text(admission.request.post_data + "\n")
     (context.output / (name + "-artifact.json")).write_text(json.dumps(result, indent=2) + "\n")
     rendered_frame(page)
     canvas.screenshot(path=str(context.output / (name + ".png")))
-    return artifact, admission.request.post_data_json
+    page.decompile_last_source = source
+    page.decompile_last_job = job
+    # Editor spelling assertions observe the actual sent bytes/prefix. The
+    # source service may canonicalize its effective request for persistence.
+    return artifact, decompile_post_request(admission.request)
 
 
 def stage(artifact, kind):
@@ -260,7 +364,7 @@ def contains_ast(node, kind):
 def wait_job(page, url, identity, predicate):
     deadline = time.monotonic() + 30
     while True:
-        response = page.request.get(url + "/api/decompile/tasks/" + str(identity))
+        response = page.request.get(origin(url) + "/api/decompile/tasks/" + str(identity))
         assert response.status == 200, response.text()
         snapshot = response.json()["result"]["Ok"]
         if predicate(snapshot):

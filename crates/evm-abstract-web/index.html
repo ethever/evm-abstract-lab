@@ -21,7 +21,7 @@
   </head>
   <body>
     <div id="boot" role="status">
-      <strong>EVM ABSTRACT LAB</strong><span>Starting the WebGPU analysis workspace…</span>
+      <strong>EVM ABSTRACT LAB</strong><span>Starting the WebGPU workspace…</span>
       <details id="startup-diagnostics" hidden>
         <summary>Startup details</summary>
         <pre id="startup-context"></pre>
@@ -60,7 +60,7 @@
           throw new Error('GPUAdapter.info is unavailable; this workspace requires that WebGPU API.');
         }
         stage = 'JavaScript module loading';
-        const { default: init, start } = await import('./evm_abstract_web.js');
+        const { default: init, start } = await import('/evm_abstract_web.js');
         stage = 'WebAssembly initialization';
         await init();
         // eframe also creates the app and its text agent here. A rejection is

@@ -1,7 +1,7 @@
 """Harness browser acceptance helpers."""
 
 from pathlib import Path
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from contextvars import ContextVar
 from playwright.sync_api import expect
 import json
@@ -10,6 +10,7 @@ import re
 import selectors
 import subprocess
 import time
+from tempfile import TemporaryDirectory
 from web_test_hybrid import assert_detail_policy, job_result_report, namespace_available, native_entry_context, source_program
 from web_test_http_errors import ExpectedHttpErrors
 
@@ -89,25 +90,32 @@ def server_url(process: subprocess.Popen[str]) -> str:
 
 @contextmanager
 def analysis_server(args, rpc_config: Path | str | None = None, *, workers: int | None = None,
-                    postprocess_work: int | None = None):
-    command = [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0"]
-    if workers is not None:
-        command.extend(["--workers", str(workers), "--queue-capacity", str(workers * 2)])
-    if rpc_config is not None:
-        command.extend(["--rpc-config", str(rpc_config)])
-    if postprocess_work is not None:
-        command.extend(["--postprocess-work", str(postprocess_work)])
-    process = subprocess.Popen(command, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True, bufsize=1)
-    try:
-        yield server_url(process)
-    finally:
-        process.terminate()
+                    postprocess_work: int | None = None,
+                    decompile_cache_dir: Path | str | None = None):
+    # Ordinary cases own isolated caches. A persistence case may explicitly
+    # retain one directory across server restarts without sharing other cases.
+    with ExitStack() as stack:
+        if decompile_cache_dir is None:
+            decompile_cache_dir = stack.enter_context(TemporaryDirectory(prefix="evm-browser-cache-"))
+        command = [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0",
+                   "--decompile-cache-dir", str(decompile_cache_dir)]
+        if workers is not None:
+            command.extend(["--workers", str(workers), "--queue-capacity", str(workers * 2)])
+        if rpc_config is not None:
+            command.extend(["--rpc-config", str(rpc_config)])
+        if postprocess_work is not None:
+            command.extend(["--postprocess-work", str(postprocess_work)])
+        process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, bufsize=1)
         try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+            yield server_url(process)
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
 def rendered_frame(page) -> None:
     # eframe can present one already prepared frame before running logic again.
