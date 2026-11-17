@@ -218,6 +218,15 @@ impl eframe::App for BrowserApp {
         {
             let _ = element.set_attribute("data-controls", &controls);
         }
+        if !ui.ctx().will_discard() {
+            let editing = ui.ctx().output(|output| output.ime.is_some());
+            if let Err(error) = self.shortcuts.sync_text_input(editing) {
+                self.workspace.navigation_failed(format!(
+                    "Text input hit-testing could not be updated: {error:?}"
+                ));
+                ui.ctx().request_repaint();
+            }
+        }
     }
 }
 

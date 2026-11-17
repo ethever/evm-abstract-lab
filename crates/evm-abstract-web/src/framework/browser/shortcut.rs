@@ -19,7 +19,8 @@ pub(super) struct ShortcutBridge {
     state: Rc<State>,
     ctx: egui::Context,
     _canvas: Listeners,
-    text_agent: Option<Listeners>,
+    text_agent: Option<TextAgent>,
+    text_editing: bool,
 }
 
 impl ShortcutBridge {
@@ -36,16 +37,41 @@ impl ShortcutBridge {
             ctx,
             _canvas: listeners,
             text_agent: None,
+            text_editing: false,
         })
     }
 
     pub(super) fn attach_text_agent(&mut self, agent: HtmlInputElement) -> Result<(), JsValue> {
-        self.text_agent = Some(Listeners::install(
-            agent.into(),
+        let listeners = Listeners::install(
+            agent.clone().into(),
             Target::TextAgent,
             self.ctx.clone(),
             Rc::clone(&self.state),
-        )?);
+        )?;
+        agent.style().set_property(
+            "pointer-events",
+            if self.text_editing { "auto" } else { "none" },
+        )?;
+        self.text_agent = Some(TextAgent {
+            input: agent,
+            _listeners: listeners,
+        });
+        Ok(())
+    }
+
+    /// eframe leaves the agent at its last caret position when IME output
+    /// disappears. Only an active editor may own that invisible DOM hitbox.
+    /// Keep the framework's focus, value, selection and composition handling.
+    pub(super) fn sync_text_input(&mut self, editing: bool) -> Result<(), JsValue> {
+        if self.text_editing != editing {
+            if let Some(agent) = &self.text_agent {
+                agent
+                    .input
+                    .style()
+                    .set_property("pointer-events", if editing { "auto" } else { "none" })?;
+            }
+            self.text_editing = editing;
+        }
         Ok(())
     }
 
@@ -56,6 +82,11 @@ impl ShortcutBridge {
     pub(super) fn take_presses(&self) -> usize {
         self.state.take_presses()
     }
+}
+
+struct TextAgent {
+    input: HtmlInputElement,
+    _listeners: Listeners,
 }
 
 struct Listeners {

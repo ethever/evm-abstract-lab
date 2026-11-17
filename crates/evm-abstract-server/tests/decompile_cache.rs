@@ -75,6 +75,12 @@ fn link(source: &api::DecompileSource) -> DecompileOpenRequest {
         settings: None,
     }
 }
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
 async fn terminal(pool: &Pool, id: api::JobId) -> api::DecompileJobSnapshot {
     let end = Instant::now() + Duration::from_secs(20);
     loop {
@@ -111,8 +117,12 @@ impl Drop for Directory {
     }
 }
 
-#[tokio::test]
-async fn cache_hit_has_a_fresh_publication_and_reuses_the_same_immutable_arc() {
+#[test]
+fn cache_hit_has_a_fresh_publication_and_reuses_the_same_immutable_arc() {
+    runtime().block_on(cache_hit_has_a_fresh_publication_and_reuses_the_same_immutable_arc_async());
+}
+
+async fn cache_hit_has_a_fresh_publication_and_reuses_the_same_immutable_arc_async() {
     let count = Arc::new(AtomicUsize::new(0));
     let pool = pool(Cache::memory(), Arc::clone(&count));
     let first = pool.open_decompile(code("00", None)).await.unwrap();
@@ -134,8 +144,14 @@ async fn cache_hit_has_a_fresh_publication_and_reuses_the_same_immutable_arc() {
     pool.shutdown().unwrap();
 }
 
-#[tokio::test]
-async fn completed_result_survives_no_result_fetch_task_eviction_and_store_restart() {
+#[test]
+fn completed_result_survives_no_result_fetch_task_eviction_and_store_restart() {
+    runtime().block_on(
+        completed_result_survives_no_result_fetch_task_eviction_and_store_restart_async(),
+    );
+}
+
+async fn completed_result_survives_no_result_fetch_task_eviction_and_store_restart_async() {
     let directory = Directory::new();
     let count = Arc::new(AtomicUsize::new(0));
     let first = {
@@ -167,8 +183,12 @@ async fn completed_result_survives_no_result_fetch_task_eviction_and_store_resta
     pool.shutdown().unwrap();
 }
 
-#[tokio::test]
-async fn full_settings_are_distinct_and_bare_hash_chooses_defaults() {
+#[test]
+fn full_settings_are_distinct_and_bare_hash_chooses_defaults() {
+    runtime().block_on(full_settings_are_distinct_and_bare_hash_chooses_defaults_async());
+}
+
+async fn full_settings_are_distinct_and_bare_hash_chooses_defaults_async() {
     let count = Arc::new(AtomicUsize::new(0));
     let pool = pool(Cache::memory(), Arc::clone(&count));
     let mut custom = DecompileSettings {
@@ -222,8 +242,13 @@ async fn full_settings_are_distinct_and_bare_hash_chooses_defaults() {
     pool.shutdown().unwrap();
 }
 
-#[tokio::test]
-async fn limited_attempts_are_not_reused_and_capacity_warnings_keep_valid_results() {
+#[test]
+fn limited_attempts_are_not_reused_and_capacity_warnings_keep_valid_results() {
+    runtime()
+        .block_on(limited_attempts_are_not_reused_and_capacity_warnings_keep_valid_results_async());
+}
+
+async fn limited_attempts_are_not_reused_and_capacity_warnings_keep_valid_results_async() {
     let count = Arc::new(AtomicUsize::new(0));
     let pool = pool(
         Cache::memory_with_limits(8, 2048).unwrap(),
@@ -295,9 +320,13 @@ impl Executor for CancelGate {
     }
 }
 
-#[tokio::test]
-async fn identical_inflight_openings_keep_independent_cancellation_and_no_cached_cancelled_result()
-{
+#[test]
+fn identical_inflight_openings_keep_independent_cancellation_and_no_cached_cancelled_result() {
+    runtime().block_on(identical_inflight_openings_keep_independent_cancellation_and_no_cached_cancelled_result_async());
+}
+
+async fn identical_inflight_openings_keep_independent_cancellation_and_no_cached_cancelled_result_async()
+ {
     let (started, receiver) = std::sync::mpsc::sync_channel(1);
     let pool = Pool::with_executor_and_cache(
         Config {
