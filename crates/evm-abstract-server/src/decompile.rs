@@ -1,5 +1,8 @@
 //! Transport adapter for independent local recovery and traceable structuring.
 
+pub mod cache;
+pub(crate) mod source;
+
 use evm_abstract::analysis::control::Control;
 use evm_abstract_protocol::{
     ApiError, ApiErrorCode, DecompileArtifact, DecompileConfig, DecompileRequest, ErrorDetails,

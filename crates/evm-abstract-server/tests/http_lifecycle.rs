@@ -18,6 +18,7 @@ struct Server {
     child: Child,
     address: SocketAddr,
     assets: PathBuf,
+    cache: PathBuf,
     logs: Receiver<String>,
 }
 
@@ -31,9 +32,12 @@ impl Server {
         ));
         fs::create_dir(&assets).unwrap();
         fs::write(assets.join("index.html"), "complete response").unwrap();
+        let cache = assets.with_extension("cache");
         let mut child = Command::new(env!("CARGO_BIN_EXE_evm-abstract-server"))
             .args(["--bind", "127.0.0.1:0", "--workers", "1", "--assets"])
             .arg(&assets)
+            .arg("--decompile-cache-dir")
+            .arg(&cache)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -64,6 +68,7 @@ impl Server {
             child,
             address,
             assets,
+            cache,
             logs,
         }
     }
@@ -110,6 +115,7 @@ impl Drop for Server {
         let _ = self.child.kill();
         self.child.wait().unwrap();
         fs::remove_dir_all(&self.assets).unwrap();
+        fs::remove_dir_all(&self.cache).unwrap();
     }
 }
 

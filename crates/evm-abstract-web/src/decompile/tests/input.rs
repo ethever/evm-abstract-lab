@@ -78,7 +78,15 @@ impl Editor {
             },
             |ui| {
                 controls::begin_observation(ui.ctx(), true);
-                request = self.form.show(ui, self.busy);
+                request = self
+                    .form
+                    .show(ui, self.busy)
+                    .map(|submission| match submission {
+                        crate::decompile::form::Submission::Bytecode(request) => request,
+                        crate::decompile::form::Submission::Address(_) => {
+                            panic!("bytecode editor fixture changed input mode")
+                        }
+                    });
             },
         );
         output.textures_delta.clear();
@@ -403,12 +411,12 @@ fn valid_prefix_and_whitespace_drafts_send_parser_compatible_payloads_without_re
             |ui| request = form.show(ui, false),
         );
         output.textures_delta.clear();
-        assert_eq!(
-            request
-                .expect("valid draft submits by the real shortcut")
-                .bytecode,
-            expected
-        );
+        let crate::decompile::form::Submission::Bytecode(request) =
+            request.expect("valid draft submits by the real shortcut")
+        else {
+            panic!("bytecode draft changed input mode")
+        };
+        assert_eq!(request.bytecode, expected);
         assert_eq!(form.bytecode, draft);
     }
 }

@@ -1,13 +1,14 @@
 """Typed high-level publication, code, raw witness and source navigation."""
 
+import json
 import re
 
 from playwright.sync_api import expect
 from web_test_decompile_alignment import copy_code
 from web_test_decompile_helpers import (choose_stage, inspector_control, observed,
-                                       open_decompiler, stage, submit)
+                                       open_decompiler, prepare, stage, submit)
 from web_test_decompile_review import selected_row, source_descendant
-from web_test_harness import (click_control, rendered_frame, set_control,
+from web_test_harness import (click_control, edit_control, focus_text_control, rendered_frame, set_control,
                               ui_control, webgpu_evidence)
 
 
@@ -17,6 +18,39 @@ RETURN_CLEANUP = "60096007600b5600005b005b5056"
 # Read storage once, overwrite the slot in the next block, then store the old
 # captured value in slot 1 after another edge. The copies are live on baseline.
 COPY_CHAIN = "5f54610006565b602a5f5561000f565b60015500"
+
+
+def text_agent_hit(page, context, event, *, active, target=None):
+    """Read the exact eframe agent's browser hit behavior, without forcing it."""
+    if not active:
+        page.wait_for_function("""() => {
+            const controls = JSON.parse(document.querySelector('#analysis-status').getAttribute('data-controls') || '[]');
+            return !controls.some(control => control.role === 'text' && control.label === 'Runtime bytecode');
+        }""")
+        if target is not None:
+            target = ui_control(page, target["label"], role=target["role"])
+    point = None if target is None else [(target["rect"][0] + target["rect"][2]) / 2,
+                                        (target["rect"][1] + target["rect"][3]) / 2]
+    state = page.evaluate("""point => {
+        const canvas = document.querySelector('#evm-canvas');
+        const agent = canvas.nextElementSibling;
+        if (!(agent instanceof HTMLInputElement)) throw new Error('owned text agent is missing');
+        const rect = agent.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        const target = point ? document.elementFromPoint(point[0], point[1]) : null;
+        return {focused: document.activeElement === agent,
+                rect: [rect.x, rect.y, rect.width, rect.height],
+                agent_hit: hit === agent, target_hit_agent: target === agent,
+                target_hit_canvas: target === canvas,
+                pointer_events: getComputedStyle(agent).pointerEvents};
+    }""", point)
+    with (context.output / "owned-text-agent.jsonl").open("a") as output:
+        output.write(json.dumps({"event": event, "active": active, "target": point, **state}) + "\n")
+    if active:
+        assert state["focused"] and state["agent_hit"], state
+    else:
+        assert not state["agent_hit"] and not state["target_hit_agent"], state
+    return state
 
 
 def projection(artifact):
@@ -192,6 +226,12 @@ def run(context):
         ("final-unknown-branch", "5f3560203557", "partial"),
         ("final-invalid-branch", "5f3560ff57", "complete"),
     ]:
+        if name == "final-invalid-branch":
+            # Ten characters place the old caret's DOM hitbox exactly over the
+            # collapsed Simplified tab. Keep that real regression geometry.
+            prepare(page, canvas, code)
+            focus_text_control(page, canvas, "Runtime bytecode")
+            text_agent_hit(page, context, "active-before-submit", active=True)
         artifact, _ = submit(context, page, canvas, code, "lifted-" + name)
         assert artifact["completion"] == completion, artifact["diagnostics"]
         _, current, program, _ = projection(artifact)
@@ -199,6 +239,9 @@ def run(context):
         raw_blocks = {block["id"]: block for block in current["ir"]["blocks"]}
         residuals = [block for block in program["blocks"] if block["target"] is not None]
         assert residuals, program
+        if name == "final-invalid-branch":
+            target = ui_control(page, "Simplified structured code", role="tab")
+            text_agent_hit(page, context, "inactive-after-submit", active=False, target=target)
         click_control(page, canvas, "Simplified structured code", role="tab")
         text = copy_code(page, canvas)
         for block in residuals:
@@ -227,6 +270,17 @@ def run(context):
                 assert "unresolved" in raw_text or "partial" in raw_text, raw_text
             else:
                 assert "invalid" in raw_text, raw_text
+            click_control(page, canvas, "Simplified structured code", role="tab")
+        if name == "final-invalid-branch":
+            click_control(page, canvas, "Edit input", role="action")
+            focus_text_control(page, canvas, "Runtime bytecode")
+            text_agent_hit(page, context, "active-after-reopen", active=True)
+            edit_control(page, canvas, "Runtime bytecode", code + "00")
+            ui_control(page, code + "00", role="bytecode-value")
+            edit_control(page, canvas, "Runtime bytecode", code)
+            click_control(page, canvas, "Hide input", role="action")
+            target = ui_control(page, "Simplified structured code", role="tab")
+            text_agent_hit(page, context, "inactive-after-hide", active=False, target=target)
             click_control(page, canvas, "Simplified structured code", role="tab")
         artifacts.append(artifact["id"])
     rendered_frame(page)

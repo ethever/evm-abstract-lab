@@ -11,6 +11,8 @@ mod graph_view;
 mod notation;
 mod palette;
 mod report;
+#[cfg(any(target_arch = "wasm32", test))]
+mod routing;
 mod ssa_display;
 mod widgets;
 

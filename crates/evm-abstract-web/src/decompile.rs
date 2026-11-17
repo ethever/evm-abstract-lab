@@ -1,6 +1,7 @@
 //! Independent local decompiler product workspace. The core owns every
 //! semantic stage, transformation and origin; this layer owns presentation.
 
+mod address;
 mod details;
 mod diff;
 mod domain;
@@ -16,10 +17,14 @@ mod task;
 mod views;
 
 use crate::{
+    application::History,
+    routing::{Route, Source},
+};
+use crate::{
     controls::{self, Density},
     palette,
 };
-use evm_abstract_protocol::{DecompileArtifact, Fork};
+use evm_abstract_protocol::{DecompileArtifact, DecompileOpened, DecompileSettings, Fork};
 pub(crate) use task::{Command, Message};
 
 pub(crate) struct Workspace {
@@ -30,6 +35,14 @@ pub(crate) struct Workspace {
     views: views::Views,
     inspector: bool,
     reading: readability::Preferences,
+    pending: Option<Command>,
+    cleanup: std::collections::VecDeque<Command>,
+    opened: Option<DecompileOpened>,
+    published_source: Option<DecompileOpened>,
+    location: Option<(Route, History)>,
+    history: History,
+    restore_form: bool,
+    retained: bool,
 }
 
 impl Default for Workspace {
@@ -42,6 +55,14 @@ impl Default for Workspace {
             views: views::Views::default(),
             inspector: true,
             reading: readability::Preferences::default(),
+            pending: None,
+            cleanup: std::collections::VecDeque::new(),
+            opened: None,
+            published_source: None,
+            location: None,
+            history: History::Replace,
+            restore_form: false,
+            retained: false,
         }
     }
 }
@@ -53,7 +74,84 @@ impl Workspace {
         })
     }
     pub fn load_input(&mut self, bytecode: String, fork: Fork) {
+        self.task.retire();
+        self.pending = None;
+        self.location = None;
+        self.opened = None;
+        self.restore_form = false;
+        self.retained = false;
         self.form.load(bytecode, fork);
+    }
+
+    pub fn open_route(&mut self, route: &Route) {
+        self.pending = None;
+        self.location = None;
+        self.opened = None;
+        self.restore_form = false;
+        self.retained = false;
+        self.history = History::Replace;
+        if let Some(error) = &route.error {
+            self.task.invalid_link(error.to_string());
+            // A malformed link must not start a catalog request inherited
+            // from a previously hidden address draft.
+            self.form.show_bytecode();
+            return;
+        }
+        if let Some(Source::Hash { sha256, config }) = &route.source
+            && let Some(saved) = &self.published_source
+            && self.artifact.is_some()
+            && &saved.source.sha256 == sha256
+            && config.as_ref().map_or_else(
+                || saved.source.config_sha256 == DecompileSettings::default().sha256(),
+                |config| config == &saved.source.config_sha256,
+            )
+            && let Some(publication) = self.state.publication
+        {
+            self.task.resume_publication(
+                &saved.request,
+                saved.snapshot.clone(),
+                publication.version,
+            );
+            self.form
+                .load(saved.request.bytecode.clone(), saved.request.fork);
+            self.form.restore(&saved.request);
+            self.form.open = false;
+            self.opened = Some(saved.clone());
+            self.retained = true;
+            return;
+        }
+        if let Some(source) = &route.source {
+            match source {
+                Source::Address(address) => self.form.load_address(address),
+                Source::Hash { .. } => self.form.load(String::new(), Fork::Osaka),
+            }
+            self.form.open = false;
+            self.restore_form = true;
+            self.pending = Some(self.task.open(source.request()));
+        } else {
+            self.task.retire();
+            self.form.open = true;
+        }
+    }
+
+    pub fn take_location(&mut self) -> Option<(Route, History)> {
+        self.location.take()
+    }
+
+    pub fn take_cleanup(&mut self) -> Option<Command> {
+        self.cleanup.pop_front()
+    }
+
+    pub fn provider_command(&mut self) -> Option<Command> {
+        self.form.provider_command()
+    }
+
+    fn prepare_manual(&mut self) {
+        self.pending = None;
+        self.opened = None;
+        self.restore_form = false;
+        self.retained = false;
+        self.history = History::Push;
     }
     pub fn prepare_input(&mut self, input: &mut egui::RawInput) {
         self.views.prepare_input(input);
@@ -63,13 +161,6 @@ impl Workspace {
     }
     pub fn toggle_inspector(&mut self) {
         self.inspector = !self.inspector;
-    }
-
-    pub fn background_command(&mut self, context: &egui::Context) -> Option<Command> {
-        if self.task.needs_refresh() {
-            context.request_repaint_after(std::time::Duration::from_millis(100));
-        }
-        self.task.next(context.input(|input| input.time))
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Command> {
@@ -82,8 +173,11 @@ impl Workspace {
                             .strong()
                             .color(palette::ACCENT),
                     );
-                    if controls::action(ui, "Edit bytecode", Density::Regular).clicked() {
+                    if controls::action(ui, "Edit input", Density::Regular).clicked() {
                         self.form.open = !self.form.open;
+                        if self.form.open {
+                            self.restore_form = false;
+                        }
                     }
                     controls::toggle(
                         ui,
@@ -119,10 +213,16 @@ impl Workspace {
             .frame(palette::chrome_frame())
             .show(ui, |ui| self.form.show(ui, self.task.busy()))
             .inner;
-        let mut command = request.map(|request| {
-            self.form.open = false;
-            self.task.start(request)
-        });
+        let mut command = request
+            .map(|request| {
+                self.form.open = false;
+                self.prepare_manual();
+                match request {
+                    form::Submission::Bytecode(request) => self.task.start(request),
+                    form::Submission::Address(request) => self.task.open(request),
+                }
+            })
+            .or_else(|| self.pending.take());
         let status_response = egui::Panel::bottom("decompile_status")
             .frame(palette::chrome_frame())
             .show(ui, |ui| {
@@ -163,6 +263,41 @@ impl Workspace {
                 if let Some(error) = &self.task.error {
                     ui.colored_label(palette::ERROR, error.to_string());
                 }
+                if let Some(warning) = self
+                    .task
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.cache_warning.as_ref())
+                {
+                    ui.colored_label(
+                        palette::WARNING,
+                        format!("Result cache: {}", warning.message),
+                    );
+                }
+                if let Some(opened) = self.opened.as_ref().or(self.published_source.as_ref()) {
+                    let source = &opened.source;
+                    ui.label(format!(
+                        "SHA-256: {} · Cache: {}",
+                        source.sha256,
+                        if self.retained {
+                            "retained"
+                        } else if source.cache_hit {
+                            "hit"
+                        } else {
+                            "miss"
+                        }
+                    ));
+                    if let Some(origin) = &source.origin {
+                        ui.label(format!(
+                            "Source: {} · {} · chain {} · block {} ({})",
+                            origin.address,
+                            origin.provider_id,
+                            origin.chain_id,
+                            origin.block_number.0,
+                            origin.block_hash
+                        ));
+                    }
+                }
             });
         controls::observe(
             ui,
@@ -171,6 +306,7 @@ impl Workspace {
             "decompile-status",
             None,
         );
+        let mut reading_request = None;
         if let Some(artifact) = &self.artifact {
             egui::Panel::top("decompile_stage_controls")
                 .frame(palette::chrome_frame())
@@ -200,10 +336,7 @@ impl Workspace {
                         self.task.busy(),
                     )
                 });
-                if let Some(request) = panel_response.inner {
-                    self.form.remember_readability(&request);
-                    command = Some(self.task.start(request));
-                }
+                reading_request = panel_response.inner;
                 controls::observe(
                     ui,
                     &panel_response.response,
@@ -235,6 +368,11 @@ impl Workspace {
                 },
             );
         }
+        if let Some(request) = reading_request {
+            self.form.remember_readability(&request);
+            self.prepare_manual();
+            command = Some(self.task.start(request));
+        }
         if command.is_none() {
             command = self.task.next(ui.input(|input| input.time));
         }
@@ -247,6 +385,27 @@ impl Workspace {
 
     pub fn receive(&mut self, message: Message) {
         match message {
+            Message::Providers { generation, result } => {
+                self.form.receive_providers(generation, result)
+            }
+            Message::Opened { generation, result } => {
+                if let Some(cleanup) = self.task.stale_open_cleanup(generation, &result) {
+                    self.cleanup.push_back(cleanup);
+                    return;
+                }
+                if let Some(opened) = self.task.receive_open(generation, *result) {
+                    if self.restore_form {
+                        self.form.restore(&opened.request);
+                        self.form.resolved_origin(opened.source.origin.as_ref());
+                    }
+                    self.restore_form = false;
+                    self.location = Some((Route::canonical(&opened.source), self.history));
+                    self.opened = Some(opened);
+                    if let Some(cancel) = self.task.take_cancel() {
+                        self.cleanup.push_back(cancel);
+                    }
+                }
+            }
             Message::Status {
                 generation,
                 operation,
@@ -309,6 +468,10 @@ impl Workspace {
                     );
                     return;
                 }
+                if let Err(error) = self.task.check_opened_artifact(&result.artifact) {
+                    self.task.reject(result.publication, error);
+                    return;
+                }
                 if let Err(error) = model::check_artifact(&result.artifact) {
                     self.task
                         .reject(result.publication, task::Error::Artifact(error));
@@ -350,6 +513,14 @@ impl Workspace {
                 self.reading.install(&result.artifact, &self.state);
                 self.artifact = Some(result.artifact);
                 self.task.delivered(result.publication);
+                if let Some(opened) = &self.opened {
+                    let mut saved = opened.clone();
+                    if let Some(snapshot) = &self.task.snapshot {
+                        saved.snapshot = snapshot.clone();
+                    }
+                    saved.snapshot.publication = Some(result.publication);
+                    self.published_source = Some(saved);
+                }
             }
         }
     }
@@ -370,6 +541,32 @@ impl Workspace {
         }
         if let Some(error) = &self.task.error {
             status.push_str(&format!("; Error: {error}"));
+        }
+        if let Some(warning) = self
+            .task
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.cache_warning.as_ref())
+        {
+            status.push_str(&format!("; Cache warning: {}", warning.message));
+        }
+        if let Some(opened) = self.opened.as_ref().or(self.published_source.as_ref()) {
+            let source = &opened.source;
+            status.push_str(&format!(
+                "; Code SHA-256: {}; Config SHA-256: {}; Result cache: {}",
+                source.sha256,
+                source.config_sha256,
+                if self.retained {
+                    "retained"
+                } else if source.cache_hit {
+                    "hit"
+                } else {
+                    "miss"
+                }
+            ));
+            if let Some(origin) = &source.origin {
+                status.push_str(&format!("; Source address: {}; Source provider: {}; Source chain: {}; Source block: {} {}", origin.address, origin.provider_id, origin.chain_id, origin.block_number.0, origin.block_hash));
+            }
         }
         if let Some(artifact) = &self.artifact {
             if let Some(publication) = self.state.publication {

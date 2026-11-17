@@ -8,12 +8,11 @@ license.workspace      = true
 repository.workspace   = true
 
 [dependencies]
-evm-decompile-model = { path = "../evm-decompile-model" }
-serde.workspace     = true
-symbolic-structure  = { path = "../symbolic-structure" }
-
-[dev-dependencies]
+evm-decompile-model  = { path = "../evm-decompile-model" }
+serde.workspace      = true
 serde_json.workspace = true
+sha2.workspace       = true
+symbolic-structure   = { path = "../symbolic-structure" }
 
 [lints]
 workspace = true

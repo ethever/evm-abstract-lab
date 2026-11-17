@@ -1,10 +1,10 @@
-//! Same application, independent workspace models and task domains. The shell
-//! preserves each workspace's input, immutable result, selection and camera.
-
+//! URL-owned pages with lazily retained, independent workspace state.
+//! An inactive page retains its view but never starts or polls background work.
 use crate::{
     Workspace,
     controls::{self, Density},
     decompile, palette,
+    routing::{Page, Route},
 };
 
 pub(crate) enum Command {
@@ -12,32 +12,112 @@ pub(crate) enum Command {
     Decompile(decompile::Command),
 }
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) enum Message {
     Analysis(crate::Message),
     Decompile(decompile::Message),
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum Mode {
-    #[default]
-    Analysis,
-    Decompiler,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum History {
+    Push,
+    Replace,
 }
 
-#[derive(Default)]
+pub(crate) struct Navigation {
+    pub route: Route,
+    pub history: History,
+}
+
 pub(crate) struct Application {
-    analysis: Workspace,
-    decompile: decompile::Workspace,
-    mode: Mode,
+    analysis: Option<Workspace>,
+    decompile: Option<decompile::Workspace>,
+    route: Route,
+    decompiler_route: Route,
+    navigation: std::collections::VecDeque<Navigation>,
+    navigation_error: Option<String>,
+}
+
+impl Default for Application {
+    fn default() -> Self {
+        Self::new(Route::default())
+    }
 }
 
 impl Application {
+    pub fn new(route: Route) -> Self {
+        let mut app = Self {
+            analysis: None,
+            decompile: None,
+            route: Route::default(),
+            decompiler_route: Route::page(Page::Decompiler),
+            navigation: std::collections::VecDeque::new(),
+            navigation_error: None,
+        };
+        app.activate(route);
+        app
+    }
+
+    /// Called by browser history as well as explicit workspace navigation.
+    /// Keeping the same source resumes its retained task/view without reopening.
+    pub fn activate(&mut self, route: Route) {
+        self.navigation_error = None;
+        match route.page {
+            Page::Analysis => {
+                self.analysis.get_or_insert_with(Workspace::default);
+            }
+            Page::Decompiler => {
+                let fresh = self.decompile.is_none();
+                let workspace = self
+                    .decompile
+                    .get_or_insert_with(decompile::Workspace::default);
+                if fresh || route != self.decompiler_route {
+                    workspace.open_route(&route);
+                }
+                self.decompiler_route = route.clone();
+            }
+        }
+        self.route = route;
+    }
+
+    fn navigate(&mut self, route: Route) {
+        self.activate(route.clone());
+        self.navigation.push_back(Navigation {
+            route,
+            history: History::Push,
+        });
+    }
+
+    pub fn take_navigation(&mut self) -> Option<Navigation> {
+        self.navigation.pop_front()
+    }
+
+    /// Finish explicit cancellation even after the requesting page is hidden.
+    pub fn cleanup_command(&mut self) -> Option<Command> {
+        self.analysis
+            .as_mut()
+            .and_then(Workspace::cleanup_command)
+            .map(Command::Analysis)
+            .or_else(|| {
+                self.decompile
+                    .as_mut()?
+                    .take_cleanup()
+                    .map(Command::Decompile)
+            })
+    }
+
+    pub fn navigation_failed(&mut self, error: String) {
+        self.navigation_error = Some(error);
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Command> {
-        let input = self.analysis.captured_decompile_input();
-        let modal = self.mode == Mode::Analysis && self.analysis.input_open();
+        let modal = self.route.page == Page::Analysis
+            && self.analysis.as_ref().is_some_and(Workspace::input_open);
+        let captured = self
+            .analysis
+            .as_ref()
+            .is_some_and(|workspace| workspace.captured_decompile_input().is_some());
+        let mut page = self.route.page;
+        let mut capture = false;
         egui::Panel::top("application_workspace")
             .frame(palette::chrome_frame())
             .show(ui, |ui| {
@@ -48,116 +128,197 @@ impl Application {
                         } else {
                             Density::Compact
                         };
-                        controls::tab_value(
-                            ui,
-                            &mut self.mode,
-                            Mode::Analysis,
-                            "Analysis",
-                            density,
-                        );
-                        controls::tab_value(
-                            ui,
-                            &mut self.mode,
-                            Mode::Decompiler,
-                            "Decompiler",
-                            density,
-                        );
-                        if self.mode == Mode::Analysis
-                            && controls::action_enabled(
+                        controls::tab_value(ui, &mut page, Page::Analysis, "Analysis", density);
+                        controls::tab_value(ui, &mut page, Page::Decompiler, "Decompiler", density);
+                        if self.route.page == Page::Analysis {
+                            capture = controls::action_enabled(
                                 ui,
-                                input.is_some(),
+                                captured,
                                 "Decompile captured source",
                                 density,
                             )
-                            .clicked()
-                            && let Some((bytecode, fork)) = input
-                        {
-                            self.decompile.load_input(bytecode.to_owned(), fork);
-                            self.mode = Mode::Decompiler;
+                            .clicked();
                         }
                     });
                 });
+                if let Some(error) = &self.navigation_error {
+                    ui.colored_label(palette::ERROR, error);
+                }
             });
+        if capture {
+            let input = self
+                .analysis
+                .as_ref()
+                .and_then(Workspace::captured_decompile_input)
+                .map(|(bytes, fork)| (bytes.to_owned(), fork));
+            if let Some((bytes, fork)) = input {
+                self.navigate(Route::page(Page::Decompiler));
+                self.decompile
+                    .as_mut()
+                    .expect("activated page")
+                    .load_input(bytes, fork);
+            }
+        } else if page != self.route.page {
+            let route = if page == Page::Decompiler {
+                self.decompiler_route.clone()
+            } else {
+                Route::default()
+            };
+            self.navigate(route);
+        }
         ui.push_id(
-            match self.mode {
-                Mode::Analysis => "analysis_workspace",
-                Mode::Decompiler => "decompiler_workspace",
+            match self.route.page {
+                Page::Analysis => "analysis_workspace",
+                Page::Decompiler => "decompiler_workspace",
             },
-            |ui| match self.mode {
-                Mode::Analysis => self.analysis.show(ui).map(Command::Analysis),
-                Mode::Decompiler => self.decompile.show(ui).map(Command::Decompile),
+            |ui| match self.route.page {
+                Page::Analysis => self
+                    .analysis
+                    .as_mut()
+                    .expect("active page")
+                    .show(ui)
+                    .map(Command::Analysis),
+                Page::Decompiler => self
+                    .decompile
+                    .as_mut()
+                    .expect("active page")
+                    .show(ui)
+                    .map(Command::Decompile),
             },
         )
         .inner
     }
 
     pub fn prepare_input(&mut self, input: &mut egui::RawInput) {
-        match self.mode {
-            Mode::Analysis => self.analysis.prepare_input(input),
-            Mode::Decompiler => self.decompile.prepare_input(input),
+        match self.route.page {
+            Page::Analysis => self
+                .analysis
+                .as_mut()
+                .expect("active page")
+                .prepare_input(input),
+            Page::Decompiler => self
+                .decompile
+                .as_mut()
+                .expect("active page")
+                .prepare_input(input),
         }
     }
 
     pub fn receive_message(&mut self, message: Message) {
         match message {
-            Message::Analysis(message) => self.analysis.receive_message(message),
-            Message::Decompile(message) => self.decompile.receive(message),
+            Message::Analysis(message) => {
+                if let Some(workspace) = &mut self.analysis {
+                    workspace.receive_message(message);
+                }
+            }
+            Message::Decompile(message) => {
+                if let Some(workspace) = &mut self.decompile {
+                    workspace.receive(message);
+                    if let Some((route, history)) = workspace.take_location() {
+                        self.decompiler_route = route.clone();
+                        if self.route.page == Page::Decompiler {
+                            self.route = route.clone();
+                            self.navigation.push_back(Navigation { route, history });
+                        }
+                    }
+                }
+            }
         }
     }
 
     pub fn startup_command(&mut self) -> Option<Command> {
-        (self.mode == Mode::Analysis)
-            .then(|| self.analysis.startup_command())
-            .flatten()
-            .map(Command::Analysis)
+        match self.route.page {
+            Page::Analysis => self
+                .analysis
+                .as_mut()?
+                .startup_command()
+                .map(Command::Analysis),
+            Page::Decompiler => None,
+        }
     }
 
     pub fn rpc_provider_command(&mut self) -> Option<Command> {
-        self.analysis.rpc_provider_command().map(Command::Analysis)
-    }
-
-    pub fn background_command(&mut self, context: &egui::Context) -> Option<Command> {
-        match self.mode {
-            Mode::Analysis => self
-                .decompile
-                .background_command(context)
-                .map(Command::Decompile),
-            Mode::Decompiler => self
+        match self.route.page {
+            Page::Analysis => self
                 .analysis
-                .background_command(context)
+                .as_mut()?
+                .rpc_provider_command()
                 .map(Command::Analysis),
+            Page::Decompiler => self
+                .decompile
+                .as_mut()?
+                .provider_command()
+                .map(Command::Decompile),
         }
     }
 
     pub fn inspector_shortcut_available(&self) -> bool {
-        match self.mode {
-            Mode::Analysis => self.analysis.inspector_shortcut_available(),
-            Mode::Decompiler => self.decompile.inspector_shortcut_available(),
+        match self.route.page {
+            Page::Analysis => self
+                .analysis
+                .as_ref()
+                .is_some_and(Workspace::inspector_shortcut_available),
+            Page::Decompiler => self
+                .decompile
+                .as_ref()
+                .is_some_and(decompile::Workspace::inspector_shortcut_available),
         }
     }
 
     pub fn toggle_inspector(&mut self) {
-        match self.mode {
-            Mode::Analysis => self.analysis.toggle_inspector(),
-            Mode::Decompiler => self.decompile.toggle_inspector(),
+        match self.route.page {
+            Page::Analysis => self
+                .analysis
+                .as_mut()
+                .expect("active page")
+                .toggle_inspector(),
+            Page::Decompiler => self
+                .decompile
+                .as_mut()
+                .expect("active page")
+                .toggle_inspector(),
         }
     }
 
     pub fn accessible_status(&self) -> String {
-        match self.mode {
-            Mode::Analysis => format!("{}; Workspace: Analysis", self.analysis.accessible_status()),
-            Mode::Decompiler => self.decompile.accessible_status(),
+        let mut status = match self.route.page {
+            Page::Analysis => format!(
+                "{}; Workspace: Analysis",
+                self.analysis
+                    .as_ref()
+                    .expect("active page")
+                    .accessible_status()
+            ),
+            Page::Decompiler => self
+                .decompile
+                .as_ref()
+                .expect("active page")
+                .accessible_status(),
+        };
+        if let Some(error) = &self.navigation_error {
+            status.push_str(&format!("; Navigation error: {error}"));
         }
+        status
     }
 
     pub fn accessible_rpc_provider_status(&self) -> String {
-        self.analysis.accessible_rpc_provider_status()
+        match self.route.page {
+            Page::Analysis => self
+                .analysis
+                .as_ref()
+                .expect("active page")
+                .accessible_rpc_provider_status(),
+            Page::Decompiler => String::new(),
+        }
     }
 
     pub fn accessible_input_status(&self) -> Option<String> {
-        match self.mode {
-            Mode::Analysis => self.analysis.accessible_input_status(),
-            Mode::Decompiler => None,
+        match self.route.page {
+            Page::Analysis => self.analysis.as_ref()?.accessible_input_status(),
+            Page::Decompiler => None,
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

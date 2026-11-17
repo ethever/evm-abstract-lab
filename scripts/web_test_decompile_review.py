@@ -3,8 +3,9 @@
 import time
 from playwright.sync_api import expect
 from web_test_decompile_helpers import (BRANCH, IRREDUCIBLE, LOOP, choose_stage,
-                                       inspector_control, observed, open_decompiler,
-                                       prepare, stage, submit)
+                                       decompile_post_request, inspector_control, is_decompile_admission, observed, open_decompiler,
+                                       open_decompiler_with_analysis,
+                                       prepare, stage, submit, switch_workspace)
 from web_test_harness import (click_control, edit_control, focus_text_control,
                               open_input, rendered_frame, resize_view, ui_control,
                               set_control,
@@ -173,7 +174,7 @@ def recovery(context):
     ]:
         artifact, request = submit(context, page, canvas, draft, name)
         assert request["bytecode"] == expected and artifact["input"]["runtime_bytecode"] == list(bytes.fromhex("600160020100"))
-        click_control(page, canvas, "Edit bytecode", role="action")
+        click_control(page, canvas, "Edit input", role="action")
         ui_control(page, draft, role="bytecode-value")
         artifacts.append(artifact["id"])
     # ADD clears literal control tags before the common JUMP at PC0x12, so
@@ -380,7 +381,7 @@ def navigation(context):
 
 
 def editing(context):
-    page, canvas, _, _ = open_decompiler(context)
+    page, canvas, _, _ = open_decompiler_with_analysis(context)
     requests = []
     page.on("request", lambda request: requests.append(request) if request.method == "POST" and "/api/" in request.url else None)
 
@@ -395,7 +396,7 @@ def editing(context):
         rendered_frame(page)
 
     a, b = "600160020100", "600360040100"
-    click_control(page, canvas, "Analysis", role="tab")
+    switch_workspace(page, canvas, "Analysis")
     open_input(page, mode="Bytecode")
     edit_control(page, canvas, "Runtime bytecode", a)
     checkpoint()
@@ -404,7 +405,7 @@ def editing(context):
     draft(a + "00")
     checkpoint()
     page.keyboard.press("Escape")
-    click_control(page, canvas, "Decompiler", role="tab")
+    switch_workspace(page, canvas, "Decompiler")
     prepare(page, canvas, b)
     focus_text_control(page, canvas, "Runtime bytecode")
     checkpoint()
@@ -419,9 +420,9 @@ def editing(context):
     rendered_frame(page)
     draft(b + "00")
     click_control(page, canvas, "Hide input", role="action")
-    click_control(page, canvas, "Edit bytecode", role="action")
+    click_control(page, canvas, "Edit input", role="action")
     draft(b + "00")
-    click_control(page, canvas, "Analysis", role="tab")
+    switch_workspace(page, canvas, "Analysis")
     open_input(page, mode="Bytecode")
     # open_input already establishes focus; avoid another selection-changing
     # activation before the exact single Undo/Redo assertions.
@@ -432,7 +433,7 @@ def editing(context):
     rendered_frame(page)
     draft(a + "00")
     page.keyboard.press("Escape")
-    click_control(page, canvas, "Decompiler", role="tab")
+    switch_workspace(page, canvas, "Decompiler")
     draft(b + "00")
     focus_text_control(page, canvas, "Runtime bytecode")
     page.keyboard.press("Control+a")
@@ -444,26 +445,26 @@ def editing(context):
     rendered_frame(page)
     assert not requests, "composition submitted a task"
     click_control(page, canvas, "Hide input", role="action")
-    click_control(page, canvas, "Analysis", role="tab")
+    switch_workspace(page, canvas, "Analysis")
     open_input(page, mode="Bytecode")
     draft(a + "00")
     session.send("Input.imeSetComposition", {"text": "", "selectionStart": 0, "selectionEnd": 0})
     session.detach()
     page.keyboard.press("Escape")
-    click_control(page, canvas, "Decompiler", role="tab")
+    switch_workspace(page, canvas, "Decompiler")
     prepare(page, canvas, b)
-    with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith("/api/decompile/tasks")) as admission:
+    with page.expect_response(is_decompile_admission) as admission:
         page.keyboard.down("Control")
         page.keyboard.down("Enter")
         page.keyboard.down("Enter")
         page.keyboard.up("Enter")
         page.keyboard.up("Control")
-    assert admission.value.request.post_data_json["bytecode"] == b
+    assert decompile_post_request(admission.value.request)["bytecode"] == b
     expect(page.locator("#analysis-status")).to_contain_text("Decompile task: Ready", timeout=60000)
     assert len(requests) == 1, "held submit chord or workspace switch submitted another task"
     page.keyboard.press("Control+j")
     expect(page.locator("#analysis-status")).to_contain_text("Transform inspector: closed")
-    click_control(page, canvas, "Analysis", role="tab")
+    switch_workspace(page, canvas, "Analysis")
     click_control(page, canvas, "Decompile captured source", role="action")
     report = page.decompile_analysis_report
     graph = report["native"] or report["global"]

@@ -13,6 +13,7 @@ use evm_abstract_protocol::{
     },
 };
 
+mod address_layout;
 #[cfg(not(target_arch = "wasm32"))]
 mod dependencies;
 mod dispatch;
@@ -23,6 +24,7 @@ mod input;
 mod lifecycle;
 #[cfg(not(target_arch = "wasm32"))]
 mod lifted;
+mod open;
 mod publication_cache;
 mod rendering;
 

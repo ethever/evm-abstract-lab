@@ -43,6 +43,11 @@ fn next_id() -> Result<JobId, ApiError> {
 }
 
 pub(super) enum Command {
+    RestoreDecompile {
+        artifact: Arc<evm_abstract_protocol::DecompileArtifact>,
+        key: crate::decompile::cache::Key,
+        reply: SyncSender<Result<evm_abstract_protocol::DecompileJobSnapshot, ApiError>>,
+    },
     Submit {
         request: Box<Request>,
         reply: SyncSender<Result<Snapshot, ApiError>>,
@@ -103,6 +108,7 @@ struct Entry {
     decompile_progress: crate::decompile::Observer,
     request: Option<Request>,
     report: Option<Retained>,
+    cache_key: Option<crate::decompile::cache::Key>,
 }
 
 pub(super) struct Coordinator<E> {
@@ -115,6 +121,7 @@ pub(super) struct Coordinator<E> {
     retained: VecDeque<JobId>,
     stopping: bool,
     shutdown_replies: Vec<SyncSender<()>>,
+    cache: Arc<crate::decompile::cache::Cache>,
 }
 
 impl<E: Executor> Coordinator<E> {
@@ -122,6 +129,7 @@ impl<E: Executor> Coordinator<E> {
         config: Config,
         executor: E,
         sender: SyncSender<Command>,
+        cache: Arc<crate::decompile::cache::Cache>,
     ) -> Result<Self, PoolError> {
         let mut workers = Vec::new();
         workers
@@ -129,7 +137,8 @@ impl<E: Executor> Coordinator<E> {
             .map_err(PoolError::Capacity)?;
         for worker in 0..config.workers {
             workers.push(Some(
-                start_worker(worker, executor.clone(), sender.clone()).map_err(PoolError::Spawn)?,
+                start_worker(worker, executor.clone(), sender.clone(), Arc::clone(&cache))
+                    .map_err(PoolError::Spawn)?,
             ));
         }
         Ok(Self {
@@ -142,6 +151,7 @@ impl<E: Executor> Coordinator<E> {
             retained: VecDeque::new(),
             stopping: false,
             shutdown_replies: Vec::new(),
+            cache,
         })
     }
 
@@ -166,6 +176,14 @@ impl<E: Executor> Coordinator<E> {
 
     fn command(&mut self, command: Command) {
         match command {
+            Command::RestoreDecompile {
+                artifact,
+                key,
+                reply,
+            } => {
+                let result = self.restore_decompile(artifact, key);
+                let _ = reply.send(result);
+            }
             Command::Submit { request, reply } => {
                 let result = self.submit(*request);
                 let _ = reply.send(result);
@@ -237,7 +255,7 @@ impl<E: Executor> Coordinator<E> {
                     if error.as_ref().is_some_and(|error| matches!(&error.details, ErrorDetails::Worker(detail) if detail.kind == WorkerErrorKind::Spawn)) {
                         self.fail_waiting(*error.expect("spawn error was checked"));
                     } else {
-                        match start_worker(worker, self.executor.clone(), self.sender.clone()) {
+                        match start_worker(worker, self.executor.clone(), self.sender.clone(),Arc::clone(&self.cache)) {
                             Ok(replacement) => self.workers[worker] = Some(replacement),
                             Err(error) => self.fail_waiting(worker_spawn_error(error)),
                         }
@@ -273,6 +291,10 @@ impl<E: Executor> Coordinator<E> {
         let id = next_id()?;
         let (sender, events) = mpsc::sync_channel(32);
         let (decompile_sender, decompile_events) = mpsc::sync_channel(32);
+        let cache_key = match &request {
+            Request::CachedDecompile { key, .. } => Some(key.clone()),
+            _ => None,
+        };
         let entry = Entry {
             snapshot: Snapshot::new(id, request.kind()),
             queued_at: Instant::now(),
@@ -282,6 +304,7 @@ impl<E: Executor> Coordinator<E> {
             decompile_progress: crate::decompile::Observer::new(decompile_sender),
             request: Some(request),
             report: None,
+            cache_key,
         };
         self.jobs.insert(id, entry);
         self.waiting.push_back(id);
@@ -289,6 +312,51 @@ impl<E: Executor> Coordinator<E> {
         let entry = self.jobs.get_mut(&id).expect("submitted job remains owned");
         refresh_timings(entry);
         Ok(entry.snapshot.copy())
+    }
+
+    fn restore_decompile(
+        &mut self,
+        artifact: Arc<evm_abstract_protocol::DecompileArtifact>,
+        key: crate::decompile::cache::Key,
+    ) -> Result<evm_abstract_protocol::DecompileJobSnapshot, ApiError> {
+        if self.stopping {
+            return Err(worker_error(
+                WorkerErrorKind::Channel,
+                "analysis pool is shutting down",
+            ));
+        }
+        let id = next_id()?;
+        let (sender, events) = mpsc::sync_channel(32);
+        let (decompile_sender, decompile_events) = mpsc::sync_channel(32);
+        let mut entry = Entry {
+            snapshot: Snapshot::new(id, Kind::Decompile),
+            queued_at: Instant::now(),
+            control: Control::new(Observer::new(sender)),
+            events,
+            decompile_events,
+            decompile_progress: crate::decompile::Observer::new(decompile_sender),
+            request: None,
+            report: None,
+            cache_key: Some(key.clone()),
+        };
+        self.cache.remember_live(&key, &artifact);
+        publish_decompile(&mut entry, artifact);
+        *entry.snapshot.state_mut() = JobState::Completed;
+        let Snapshot::Decompile(snapshot) = entry.snapshot.copy() else {
+            unreachable!("decompiler entry")
+        };
+        self.jobs.insert(id, entry);
+        self.retain(id);
+        Ok(snapshot)
+    }
+
+    fn retain(&mut self, id: JobId) {
+        self.retained.push_back(id);
+        while self.retained.len() > self.config.retained_jobs {
+            if let Some(expired) = self.retained.pop_front() {
+                self.jobs.remove(&expired);
+            }
+        }
     }
 
     fn dispatch(&mut self) {
@@ -414,7 +482,10 @@ impl<E: Executor> Coordinator<E> {
         if entry.control.cancellation().is_cancelled() {
             // A decompiler can return an inspectable partial artifact after a
             // checkpoint. Retain its validated stages while acknowledging cancellation.
-            if let Ok(Outcome::Decompile(artifact)) = result {
+            if let Ok(Outcome::Decompile(artifact, warning)) = result {
+                if let Snapshot::Decompile(snapshot) = &mut entry.snapshot {
+                    snapshot.cache_warning = warning;
+                }
                 publish_decompile(entry, Arc::from(artifact));
             }
             *entry.snapshot.state_mut() = JobState::Cancelled;
@@ -449,19 +520,29 @@ impl<E: Executor> Coordinator<E> {
                     publish(entry, Arc::from(report));
                     *entry.snapshot.state_mut() = JobState::Completed;
                 }
-                Ok(Outcome::Decompile(artifact)) => {
-                    publish_decompile(entry, Arc::from(artifact));
+                Ok(Outcome::Decompile(artifact, warning)) => {
+                    let artifact: Arc<evm_abstract_protocol::DecompileArtifact> =
+                        Arc::from(artifact);
+                    if warning.is_none()
+                        && matches!(
+                            artifact.completion,
+                            evm_abstract_protocol::decompile_model::Completion::Complete
+                                | evm_abstract_protocol::decompile_model::Completion::Partial
+                        )
+                        && let Some(key) = &entry.cache_key
+                    {
+                        self.cache.remember_live(key, &artifact);
+                    }
+                    if let Snapshot::Decompile(snapshot) = &mut entry.snapshot {
+                        snapshot.cache_warning = warning;
+                    }
+                    publish_decompile(entry, artifact);
                     *entry.snapshot.state_mut() = JobState::Completed;
                 }
                 Err(error) => *entry.snapshot.state_mut() = JobState::Failed(error),
             }
         }
-        self.retained.push_back(id);
-        while self.retained.len() > self.config.retained_jobs {
-            if let Some(expired) = self.retained.pop_front() {
-                self.jobs.remove(&expired);
-            }
-        }
+        self.retain(id);
     }
 
     fn fail_waiting(&mut self, error: ApiError) {
@@ -717,6 +798,7 @@ fn start_worker<E: Executor>(
     worker: usize,
     executor: E,
     sender: SyncSender<Command>,
+    cache: Arc<crate::decompile::cache::Cache>,
 ) -> Result<Worker, std::io::Error> {
     let (work_sender, receiver) = mpsc::sync_channel::<Work>(1);
     thread::Builder::new()
@@ -749,7 +831,18 @@ fn start_worker<E: Executor>(
                                     .map(|report| Outcome::Analysis(Box::new(report))),
                                 Request::Decompile(request) => executor
                                     .decompile(*request, &work.control, &work.decompile_progress)
-                                    .map(|artifact| Outcome::Decompile(Box::new(artifact))),
+                                    .map(|artifact| Outcome::Decompile(Box::new(artifact), None)),
+                                Request::CachedDecompile { request, key } => executor
+                                    .decompile(*request, &work.control, &work.decompile_progress)
+                                    .map(|artifact| {
+                                        let warning = cache
+                                            .publish(&key, &artifact, || {
+                                                work.control.cancellation().is_cancelled()
+                                            })
+                                            .err()
+                                            .map(|e| e.warning());
+                                        Outcome::Decompile(Box::new(artifact), warning)
+                                    }),
                             };
                             drop(timing);
                             let id = work.id;

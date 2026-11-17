@@ -3,7 +3,8 @@
 import json
 
 from playwright.sync_api import expect
-from web_test_decompile_helpers import (observed, open_decompiler, prepare, submit)
+from web_test_decompile_helpers import (decompile_post_request, observed, open_decompiler,
+                                       prepare, submit)
 from web_test_harness import (edit_control, focus_text_control,
                               rendered_frame, set_control, ui_control,
                               webgpu_evidence)
@@ -35,7 +36,7 @@ def run(context):
     page, canvas, _, _ = open_decompiler(context)
     requests, responses, results = [], [], []
     page.on("request", lambda request: requests.append(request)
-            if request.method == "POST" and request.url.endswith("/api/decompile/tasks") else None)
+            if request.method == "POST" and request.url.endswith(("/api/decompile/open", "/api/decompile/tasks")) else None)
     page.on("response", lambda response: responses.append(response)
             if response.request.method == "GET" and "/api/decompile/tasks/" in response.url
             and response.url.endswith("/result") and response.status == 200 else None)
@@ -43,7 +44,7 @@ def run(context):
     # A tiny actual job with maximum configured ceilings must complete cheaply;
     # successful wasm adoption also proves its returned config decodes above u32.
     artifact, _ = submit(context, page, canvas, "00", "budgets-default-maximum")
-    request = json.loads(requests[-1].post_data)
+    request = decompile_post_request(requests[-1])
     reply = json.loads(responses[-1].text())["result"]["Ok"]
     assert artifact == reply["artifact"]
     assert all(request["limits"][field] == MAX for field in RESOURCE_FIELDS), request
@@ -67,7 +68,7 @@ def run(context):
         assert editor_text(page, canvas, "Work limit") == str(value)
         artifact, _ = submit(context, page, canvas, "00", "budgets-work-" + str(value))
         raw = requests[-1].post_data
-        request = json.loads(raw)
+        request = decompile_post_request(requests[-1])
         reply = json.loads(responses[-1].text())["result"]["Ok"]
         assert f'"max_work":{value}' in raw, raw
         assert request["limits"]["max_work"] == value
@@ -97,7 +98,7 @@ def run(context):
     edit_control(page, canvas, "Work limit", "9007199254740993")
     ui_control(page, "Decompile", role="action", enabled=True)
     artifact, _ = submit(context, page, canvas, "00", "budgets-corrected-draft")
-    assert json.loads(requests[-1].post_data)["limits"]["max_work"] == 9_007_199_254_740_993
+    assert decompile_post_request(requests[-1])["limits"]["max_work"] == 9_007_199_254_740_993
     assert artifact["config"]["limits"]["max_work"] == 9_007_199_254_740_993
 
     # Exercise progress and final-statistics decoding at the u64 boundary
@@ -109,16 +110,18 @@ def run(context):
         payload = json.loads(response.text())
         success = payload.get("result", {}).get("Ok")
         if success is not None:
-            if "progress" in success:
-                success["progress"]["work"] = MAX
+            snapshot = success.get("snapshot", success)
+            if "progress" in snapshot:
+                snapshot["progress"]["work"] = MAX
             if "artifact" in success:
                 success["artifact"]["statistics"]["work"] = MAX
         route.fulfill(response=response, body=json.dumps(payload))
 
     prepare(page, canvas, "00")
     edit_control(page, canvas, "Work limit", str(MAX))
-    pattern = "**/api/decompile/tasks**"
-    page.route(pattern, wide_counters)
+    patterns = ["**/api/decompile/tasks**", "**/api/decompile/open"]
+    for pattern in patterns:
+        page.route(pattern, wide_counters)
     try:
         artifact, _ = submit(context, page, canvas, "00", "budgets-synthetic-wide-counters")
         expect(page.locator("#analysis-status")).to_contain_text("Work: " + str(MAX))
@@ -133,7 +136,8 @@ def run(context):
         results.append({"artifact": artifact["id"], "transport_only_work": MAX,
                         "actual_work": original["statistics"]["work"]})
     finally:
-        page.unroute(pattern, wide_counters)
+        for pattern in patterns:
+            page.unroute(pattern, wide_counters)
     gpu = webgpu_evidence(page)
     page.close()
     return {"cases": results, "webgpu": gpu}

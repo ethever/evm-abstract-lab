@@ -128,6 +128,10 @@ impl Registry {
             .collect()
     }
 
+    pub(crate) fn default_id(&self) -> Option<&str> {
+        self.providers.first().map(|provider| provider.id.as_str())
+    }
+
     /// Reject unknown RPC IDs before scheduling work; bytecode needs no provider.
     pub fn validate_request(&self, request: &api::AnalyzeRequest) -> Result<(), api::ApiError> {
         if let api::AnalysisInput::Rpc(input) = &request.input {

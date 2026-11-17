@@ -51,6 +51,9 @@ pub enum ServerError {
     /// Backend RPC configuration could not be read or validated.
     #[error("RPC configuration: {0}")]
     RpcConfig(crate::rpc_providers::ConfigError),
+    /// A configured persistent cache could not be initialized.
+    #[error("decompiler cache: {0}")]
+    Cache(crate::decompile::cache::Error),
 }
 
 impl From<io::Error> for ServerError {
@@ -70,6 +73,10 @@ pub fn router(assets: PathBuf, jobs: crate::jobs::Pool) -> Router {
     Router::new()
         .route(RPC_PROVIDERS_PATH, get(providers))
         .route(API_PATH, post(tasks::submit))
+        .route(
+            evm_abstract_protocol::DECOMPILE_OPEN_PATH,
+            post(decompile::open),
+        )
         .route(
             evm_abstract_protocol::DECOMPILE_API_PATH,
             post(decompile::submit),
@@ -136,7 +143,27 @@ pub async fn serve_with_postprocess_work(
     providers: crate::rpc_providers::Registry,
     postprocess_work: usize,
 ) -> Result<(), ServerError> {
-    let jobs = crate::jobs::Pool::with_postprocess_work(config, providers, postprocess_work)
+    serve_with_cache(
+        listener,
+        assets,
+        config,
+        providers,
+        postprocess_work,
+        crate::decompile::cache::Cache::memory(),
+    )
+    .await
+}
+
+/// Serve with an explicitly configured durable decompiler cache.
+pub async fn serve_with_cache(
+    listener: TcpListener,
+    assets: &Path,
+    config: crate::jobs::Config,
+    providers: crate::rpc_providers::Registry,
+    postprocess_work: usize,
+    cache: Arc<crate::decompile::cache::Cache>,
+) -> Result<(), ServerError> {
+    let jobs = crate::jobs::Pool::with_cache(config, providers, postprocess_work, cache)
         .map_err(ServerError::Pool)?;
     serve_with_shutdown(
         listener,
@@ -309,7 +336,7 @@ async fn asset(State(state): State<Application>, method: Method, uri: Uri) -> Re
 }
 
 fn load_asset(assets: &Path, path: &str) -> Result<(&'static str, Vec<u8>), ApiError> {
-    let relative = if path == "/" {
+    let relative = if matches!(path, "/" | "/decompiler" | "/decompiler/") {
         "index.html"
     } else {
         path.trim_start_matches('/')

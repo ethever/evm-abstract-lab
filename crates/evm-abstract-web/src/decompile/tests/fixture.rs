@@ -360,6 +360,7 @@ pub(super) fn snapshot(
             queue_ns: api::DecimalU64(0),
             processing_ns: api::DecimalU64(0),
             publication,
+            cache_warning: None,
         }),
     }
 }

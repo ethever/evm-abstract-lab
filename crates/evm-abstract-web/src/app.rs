@@ -187,11 +187,8 @@ impl Workspace {
     }
 
     #[cfg(any(target_arch = "wasm32", test))]
-    pub(crate) fn background_command(&mut self, context: &egui::Context) -> Option<Command> {
-        if self.task.needs_refresh() {
-            context.request_repaint_after(std::time::Duration::from_millis(100));
-        }
-        self.task.next_command(context.input(|input| input.time))
+    pub(crate) fn cleanup_command(&mut self) -> Option<Command> {
+        self.task.cancel_command()
     }
 
     /// Transfer only actual captured runtime bytes and their decoding fork.

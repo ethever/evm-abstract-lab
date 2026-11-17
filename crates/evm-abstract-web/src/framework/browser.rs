@@ -3,6 +3,7 @@
 //! widgets remain statically dispatched and contain no transport logic.
 
 mod decompile;
+mod navigation;
 mod pointer;
 mod shortcut;
 
@@ -68,7 +69,11 @@ pub async fn start(canvas_id: &str) -> Result<(), JsValue> {
                         .map_err(|error| {
                             std::io::Error::other(format!("Shortcut setup failed: {error:?}"))
                         })?;
-                Ok(Box::new(BrowserApp::new(shortcuts, pointer)))
+                let navigation = navigation::NavigationBridge::install(creation.egui_ctx.clone())
+                    .map_err(|error| {
+                    std::io::Error::other(format!("Navigation setup failed: {error:?}"))
+                })?;
+                Ok(Box::new(BrowserApp::new(shortcuts, pointer, navigation)))
             }),
         )
         .await;
@@ -104,20 +109,24 @@ struct BrowserApp {
     workspace: Application,
     results: Receiver<AppMessage>,
     sender: Sender<AppMessage>,
-    initial_request: bool,
+    navigation: navigation::NavigationBridge,
     last_status: String,
     shortcuts: shortcut::ShortcutBridge,
     pointer: pointer::PointerBridge,
 }
 
 impl BrowserApp {
-    fn new(shortcuts: shortcut::ShortcutBridge, pointer: pointer::PointerBridge) -> Self {
+    fn new(
+        shortcuts: shortcut::ShortcutBridge,
+        pointer: pointer::PointerBridge,
+        navigation: navigation::NavigationBridge,
+    ) -> Self {
         let (sender, results) = mpsc::channel();
         Self {
-            workspace: Application::default(),
+            workspace: Application::new(navigation.initial()),
             results,
             sender,
-            initial_request: true,
+            navigation,
             last_status: String::new(),
             shortcuts,
             pointer,
@@ -135,6 +144,15 @@ impl eframe::App for BrowserApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(route) = self.navigation.take() {
+            match route {
+                Ok(route) => {
+                    self.navigation.title(route.page);
+                    self.workspace.activate(route);
+                }
+                Err(error) => self.workspace.navigation_failed(error),
+            }
+        }
         self.pointer.prepare(ui);
         let status_element = web_sys::window()
             .and_then(|window| window.document())
@@ -154,13 +172,16 @@ impl eframe::App for BrowserApp {
         let mut request = self.workspace.show(ui);
         self.shortcuts
             .set_available(self.workspace.inspector_shortcut_available());
-        if self.initial_request {
-            self.initial_request = false;
-            request = request.or_else(|| self.workspace.startup_command());
+        request = request.or_else(|| self.workspace.startup_command());
+        while let Some(navigation) = self.workspace.take_navigation() {
+            if let Err(error) = self.navigation.apply(navigation) {
+                self.workspace
+                    .navigation_failed(format!("Could not update the page URL: {error:?}"));
+            }
         }
         for request in [
             request,
-            self.workspace.background_command(ui.ctx()),
+            self.workspace.cleanup_command(),
             self.workspace.rpc_provider_command(),
         ]
         .into_iter()
@@ -176,11 +197,11 @@ impl eframe::App for BrowserApp {
         }
         // A live region also makes canvas-only loading/error states accessible
         // to assistive tools and browser smoke checks.
-        let mut status = format!(
-            "{}; {}",
-            self.workspace.accessible_status(),
-            self.workspace.accessible_rpc_provider_status()
-        );
+        let mut status = self.workspace.accessible_status();
+        let providers = self.workspace.accessible_rpc_provider_status();
+        if !providers.is_empty() {
+            status.push_str(&format!("; {providers}"));
+        }
         if let Some(input) = self.workspace.accessible_input_status() {
             status.push_str("; ");
             status.push_str(&input);
@@ -196,6 +217,15 @@ impl eframe::App for BrowserApp {
             && let Some(controls) = crate::controls::observed(ui.ctx())
         {
             let _ = element.set_attribute("data-controls", &controls);
+        }
+        if !ui.ctx().will_discard() {
+            let editing = ui.ctx().output(|output| output.ime.is_some());
+            if let Err(error) = self.shortcuts.sync_text_input(editing) {
+                self.workspace.navigation_failed(format!(
+                    "Text input hit-testing could not be updated: {error:?}"
+                ));
+                ui.ctx().request_repaint();
+            }
         }
     }
 }
@@ -320,7 +350,15 @@ async fn fetch(
         .set("Accept", "application/json")
         .map_err(browser_error)?;
     let window = web_sys::window().ok_or(TransportError::MissingWindow)?;
-    let seconds = if path.ends_with("/result") { 60 } else { 15 };
+    let seconds = if path == evm_abstract_protocol::DECOMPILE_OPEN_PATH {
+        // Address opening pins a block and verifies chain/head around code
+        // acquisition; its five bounded RPC exchanges can take 75 seconds.
+        90
+    } else if path.ends_with("/result") {
+        60
+    } else {
+        15
+    };
     let timed_out = Rc::new(Cell::new(false));
     let elapsed = Rc::clone(&timed_out);
     let timeout = Closure::once(move || {

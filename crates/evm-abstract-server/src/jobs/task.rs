@@ -16,13 +16,17 @@ pub(super) enum Kind {
 pub(super) enum Request {
     Analysis(Box<AnalyzeRequest>),
     Decompile(Box<DecompileRequest>),
+    CachedDecompile {
+        request: Box<DecompileRequest>,
+        key: crate::decompile::cache::Key,
+    },
 }
 
 impl Request {
     pub(super) fn kind(&self) -> Kind {
         match self {
             Self::Analysis(_) => Kind::Analysis,
-            Self::Decompile(_) => Kind::Decompile,
+            Self::Decompile(_) | Self::CachedDecompile { .. } => Kind::Decompile,
         }
     }
 }
@@ -49,6 +53,7 @@ impl Snapshot {
                 queue_ns: DecimalU64(0),
                 processing_ns: DecimalU64(0),
                 publication: None,
+                cache_warning: None,
             }),
         }
     }
@@ -84,14 +89,17 @@ impl Snapshot {
 
 pub(super) enum Outcome {
     Analysis(Box<AnalysisReport>),
-    Decompile(Box<DecompileArtifact>),
+    Decompile(
+        Box<DecompileArtifact>,
+        Option<evm_abstract_protocol::DecompileCacheWarning>,
+    ),
 }
 
 impl Outcome {
     pub(super) fn kind(&self) -> Kind {
         match self {
             Self::Analysis(_) => Kind::Analysis,
-            Self::Decompile(_) => Kind::Decompile,
+            Self::Decompile(..) => Kind::Decompile,
         }
     }
 }
