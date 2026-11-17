@@ -37,8 +37,9 @@ def error_tail(message, alias=False, padding=False, observation=False):
             word[-1] = 1
         code.extend(bytes([0x7f]) + word + bytes([0x81, 0x60, 68 + position, 0x01, 0x52]))
     if alias:
-        # Arbitrary calldata address may overwrite payload or pointer slot.
-        code.extend(bytes.fromhex("5f5f3552"))
+        # The failure guard fixes word 0 to zero. An independent word must
+        # choose the address so this write can overwrite the payload or slot 64.
+        code.extend(bytes.fromhex("5f60203552"))
     if observation:
         code.extend(bytes.fromhex("3350"))
     size = len(abi_bytes(message))
